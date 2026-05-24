@@ -1,0 +1,51 @@
+{
+  "id": "net.photoshop.link.uxp",
+  "name": "Photoshop Link",
+  "version": "1.0.0",
+  "main": "index.html",
+  "manifestVersion": 5,
+  "host": [
+    {
+      "app": "PS",
+      "minVersion": "26.0.0"
+    }
+  ],
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "photoshopLinkPanel",
+      "label": {
+        "default": "Photoshop Link"
+      },
+      "minimumSize": { "width": 230, "height": 200 },
+      "maximumSize": { "width": 1600, "height": 2000 },
+      "preferredDockedSize": { "width": 260, "height": 320 },
+      "preferredFloatingSize": { "width": 320, "height": 400 }
+    }
+  ],
+  "requiredPermissions": {
+    "localFileSystem": "fullAccess",
+    "allowCodeGenerationFromStrings": true,
+    "network": {
+      "domains": [ "localhost" ]
+    }
+  },
+  "icons": [
+    {
+      "width": 23,
+      "height": 23,
+      "path": "icons/icon-dark.png",
+      "scale": [1, 2],
+      "theme": ["darkest", "dark", "medium"],
+      "species": ["pluginList"]
+    },
+    {
+      "width": 23,
+      "height": 23,
+      "path": "icons/icon-light.png",
+      "scale": [1, 2],
+      "theme": ["lightest", "light"],
+      "species": ["pluginList"]
+    }
+  ]
+}

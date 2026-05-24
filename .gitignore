@@ -1,0 +1,75 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Playwright
+node_modules/
+.flow-playwright-profile/
+
+# IDE
+.vscode/*
+!.vscode/settings.json.example
+.idea/
+
+# Claude Code
+.claude/settings.local.json
+.claude/projects/
+
+# 機密・個人設定（誤コミット防止）
+*.env
+.env.*
+!.env.example
+**/dashboard_config.json
+**/suno_config.json
+**/youtube_client_secret.json
+**/youtube_token.json
+**/line_config.json
+**/auth_token.txt
+**/competitor_analysis_cache.json
+**/master_settings.json
+**/master_prompts.json
+**/channels.json
+**/benchmark_config.json
+**/schedule_jobs.json
+**/export_queue.json
+**/export_rules.json
+**/task_history.json
+**/pipeline_status.json
+**/process_status.json
+**/migration.log
+**/.migration_completed
+
+# OAuth credentials / venv 由来の youtube-oauth-2 系（CONFIG_DIR 内のため通常は対象外だが念のため）
+**/youtube-oauth-2/
+
+# ログ・一時
+*.log
+*.tmp
+*.swp
+*~
+
+# Premiere キャッシュ
+*.prproj.bak
+*Auto-Save*
+
+# Chromium プロファイル（万一作業ツリー内にある場合）
+chromium_profile/

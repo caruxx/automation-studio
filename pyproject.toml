@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "automation-studio"
+version = "0.1.0"
+description = "クリエイター向け制作パイプライン自動化ダッシュボード（SUNO・Premiere Pro・Adobe Media Encoder・YouTube・Google Flow を連携）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Automation Studio Contributors" }]
+keywords = ["automation", "youtube", "premiere", "suno", "creator", "pipeline"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    # Web フレームワーク
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.0",
+    # スケジューラ
+    "apscheduler>=3.10",
+    # HTTP / OAuth
+    "httpx>=0.27",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.120",
+    # JSON 拡張
+    "python-multipart>=0.0.9",  # FastAPI のフォームアップロード用
+]
+
+[project.optional-dependencies]
+# SUNO / Flow ブラウザ自動化（Playwright）
+browser = ["playwright>=1.40"]
+# Premiere Pro 連携（macOS のみ、pymiere は HTTP 経由）
+premiere = ["pymiere>=1.5"]
+# 全部入り
+all = ["playwright>=1.40", "pymiere>=1.5"]
+# 開発用
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+# CLI エントリーポイント（python -m automation_studio.cli を想定。当面はラッパー shell も同梱）
+automation-studio = "Python.app:_run_uvicorn"
+as-pipeline = "Python.app_pipeline:main"
+
+[project.urls]
+"Homepage" = "https://github.com/yourname/automation-studio"
+"Issues" = "https://github.com/yourname/automation-studio/issues"
+
+# ─── setuptools 設定（フラットレイアウトを明示） ───
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["Python*"]
+exclude = ["tests*", "youtube-oauth-2*", "venv*", ".venv*"]
+
+[tool.setuptools.package-data]
+"Python" = ["*.epr", "*.jsx", "*.sh"]
+
+# ─── 開発ツール設定 ───
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "youtube-oauth-2",
+    "venv",
+    ".venv",
+    "Python/orzz_*.py",  # 互換 shim は警告対象外
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501"]  # line-length は緩め
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
