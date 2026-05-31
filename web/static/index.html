@@ -246,6 +246,20 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .badge-info{background:rgba(96,165,250,.18);color:var(--accent-info)}
 .badge-purple{background:rgba(167,139,250,.18);color:var(--brand-purple)}
 .badge-neutral{background:rgba(113,113,113,.22);color:var(--text-secondary)}
+/* U1 実行履歴（台帳）ビュー */
+.ledger-stats{display:flex;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-3)}
+.lstat{background:var(--surface-2,rgba(127,127,127,.08));border:1px solid var(--border,rgba(127,127,127,.2));border-radius:var(--radius-md);padding:8px 14px;min-width:72px;text-align:center}
+.lstat-num{font-size:var(--text-lg);font-weight:var(--font-semibold);line-height:1.1}
+.lstat-lbl{font-size:11px;color:var(--text-tertiary);margin-top:3px}
+.ledger-controls{display:flex;gap:var(--space-2);align-items:center;margin-bottom:var(--space-2);flex-wrap:wrap}
+.ledger-table-wrap{overflow-x:auto}
+.ledger-table{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.ledger-table th,.ledger-table td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--border,rgba(127,127,127,.18));vertical-align:top;white-space:nowrap}
+.ledger-table th{font-size:11px;color:var(--text-tertiary);font-weight:var(--font-semibold)}
+.ledger-table td:last-child{white-space:normal}
+.ledger-hint{font-size:11px;color:var(--text-tertiary);margin-top:3px}
+.ledger-hint code{background:rgba(127,127,127,.15);padding:1px 5px;border-radius:4px}
+.ledger-sum{font-size:11px;color:var(--text-tertiary);margin-top:3px;max-width:360px;white-space:normal}
 
 /* ===== Stat ===== */
 .stat{background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-lg);padding:var(--space-4);overflow:hidden;min-width:0}
@@ -1309,6 +1323,7 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
     <button class="nav-btn" data-p="benchmark" onclick="go('benchmark')"><span class="nav-label">ベンチマーク</span></button>
     <button class="nav-btn" data-p="automation" onclick="go('automation')"><span class="nav-label">自動化</span></button>
     <button class="nav-btn" data-p="export" onclick="go('export')"><span class="nav-label">書き出し</span></button>
+    <button class="nav-btn" data-p="ledger" onclick="go('ledger')"><span class="nav-label">実行履歴</span></button>
   </nav>
 
   <div class="sidebar-footer">
@@ -3164,6 +3179,15 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
     </div>
   </div>
 
+  <!-- ===== 実行履歴（台帳 runs.db / U1） ===== -->
+  <div class="page" id="p-ledger">
+    <div class="page-head">
+      <div class="section-heading"><div class="page-title">実行履歴（台帳）</div></div>
+      <div class="fh" style="margin:0">各チャンネル × vol の工程実行ログ（中央台帳 runs.db）。失敗 run は再開コマンドを表示します。</div>
+    </div>
+    <div id="ledgerBody" style="margin-top:var(--space-3)"><div class="fh">読み込み中...</div></div>
+  </div>
+
   <!-- ===== 詳細設定（旧マスター設定 / Sprint 5-D） ===== -->
   <div class="page" id="p-master">
     <div class="page-head">
@@ -3529,7 +3553,7 @@ const MODELS={
   claude:[{id:"cli-default",l:"claude CLI [既定モデル]"}],
   codex:[{id:"cli-default",l:"codex CLI [既定モデル]"}]
 };
-const PAGE_TITLES={dashboard:'ダッシュボード',videos:'コンテンツ',benchmark:'ベンチマーク分析',automation:'自動化',export:'書き出し',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',notify:'Discord 通知',settings:'基本設定',master:'詳細設定'};
+const PAGE_TITLES={dashboard:'ダッシュボード',videos:'コンテンツ',benchmark:'ベンチマーク分析',automation:'自動化',export:'書き出し',ledger:'実行履歴（台帳）',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',notify:'Discord 通知',settings:'基本設定',master:'詳細設定'};
 
 // 動画詳細タブ定義（ワークフロー順）
 // stepKey: WORKFLOW_STEPS のキー（完了判定に使用）
@@ -3612,6 +3636,7 @@ function go(n, pushHistory=true){
   if(n==='premiere'){loadPrVideoSelect();checkPremiere();startPanelLogPoll();}else{stopPanelLogPoll();}
   if(n==='photoshop'){loadPsVideoSelect();checkPhotoshop();}
   if(n==='youtube')loadYoutubeHistory();
+  if(n==='ledger')loadLedger();
   // ページ遷移でない場合は詳細を閉じる
   if(n!=='videos'&&_curVideo){_curVideo=null;document.getElementById('vDetail').style.display='none';document.getElementById('vList').style.display='block'}
   // History API
@@ -4598,6 +4623,126 @@ async function publishNow(videoName){
     toast(`✅ ${videoName} を public に公開しました`,'s');
     setTimeout(loadRunsActive, 1000);
   }catch(e){toast('接続エラー: '+e.message,'e')}
+}
+
+/* ==== 実行履歴（台帳 runs.db / U1） ==== */
+const _LEDGER_BADGE={done:'badge-success',failed:'badge-danger',in_progress:'badge-info',cancelled:'badge-warning',reconstructed:'badge-neutral'};
+let _ledgerFilter={status:'',limit:50};
+
+async function loadLedger(){
+  const body=document.getElementById('ledgerBody');
+  if(!body) return;
+  body.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const qs='/api/runs/ledger?limit='+encodeURIComponent(_ledgerFilter.limit)
+            +(_ledgerFilter.status?'&status='+encodeURIComponent(_ledgerFilter.status):'');
+    const [statsR,runsR]=await Promise.all([
+      fetch('/api/runs/ledger/stats?days=7'),
+      fetch(qs)
+    ]);
+    const stats=statsR.ok?await statsR.json():null;
+    const data=runsR.ok?await runsR.json():null;
+    const runs=(data&&data.runs)||[];
+    body.innerHTML=renderLedgerStats(stats)+renderLedgerControls()+renderLedgerTable(runs);
+  }catch(e){
+    body.innerHTML='<div class="fh">台帳の読み込みに失敗しました（'+esc((e&&e.message)||e)+'）</div>';
+  }
+}
+
+function renderLedgerStats(s){
+  if(!s) return '';
+  const rate=s.total?Math.round((s.done/s.total)*100):0;
+  const avg=s.avg_duration_sec?Math.round(s.avg_duration_sec/60):0;
+  return `<div class="ledger-stats">
+    <div class="lstat"><div class="lstat-num">${s.total||0}</div><div class="lstat-lbl">直近${s.window_days||7}日</div></div>
+    <div class="lstat"><div class="lstat-num" style="color:var(--accent-success)">${s.done||0}</div><div class="lstat-lbl">成功</div></div>
+    <div class="lstat"><div class="lstat-num" style="color:var(--accent-danger)">${s.failed||0}</div><div class="lstat-lbl">失敗</div></div>
+    <div class="lstat"><div class="lstat-num" style="color:var(--accent-info)">${s.in_progress||0}</div><div class="lstat-lbl">実行中</div></div>
+    <div class="lstat"><div class="lstat-num">${rate}%</div><div class="lstat-lbl">成功率</div></div>
+    <div class="lstat"><div class="lstat-num">${avg}分</div><div class="lstat-lbl">平均所要</div></div>
+    <div class="lstat"><div class="lstat-num">${s.auto_resume_chains||0}</div><div class="lstat-lbl">自動再開</div></div>
+  </div>`;
+}
+
+function renderLedgerControls(){
+  const opts=['','in_progress','done','failed','cancelled','reconstructed'];
+  const labels={'':'すべて',in_progress:'実行中',done:'成功',failed:'失敗',cancelled:'取消',reconstructed:'復元'};
+  let sel='<select id="ledgerStatusSel" class="fi" style="max-width:140px" onchange="onLedgerFilterChange()">';
+  opts.forEach(o=>{sel+=`<option value="${o}"${o===_ledgerFilter.status?' selected':''}>${labels[o]}</option>`;});
+  sel+='</select>';
+  return `<div class="ledger-controls">
+    <label class="fl" style="margin:0">状態</label> ${sel}
+    <button class="btn btn-ghost btn-sm" onclick="loadLedger()">🔄 更新</button>
+    <button class="btn btn-ghost btn-sm" onclick="reapStaleRuns()" title="6時間以上 in_progress のまま放置された run を失敗に降格">🧹 stale 整理</button>
+  </div>`;
+}
+
+function _ledgerBadge(st){
+  const cls=_LEDGER_BADGE[st]||'badge-neutral';
+  return `<span class="badge ${cls}">${esc(st||'?')}</span>`;
+}
+
+function renderLedgerTable(runs){
+  if(!runs.length){return '<div class="fh" style="padding:var(--space-4)">まだ実行履歴がありません</div>';}
+  let rows='';
+  runs.forEach(r=>{
+    const dur=r.duration_sec!=null
+      ?(r.duration_sec>=60?Math.round(r.duration_sec/60)+'分':r.duration_sec+'秒'):'-';
+    const exit=r.exit_code!=null?r.exit_code:'';
+    const fail=r.failed_stage?` <span class="badge badge-danger">${esc(r.failed_stage)}</span>`:'';
+    const resumeHint=(r.status==='failed'&&r.failed_stage)
+      ?`<div class="ledger-hint">再開: <code>python3 app_pipeline.py ${esc(String(r.vol||''))} --from ${esc(r.failed_stage)}</code></div>`:'';
+    const summary=r.summary?`<div class="ledger-sum">${esc(r.summary)}</div>`:'';
+    const chainBtn=r.parent_run_id?`<button class="btn btn-ghost btn-sm" onclick="showRunChain('${esc(r.run_id)}')">🔗 連鎖</button>`:'';
+    const started=r.started_at?String(r.started_at).replace('T',' ').replace(/(\.\d+)?Z?$/,''):'';
+    rows+=`<tr>
+      <td>${esc(r.channel_name||r.channel_id||'-')}</td>
+      <td>vol.${esc(String(r.vol||''))}</td>
+      <td><span class="badge badge-neutral">${esc(r.kind||'')}</span></td>
+      <td>${_ledgerBadge(r.status)}${fail}</td>
+      <td>${esc(r.from_stage||'')}</td>
+      <td>${esc(started)}</td>
+      <td>${dur}</td>
+      <td>${esc(String(exit))}</td>
+      <td>${chainBtn}${summary}${resumeHint}</td>
+    </tr>`;
+  });
+  return `<div class="ledger-table-wrap"><table class="ledger-table">
+    <thead><tr><th>チャンネル</th><th>vol</th><th>種別</th><th>状態</th><th>from</th><th>開始</th><th>所要</th><th>exit</th><th>詳細</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function onLedgerFilterChange(){
+  const sel=document.getElementById('ledgerStatusSel');
+  if(sel)_ledgerFilter.status=sel.value;
+  loadLedger();
+}
+
+async function reapStaleRuns(){
+  if(!confirm('6時間以上 in_progress のまま放置された run を「失敗」に降格します。よろしいですか？')) return;
+  try{
+    const r=await fetch('/api/runs/ledger/reap',{method:'POST'});
+    const d=await r.json();
+    const n=(d&&d.reaped!=null)?d.reaped:0;
+    toast(n+' 件を失敗に降格しました','s');
+    loadLedger();
+  }catch(e){toast('stale 整理に失敗: '+((e&&e.message)||e),'e');}
+}
+
+async function showRunChain(runId){
+  try{
+    const r=await fetch('/api/runs/ledger/'+encodeURIComponent(runId)+'/chain');
+    if(!r.ok){toast('連鎖の取得に失敗','e');return;}
+    const d=await r.json();
+    const chain=(d&&d.chain)||[];
+    let h='<div class="mo-head"><div class="mo-title">実行連鎖（auto_resume 親子）</div><button class="mo-x" onclick="closeModal()">×</button></div><div class="mo-body"><table class="ledger-table"><thead><tr><th>#</th><th>vol</th><th>状態</th><th>from</th><th>失敗工程</th><th>開始</th></tr></thead><tbody>';
+    chain.forEach((c,i)=>{
+      const st=c.started_at?String(c.started_at).replace('T',' ').replace(/(\.\d+)?Z?$/,''):'';
+      h+=`<tr><td>${i+1}</td><td>vol.${esc(String(c.vol||''))}</td><td>${_ledgerBadge(c.status)}</td><td>${esc(c.from_stage||'')}</td><td>${esc(c.failed_stage||'')}</td><td>${esc(st)}</td></tr>`;
+    });
+    h+='</tbody></table></div>';
+    modal(h);
+  }catch(e){toast('連鎖の取得に失敗: '+((e&&e.message)||e),'e');}
 }
 
 /* ==== 全チャンネル稼働状況（P1-7） ==== */
