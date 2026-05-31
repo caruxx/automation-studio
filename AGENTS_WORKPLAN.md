@@ -269,11 +269,20 @@ skills/app-web-dashboard.md, skills/app-master-config.md, skills/app-remote-acce
 
 ---
 
-### Phase 3 以降（別PC作業時に本書へ追記して詳細化）
+### Phase 3 — ✅ 完了（commit b0160db）
 
-- **Phase 3**: publish-worker を公開ゲート(`publish_video_to_public`)に接続。QA通過＋人間承認で本公開（§2 の自律度方針に従い承認ゲートを残す）。
-- **Phase 4**: 全ドメインを StageWorker 共通I/F（can_run/run/on_fail/record, AGENTS_DESIGN §3.3）に再整理＋オーケストレーター拡張（依存解決・能動トリガー）。
-- **Phase 5**: P3 残（plan自動採択 P3-2 / policy-aware配分 P3-4 / token health cron P3-5）。
+公開ゲート(P2-7)のコードは**既に完成済み**だった（step_upload→_schedule_publish_after_upload→_job_publish_now→publish_video_to_public、承認ゲート無し）。STEPS順が export→qa→meta→thumbnail→upload なので **upload到達=QA通過済み**。§6-4「upload完全自動」は元々満たされていた。
+- 残課題「公開方式を選ぶ手段」を実装: per-channel 設定 `publish_mode`（unlisted/public/delayed）。
+- app.py(PER_CHANNEL_KEYS + DashboardConfigUpdate) / app_pipeline.py(step_upload を publish_mode駆動) / index.html(設定タブに公開方式select＋遅延欄＋onPublishModeChange、予約投稿イメージ)。
+- 後方互換: publish_mode 未設定なら publish_delay_hours>0 を delayed とみなす。実API検証済(PUT→GET往復、16.WWで検証しバックアップ復元)。
+- §2 表の「upload自律度=承認ゲート維持」は **§6-4 で完全自動に方針転換済み**（承認ゲートは設けない）。
+
+### Phase 4 / 5 — 詳細設計を AGENTS_DESIGN §7-9 に記載（レビュー待ち・実装前）
+
+方針: **Phase 4 はまず設計だけ固める / UI は後でまとめて改修**（バックエンド先行）。
+- **Phase 4**: StageWorker 共通I/F（can_run/run/on_fail/record）＋オーケストレーター拡張。台帳(runs.db)を黒板にした依存解決・能動トリガー。既存 step_*/pipeline/auto_resume/公開ゲートは温存しレイヤ追加のみ。→ 詳細 AGENTS_DESIGN §7。
+- **Phase 5**: plan自動採択(P3-2) / policy-aware配分(P3-4) / token health cron(P3-5、モジュール済→cron化のみ)。→ 詳細 AGENTS_DESIGN §8。
+- 要レビュー（実装前）: 常駐方式(APScheduler定期 vs 常駐スレッド) / 能動トリガーの自発生成範囲 / quota残取得方法 / オーケストレーター置き場 / UI一括改修タイミング。→ AGENTS_DESIGN §9。
 
 ---
 

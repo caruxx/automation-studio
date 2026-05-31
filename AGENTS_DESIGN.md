@@ -194,3 +194,95 @@ class StageWorker:
 ## 次のステップ
 
 本設計書をレビューのうえ、§6を確定 → Phase 0+1（CLAUDE.md修復＋サブエージェント7個作成）から着手するのが最小リスク・最大即効。
+
+---
+
+# Phase 4 / 5 詳細設計（2026-05-31 追記・レビュー待ち）
+
+> **状態**: ドラフト（実装前）。Phase 0-3 完了済み（commit 4b2e37f / b0160db）。
+> **方針確定**: Phase 4 は「まず設計だけ固める」、UI は「後でまとめて改修」（バックエンド先行）。
+> **現物確認済み**: STEPS（app_pipeline.py:67）/ run_ledger スキーマ（app_run_ledger.py:13-30）/ APScheduler+schedule_jobs.json（app.py:10465〜）/ auto_resume（app.py:10633〜）/ 公開ゲート（app.py:10548〜）。
+
+## 7. Phase 4: StageWorker 共通I/F化 + オーケストレーター拡張
+
+### 7.1 設計の核心（現行との差分）
+
+現行は「app.py の各 _job_*（vol_create / spot_create / auto_resume / publish_now）が、pipeline を
+subprocess で起動し、失敗時に stdout を解析して次を決める」**中央集権・命令駆動**モデル。
+
+Phase 4 は **台帳(runs.db)を黒板(blackboard)**にし、各ドメインワーカーが「自分が動かせる vol を
+台帳から自分で拾う」**データ駆動・自律**モデルへ拡張する。**既存の step_* 関数・pipeline・公開ゲート・
+auto_resume はそのまま温存**し、その上に「進行判断レイヤ」を追加するだけ（ロジックの作り直しはしない）。
+
+### 7.2 StageWorker 共通I/F（新規 `Python/app_workers.py`）
+
+```python
+class StageWorker:
+    domain: str                       # "music" | "image" | "video" | "qa" | "publish" | "analysis"
+    stages: list[str]                 # 担当 STEPS（例 music=["suno","rename"]）
+
+    def can_run(self, vol, channel, ledger) -> bool:
+        # 依存解決: 直前 stage が done かつ自 stage 未完了の vol を「動かせる」と判定。
+        # 台帳の最新 run の status / failed_stage と、フォルダ内の成果物(mp4 等)有無で決める。
+
+    def run(self, vol, channel) -> ExitCode:
+        # 既存 step_*（app_pipeline.STEP_FUNCS）を呼ぶだけ。sentinel exit(0/1/75/76/77/78)準拠。
+
+    def on_fail(self, code) -> Action:
+        # retry(76) / auto_resume(差し戻し含む) / notify(75,77,78) を code で分岐。
+        # 既存 _should_auto_resume / _RESUME_OVERRIDE / RETRY_POLICY を再利用。
+
+    def record(self, ledger, ...):
+        # start_run / finish_run で台帳更新（既存 app_run_ledger をそのまま使用）。
+```
+
+- **依存解決の単一ソース**は STEPS の順序。`STEPS.index(自stage) == STEPS.index(最新done stage)+1` が基本条件。
+- ドメイン→stages のマッピングは §1 の表と一致（music/image/video/qa/publish）。analysis は工程外＝定期実行。
+
+### 7.3 オーケストレーター拡張（app_pipeline.py or 新規 `app_orchestrator.py`）
+
+```
+ループ（per-channel・スロット調整付き）:
+  1. reap_stale()          # 既存: 6h 超の in_progress を降格
+  2. 各 channel × 各 worker で can_run(vol) を評価 → 実行可能タスク集合を得る
+  3. 同時実行スロット制約を適用（render queue は既存どおり物理シリアライズ=1）
+  4. _balance_trigger_slot 相当で 30 分分散しつつ run() を投入
+  5. 能動トリガー: 「素材が無い最小未着手 vol」を music-worker が自発生成（plan→suno）
+```
+
+- **衝突調整**: video/export は既存 `app_render_queue.py`（SQLite + 1 worker）にそのまま委譲。
+- **能動トリガー**は Phase 5 の plan自動採択と接続（analysis 提案→music 起案）。Phase 4 では「枠だけ」用意。
+
+### 7.4 常駐方式（要レビュー §9-1）
+
+- **案A: APScheduler 定期ジョブ**（例: 5分間隔で can_run 評価 → 投入）。既存 scheduler に最も馴染む。永続化は schedule_jobs.json。**推奨**。
+- 案B: 常駐スレッド（render queue と同様の 1 worker ループ）。即応性は高いがプロセス管理が増える。
+- 既存資産（APScheduler / schedule_jobs.json / _job_* 群）との整合から **案A 推奨**。
+
+### 7.5 Phase 4 で「将来必要になる UI」（今回は作らない・列挙のみ）
+
+| UI 要素 | 役割 | 接続 API（既存 or 新規） |
+|---------|------|------------------------|
+| ワーカー稼働ボード | 各 worker が今どの vol を処理中/待機/停止か | 新規 `/api/workers/status` |
+| 依存・進行ビュー | vol ごとに STEPS のどこまで進んだか（黒板可視化） | 既存 `/api/runs` 拡張 + get_run_chain |
+| 自走 ON/OFF トグル | per-channel で能動トリガーを有効化/一時停止 | 新規 `/api/workers/autopilot`（per-channel 設定キー追加） |
+| 手動介入 | 特定 vol を差し戻し / スキップ / 優先度上げ | 既存 auto_resume/publish API + 新規 priority |
+
+## 8. Phase 5: 自律性の仕上げ（P3 残）
+
+| 強化 | 内容 | 既存との接続 | 将来UI |
+|------|------|------------|--------|
+| **plan自動採択**（P3-2） | analysis-worker の次vol提案を music-worker が自動採択して起案 | claude_proposer / app_series + 能動トリガー(§7.3) | 採択 log ビュー・自動/確認の切替設定 |
+| **policy-aware配分**（P3-4） | チャンネル優先度 × YouTube quota 残 でスロット再配分 | quota(insert1600/update50) + per-channel 優先度キー(新規) | quota 残ゲージ・優先度スライダー |
+| **token health cron**（P3-5） | app_token_health.py を定期実行し OAuth/cookie 期限を事前通知 | 既存モジュール有・cron 化のみ未完。APScheduler 定期ジョブ化 | 信号機表示(緑/黄/赤)・次回点検時刻 |
+
+- token health は**モジュール実装済み**なので Phase 5 で最も低コスト。APScheduler への登録だけで成立。
+- policy-aware 配分は quota 実残の取得方法（API or 推定カウンタ）が要検討（§9-3）。
+
+## 9. Phase 4/5 要レビュー事項（実装前に決めたい）
+
+1. **ワーカー常駐方式**: §7.4 案A(APScheduler定期) で良いか / 案B(常駐スレッド)か。
+2. **能動トリガーの自発生成範囲**: music-worker が「素材無し vol」を**どこまで自動起案**してよいか（plan自動採択 P3-2 と直結。完全自動は要慎重）。
+3. **quota 残の取得**: policy-aware 配分のため、YouTube quota 残を API 実測するか、ローカル推定カウンタで近似するか。
+4. **オーケストレーターの置き場**: app_pipeline.py 拡張か、新規 app_orchestrator.py 分離か。
+5. **UI 一括改修のタイミング**: Phase 4+5 のバックエンド完了後にまとめて（確定方針）。新タブ新設か既存ビュー拡張か。
