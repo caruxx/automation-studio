@@ -202,10 +202,122 @@ class QAWorker(StageWorker):
         return True
 
 
-# ワーカーレジストリ（段階展開。今は qa のみ。image/video/publish は順次追加）。
-WORKERS: dict[str, StageWorker] = {
-    "qa": QAWorker(),
+# ─── stage 別 成果物検出（can_run の依存解決の地に足のついた根拠） ───
+# 台帳が一次情報だが、手動実行ぶんを拾うためフォルダ成果物も見る。
+# premiere だけはクリーンなファイル成果物が無い（Premiere プロジェクト内状態）ため
+# export mp4 を proxy にしつつ台帳併用。
+def _img_has(folder: Path, vol: int, *names: str) -> bool:
+    img = folder / "Image"
+    for n in names:
+        if (folder / n).exists() or (img / n).exists():
+            return True
+    return False
+
+
+def _bgimage_done(folder: Path, vol: int) -> bool:
+    return _img_has(folder, vol, f"vol{vol}.png", f"vol{vol}.jpg")
+
+
+def _psd_done(folder: Path, vol: int) -> bool:
+    # template_psd 未設定なら step_psd_composite は no-op（True 即返し）→ 完了扱い。
+    try:
+        if not _pipe._should_run_psd(folder):
+            return True
+    except Exception:
+        pass
+    return _img_has(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
+
+
+def _premiere_done(folder: Path, vol: int) -> bool:
+    # ファイル成果物なし。export mp4 があれば premiere は確実に完了済み（台帳でも補完）。
+    return _has_export_mp4(folder)
+
+
+def _export_done(folder: Path, vol: int) -> bool:
+    return _has_export_mp4(folder)
+
+
+def _qa_done(folder: Path, vol: int) -> bool:
+    return (folder / "qa_report.json").exists()
+
+
+def _meta_done(folder: Path, vol: int) -> bool:
+    # step_meta は youtube_{title,description,tags}.txt を書き出す（title を代表に判定）。
+    return (folder / "youtube_title.txt").exists()
+
+
+def _thumbnail_done(folder: Path, vol: int) -> bool:
+    return _img_has(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
+
+
+_ARTIFACT_DONE = {
+    "bgimage": _bgimage_done,
+    "psd_composite": _psd_done,
+    "premiere": _premiere_done,
+    "export": _export_done,
+    "qa": _qa_done,
+    "meta": _meta_done,
+    "thumbnail": _thumbnail_done,
 }
+
+
+def _ledger_stage_done(stage: str, vol: int, channel_id: str = "") -> bool:
+    """台帳に「その stage の done run」があるか。orchestrator 単一stage run は
+    meta_json に stage 名を含む。full-pipeline の done run（meta 空）も完了とみなす。"""
+    if _ledger is None:
+        return False
+    try:
+        runs = _ledger.list_runs(channel_id=channel_id or None, vol=vol, limit=30)
+    except Exception:
+        return False
+    for r in runs:
+        if r.get("status") == "done":
+            mj = r.get("meta_json") or ""
+            if (f'"{stage}"' in mj) or (mj == ""):
+                return True
+    return False
+
+
+def _stage_artifact_done(stage: str, folder: Path, vol: int, channel_id: str = "") -> bool:
+    fn = _ARTIFACT_DONE.get(stage)
+    if fn and fn(folder, vol):
+        return True
+    return _ledger_stage_done(stage, vol, channel_id)
+
+
+@dataclass
+class StepWorker(StageWorker):
+    """1 stage = 1 ワーカーの汎用実装。can_run は _stage_artifact_done で
+    「前段 done × 自 stage 未完」を判定。STEPS 上で image ドメイン(bgimage/psd/
+    thumbnail)は隣接しないため、ドメイン単位ではなく stage 単位が依存解決に正しい。
+    domain_label は表示上のグルーピング(image/video/publish)。"""
+    domain_label: str = ""
+
+    def can_run(self, vol: int, folder: Path, *, channel_id: str = "") -> bool:
+        head = self.stages[0]
+        prev = self.prev_stage(head)
+        prev_done = True if prev is None else _stage_artifact_done(prev, folder, vol, channel_id=channel_id)
+        self_done = _stage_artifact_done(head, folder, vol, channel_id=channel_id)
+        return prev_done and not self_done
+
+
+# ワーカーレジストリ（stage 単位）。
+# ⚠ upload は **意図的に含めない**（最終投稿は手動ゲート。ポリシー §1）。
+# ⚠ suno / rename も含めない（music ドメインは人間が prompt 合意後に起動。§9-2）。
+# まず全 stage を登録し、autopilot で実際に tick する範囲は app.py 統合時に
+# per-channel 設定で絞る（既定 = export〜thumbnail）。
+WORKERS: dict[str, StageWorker] = {
+    "bgimage":       StepWorker(domain="bgimage", stages=["bgimage"], domain_label="image"),
+    "psd_composite": StepWorker(domain="psd_composite", stages=["psd_composite"], domain_label="image"),
+    "premiere":      StepWorker(domain="premiere", stages=["premiere"], domain_label="video"),
+    "export":        StepWorker(domain="export", stages=["export"], domain_label="video"),
+    "qa":            QAWorker(),
+    "meta":          StepWorker(domain="meta", stages=["meta"], domain_label="publish"),
+    "thumbnail":     StepWorker(domain="thumbnail", stages=["thumbnail"], domain_label="image"),
+}
+
+# autopilot 既定範囲（app.py 統合時に tick 対象を絞るためのヒント）。
+AUTOPILOT_DEFAULT_STAGES = ["export", "qa", "meta", "thumbnail"]
 
 
 # ─── オーケストレーション tick（APScheduler 定期ジョブから呼ぶ想定） ───
