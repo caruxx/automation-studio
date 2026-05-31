@@ -272,6 +272,8 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .ap-ch-name{font-weight:var(--font-semibold);min-width:120px}
 .ap-toggle{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
 .ap-prio-input{width:70px}
+/* U5: サイドバー ツール区切りラベル */
+.nav-section-label{font-size:10px;color:var(--text-tertiary);padding:10px 12px 3px;margin-top:6px;font-weight:600;letter-spacing:.04em;border-top:1px solid var(--border-default,rgba(127,127,127,.15))}
 
 /* ===== Stat ===== */
 .stat{background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-lg);padding:var(--space-4);overflow:hidden;min-width:0}
@@ -1347,6 +1349,11 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <button class="nav-btn" data-p="ledger" onclick="go('ledger')"><span class="nav-label">実行履歴</span></button>
     <button class="nav-btn" data-p="health" onclick="go('health')"><span class="nav-label">接続ヘルス</span></button>
     <button class="nav-btn" data-p="autopilot" onclick="go('autopilot')"><span class="nav-label">自走運用</span></button>
+    <div class="nav-section-label">ツール</div>
+    <button class="nav-btn" data-p="suno" onclick="go('suno')"><span class="nav-label">SUNO</span></button>
+    <button class="nav-btn" data-p="premiere" onclick="go('premiere')"><span class="nav-label">Premiere</span></button>
+    <button class="nav-btn" data-p="photoshop" onclick="go('photoshop')"><span class="nav-label">Photoshop</span></button>
+    <button class="nav-btn" data-p="youtube" onclick="go('youtube')"><span class="nav-label">YouTube</span></button>
   </nav>
 
   <div class="sidebar-footer">
@@ -3658,6 +3665,48 @@ function esc(s){const d=document.createElement('div');d.textContent=s==null?'':s
 function toast(m,t='i'){const map={s:'toast-success',e:'toast-error',i:'toast-info',w:'toast-warning'};const c=document.getElementById('toastC'),e=document.createElement('div');e.className=`toast ${map[t]||'toast-info'}`;e.textContent=m;c.appendChild(e);setTimeout(()=>{e.style.opacity='0';setTimeout(()=>e.remove(),300)},3000)}
 function modal(h){document.getElementById('modalC').innerHTML=`<div class="mo" onclick="if(event.target===this)closeModal()"><div class="mo-box">${h}</div></div>`}
 function closeModal(){document.getElementById('modalC').innerHTML=''}
+/* U6: API POST 共通ヘルパ — HTTP ステータス + detail を必ず surface し、エラーUXを統一 */
+async function apiPost(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: body!=null ? JSON.stringify(body) : undefined});
+  if(!r.ok){
+    let detail='';
+    try{ const j=await r.json(); detail=j.detail||j.message||''; }
+    catch(_){ try{ detail=await r.text(); }catch(__){} }
+    throw new Error(detail || ('HTTP '+r.status));
+  }
+  return r.json().catch(()=>({}));
+}
+async function apiPut(url, body){
+  const r = await fetch(url, {method:'PUT', headers:{'Content-Type':'application/json'},
+    body: body!=null ? JSON.stringify(body) : undefined});
+  if(!r.ok){
+    let detail='';
+    try{ const j=await r.json(); detail=j.detail||j.message||''; }
+    catch(_){ try{ detail=await r.text(); }catch(__){} }
+    throw new Error(detail || ('HTTP '+r.status));
+  }
+  return r.json().catch(()=>({}));
+}
+/* U6: 失敗 toast に「再試行」リンク。t==='e' かつ onRetry 指定時は自動消去せずボタン表示 */
+function toastRetry(m, onRetry){
+  const c=document.getElementById('toastC'); if(!c){ toast(m,'e'); return; }
+  const e=document.createElement('div'); e.className='toast toast-error';
+  const span=document.createElement('span'); span.textContent=m; e.appendChild(span);
+  if(typeof onRetry==='function'){
+    const b=document.createElement('button');
+    b.textContent='再試行'; b.style.cssText='margin-left:10px;background:transparent;border:1px solid currentColor;border-radius:4px;color:inherit;cursor:pointer;padding:1px 8px;font-size:11px';
+    b.onclick=()=>{ e.remove(); onRetry(); };
+    e.appendChild(b);
+    const x=document.createElement('button');
+    x.textContent='×'; x.style.cssText='margin-left:6px;background:transparent;border:none;color:inherit;cursor:pointer;font-size:14px';
+    x.onclick=()=>e.remove(); e.appendChild(x);
+    c.appendChild(e);  // onRetry あり = 自動消去しない
+  }else{
+    e.appendChild(span); c.appendChild(e);
+    setTimeout(()=>{ e.style.opacity='0'; setTimeout(()=>e.remove(),300); },5000);
+  }
+}
 
 /* ==== Nav (History API 対応) ==== */
 function go(n, pushHistory=true){
