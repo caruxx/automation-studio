@@ -301,9 +301,33 @@ class StepWorker(StageWorker):
         return prev_done and not self_done
 
 
+# ─── plan ワーカー（P3-2 = plan 自動採択。§9-2「空枠作成まで」） ───
+class PlanWorker(StageWorker):
+    """ベンチマーク分析 → 次動画プラン(plan.json)を生成する plan-worker。
+
+    既存 step_plan（app_pipeline）をそのまま run() で呼ぶ。step_plan は plan.json を
+    書き出すだけで **SUNO 生成は実行しない**（後続 step_suno が plan.json を優先利用）。
+    よって本ワーカーは §9-2「空枠作成まで」の範囲に収まる（音源生成は人間が prompt
+    合意後に起動）。plan は STEPS（10工程）には含まれず STEPS_WITH_PLAN の先頭なので
+    prev_stage は None＝依存なし。plan.json があれば can_run=False（再生成は手動削除）。
+    """
+    def __init__(self):
+        super().__init__(domain="plan", stages=["plan"])
+
+    def prev_stage(self, stage: str) -> Optional[str]:
+        return None  # plan は最先頭。依存なし。
+
+    def can_run(self, vol: int, folder: Path, *, channel_id: str = "") -> bool:
+        if (folder / "plan.json").exists():
+            return False  # 既存 plan は再利用（再生成は手動削除）
+        return True
+
+
 # ワーカーレジストリ（stage 単位）。
 # ⚠ upload は **意図的に含めない**（最終投稿は手動ゲート。ポリシー §1）。
 # ⚠ suno / rename も含めない（music ドメインは人間が prompt 合意後に起動。§9-2）。
+# ⚠ plan も WORKERS には含めない（autopilot で全 vol に勝手に plan 生成しないため）。
+#    plan は ALL_WORKERS / PLAN_WORKER 経由で明示的に評価する。
 # まず全 stage を登録し、autopilot で実際に tick する範囲は app.py 統合時に
 # per-channel 設定で絞る（既定 = export〜thumbnail）。
 WORKERS: dict[str, StageWorker] = {
@@ -316,7 +340,13 @@ WORKERS: dict[str, StageWorker] = {
     "thumbnail":     StepWorker(domain="thumbnail", stages=["thumbnail"], domain_label="image"),
 }
 
+# plan を含む全ワーカー（plan 自動採択を明示的に走らせたい時に evaluate(workers=ALL_WORKERS)）。
+PLAN_WORKER = PlanWorker()
+ALL_WORKERS: dict[str, StageWorker] = {"plan": PLAN_WORKER, **WORKERS}
+
 # autopilot 既定範囲（app.py 統合時に tick 対象を絞るためのヒント）。
+# plan を入れると「次 vol を自動起案」になるが、§9-2 で空枠作成までは許容範囲。
+# ただし既定では含めない（明示 opt-in）。
 AUTOPILOT_DEFAULT_STAGES = ["export", "qa", "meta", "thumbnail"]
 
 
@@ -326,24 +356,29 @@ class Candidate:
     domain: str
     vol: int
     folder: str
+    channel_id: str = ""
 
 
-def evaluate(channels: list[dict], *, dry_run: bool = True) -> list[Candidate]:
+def evaluate(channels: list[dict], *, dry_run: bool = True,
+             workers: Optional[dict] = None) -> list[Candidate]:
     """各 channel × 各 worker で can_run を評価し、実行可能タスク集合を返す。
 
     channels: [{"channel_id":..., "folder":..., "name":..., "vols":[{"vol":int,"folder":str}, ...]}]
     dry_run=True なら候補列挙のみ（run() は呼ばない）。実投入は app.py 統合時に行う。
+    workers: 評価対象の worker dict（既定 WORKERS）。plan を含めたい時は ALL_WORKERS を渡す。
     """
+    pool = workers if workers is not None else WORKERS
     candidates: list[Candidate] = []
     for ch in channels:
         ch_id = ch.get("channel_id", "")
         for v in ch.get("vols", []):
             vol = int(v.get("vol", 0))
             folder = Path(v.get("folder", ""))
-            for domain, worker in WORKERS.items():
+            for domain, worker in pool.items():
                 try:
                     if worker.can_run(vol, folder, channel_id=ch_id):
-                        candidates.append(Candidate(domain=domain, vol=vol, folder=str(folder)))
+                        candidates.append(Candidate(domain=domain, vol=vol,
+                                                    folder=str(folder), channel_id=ch_id))
                 except Exception:
                     continue
     return candidates
@@ -467,35 +502,97 @@ def dispatch(candidate: "Candidate", channel: dict, *, via_api: bool = False,
     return result
 
 
-def tick(channels: list[dict], *, notify: Optional[Callable[[str], None]] = None,
-         via_api: bool = False, max_dispatch: int = 8) -> dict:
-    """1 周期: evaluate で候補を出し、ブレーカー非該当チャンネルの候補を dispatch。
+# ─── policy-aware 配分（P3-4。quota 残 × channel 優先度） ───
+# upload を消費する stage（quota チェックが要る stage）。現状 WORKERS に upload は
+# 無いが、将来 publish 系を autopilot に入れた時のガードとして定義しておく。
+_QUOTA_CONSUMING_STAGES = {"upload"}
 
+
+def channel_priority(channel: dict) -> int:
+    """channel の優先度（大きいほど優先）。channels.json / per-channel 設定の
+    `priority`（既定 100）。未設定は 100。"""
+    try:
+        return int(channel.get("priority", 100))
+    except (TypeError, ValueError):
+        return 100
+
+
+def channel_quota_remaining(channel: dict) -> int:
+    """channel の YouTube quota 残（unit）。app_youtube の台帳から算出。
+    取得できなければ十分大きい値（=制約なし）を返す。"""
+    folder = channel.get("folder", "")
+    if not folder:
+        return 10 ** 9
+    try:
+        import app_youtube as _yt
+        used = _yt.quota_used_in_window(folder)
+        cap = getattr(_yt, "DEFAULT_DAILY_QUOTA_CAP", 9600)
+        return max(0, cap - used)
+    except Exception:
+        return 10 ** 9
+
+
+def _quota_ok_for(channel: dict, domain: str) -> bool:
+    """その domain を channel で動かして quota 的に問題ないか。
+    quota を消費しない stage は常に True。"""
+    if domain not in _QUOTA_CONSUMING_STAGES:
+        return True
+    try:
+        import app_youtube as _yt
+        per = getattr(_yt, "QUOTA_PER_UPLOAD", 1600)
+    except Exception:
+        per = 1600
+    return channel_quota_remaining(channel) >= per
+
+
+def prioritize(candidates: list[Candidate], channels: list[dict]) -> list[Candidate]:
+    """候補を policy で並べ替え（priority 降順 → quota 残 多い順 → vol 昇順）。
+    quota 枯渇チャンネルの quota 消費 stage は除外する。"""
+    by_id = {c.get("channel_id", ""): c for c in channels}
+    kept: list[tuple] = []
+    for cand in candidates:
+        ch = by_id.get(cand.channel_id, {})
+        if not _quota_ok_for(ch, cand.domain):
+            continue  # quota 枯渇 → この候補は今回スキップ
+        kept.append((
+            -channel_priority(ch),            # priority 降順
+            -channel_quota_remaining(ch),     # quota 残 多い順
+            cand.vol,                         # vol 昇順（古い vol を先に仕上げる）
+            cand,
+        ))
+    kept.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [t[3] for t in kept]
+
+
+def tick(channels: list[dict], *, notify: Optional[Callable[[str], None]] = None,
+         via_api: bool = False, max_dispatch: int = 8,
+         workers: Optional[dict] = None) -> dict:
+    """1 周期: evaluate → policy 並べ替え → ブレーカー非該当を dispatch。
+
+    policy-aware（P3-4）: channel 優先度 × quota 残で候補を並べ替え、quota 枯渇
+    チャンネルの quota 消費 stage は除外。
     ⚠ APScheduler 定期ジョブから呼ぶ想定。**現状どこからも呼ばれていない**
     （app.py 未登録 = 無人稼働しない）。app.py 統合は別途 GO 後。
     """
-    cands = evaluate(channels, dry_run=True)
-    ch_by_id = {c.get("channel_id", ""): c for c in channels}
+    cands = evaluate(channels, dry_run=True, workers=workers)
+    ordered = prioritize(cands, channels)
+    by_id = {c.get("channel_id", ""): c for c in channels}
     results = []
     dispatched = 0
-    for cand in cands:
+    skipped_quota = len(cands) - len(ordered)
+    for cand in ordered:
         if dispatched >= max_dispatch:
             break
-        # candidate がどのチャンネルか（folder の親で引く or channel_id 再評価）
-        ch = None
-        for c in channels:
-            if any(int(v.get("vol", 0)) == cand.vol and v.get("folder") == cand.folder
-                   for v in c.get("vols", [])):
-                ch = c
-                break
+        ch = by_id.get(cand.channel_id)
         if ch is None:
             continue
-        if is_channel_tripped(ch.get("channel_id", "")):
+        if is_channel_tripped(cand.channel_id):
             results.append({"status": "tripped", "vol": cand.vol, "domain": cand.domain})
             continue
         results.append(dispatch(cand, ch, via_api=via_api, notify=notify))
         dispatched += 1
-    return {"evaluated": len(cands), "dispatched": dispatched, "results": results}
+    return {"evaluated": len(cands), "dispatched": dispatched,
+            "skipped_quota": skipped_quota, "results": results}
 
 
 if __name__ == "__main__":
@@ -531,6 +628,20 @@ if __name__ == "__main__":
     assert _mock_consecutive([{"status":"done"},{"status":"failed"}]) == 0
     print("breaker logic asserts: PASS（threshold=%d）" % BREAKER_THRESHOLD)
     print("WORKERS に upload 無し（自動投稿しない）:", "upload" not in WORKERS)
+    # policy-aware 配分の単体確認
+    print("--- policy ---")
+    chs = [
+        {"channel_id": "a", "name": "A", "folder": "", "priority": 50},
+        {"channel_id": "b", "name": "B", "folder": "", "priority": 200},
+    ]
+    cs = [Candidate(domain="qa", vol=3, folder="/x", channel_id="a"),
+          Candidate(domain="qa", vol=1, folder="/y", channel_id="b")]
+    order = prioritize(cs, chs)
+    print("priority order (B=200 が先):", [(c.channel_id, c.vol) for c in order])
+    assert order[0].channel_id == "b", "priority 降順が効いていない"
+    # quota 枯渇ガード: upload 系は quota チェックされる（domain=upload は WORKERS に無いが関数単体で確認）
+    print("_quota_ok_for(qa)=", _quota_ok_for({"folder": ""}, "qa"), "(期待 True: 非quota stage)")
+    print("PLAN_WORKER 単独:", PLAN_WORKER.domain, "/ ALL_WORKERS に plan:", "plan" in ALL_WORKERS)
     # dry-run 評価（引数で channels JSON を渡せる）
     if len(sys.argv) > 1:
         chans = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
