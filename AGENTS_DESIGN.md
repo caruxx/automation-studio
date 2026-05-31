@@ -279,10 +279,17 @@ class StageWorker:
 - token health は**モジュール実装済み**なので Phase 5 で最も低コスト。APScheduler への登録だけで成立。
 - policy-aware 配分は quota 実残の取得方法（API or 推定カウンタ）が要検討（§9-3）。
 
-## 9. Phase 4/5 要レビュー事項（実装前に決めたい）
+## 9. Phase 4/5 要レビュー事項 — ✅ 確定（2026-06-01）
 
-1. **ワーカー常駐方式**: §7.4 案A(APScheduler定期) で良いか / 案B(常駐スレッド)か。
-2. **能動トリガーの自発生成範囲**: music-worker が「素材無し vol」を**どこまで自動起案**してよいか（plan自動採択 P3-2 と直結。完全自動は要慎重）。
-3. **quota 残の取得**: policy-aware 配分のため、YouTube quota 残を API 実測するか、ローカル推定カウンタで近似するか。
-4. **オーケストレーターの置き場**: app_pipeline.py 拡張か、新規 app_orchestrator.py 分離か。
-5. **UI 一括改修のタイミング**: Phase 4+5 のバックエンド完了後にまとめて（確定方針）。新タブ新設か既存ビュー拡張か。
+1. **ワーカー常駐方式**: ✅ **APScheduler 定期ジョブ**（案A）。既存 scheduler / schedule_jobs.json と整合。
+2. **能動トリガーの自発生成範囲**: ✅ **空枠作成まで**。ワーカーは空の vol フォルダ＋企画案の作成までを自動化し、**SUNO 生成の実行は prompt 本文を人間に見せて合意後に手動起動**（過去の「ジャンル勝手決め」事故の再発防止＝メモリ [[feedback_suno_prompt_confirmation]] に従う）。完全自動アップロードまでは走らせない。
+3. **quota 残の取得**: ✅ **既存 `.youtube_quota.json` 台帳（累計 unit 集計）＋ 403 quotaExceeded 検知のハイブリッド**。YouTube Data API は quota 残を返す API を提供しないため、これが事実上の「実測」。`quota_used_in_window()` / `check_quota_before_upload()` / `_is_retryable_http_error()` を再利用。
+4. **オーケストレーターの置き場**: ✅ **新規 `Python/app_orchestrator.py` に分離**。app.py（11,933行）を肥大化させず、まず 1 ドメインを StageWorker 化して挙動確認 → 段階展開。
+5. **UI 一括改修のタイミング**: ✅ **Phase 4+5 のバックエンド完了後にまとめて**。それまでは API/CLI で検証（§7.5 の UI 要素一覧を後でまとめて実装）。
+
+### 9.1 実装順（確定後）
+1. `app_orchestrator.py` に StageWorker 基底 + 1 ドメイン具象（qa or music）を試作。can_run は runs.db ＋フォルダ成果物で依存解決（STEPS 順）。
+2. APScheduler 定期ジョブから can_run 評価 → run() 投入のループを 1 本通す。
+3. 挙動確認 → 残ドメインへ展開（image/video/publish）。analysis は定期実行枠。
+4. Phase 5（plan自動採択は §9-2 の「空枠まで」、policy-aware は §9-3 ハイブリッド、token health cron は既存モジュールを APScheduler 登録）。
+5. 最後に UI 一括改修。
