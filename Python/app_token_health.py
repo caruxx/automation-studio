@@ -200,13 +200,19 @@ def check_playwright_profile(profile_dir: Path = None) -> dict:
 
 # ─── 統合チェック ─────────────────────────────────
 
-def check_all() -> dict:
-    """全チャンネル + Playwright を一括点検し、warn 以上の項目をリストで返す。"""
+def check_all(notify=None) -> dict:
+    """全チャンネル + Playwright を一括点検し、warn 以上の項目をリストで返す。
+
+    Phase 5（token health cron）: notify を渡すと warnings がある時にコールバックを
+    呼ぶ（app.py の _notify_line / _send_line_notify を注入する想定）。読み取り専用で
+    副作用なし。out に overall（ok/warn/expired）を付与する。
+    """
     out = {
         "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
         "channels": [],
         "playwright": None,
         "warnings": [],  # 通知すべき項目
+        "overall": "ok",
     }
     # チャンネル別 YouTube
     chs = []
@@ -242,6 +248,20 @@ def check_all() -> dict:
             "status": pw["status"],
             "message": pw["message"],
         })
+    # overall 判定: expired/missing があれば expired、warn/no_refresh があれば warn。
+    statuses = [w["status"] for w in out["warnings"]]
+    if any(s in ("expired", "missing") for s in statuses):
+        out["overall"] = "expired"
+    elif any(s in ("warn", "no_refresh") for s in statuses):
+        out["overall"] = "warn"
+    # Phase 5: 通知コールバック（warnings がある時のみ）
+    if notify and out["warnings"]:
+        lines = [f"[{w['channel_name']}] {w['kind']}: {w['status']}（{w['message']}）"
+                 for w in out["warnings"]]
+        try:
+            notify("🔑 トークン点検アラート:\n" + "\n".join(lines))
+        except Exception:
+            pass
     return out
 
 
@@ -252,6 +272,8 @@ def _main():
     p = argparse.ArgumentParser(description="token health check")
     p.add_argument("--channel-folder", help="個別チャンネルだけ点検")
     p.add_argument("--playwright-only", action="store_true")
+    p.add_argument("--cron", action="store_true",
+                   help="全チャンネル集約点検（Phase5 cron用）。overall=expired なら exit 1")
     args = p.parse_args()
     if args.channel_folder:
         print(json.dumps(check_youtube_token(args.channel_folder),
@@ -261,7 +283,11 @@ def _main():
         print(json.dumps(check_playwright_profile(),
                          ensure_ascii=False, indent=2))
         return
-    print(json.dumps(check_all(), ensure_ascii=False, indent=2))
+    rep = check_all()
+    print(json.dumps(rep, ensure_ascii=False, indent=2))
+    if args.cron:
+        # OS cron / launchd 用の終了コード（expired なら非ゼロで監視に拾わせる）
+        raise SystemExit(1 if rep.get("overall") == "expired" else 0)
 
 
 if __name__ == "__main__":
