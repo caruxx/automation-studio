@@ -1,6 +1,8 @@
 # UI 一括改修 計画書（UI_PLAN）
 
-> **状態**: ドラフト / レビュー待ち（2026-06-01 起案。general-purpose サブエージェントで全機能を機械的に棚卸し済み）
+> **状態**: ✅ U1-U6 全実装完了（2026-06-01）。残るは app.py orchestrator 統合（tick→APScheduler＝無人稼働開始）のみ＝要GO。
+> **実装コミット**: U1=29e3de4(台帳) / U2=e21a66d(接続ヘルス) / U3=2e01901+e0a06bc(自走運用パネル) / U4=8b28a4e(コンテンツ導線=details化) / U5+U6=d42acac(nav追加[撤去せず]+apiPost/apiPut/toastRetry)。
+> ⚠ U5の破壊的撤去(p-notify削除・オーファンAPI30件削除)は安全のため**未実施**（追加・掲載のみ）。⚠ 予約取消専用APIは無く即時公開(publishNow)で代替。
 > **背景**: Phase 0-5 のバックエンドは実装済みだが、Phase 4/5 で作った「自走運用」機能の **UI が未整備**。本書はその一括改修の計画。
 > **関連**: [AGENTS_DESIGN.md](AGENTS_DESIGN.md) §7-9 / [AGENTS_WORKPLAN.md](AGENTS_WORKPLAN.md) / [project memory: orchestrator integration policy]
 > **対象**: `web/static/index.html`（13,786行・Vanilla JS SPA）/ `Python/app.py`（11,935行・**248 API ルート**）
