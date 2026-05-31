@@ -1689,17 +1689,35 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
 
 def step_upload(vol: int, folder: Path, via_api: bool, **kw):
     privacy = kw.get("privacy", "unlisted")
-    # P2-7: per-channel `publish_delay_hours` が > 0 なら強制 private で upload し、
-    # アップロード成功後に /api/youtube/schedule-publish を呼んで N 時間後に public 化を予約。
+    # P3-3: per-channel `publish_mode`（公開方式＝予約投稿イメージ）で upload privacy と
+    # 公開ゲートを決める。
+    #   - "unlisted" : 限定公開で upload、公開ゲート無し（既定・現行動作）
+    #   - "public"   : 即時 public で upload
+    #   - "delayed"  : private で upload → `publish_delay_hours` 時間後に自動 public 化
+    # 後方互換: publish_mode 未設定なら publish_delay_hours>0 → "delayed"、それ以外 "unlisted"。
     cfg = _load_dashboard_config()
     try:
         delay_h = float(cfg.get("publish_delay_hours") or 0)
     except (TypeError, ValueError):
         delay_h = 0.0
-    if delay_h > 0:
-        if privacy != "private":
-            print(f"  🔒 publish_delay_hours={delay_h}h → upload は private、{delay_h}h 後に自動 public 化")
+    mode = (cfg.get("publish_mode") or "").strip().lower()
+    if mode not in ("unlisted", "public", "delayed"):
+        mode = "delayed" if delay_h > 0 else "unlisted"
+
+    schedule_gate = False
+    if mode == "public":
+        privacy = "public"
+        print("  🌐 publish_mode=public → 即時公開で upload")
+    elif mode == "delayed" and delay_h > 0:
         privacy = "private"
+        schedule_gate = True
+        print(f"  🔒 publish_mode=delayed → upload は private、{delay_h}h 後に自動 public 化")
+    elif mode == "delayed" and delay_h <= 0:
+        # delayed なのに遅延時間が無い → 即時 public とみなす（設定の取りこぼし救済）
+        privacy = "public"
+        print("  🌐 publish_mode=delayed だが publish_delay_hours=0 → 即時公開で upload")
+    else:
+        print(f"  🔗 publish_mode=unlisted → 限定公開で upload（公開ゲート無し）")
 
     if via_api:
         r = _api_post("/api/youtube/upload", {
@@ -1708,7 +1726,7 @@ def step_upload(vol: int, folder: Path, via_api: bool, **kw):
         if not r:
             return False
         ok = _api_poll("/api/youtube/status", "YouTube アップロード", timeout=7200)
-        if ok and delay_h > 0:
+        if ok and schedule_gate:
             _schedule_publish_after_upload(folder, delay_h)
         return ok
     else:
@@ -1716,7 +1734,7 @@ def step_upload(vol: int, folder: Path, via_api: bool, **kw):
             sys.executable, str(BASE / "app_youtube.py"),
             str(folder), "--privacy", privacy,
         ], STEP_LABELS["upload"], timeout=7200)
-        if ok is True and delay_h > 0:
+        if ok is True and schedule_gate:
             _schedule_publish_after_upload(folder, delay_h)
         return ok
 

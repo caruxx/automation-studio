@@ -217,6 +217,7 @@ PER_CHANNEL_KEYS = {
     "channel_icon", "template_prproj", "template_psd", "export_path",
     "psd_base_layer", "psd_toggle_layer", "psd_image_subdir",
     "export_ignore_list",  # AME 書き出し watcher が無視する video_name のリスト（2 PC 間自動同期）
+    "publish_mode",  # P3-3: 公開方式（unlisted=限定公開 / public=即時公開 / delayed=N時間後自動公開）
     "publish_delay_hours",  # P2-7: upload 後の公開ゲート（0=即時、>0=N時間後 public化）
     "reference_image_dir",  # step_bgimage: 参照画像フォルダ（最優先。空なら Picked → rival thumbs にフォールバック）
     "default_duration_sec",  # Premiere 自動配置の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
@@ -961,6 +962,7 @@ class DashboardConfigUpdate(BaseModel):
     psd_base_layer: Optional[str] = None
     psd_toggle_layer: Optional[str] = None
     psd_image_subdir: Optional[str] = None
+    publish_mode: Optional[str] = None  # P3-3: unlisted / public / delayed
     publish_delay_hours: Optional[float] = None  # P2-7: upload 後 N 時間で public 化（0=即時）
     reference_image_dir: Optional[str] = None    # step_bgimage: 参照画像フォルダ（空文字でクリア）
     default_duration_sec: Optional[int] = None   # Premiere 自動配置の規定尺（秒）。0/空でクリア（10800 にフォールバック）
@@ -2124,7 +2126,17 @@ def api_create_video_folder(req: VideoFolderCreate):
                 shutil.copy2(str(prproj_src), str(prproj_dst))
                 try:
                     with gzip.open(str(prproj_dst), 'rb') as f: xml = f.read()
-                    xml = xml.replace('BGMシーケンス'.encode(), f"{prefix}_vol{vol_num}".encode())
+                    # テンプレ内に残っている可能性のある旧シーケンス名 (BGMシーケンス /
+                    # {prefix}_vol01 / {prefix}_vol02 等) を全部 {prefix}_vol{N} に置換。
+                    # 旧コードは 'BGMシーケンス' しか置換せず、テンプレが {prefix}_vol01
+                    # と命名されていた場合に置換が効かず、JSX が新シーケンスを見つけられず
+                    # 「クリップが見つかりません」エラーになっていた。
+                    target_name = f"{prefix}_vol{vol_num}".encode()
+                    for old in (b"BGM\xe3\x82\xb7\xe3\x83\xbc\xe3\x82\xb1\xe3\x83\xb3\xe3\x82\xb9",
+                                f"{prefix}_vol01".encode(),
+                                f"{prefix}_vol02".encode()):
+                        if old != target_name:
+                            xml = xml.replace(old, target_name)
                     with gzip.open(str(prproj_dst), 'wb') as f: f.write(xml)
                 except Exception:
                     pass
@@ -2606,6 +2618,262 @@ def api_generate_video_concept(video_name: str):
     if concept:
         (folder / "concept.txt").write_text(concept, encoding="utf-8")
     return {"status": "ok", "concept": concept}
+
+# ─── API: 多言語 localizations 生成（YouTube snippet.localizations 用） ───
+
+DEFAULT_LOCALIZATION_LANGS = ["ja", "zh-Hans", "zh-Hant", "ko", "es", "es-419", "pt-BR", "fr", "de", "it"]
+
+
+class GenerateLocalizationsRequest(BaseModel):
+    languages: Optional[List[str]] = None  # 未指定なら DEFAULT_LOCALIZATION_LANGS
+    force: bool = False                    # True なら既存 youtube_localizations.json を無視して再生成
+
+
+def _build_localizations_prompt(title: str, description: str, langs: List[str]) -> str:
+    lang_list = ", ".join(langs)
+    keys_block = ",".join(f'"{l}":{{"title":"...","description":"..."}}' for l in langs)
+    return f"""Translate the following YouTube video metadata into these languages: {lang_list}. Return JSON only.
+
+ORIGINAL (English):
+TITLE: {title}
+DESCRIPTION:
+{description}
+
+RULES:
+- Translate naturally; keep the BGM-channel mood.
+- Preserve Tracklist with timestamps verbatim.
+- Title within ~80 chars.
+- zh-Hans = Simplified Chinese, zh-Hant = Traditional Chinese.
+- es = Spain Spanish, es-419 = Latin America Spanish.
+- pt-BR = Brazilian Portuguese.
+- In description, escape newlines as \\n inside JSON strings (literal \\n, NOT raw line breaks).
+
+OUTPUT (JSON only, no markdown fence, no explanation, all values single-line with \\n escapes):
+{{{keys_block}}}"""
+
+
+@app.post("/api/videos/{video_name}/generate-localizations")
+def api_generate_localizations(video_name: str, req: GenerateLocalizationsRequest):
+    """Claude CLI で 10 言語翻訳して youtube_localizations.json を生成。
+
+    入力: <vol_folder>/youtube_title.txt + youtube_description.txt
+    出力: <vol_folder>/youtube_localizations.json (上書き)
+    使い所: app_youtube.py が upload 時に同 JSON を読んで snippet.localizations として送信
+    """
+    config = get_dashboard_config()
+    folder = Path(config["channel_folder"]) / video_name
+    if not folder.exists():
+        raise HTTPException(404, f"vol_folder が存在しません: {folder}")
+
+    title_path = folder / "youtube_title.txt"
+    desc_path = folder / "youtube_description.txt"
+    if not title_path.exists() or not desc_path.exists():
+        raise HTTPException(400, "youtube_title.txt または youtube_description.txt がありません。先に meta step / suggest API を実行してください")
+
+    out_path = folder / "youtube_localizations.json"
+    if out_path.exists() and not req.force:
+        try:
+            existing = json.loads(out_path.read_text(encoding="utf-8"))
+            return {"status": "skipped", "reason": "既存ファイルあり (force=true で再生成可能)",
+                    "video_name": video_name, "languages": list(existing.keys()),
+                    "output_path": str(out_path)}
+        except Exception:
+            pass  # 壊れていれば再生成
+
+    title = title_path.read_text(encoding="utf-8").strip()
+    description = desc_path.read_text(encoding="utf-8").strip()
+    langs = req.languages or DEFAULT_LOCALIZATION_LANGS
+    prompt = _build_localizations_prompt(title, description, langs)
+
+    # Claude CLI 呼び出し（pipeline の _generate_scene_copy_en と同じパターン）
+    suno_cfg_path = CONFIG_DIR / "suno_config.json"
+    cli = "claude"
+    if suno_cfg_path.exists():
+        try:
+            cli = (json.loads(suno_cfg_path.read_text(encoding="utf-8")).get("claude_cli") or "claude")
+        except Exception:
+            pass
+
+    try:
+        proc = subprocess.run([cli, "--print", prompt], capture_output=True, text=True, timeout=180)
+    except FileNotFoundError:
+        raise HTTPException(500, f"Claude CLI ({cli}) が PATH に見つかりません")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "Claude CLI タイムアウト (180s)")
+    if proc.returncode != 0:
+        raise HTTPException(500, f"Claude CLI 失敗 (rc={proc.returncode}): {(proc.stderr or '')[:200]}")
+
+    raw = proc.stdout or ""
+    m = re.search(r"\{[\s\S]*\}", raw)
+    if not m:
+        raise HTTPException(500, f"JSON が抽出できませんでした: {raw[:200]}")
+    try:
+        data = json.loads(m.group(0), strict=False)
+    except json.JSONDecodeError as e:
+        raise HTTPException(500, f"JSON parse 失敗: {e}; raw head: {m.group(0)[:200]}")
+
+    out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "status": "ok",
+        "video_name": video_name,
+        "languages": list(data.keys()),
+        "output_path": str(out_path),
+    }
+
+
+# ─── API: 動画 mp4 の場所・情報を統一表示 ───
+
+@app.get("/api/videos/{video_name}/mp4-info")
+def api_mp4_info(video_name: str):
+    """vol の mp4 をどこから検出したか、サイズ・解像度・尺・コーデックを返す。
+
+    検出ソース判定（_find_exported_mp4 の探索順と整合）:
+      - "manual_exported_video": <vol_folder>/manual_exported_video.json で紐づけ済
+      - "vol_folder": <vol_folder>/*.mp4
+      - "external_ssd_per_video": <export_path>/<video_name>/*.mp4
+      - "external_ssd_flat": <export_path>/<prefix>_vol<num>*.mp4 (flat 配置)
+    """
+    config = get_dashboard_config()
+    folder = Path(config["channel_folder"]) / video_name
+    if not folder.exists():
+        raise HTTPException(404, f"vol_folder が存在しません: {folder}")
+
+    mp4 = _find_exported_mp4(folder, video_name)
+    if not mp4:
+        return {"present": False, "path": None, "source": None}
+
+    mp4_str = str(mp4)
+    source = "unknown"
+    # manual_exported_video.json と一致するか
+    manual_path = folder / MANUAL_EXPORTED_VIDEO_FILE
+    if manual_path.exists():
+        try:
+            md = json.loads(manual_path.read_text(encoding="utf-8"))
+            if md.get("path") == mp4_str:
+                source = "manual_exported_video"
+        except Exception:
+            pass
+    if source == "unknown":
+        if mp4_str.startswith(str(folder) + "/"):
+            source = "vol_folder"
+        elif mp4_str.startswith("/Volumes/"):
+            # per_video subfolder か flat か
+            try:
+                ext_dir = _resolve_external_export_dir()
+            except Exception:
+                ext_dir = None
+            if ext_dir is not None and mp4.parent == (ext_dir / video_name):
+                source = "external_ssd_per_video"
+            else:
+                source = "external_ssd_flat"
+
+    info: dict = {
+        "present": True,
+        "path": mp4_str,
+        "source": source,
+        "size_bytes": mp4.stat().st_size,
+    }
+    # ffprobe があれば解像度・尺・コーデックを取得（無くても non-fatal）
+    import shutil as _sh
+    ffprobe = _sh.which("ffprobe")
+    if ffprobe:
+        try:
+            proc = subprocess.run(
+                [ffprobe, "-v", "error",
+                 "-show_entries", "format=duration",
+                 "-show_entries", "stream=width,height,codec_name,codec_type",
+                 "-of", "json", mp4_str],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode == 0:
+                fd = json.loads(proc.stdout)
+                for s in fd.get("streams", []):
+                    if s.get("codec_type") == "video" or "width" in s:
+                        info["width"] = s.get("width")
+                        info["height"] = s.get("height")
+                        info["resolution"] = f'{s.get("width")}x{s.get("height")}'
+                        info["video_codec"] = s.get("codec_name")
+                        break
+                fmt = fd.get("format", {})
+                if fmt.get("duration"):
+                    info["duration_sec"] = float(fmt["duration"])
+        except Exception:
+            pass
+    return info
+
+
+# ─── API: メタ情報の充足状況チェック ───
+
+@app.get("/api/videos/{video_name}/meta-status")
+def api_meta_status(video_name: str):
+    """動画 vol の meta データ充足状況を返す（Web UI のチェックリスト用）。
+    各項目の present / ok を見て、ready_for_upload で総合判定。
+    """
+    config = get_dashboard_config()
+    folder = Path(config["channel_folder"]) / video_name
+    if not folder.exists():
+        raise HTTPException(404, f"vol_folder が存在しません: {folder}")
+
+    def _check_text(filename: str, min_size: int = 1) -> dict:
+        p = folder / filename
+        if not p.exists():
+            return {"present": False, "size": 0, "ok": False}
+        size = p.stat().st_size
+        try:
+            preview = p.read_text(encoding="utf-8").strip()[:80]
+        except Exception:
+            preview = ""
+        return {"present": True, "size": size, "ok": size >= min_size, "preview": preview}
+
+    title = _check_text("youtube_title.txt", 5)
+    description = _check_text("youtube_description.txt", 50)
+    tags = _check_text("youtube_tags.txt", 5)
+
+    loc_path = folder / "youtube_localizations.json"
+    if loc_path.exists():
+        try:
+            d = json.loads(loc_path.read_text(encoding="utf-8"))
+            locs = {"present": True, "languages": list(d.keys()), "count": len(d), "ok": len(d) >= 5}
+        except Exception as e:
+            locs = {"present": True, "error": str(e), "ok": False}
+    else:
+        locs = {"present": False, "languages": [], "count": 0, "ok": False}
+
+    mp4 = _find_exported_mp4(folder, folder.name)
+    mp4_info: dict = {"present": mp4 is not None, "path": str(mp4) if mp4 else None}
+    if mp4:
+        try:
+            mp4_info["size"] = mp4.stat().st_size
+        except Exception:
+            pass
+
+    upload_info: dict = {"present": False, "video_id": None, "url": None}
+    up_path = folder / "youtube_upload.json"
+    if up_path.exists():
+        try:
+            ud = json.loads(up_path.read_text(encoding="utf-8"))
+            upload_info = {
+                "present": True,
+                "video_id": ud.get("video_id"),
+                "url": ud.get("url"),
+                "title": ud.get("title"),
+                "localizations_applied": ud.get("localizations_applied") or [],
+            }
+        except Exception:
+            pass
+
+    ready_for_upload = bool(title.get("ok") and description.get("ok") and tags.get("ok") and mp4_info["present"])
+    return {
+        "video_name": video_name,
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "localizations": locs,
+        "mp4": mp4_info,
+        "upload": upload_info,
+        "ready_for_upload": ready_for_upload,
+    }
+
 
 # ─── API: 動画の非表示 / 復元 ───
 
@@ -3987,31 +4255,31 @@ def api_suggest_imitate_evolve(video_name: str):
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
 
-    default_prompt = f"""You are a YouTube BGM channel strategy consultant.
-The owner wants to extract proven principles from benchmark channels and evolve them into the channel's own identity. Do not copy exact assets, titles, names, or brandable expressions.
+    default_prompt = f"""あなたは YouTube BGM チャンネルの戦略コンサルタントです。
+オーナーは、ベンチマークチャンネルから実証済みの勝ちパターン（原則）を抽出し、それを自チャンネル独自のアイデンティティへと進化させたいと考えています。素材・タイトル・名称・ブランド固有の表現をそのまま流用してはいけません。
 
-=== Our Channel Persona ===
+=== 自チャンネルのペルソナ ===
 {persona[:2000]}
 
-=== Benchmark Videos (top videos + recent uploads) ===
+=== ベンチマーク動画（人気動画 + 最近の投稿）===
 {bench_text}
 
-=== Your Task ===
-Write concrete English recommendations from the viewer-needs perspective.
+=== タスク ===
+視聴者ニーズの観点から、具体的な提案をすべて日本語で記述してください。
 
-"imitate": proven structures, title patterns, thumbnail principles, posting timing, or emotional promises that are clearly attracting viewers.
-"avoid": overused patterns, misfits with our persona, viewer-fatigue risks, or anything too close to direct copying.
-"evolve": ways to use our persona to answer a deeper unmet need and create an "oh, this is exactly it" experience.
+"imitate"（パクる要素）: 視聴者を明確に惹きつけている、実証済みの構成・タイトルパターン・サムネイルの原則・投稿時刻・感情的な訴求。
+"avoid"（避ける要素）: 使い古されたパターン、自ペルソナと噛み合わないもの、視聴者の飽きを招くリスク、直接的な模倣に近すぎるもの。
+"evolve"（進化させる要素）: 自ペルソナの強みを活かして、より深い未充足ニーズに応え、「まさにこれだ」と思わせる体験を生み出す方法。
 
-Respond with a SINGLE JSON object:
+次の単一の JSON オブジェクトのみで回答してください:
 {{
-  "imitate": ["specific English tactic 1", "specific English tactic 2", ...],
-  "avoid": ["specific English risk 1", "specific English risk 2", ...],
-  "evolve": ["specific English evolution 1", "specific English evolution 2", ...],
-  "summary": "<1-2 English sentences summarizing the strategy>"
+  "imitate": ["具体的な施策1", "具体的な施策2", ...],
+  "avoid": ["具体的なリスク1", "具体的なリスク2", ...],
+  "evolve": ["具体的な進化案1", "具体的な進化案2", ...],
+  "summary": "<戦略を1〜2文で要約した日本語>"
 }}
 
-Output ONLY JSON. All values must be English."""
+JSON 以外は一切出力しないこと。すべての値は日本語で記述すること。"""
 
     prompt = (get_master_prompts().get("imitate_evolve") or "").strip() or default_prompt
     cli_path = shutil.which(cli_cmd) or cli_cmd
@@ -5600,6 +5868,42 @@ async def api_youtube_upload(req: UploadRequest):
     cmd, meta = _build_youtube_upload_command(req)
     result = _enqueue_youtube_upload(cmd, meta, source="web")
     return {**result, **_youtube_queue_snapshot()}
+
+
+class BatchUploadRequest(BaseModel):
+    video_names: List[str]
+    privacy: str = "unlisted"  # "private" / "unlisted" / "public"
+
+
+@app.post("/api/youtube/batch-upload")
+async def api_youtube_batch_upload(req: BatchUploadRequest):
+    """複数 vol を**順次**アップロード（既存 upload queue を活用）。
+
+    bash + curl + polling の脆さ（変数名衝突、polling 漏れ）を排除し、
+    一度の API 呼び出しで全部 enqueue する。queue は内部で 1 つずつ順次処理。
+    quota 枯渇時は YT_QUOTA_EXHAUSTED で残りをスキップして翌日 scheduler が再開。
+    """
+    if not req.video_names:
+        raise HTTPException(400, "video_names が空です")
+    enqueued: list = []
+    skipped: list = []
+    for name in req.video_names:
+        try:
+            up_req = UploadRequest(video_name=name, privacy=req.privacy)
+            cmd, meta = _build_youtube_upload_command(up_req)
+            result = _enqueue_youtube_upload(cmd, meta, source="web-batch")
+            enqueued.append({"video_name": name, **{k: v for k, v in result.items() if k in ("status", "job", "position")}})
+        except HTTPException as e:
+            skipped.append({"video_name": name, "reason": e.detail, "status_code": e.status_code})
+        except Exception as e:
+            skipped.append({"video_name": name, "reason": str(e), "status_code": 500})
+    snapshot = _youtube_queue_snapshot()
+    return {
+        "status": "ok",
+        "enqueued": enqueued,
+        "skipped": skipped,
+        **snapshot,
+    }
 
 @app.get("/api/youtube/status")
 def api_youtube_status():
@@ -8565,12 +8869,16 @@ def api_photoshop_generate_scene_text(req: PhotoshopGenerateSceneTextRequest):
 class PhotoshopRenderDualRequest(BaseModel):
     video_name: Optional[str] = None        # アクティブチャンネル配下の vol フォルダ名
     video_folder: Optional[str] = None      # or 絶対パス
-    scene_text: str                         # 都市名_テキスト 層に流し込むシーン名
+    scene_text: Optional[str] = None        # 空 or 未指定なら vision で自動生成 + scene_en.txt キャッシュ
     base_layer: Optional[str] = None        # 既定: per-channel `psd_base_layer`
-    scene_text_layer: Optional[str] = "都市名_テキスト"
-    playlist_layer: Optional[str] = "PLAY LIST "  # 末尾スペース注意
+    scene_text_layer: Optional[str] = None  # 既定: per-channel `psd_text_layer` → "都市名_テキスト"
+    playlist_layer: Optional[str] = None    # 既定: per-channel `psd_toggle_layer` → "PLAY LIST " (末尾スペース)
     image_subdir: Optional[str] = None      # 既定: per-channel `psd_image_subdir`
     quality: int = 90
+    target_width: Optional[int] = None      # 空 or 未指定なら per-channel `psd_export_width` → 1920
+    target_height: Optional[int] = None     # 空 or 未指定なら per-channel `psd_export_height` → 1080
+    save_psd: Optional[bool] = None         # 空 or 未指定なら True (vol 固有 PSD の編集状態を保存)
+    scene_text_font: Optional[str] = None   # 空 or 未指定なら per-channel `psd_text_font`
 
 
 @app.post("/api/photoshop/render-dual-thumbnail")
@@ -8578,6 +8886,9 @@ def api_photoshop_render_dual_thumbnail(req: PhotoshopRenderDualRequest):
     """Harbor Notes 仕様: AI生成画像 + シーンテキスト中央配置で 2 層対立式の 2 枚出力。
     vol{N}.jpg (都市名OFF/PLAY LIST ON, Premiere背景画像用) と
     サムネイル.jpg (都市名ON/PLAY LIST OFF, YouTubeサムネ用) を生成。
+
+    CLI の step_psd_composite と同等の挙動になるよう、未指定パラメータは per-channel config
+    から自動補完される（scene_text は空なら vision で生成、サイズは 1920×1080、save_psd=True 等）。
     """
     config = get_dashboard_config()
     folder_path = req.video_folder
@@ -8593,26 +8904,75 @@ def api_photoshop_render_dual_thumbnail(req: PhotoshopRenderDualRequest):
         ps = _import_photoshop()
         # PSD 検索（vol{N}.psd or vol*.psd or テンプレ）
         psd = ps._find_video_psd(folder)
-        # 差し替え画像検索（image_subdir 配下 or vol{N}.png）
-        image_subdir = req.image_subdir or config.get("psd_image_subdir", "image")
-        swap = ps._find_swap_image(folder, image_subdir)
-        # fallback: vol{N}.png (step_bgimage の出力)
+        # 差し替え画像検索 — CLI step_psd_composite と同じフォールバック順:
+        # vol{N}.png → vol{N}_source.jpg → image_subdir 配下の任意の画像。
+        # vol{N}.jpg は Photoshop 合成出力（PLAY LIST 焼き付き）なので候補から除外する。
+        swap = None
+        m = re.match(r"^(\d+)_", folder.name)
+        vol_num = m.group(1) if m else None
+        if vol_num:
+            for cand_name in (f"vol{vol_num}.png", f"vol{vol_num}_source.jpg"):
+                cand = folder / cand_name
+                if cand.exists():
+                    swap = cand
+                    break
         if not swap:
             for cand in folder.glob("vol*.png"):
-                swap = cand
-                break
+                if not cand.name.endswith("_source.jpg"):
+                    swap = cand
+                    break
+        if not swap:
+            image_subdir = req.image_subdir or config.get("psd_image_subdir", "image")
+            swap = ps._find_swap_image(folder, image_subdir)
         if not swap:
             raise HTTPException(404, f"差し替え画像が見つかりません: {folder}")
+
+        # scene_text 自動補完（空 or 未指定なら vision で生成 + scene_en.txt にキャッシュ）
+        scene_text = (req.scene_text or "").strip()
+        if not scene_text:
+            cache_file = folder / "scene_en.txt"
+            if cache_file.exists():
+                try:
+                    scene_text = cache_file.read_text(encoding="utf-8").strip()
+                except Exception:
+                    scene_text = ""
+            if not scene_text:
+                try:
+                    persona = (config.get("persona") or "").strip()
+                    scene_text = generate_scene_text_for_image(str(swap), persona=persona)
+                    if scene_text:
+                        try:
+                            cache_file.write_text(scene_text + "\n", encoding="utf-8")
+                        except Exception:
+                            pass
+                except Exception:
+                    scene_text = ""
+
+        # サイズ自動補完
+        tw = req.target_width or config.get("psd_export_width") or 1920
+        th = req.target_height or config.get("psd_export_height") or 1080
+        # save_psd デフォルト True
+        save_psd = True if req.save_psd is None else bool(req.save_psd)
+        # フォント自動補完
+        scene_text_font = req.scene_text_font or config.get("psd_text_font") or None
+        # レイヤー名（strip しない — 末尾スペース必須なケースあり）
+        base_layer = req.base_layer or config.get("psd_base_layer") or "base"
+        scene_text_layer = req.scene_text_layer or config.get("psd_text_layer") or "都市名_テキスト"
+        playlist_layer = req.playlist_layer or config.get("psd_toggle_layer") or "PLAY LIST "
 
         return ps.render_dual_thumbnail(
             psd_path=str(psd),
             base_image=str(swap),
-            scene_text=req.scene_text,
+            scene_text=scene_text,
             out_dir=str(folder),
-            base_layer=req.base_layer or config.get("psd_base_layer", "base"),
-            scene_text_layer=req.scene_text_layer or "都市名_テキスト",
-            playlist_layer=req.playlist_layer or "PLAY LIST ",
+            base_layer=base_layer,
+            scene_text_layer=scene_text_layer,
+            playlist_layer=playlist_layer,
             quality=req.quality,
+            target_width=int(tw),
+            target_height=int(th),
+            save_psd=save_psd,
+            scene_text_font=scene_text_font,
         )
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
@@ -11357,6 +11717,35 @@ def api_youtube_publish_now(video_name: str):
     raise HTTPException(500, f"publish failed: {result}")
 
 
+class UpdateSnippetRequest(BaseModel):
+    apply_localizations: bool = True
+
+
+@app.post("/api/youtube/update-snippet/{video_name}")
+def api_youtube_update_snippet(video_name: str, req: UpdateSnippetRequest = UpdateSnippetRequest()):
+    """既存動画のタイトル/説明/タグ/言語/localizations を YouTube videos.update で更新。
+
+    動画ファイルは再アップロードしない（quota ~50 unit）。`youtube_upload.json` から
+    video_id を取得し、`youtube_title.txt` `youtube_description.txt` `youtube_tags.txt`
+    `youtube_localizations.json` を読み取って snippet + localizations を反映する。
+    """
+    cfg = get_dashboard_config()
+    ch_folder = cfg.get("channel_folder") or ""
+    if not ch_folder:
+        raise HTTPException(400, "active channel が無い")
+    folder = Path(ch_folder) / video_name
+    if not folder.exists():
+        raise HTTPException(404, f"video folder not found: {folder}")
+    sys.path.insert(0, str(SHARED_BASE / "Python"))
+    from app_youtube import update_video_snippet
+    result = update_video_snippet(folder, apply_localizations=req.apply_localizations)
+    status_code_map = {"ok": 200, "missing": 404, "retryable": 503, "error": 500}
+    sc = status_code_map.get(result.get("status", "error"), 500)
+    if sc != 200:
+        raise HTTPException(sc, f"update-snippet failed: {result}")
+    return {"status": "ok", **result}
+
+
 @app.on_event("startup")
 async def _recover_scheduled_publishes():
     """サーバ再起動時に、未公開の `scheduled_publish_at` を持つ vol を再登録。
@@ -11529,16 +11918,11 @@ def _run_uvicorn():
     print(f"共有ドライブ: {SHARED_BASE}")
     print(f"Web: {WEB_DIR}")
     print(f"Config: {CONFIG_DIR}")
+    # ポートは 8888 固定（フォールバックの 8889/8890... 揺れを止める）。
+    # 8888 が使用中の場合は start.sh が起動前に kill する責務。
+    # APP_PORT / ORZZ_PORT env で明示指定された場合のみ上書き可能。
     port_env = (os.environ.get("APP_PORT") or os.environ.get("ORZZ_PORT"))
-    if port_env:
-        port = int(port_env)
-    else:
-        port = _find_free_port(8888, 8899)
-        if port is None:
-            print("⚠️  8888-8899 が全て使用中です。APP_PORT 環境変数で明示指定してください。")
-            sys.exit(1)
-        if port != 8888:
-            print(f"⚠️  8888 が使用中のため {port} にフォールバックしました")
+    port = int(port_env) if port_env else 8888
     host = (os.environ.get("APP_HOST") or os.environ.get("ORZZ_HOST") or "127.0.0.1").strip()
     public_hosts = {".".join(("0", "0", "0", "0")), ":" * 2}
     if host in public_hosts and not AUTH_REQUIRED:

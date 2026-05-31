@@ -461,7 +461,17 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .detail-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-4);gap:var(--space-3)}
 .detail-actions{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
 .meta-workspace{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:var(--space-4);align-items:start}
+/* 公開準備タブ: 右サイドのアシスタントパネル (個別提案/ベンチマーク参照/A/B ログ) を
+   sticky で固定し、画面高さに収めて内部スクロールにする。これで左カラム編集エリアの
+   下に右カラム長さ分の空白ができてしまう問題を解消（左空間の埋め）。*/
+@media (min-width:901px){
+  .meta-workspace > aside{position:sticky;top:var(--space-3);align-self:start;max-height:calc(100vh - 120px);overflow-y:auto}
+}
 .meta-editor,.meta-aside{min-width:0}
+/* 公開準備タブの左カラム：説明文/タグ textarea に最低高さを確保。
+   右カラム (AI 提案/ベンチマーク/A/B ログ) より短くなって発生する左空白を視覚的に埋める。*/
+.meta-editor #vdDesc{min-height:320px}
+.meta-editor #vdTags{min-height:140px}
 .assist-panel{background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-lg);padding:var(--space-4)}
 .assist-panel+.assist-panel{margin-top:var(--space-3)}
 .assist-panel .sec-title{margin-bottom:var(--space-2)}
@@ -534,9 +544,20 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .lang-chip-meta{font-size:10px;color:var(--text-tertiary);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lang-checklist-toolbar{display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2);flex-wrap:wrap}
 .lang-checklist-counter{font-size:var(--text-xs);color:var(--text-secondary);font-weight:var(--font-medium);margin-left:auto}
-.assist-actions{display:flex;flex-direction:column;gap:var(--space-2)}
-.assist-actions .btn{width:100%;justify-content:flex-start;border-radius:var(--radius-md)}
-.upload-layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:var(--space-5);align-items:start}
+/* 公開準備タブの右サイドアシスタントパネル内のボタン群は横並びで wrap させ、
+   縦の長さを抑える（旧: column / width:100%）。サイドバーと本体の高さバランス改善。 */
+.assist-actions{display:flex;flex-direction:row;flex-wrap:wrap;gap:var(--space-2)}
+.assist-actions .btn{justify-content:center;border-radius:var(--radius-md)}
+/* アップロード設定: 旧 2 カラム (240px サムネ + 1fr フォーム) → 1 カラムに統一して、
+   フォーム入力欄の幅を上の編集エリア (タイトル/説明/タグ) と揃える。
+   サムネは max-width で上に小さく表示。*/
+.upload-layout{display:grid;grid-template-columns:1fr;gap:var(--space-3);align-items:start}
+.upload-layout > div:first-child{max-width:200px}
+/* アップロード設定タブの 3 つの details セクション (テンプレート / 動画上書き / 多言語)
+   を 2 列 grid に並べて縦の長さを半減。サイドバーと本体の高さバランスを揃える。 */
+.upload-extras-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-2);margin-top:var(--space-3)}
+.upload-extras-grid > details{margin-top:0 !important}
+@media (max-width:900px){.upload-extras-grid{grid-template-columns:1fr}}
 .export-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3);margin-bottom:var(--space-4)}
 .summary-tile{background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-md);padding:var(--space-3)}
 .summary-tile .summary-label{font-size:var(--text-xs);color:var(--text-tertiary);font-weight:var(--font-semibold);margin-bottom:var(--space-1)}
@@ -802,7 +823,11 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .readiness-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:var(--space-2);margin-top:10px}
 .readiness-item{display:flex;align-items:center;gap:6px;font-size:12px;padding:var(--space-2) 10px;background:var(--bg-elevated);border-radius:var(--radius-sm);border:1px solid var(--border-default)}
 .ri-ok{color:var(--accent-success)}.ri-ng{color:var(--text-tertiary)}
-.publish-prep-section{margin-top:var(--space-4)}
+.publish-prep-section{margin-top:0}
+/* 公開準備タブ：上のメタ編集 (meta-workspace) と下のアップロードフォーム (publish-prep-section)
+   を視覚的に連結し、隙間を無くす（旧: margin-top var(--space-4) で間隔あった）。*/
+.tab-panel.publish-prep-section[data-t="meta"]{padding-top:0}
+.tab-panel.publish-prep-section[data-t="meta"] > .card#uploadCard{border-top:0;border-top-left-radius:0;border-top-right-radius:0;margin-top:0}
 .publish-prep-head{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-3);margin-bottom:var(--space-3);flex-wrap:wrap}
 .publish-prep-title{font-size:var(--text-lg);font-weight:var(--font-semibold);color:var(--text-primary)}
 .publish-prep-sub{font-size:var(--text-sm);color:var(--text-secondary);line-height:1.7;margin-top:2px;max-width:760px}
@@ -1418,6 +1443,7 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
           <div style="flex:1;min-width:8px"></div>
           <button class="btn btn-secondary btn-sm" onclick="bulkSuggestMeta()" title="選択フォルダのタイトル・説明・タグを順次 AI 提案＋保存">メタ一括提案</button>
           <button class="btn btn-secondary btn-sm" onclick="bulkSuggestAll()" title="競合分析から楽曲/サムネ/メタを一括提案">一気通貫提案</button>
+          <button class="btn btn-secondary btn-sm" onclick="bulkBatchUpload()" title="選択フォルダを限定公開で順次アップロード (YouTube quota 制限あり、1日6件まで)">📤 一括アップロード</button>
           <button class="btn btn-primary btn-sm" onclick="bulkRunPipeline()" title="選択フォルダを順次パイプライン実行">全工程を一括実行</button>
           <span style="width:1px;height:20px;background:var(--border-default)"></span>
           <button class="btn btn-secondary btn-sm" onclick="bulkToggleHidden(false)" id="vBulkHideBtn">選択を非表示</button>
@@ -1772,14 +1798,24 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
             <textarea class="ft" id="cfgRivals" rows="2" placeholder="1行1URL（YouTube チャンネルURL）" style="margin-top:var(--space-2)"></textarea>
           </details>
         </div>
-        <!-- P2-7: 公開ゲート設定 -->
+        <!-- P3-3: 公開方式（予約投稿イメージ・per-channel） -->
         <div class="ff" style="border-top:1px dashed var(--border-default);padding-top:var(--space-2);margin-top:var(--space-2)">
-          <label class="fl">公開ゲート（upload 後の遅延時間）</label>
+          <label class="fl">公開方式（自動アップロード時）</label>
           <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
-            <input type="number" class="fi" id="cfgPublishDelayHours" min="0" max="720" step="0.5" placeholder="0" style="max-width:140px">
-            <span class="fh" style="margin:0">時間（0 で即時公開・設定値以上経過後に自動 public 化）</span>
+            <select class="fi" id="cfgPublishMode" onchange="onPublishModeChange()" style="max-width:240px">
+              <option value="unlisted">限定公開のまま（手動で公開）</option>
+              <option value="public">即時公開（アップロード時に公開）</option>
+              <option value="delayed">予約公開（N 時間後に自動公開）</option>
+            </select>
           </div>
-          <div class="fh" style="margin-top:4px">推奨: 24（=1日）。private で upload された動画を、N 時間後に APScheduler が public へ切替。途中で YouTube Studio から削除すれば公開を中止できる猶予枠になる。</div>
+          <div class="fh" style="margin-top:4px">チャンネルごとに保存されます。自動パイプラインの upload 工程がこの方式で投稿します。</div>
+          <div id="cfgPublishDelayWrap" style="display:none;margin-top:var(--space-2)">
+            <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
+              <input type="number" class="fi" id="cfgPublishDelayHours" min="0.5" max="720" step="0.5" placeholder="24" style="max-width:140px">
+              <span class="fh" style="margin:0">時間後に自動で公開（限定公開ではなく private で投稿し、N 時間後に public 化）</span>
+            </div>
+            <div class="fh" style="margin-top:4px">推奨: 24（=1日）。途中で YouTube Studio から削除すれば公開を中止できる猶予枠になります。</div>
+          </div>
         </div>
         <div class="btns" style="margin-top:var(--space-2)">
           <button class="btn btn-primary btn-sm" onclick="saveSettings()">保存</button>
@@ -2369,6 +2405,7 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
 
           <div class="btns">
             <button class="btn btn-primary" id="psRenderBtn" onclick="runPhotoshopThumbs()">サムネ生成</button>
+            <button class="btn btn-secondary" id="psCompositeBtn" onclick="runPsdCompositePipeline()" title="pipeline の psd_composite step を単発実行（CLI と同等：scene_en 自動生成 + 1920×1080 アップサンプル + vol 固有 PSD save&close）">⚡ 自動 PSD 合成</button>
             <button class="btn btn-secondary btn-sm" onclick="psListLayers()" title="アクティブな PSD のレイヤー名を一覧表示">レイヤー確認</button>
           </div>
         </div>
@@ -3514,6 +3551,7 @@ const DETAIL_TABS=[
 const WORKFLOW_STEPS=[
   {key:'suno',short:'楽曲',label:'SUNO生成',test:v=>v.has_music},
   {key:'bgimage',short:'背景',label:'背景画像',test:v=>v.has_bg_image || v.has_images_selected || v.has_thumb},
+  {key:'psd_composite',short:'合成',label:'PSD合成',test:v=>v.has_thumb},
   {key:'images',short:'画像',label:'画像選択',test:v=>v.has_images_selected || v.has_thumb},
   {key:'jsx',short:'配置',label:'JSX配置',test:v=>v.has_srt},
   {key:'export',short:'書出',label:'書き出し',test:v=>v.has_mp4},
@@ -4020,6 +4058,16 @@ async function loadConfig(){try{
     const v=dc.publish_delay_hours;
     $('cfgPublishDelayHours').value=(v==null||v==='')?'':v;
   }
+  if($('cfgPublishMode')){
+    // 後方互換: publish_mode 未設定なら publish_delay_hours>0 → delayed、それ以外 unlisted
+    let mode=(dc.publish_mode||'').trim().toLowerCase();
+    if(!['unlisted','public','delayed'].includes(mode)){
+      const dh=parseFloat(dc.publish_delay_hours);
+      mode=(!isNaN(dh)&&dh>0)?'delayed':'unlisted';
+    }
+    $('cfgPublishMode').value=mode;
+    if(typeof onPublishModeChange==='function')onPublishModeChange();
+  }
   if($('cfgSheetDetail'))$('cfgSheetDetail').value=dc.spreadsheet_channel_detail_url||'';
   if($('cfgSheetGrowth'))$('cfgSheetGrowth').value=dc.spreadsheet_growth_tracking_url||'';
   if($('cfgRivals'))$('cfgRivals').value=(dc.rival_channels||[]).join('\n');
@@ -4288,6 +4336,14 @@ function wireSettingsAutoSave(){
   _autoSaveWired=true;
 }
 
+// P3-3: 公開方式 select の変更で遅延時間欄の表示を切替（delayed のときだけ表示）
+function onPublishModeChange(){
+  const sel=document.getElementById('cfgPublishMode');
+  const wrap=document.getElementById('cfgPublishDelayWrap');
+  if(!sel||!wrap)return;
+  wrap.style.display=(sel.value==='delayed')?'block':'none';
+}
+
 async function saveSettings(){
   const persona=document.getElementById('cfgPersona').value;
   const rivals=document.getElementById('cfgRivals').value.split('\n').map(s=>s.trim()).filter(Boolean);
@@ -4343,11 +4399,18 @@ async function saveSettings(){
   }
   if(filePrefix)body.file_prefix=filePrefix;
   if(appId)body.app_id=appId;
-  // P2-7: 公開ゲート（per-channel）
-  const publishDelayRaw=document.getElementById('cfgPublishDelayHours')?.value;
-  if(publishDelayRaw!=null && publishDelayRaw!==''){
-    const v=parseFloat(publishDelayRaw);
-    if(!isNaN(v) && v>=0) body.publish_delay_hours=v;
+  // P3-3: 公開方式（per-channel・予約投稿イメージ）
+  const publishMode=document.getElementById('cfgPublishMode')?.value;
+  if(publishMode && ['unlisted','public','delayed'].includes(publishMode)){
+    body.publish_mode=publishMode;
+    // delayed のときだけ遅延時間を送る。delayed 以外は 0 にして公開ゲートを無効化。
+    if(publishMode==='delayed'){
+      const publishDelayRaw=document.getElementById('cfgPublishDelayHours')?.value;
+      const v=parseFloat(publishDelayRaw);
+      body.publish_delay_hours=(!isNaN(v)&&v>0)?v:24;  // 未入力なら推奨値 24h
+    }else{
+      body.publish_delay_hours=0;
+    }
   }
   try{
     const r=await fetch('/api/config/dashboard',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -5058,6 +5121,7 @@ async function showVideoDetail(name){
           </span>
           <span class="aeb-group" title="制作・編集工程">
             <span class="aeb-group-title">編集</span>
+            <label title="Photoshop テンプレで vol{N}.jpg + サムネイル.jpg を 2 枚出し（1920×1080）"><input type="checkbox" data-step="psd_composite" checked> PSD合成</label>
             <label title="Premiere に音源・画像を自動配置します"><input type="checkbox" data-step="premiere" checked> 配置</label>
             <label title="Adobe Media Encoder で MP4 を書き出します"><input type="checkbox" data-step="export" checked> 書き出し</label>
             <label title="AI でタイトル候補・説明文・タグを生成します"><input type="checkbox" data-step="meta" checked> メタ</label>
@@ -5078,9 +5142,16 @@ async function showVideoDetail(name){
         </div>
 
           <div class="tab-panel on" data-t="meta">
-            <div class="strategy-note">
-              <strong>English-first metadata.</strong>
-              Benchmark channels, YouTube Data API signals, and ChannelTracker growth patterns are used to find the viewer moment, unmet need, and "this is exactly it" hook. Titles, descriptions, and tags should be adopted in English; subtitles/localizations are generated by translating from that English source.
+            <!-- 統合ヘッダ: タイトル + メタ充足チェック + 全言語生成（旧 publish-prep-head から移植）-->
+            <div class="publish-prep-head" style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-3)">
+              <div>
+                <div class="publish-prep-title">YouTube 公開設定</div>
+                <div class="publish-prep-sub">英語タイトル・説明文・タグを編集し、その下のフォームでアップロードまで一気通貫で実行します。字幕や多言語説明は英語ソースから自然な現地語へ翻訳。</div>
+              </div>
+              <div class="btns" style="flex-shrink:0">
+                <button class="btn btn-secondary btn-sm" onclick="loadMetaStatus('${esc(name)}')" title="title/description/tags/localizations/mp4 の充足チェック">📊 メタ充足チェック</button>
+                <button class="btn btn-secondary btn-sm" onclick="runGenerateLocalizations('${esc(name)}')" title="youtube_title.txt + youtube_description.txt を Claude CLI で 10言語翻訳して youtube_localizations.json を生成">⚡ 全言語生成</button>
+              </div>
             </div>
             <div class="meta-workspace">
               <div class="card meta-editor">
@@ -5673,6 +5744,7 @@ async function showVideoDetail(name){
                 <button class="btn btn-primary btn-sm" onclick="_confirmAndRunPipeline('${esc(name)}',['export'])">▶ 書き出しを実行</button>
                 <button class="btn btn-secondary btn-sm" onclick="go('premiere')">Premiere ログを確認</button>
                 ${d.mp4_file?`<button class="btn btn-secondary btn-sm" onclick="openF('${esc(d.mp4_file)}')">MP4を開く</button>`:''}
+                <button class="btn btn-secondary btn-sm" onclick="loadMp4Info('${esc(name)}')" title="mp4 の場所・サイズ・解像度・尺・コーデックを表示">📹 MP4 詳細</button>
               </div>
               <div class="ff" style="margin-top:var(--space-3)">
                 <label class="fl">書き出し済み MP4 を読み込み</label>
@@ -5695,12 +5767,6 @@ async function showVideoDetail(name){
           </div>
 
           <div class="tab-panel on publish-prep-section" data-t="meta">
-            <div class="publish-prep-head">
-              <div>
-                <div class="publish-prep-title">YouTube 公開設定</div>
-                <div class="publish-prep-sub">上の公開準備で採用した英語タイトル・説明文・タグを、そのままアップロードへ適用します。字幕や多言語説明は英語ソースから自然な現地語へ翻訳します。</div>
-              </div>
-            </div>
             ${d.readiness.upload&&d.upload_info?`
               <div class="card" style="border-color:var(--accent-success);margin-bottom:var(--space-3)">
                 <div class="sec-title" style="color:var(--accent-success)">✓ アップロード済</div>
@@ -5709,7 +5775,10 @@ async function showVideoDetail(name){
                   <strong>公開設定:</strong> ${esc(d.upload_info.privacy||'')}<br>
                   <strong>日時:</strong> ${esc(d.upload_info.uploaded_at||'')}${d.upload_info.schedule?'<br><strong>予約公開:</strong> '+esc(d.upload_info.schedule):''}
                 </div>
-                <div class="btns"><button class="btn btn-secondary btn-sm" onclick="confirmReupload('${esc(name)}')">再アップロード</button></div>
+                <div class="btns">
+                  <button class="btn btn-primary btn-sm" onclick="runUpdateSnippet('${esc(name)}')" title="既存動画のタイトル・説明・タグ・10言語ローカライズを YouTube videos.update で反映 (quota ~50 unit、動画ファイル再アップ無し)">📝 メタを YouTube に反映</button>
+                  <button class="btn btn-secondary btn-sm" onclick="confirmReupload('${esc(name)}')">再アップロード</button>
+                </div>
               </div>`:''}
 
             <div class="card ${d.readiness.upload?'hidden':''}" id="uploadCard">
@@ -5723,11 +5792,8 @@ async function showVideoDetail(name){
                   <div class="fh">${d.thumbnail?esc(d.thumbnail):'サムネイル未設定（「画像」タブで選択）'}</div>
                 </div>
                 <div>
-                  <div class="ff">
-                    <label class="fl">タイトル（アップロード用、空欄なら詳細タブのタイトルを使用）</label>
-                    <input type="text" class="fi" id="upTitle" value="${esc(td.title)}">
-                  </div>
-
+                  <!-- UI/UX: 公開設定 (privacy + 公開予約) を先に決めてからタイトルを編集する流れに変更。
+                       投稿コミット範囲が決まった状態で文言を仕上げる方が自然。 -->
                   <div class="fr">
                     <div class="ff">
                       <label class="fl">公開設定</label>
@@ -5744,12 +5810,16 @@ async function showVideoDetail(name){
                     </div>
                   </div>
 
+                  <!-- 旧 upTitle 入力欄は削除。上の編集エリアの vdTitle (YouTube タイトル) と統合。
+                       uploadFromDetailV2 は vdTitle.value を読むよう修正済み。 -->
+
                   <div class="ff">
                     <label class="fl">タグプレビュー</label>
                     <div id="upTagPreview" style="display:flex;gap:var(--space-1);flex-wrap:wrap"></div>
                   </div>
 
                   <!-- アップロードテンプレートのサマリ表示（D-1） -->
+                  <div class="upload-extras-grid">
                   <details style="margin-top:var(--space-3);background:var(--bg-elevated);padding:var(--space-3);border-radius:var(--radius-md)">
                     <summary style="cursor:pointer;font-weight:var(--font-semibold);color:var(--text-primary)">アップロードテンプレート <span class="badge badge-neutral" id="upDefHint" style="margin-left:var(--space-2);font-weight:normal">読み込み中…</span></summary>
                     <div id="upDefSummary" style="margin-top:var(--space-3);font-size:var(--text-xs);color:var(--text-secondary);line-height:1.7"></div>
@@ -5821,6 +5891,7 @@ async function showVideoDetail(name){
                       <div id="upLocList" style="margin-top:var(--space-3);font-size:var(--text-xs);color:var(--text-secondary)"></div>
                     </div>
                   </details>
+                  </div>
 
                   <div class="btns" style="margin-top:var(--space-3)">
                     <button class="btn btn-destructive btn-sm" id="upBtn" onclick="uploadFromDetailV2('${esc(name)}')" ${d.readiness.mp4?'':'disabled'}>▶ アップロード実行</button>
@@ -6569,7 +6640,7 @@ function autoExecCurrentOnly(name){
 }
 /* SUNO が含まれる時は現行フォームの値を確認モーダルで要約して送信 */
 function _confirmAndRunPipeline(name,steps){
-  const stepLabels={suno:'楽曲',rename:'楽曲加工',images:'画像',premiere:'自動配置',export:'書き出し',meta:'公開準備',upload:'アップロード'};
+  const stepLabels={suno:'楽曲',rename:'楽曲加工',bgimage:'背景画像',psd_composite:'PSD合成',images:'画像',premiere:'自動配置',export:'書き出し',meta:'公開準備',upload:'アップロード'};
   const stepList=steps.map(s=>`・${stepLabels[s]||s}`).join('\n');
   let sunoBlock='';
   let sunoParams=null;
@@ -7705,6 +7776,13 @@ async function bulkSuggestAll(){
 }
 
 /* ==== パイプライン一括実行（自動承認モード） ==== */
+/* 📤 一括アップロード (動画一覧 bulk action から呼ばれる)。改修#4 batch-upload API ラッパー */
+async function bulkBatchUpload(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('フォルダを選択してください','w');return}
+  await runBatchUpload(names,'unlisted');
+}
+
 async function bulkRunPipeline(){
   const names=_bulkSelectedNames();
   if(names.length===0){toast('フォルダを選択してください','w');return}
@@ -7715,7 +7793,7 @@ async function bulkRunPipeline(){
     _bpUpdate(n,'⟳','実行中...','var(--accent-warning)');
     try{
       // パイプライン起動
-      const r=await fetch(`/api/videos/${encodeURIComponent(n)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:['suno','rename','premiere','export','meta','upload']})});
+      const r=await fetch(`/api/videos/${encodeURIComponent(n)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:['suno','rename','bgimage','psd_composite','premiere','export','meta','upload']})});
       if(!r.ok){_bpUpdate(n,'✕','起動失敗','var(--accent-danger)');ng++;continue}
       // 完了までポーリング
       while(true){
@@ -9092,6 +9170,7 @@ function goToVideoDetail(name){
 async function saveVideoTitle(name){
   const t=document.getElementById('vdTitle').value;
   await fetch(`/api/videos/${encodeURIComponent(name)}/title`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name,new_title:t})});
+  // 旧 upTitle 入力欄は撤去済（vdTitle と統合）。互換のため要素があれば同期。
   const up=document.getElementById('upTitle');
   if(up)up.value=t;
   toast('タイトルを保存','s');
@@ -9205,7 +9284,9 @@ async function uploadFromDetail(name,title){
 }
 
 async function uploadFromDetailV2(name){
-  const title=document.getElementById('upTitle').value||undefined;
+  // upTitle 入力欄は撤去。上の編集エリア vdTitle (YouTube タイトル) の値をそのまま使う。
+  const vt=document.getElementById('vdTitle');
+  const title=(vt&&vt.value)||undefined;
   const privacy=document.getElementById('upPrivacy').value;
   const schedRaw=document.getElementById('upSchedule').value;
   const schedule=schedRaw?new Date(schedRaw).toISOString():undefined;
@@ -9308,6 +9389,129 @@ async function confirmReupload(name){
   // 再アップロードの場合は既存マーカーを無視してフォームを表示
   document.getElementById('uploadCard').classList.remove('hidden');
   toast('再アップロードフォームを表示','i');
+}
+
+/* ⚡ 全言語生成: youtube_title.txt + youtube_description.txt → 10 言語翻訳 → youtube_localizations.json */
+async function runGenerateLocalizations(name, force){
+  if(!confirm(`"${name}" の youtube_title.txt + description.txt を Claude CLI で 10言語翻訳します。\n所要時間: 1-2分。続行しますか？`))return;
+  toast('多言語翻訳生成を開始…','i');
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/generate-localizations`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({force: !!force}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'生成失敗','e');return;}
+    if(d.status==='skipped'){
+      if(confirm(`既存の youtube_localizations.json があります (${(d.languages||[]).length}言語)。force=true で再生成しますか？`)){
+        return runGenerateLocalizations(name, true);
+      }
+      return;
+    }
+    toast(`✓ ${(d.languages||[]).length}言語生成完了 → youtube_localizations.json`,'s');
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* 📊 メタ充足チェック: GET /api/videos/{name}/meta-status の結果をモーダル風に表示 */
+async function loadMetaStatus(name){
+  toast('メタ充足チェック中…','i');
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/meta-status`);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'取得失敗','e');return;}
+    const okMark=v=>v?'✓':'✗';
+    const lines=[
+      `--- メタ充足チェック: ${name} ---`,
+      `${okMark(d.title&&d.title.ok)} タイトル (${d.title?.size||0} bytes): ${(d.title?.preview||'').slice(0,60)}`,
+      `${okMark(d.description&&d.description.ok)} 説明文 (${d.description?.size||0} bytes)`,
+      `${okMark(d.tags&&d.tags.ok)} タグ (${d.tags?.size||0} bytes)`,
+      `${okMark(d.localizations&&d.localizations.ok)} 多言語ローカライズ (${d.localizations?.count||0}言語: ${(d.localizations?.languages||[]).join(', ')})`,
+      `${okMark(d.mp4&&d.mp4.present)} mp4 (${d.mp4?.path||'未'})`,
+      `${okMark(d.upload&&d.upload.present)} YouTube アップロード (${d.upload?.url||'未'})`,
+      ``,
+      `総合: ${d.ready_for_upload?'✅ アップロード可':'⚠ 未充足'}`,
+    ];
+    const text=lines.join('\n');
+    console.log(text);
+    alert(text);
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* 📹 MP4 詳細: GET /api/videos/{name}/mp4-info でファイル場所と仕様を表示 */
+async function loadMp4Info(name){
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/mp4-info`);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'取得失敗','e');return;}
+    if(!d.present){toast('mp4 が見つかりません','e');return;}
+    const sizeMB=(d.size_bytes/1024/1024).toFixed(1);
+    const durMin=d.duration_sec?Math.floor(d.duration_sec/60)+':'+String(Math.floor(d.duration_sec%60)).padStart(2,'0'):'?';
+    const lines=[
+      `--- MP4 詳細: ${name} ---`,
+      `パス: ${d.path}`,
+      `検出ソース: ${d.source}`,
+      `サイズ: ${sizeMB} MB`,
+      `解像度: ${d.resolution||'?'}`,
+      `尺: ${durMin}`,
+      `コーデック: ${d.video_codec||'?'}`,
+    ];
+    console.log(lines.join('\n'));
+    alert(lines.join('\n'));
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* 📤 一括アップロード: 複数 vol を順次 enqueue (改修#4 batch-upload API) */
+async function runBatchUpload(names, privacy){
+  privacy = privacy || 'unlisted';
+  if(!names || names.length===0){toast('アップロード対象が空です','e');return;}
+  if(!confirm(`${names.length} 件の vol を ${privacy} で順次アップロードします。\n（quota 1600 unit/件、1 日 6 件まで）\n続行しますか？`))return;
+  toast(`${names.length} 件をキューに追加中…`,'i');
+  try{
+    const r=await fetch('/api/youtube/batch-upload',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_names:names, privacy:privacy}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'バッチ投入失敗','e');return;}
+    const enq=(d.enqueued||[]).length;
+    const skip=(d.skipped||[]).length;
+    toast(`✓ ${enq} 件 enqueue、${skip} 件 skip`,'s');
+    if(skip>0){
+      console.warn('スキップされた vol:', d.skipped);
+    }
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* 📝 メタを YouTube に反映: videos.update API で既存動画の snippet + localizations を上書き */
+async function runUpdateSnippet(name){
+  if(!confirm(`既存の YouTube 動画 "${name}" のタイトル・説明・タグ・10言語ローカライズを更新します。\n（動画ファイル再アップは無し、YouTube API quota ~50 unit を消費）\n続行しますか？`))return;
+  toast('YouTube 側メタ更新を開始…','i');
+  try{
+    const r=await fetch(`/api/youtube/update-snippet/${encodeURIComponent(name)}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({apply_localizations: true}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'更新失敗','e');return;}
+    const locs = (d.localizations_applied||[]).length;
+    toast(`✓ メタ更新完了: parts=${(d.applied_parts||[]).join(',')}, localizations=${locs}言語`,'s');
+    if(d.previous_title && d.new_title && d.previous_title !== d.new_title){
+      console.log(`Title changed: "${d.previous_title}" → "${d.new_title}"`);
+    }
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
 }
 
 async function loadUploadTagPreview(name){
@@ -11547,6 +11751,49 @@ async function psListLayers(){
       _psLog(`  [${l.kind}] ${l.path}`,'info');
     }
   }catch(e){_psLog('✕ '+e.message,'error');}
+}
+
+// pipeline の psd_composite step を単発実行する。CLI の `python3 app_pipeline.py <vol> --only psd_composite`
+// と等価。scene_en の LLM 生成・vol 固有 PSD 解決・1920×1080 アップサンプル・PSD save&close
+// すべて pipeline 側のロジックが自動でやる。
+async function runPsdCompositePipeline(){
+  const vn=document.getElementById('psVideo')?.value||'';
+  if(!vn){toast('対象動画を選択してください','e');return;}
+  const btn=document.getElementById('psCompositeBtn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ 起動中...';}
+  _psLog(`▶ 自動 PSD 合成 (pipeline 経由): ${vn}`,'info');
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(vn)}/run-pipeline`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({steps:['psd_composite']}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      _psLog('✕ '+(d.detail||'起動失敗'),'error');
+      toast(d.detail||'起動失敗','e');
+      return;
+    }
+    _psLog(`✓ pipeline 起動 (job=${d.task_id||'pipeline'})`,'done');
+    if(btn)btn.textContent='⏳ 実行中...';
+    // 完了までポーリング
+    while(true){
+      await new Promise(res=>setTimeout(res,3000));
+      try{
+        const s=await fetch('/api/pipeline/status').then(x=>x.ok?x.json():null);
+        if(s && !s.running){
+          _psLog(`✓ pipeline 完了`,'done');
+          toast('PSD 合成完了（vol{N}.jpg + サムネイル.jpg）','s');
+          break;
+        }
+      }catch(_){/* 一時的エラーは継続 */}
+    }
+  }catch(e){
+    _psLog('✕ '+e.message,'error');
+    toast('通信エラー','e');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='⚡ 自動 PSD 合成';}
+  }
 }
 
 async function runPhotoshopThumbs(){
