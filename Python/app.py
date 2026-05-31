@@ -221,6 +221,8 @@ PER_CHANNEL_KEYS = {
     "publish_delay_hours",  # P2-7: upload 後の公開ゲート（0=即時、>0=N時間後 public化）
     "reference_image_dir",  # step_bgimage: 参照画像フォルダ（最優先。空なら Picked → rival thumbs にフォールバック）
     "default_duration_sec",  # Premiere 自動配置の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
+    "priority",  # U3: orchestrator policy 配分の channel 優先度（大きいほど優先。既定 100）
+    "autopilot_enabled",  # U3: 自走運用 ON/OFF（保存のみ。実 scheduler 起動は別途 GO 後）
 }
 
 # グローバル維持（マシン別）: API キー、OAuth トークン、ブランド設定など
@@ -11908,6 +11910,174 @@ async def api_schedule_run_now(job_id: str):
 @app.get("/api/schedule/history")
 def api_schedule_history():
     return {"history": list(reversed(_scheduler_history))[:50]}
+
+
+# ─── U3: 自走運用パネル（読み取り + 設定保存のみ） ─────────────────────
+# ⚠ 重要な安全境界: これらの API は orchestrator.evaluate(dry_run=True) など
+#   **副作用ゼロ**の呼び出しと per-channel 設定保存だけを行う。
+#   tick()/dispatch() は呼ばない。_scheduler.add_job も一切しない。
+#   = 無人稼働（autopilot の実起動）は依然として未実装。autopilot_enabled は
+#   設定値を保存するだけで、実際の定期実行は別途 GO 後に app.py へ統合する。
+
+def _build_orchestrator_channels():
+    """get_channels() から orchestrator.evaluate 用の channels を構築。
+    各 vol dict に folder(絶対パス)を必ず付与（evaluate が Path() で使うため）。
+    channels.json の "id" を "channel_id" に詰め替える（/api/runs/active と同形）。"""
+    chans = []
+    for ch in get_channels():
+        folder = ch.get("folder") or ""
+        ch_dir = Path(folder)
+        if not folder or not ch_dir.exists():
+            continue
+        vols = []
+        try:
+            entries = [d for d in ch_dir.iterdir()
+                       if d.is_dir() and parse_video_folder_name(d.name)]
+        except Exception:
+            entries = []
+        def _vk(p):
+            info = parse_video_folder_name(p.name)
+            return info["num"] if info else -1
+        entries.sort(key=_vk, reverse=True)
+        for d in entries[:10]:
+            info = parse_video_folder_name(d.name)
+            if not info:
+                continue
+            vols.append({"vol": info["num"], "name": d.name, "folder": str(d)})
+        chans.append({
+            "channel_id": ch.get("id", ""),
+            "channel_name": ch.get("name", ""),
+            "folder": folder,
+            "priority": int(ch.get("priority", 100)) if str(ch.get("priority", "")).strip() else 100,
+            "autopilot_enabled": bool(ch.get("autopilot_enabled", False)),
+            "vols": vols,
+        })
+    return chans
+
+
+@app.get("/api/workers/status")
+def api_workers_status():
+    """自走運用の dry-run 可視化: いま各 vol で着手可能な stage 候補 + チャンネル健全性。
+    ⚠ evaluate(dry_run=True) のみ。run()/dispatch()/tick() は呼ばない（副作用ゼロ）。"""
+    sys.path.insert(0, str(SHARED_BASE / "Python"))
+    try:
+        import app_orchestrator as _orch
+    except Exception as e:
+        raise HTTPException(500, f"orchestrator import 失敗: {e}")
+    channels = _build_orchestrator_channels()
+    try:
+        cands = _orch.evaluate(channels, dry_run=True)
+    except Exception as e:
+        raise HTTPException(500, f"evaluate 失敗: {e}")
+    cand_list = [{"domain": c.domain, "vol": c.vol, "folder": c.folder,
+                  "channel_id": c.channel_id} for c in cands]
+    # チャンネル別の健全性 + autopilot 設定
+    ch_health = []
+    for ch in channels:
+        cid = ch.get("channel_id", "")
+        try:
+            fails = _orch.consecutive_failures(cid)
+            tripped = _orch.is_channel_tripped(cid)
+        except Exception:
+            fails, tripped = 0, False
+        ch_health.append({
+            "channel_id": cid, "channel_name": ch.get("channel_name", ""),
+            "priority": ch.get("priority", 100),
+            "autopilot_enabled": ch.get("autopilot_enabled", False),
+            "consecutive_failures": fails, "tripped": tripped,
+            "candidate_count": sum(1 for c in cand_list if c["channel_id"] == cid),
+        })
+    return {
+        "status": "ok",
+        "candidates": cand_list,
+        "channels": ch_health,
+        "breaker_threshold": getattr(_orch, "BREAKER_THRESHOLD", 3),
+        "autopilot_default_stages": getattr(_orch, "AUTOPILOT_DEFAULT_STAGES", []),
+        "scheduler_registered": False,  # ⚠ orchestrator tick は未登録（無人稼働しない）
+    }
+
+
+@app.get("/api/quota/status")
+def api_quota_status():
+    """各チャンネルの YouTube quota 残（policy 配分の可視化用）。読み取りのみ。"""
+    import app_youtube as _ytm
+    out = []
+    for ch in get_channels():
+        folder = ch.get("folder") or ""
+        ch_dir = Path(folder)
+        if not folder or not ch_dir.exists():
+            continue
+        try:
+            used = _ytm.quota_used_in_window(ch_dir)
+            cap = _ytm.DEFAULT_DAILY_QUOTA_CAP
+            out.append({
+                "channel_id": ch.get("id", ""), "channel_name": ch.get("name", ""),
+                "used": used, "cap": cap, "remaining": max(0, cap - used),
+                "per_upload": _ytm.QUOTA_PER_UPLOAD,
+            })
+        except Exception:
+            continue
+    return {"status": "ok", "channels": out}
+
+
+def _save_channel_scalar(channel_id: str, updates: dict):
+    """指定 channel_id の .app_channel_config.json に updates をマージ保存。
+    channels.json から folder を解決（active 限定でない per-channel 保存）。"""
+    chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+    target = next((c for c in chs if c.get("id") == channel_id), None)
+    if not target:
+        raise HTTPException(404, f"channel not found: {channel_id}")
+    folder = target.get("folder") or ""
+    if not folder or not Path(folder).exists():
+        raise HTTPException(400, f"channel folder not found: {folder}")
+    p = Path(folder) / _CHANNEL_CONFIG_FILENAME
+    d = load_json(p, {})
+    d.update(updates)
+    save_json(p, d)
+    return {"status": "ok", "channel_id": channel_id, "saved": updates}
+
+
+class ChannelPriorityRequest(BaseModel):
+    channel_id: str
+    priority: int
+
+
+@app.put("/api/config/priority")
+def api_set_channel_priority(req: ChannelPriorityRequest):
+    """channel 優先度を per-channel 保存（orchestrator policy 配分が参照）。"""
+    return _save_channel_scalar(req.channel_id, {"priority": int(req.priority)})
+
+
+class AutopilotRequest(BaseModel):
+    channel_id: str
+    enabled: bool
+
+
+@app.get("/api/workers/autopilot")
+def api_get_autopilot():
+    """各チャンネルの autopilot_enabled 設定を返す（保存値の読み取りのみ）。"""
+    out = []
+    for ch in get_channels():
+        folder = ch.get("folder") or ""
+        cc = {}
+        if folder:
+            cc = load_json(Path(folder) / _CHANNEL_CONFIG_FILENAME, {})
+        out.append({
+            "channel_id": ch.get("id", ""), "channel_name": ch.get("name", ""),
+            "autopilot_enabled": bool(cc.get("autopilot_enabled", False)),
+            "priority": int(cc.get("priority", 100)) if str(cc.get("priority", "")).strip() else 100,
+        })
+    return {"status": "ok", "channels": out,
+            "scheduler_registered": False}  # ⚠ 保存しても実起動はしない
+
+
+@app.put("/api/workers/autopilot")
+def api_set_autopilot(req: AutopilotRequest):
+    """autopilot ON/OFF を per-channel 保存。
+    ⚠ これは設定値の保存のみ。実際の無人稼働（tick の定期実行）は未実装で、
+       別途 app.py への orchestrator 統合（GO 後）が必要。ここでは scheduler に
+       一切触れない（add_job しない）。"""
+    return _save_channel_scalar(req.channel_id, {"autopilot_enabled": bool(req.enabled)})
 
 
 def _run_uvicorn():
