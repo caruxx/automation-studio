@@ -659,8 +659,53 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
         suno_env_overrides = {}
         if os.environ.get("APP_KEEP_BROWSER", "").strip() not in ("0", "false", "no"):
             suno_env_overrides["APP_KEEP_BROWSER"] = "1"
-        return _run(cmd, STEP_LABELS["suno"], timeout=suno_timeout,
-                    env_overrides=suno_env_overrides or None)
+        suno_ok = _run(cmd, STEP_LABELS["suno"], timeout=suno_timeout,
+                       env_overrides=suno_env_overrides or None)
+
+        # ─── 15/15 完了後の自動連携（DL + リネーム + フェード）─────────────────
+        # SUNO は最終曲を投入後も裏で生成が走っているため、N 秒待ってから DL する。
+        # APP_SUNO_AUTO_DOWNLOAD=0 で無効化可能（生成だけしたいケース用）。
+        auto_dl = os.environ.get("APP_SUNO_AUTO_DOWNLOAD", "1").strip() not in ("0", "false", "no")
+        if not auto_dl:
+            return suno_ok
+
+        # SUNO が途中で失敗（Bot 判定タイムアウト / 認証期限 等）しても、
+        # 既に SUNO workspace に貯まっている楽曲を回収するため DL に進む。
+        # APP_SUNO_CONTINUE_ON_PARTIAL=0 で無効化可能（失敗時に即停止する従来動作）。
+        continue_on_fail = os.environ.get("APP_SUNO_CONTINUE_ON_PARTIAL", "1").strip() not in ("0", "false", "no")
+        if not suno_ok:
+            if not continue_on_fail:
+                return suno_ok
+            print("  ⚠ SUNO 生成は中断しましたが、生成済み楽曲を回収するため DL に進みます")
+            print("     （APP_SUNO_CONTINUE_ON_PARTIAL=0 で従来動作 = 失敗時即停止）")
+
+        final_wait = int(os.environ.get("APP_SUNO_FINAL_WAIT_SEC") or "300")
+        if final_wait > 0:
+            print(f"\n  ⏳ 最終曲の生成完了を待機: {final_wait} 秒（APP_SUNO_FINAL_WAIT_SEC で変更可）")
+            time.sleep(final_wait)
+
+        print(f"\n  ⬇ Workspace DL 開始: {workspace} → {folder}")
+        dl_cmd = [
+            sys.executable, str(BASE / "suno_auto_create.py"),
+            "--download-workspace", workspace,
+            "--download-dir", str(folder),
+        ]
+        dl_ok = _run(dl_cmd, "SUNO ダウンロード", timeout=3600)
+        if not dl_ok:
+            print("  ⚠ ダウンロード失敗（生成は完了済み、後で `--download-workspace` を手動実行可）")
+            return False
+
+        # リネーム + フェード（既存の step_rename ロジックを subprocess で利用）
+        print(f"\n  🎵 リネーム + フェード処理")
+        process_cmd = [
+            sys.executable, str(BASE / "app_process_tracks.py"),
+            str(folder),
+        ]
+        process_ok = _run(process_cmd, "リネーム + フェード", timeout=1800)
+        if not process_ok:
+            print("  ⚠ 後処理失敗（DL までは完了、`app_process_tracks.py <folder>` で手動実行可）")
+            # 後処理失敗は警告のみ。DL までは成功なのでステップ全体は成功扱い。
+        return True
 
 
 def step_rename(vol: int, folder: Path, via_api: bool, **kw):
@@ -1162,14 +1207,11 @@ def _resolve_external_output_path(vol: int, folder: Path):
         fm = re.match(r"^\d+_([^_]+)", folder.name)
         file_prefix = fm.group(1) if fm else "vol"
 
-    target_dir = ext_dir / folder.name
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        print(f"  ⚠ 出力先ディレクトリ作成失敗: {e} → vol_folder にフォールバック")
-        return None
-
-    return target_dir / f"{file_prefix}_vol{num}.mp4"
+    # 配置: <ext_dir>/<prefix>_vol{N}.mp4（flat 配置）
+    # 旧: <ext_dir>/<vol_folder.name>/<prefix>_vol{N}.mp4 という per_video サブフォルダを
+    # 作っていたが、SSD 側で vol ごとに大量のフォルダが増えて運用が雑然とするため、
+    # flat 配置（既存 HN_vol01_1.mp4 / HN_vol06.mp4 等と同パターン）に揃える。
+    return ext_dir / f"{file_prefix}_vol{num}.mp4"
 
 
 def step_export(vol: int, folder: Path, via_api: bool, **kw):
@@ -1737,6 +1779,15 @@ RETRY_POLICY: dict = {
 }
 DEFAULT_POLICY = {"attempts": 1, "backoff": [], "retry_on": set()}
 
+# 失敗時、その工程を再実行しても直らず「前段からやり直す」べき工程の差し戻し先。
+# 例: QA は mp4 を ffprobe で検査するだけ → NG なら mp4 自体が不良なので
+#     qa を再実行しても同じ結果。Premiere から再レンダーして初めて直る。
+# pipeline は失敗時に末尾へ「再開: ... --from <stage>」を出力し、
+# auto_resume(app.py) がそれを解析して再投入する。ここで差し戻し先を上書きする。
+_RESUME_OVERRIDE = {
+    "qa": "premiere",
+}
+
 
 def _run_step_with_retry(name: str, step_func, *args, **kw):
     """単一 stage を policy に従って retry しつつ実行。
@@ -1803,7 +1854,7 @@ def main():
     parser.add_argument("--only", choices=STEPS_WITH_PLAN, help="指定工程だけ実行")
     parser.add_argument("--via-api", action="store_true", help="Web API (localhost:8888) 経由で実行")
     parser.add_argument("--dry-run", action="store_true", help="実行せず計画だけ表示")
-    parser.add_argument("--duration", type=int, default=10800, help="Premiere 目標時間（秒）")
+    parser.add_argument("--duration", type=int, default=None, help="Premiere 目標時間（秒）。未指定なら APP_DURATION_SEC env → per-channel default_duration_sec → 10800 の順で解決")
     parser.add_argument("--suno-count", type=int, default=None, help="SUNO 生成回数")
     parser.add_argument("--suno-interval", type=int, default=None, help="SUNO ループ間隔（秒）")
     parser.add_argument("--privacy", default="unlisted", choices=["private", "unlisted", "public"])
@@ -1978,13 +2029,16 @@ def main():
         if not succeeded:
             ch_name = _load_dashboard_config().get("channel_name", "(unknown channel)")
             reason = "retry 上限に到達" if ok == "retryable" else "失敗"
+            # QA 等、その工程を再実行しても直らない工程は前段へ差し戻す（_RESUME_OVERRIDE）。
+            resume_stage = _RESUME_OVERRIDE.get(s, s)
+            rollback_note = f"（{STEP_LABELS[s]} 不良 → {resume_stage} から再実行）" if resume_stage != s else ""
             _notify_line(
-                f"❌ [{ch_name}] vol.{args.vol} の {STEP_LABELS[s]} で{reason}しました\n"
-                f"再開: python3 app_pipeline.py {args.vol} --from {s}"
+                f"❌ [{ch_name}] vol.{args.vol} の {STEP_LABELS[s]} で{reason}しました{rollback_note}\n"
+                f"再開: python3 app_pipeline.py {args.vol} --from {resume_stage}"
             )
             print(f"\n{'='*60}")
-            print(f"  ⛔ {STEP_LABELS[s]} で停止しました ({reason})")
-            print(f"  再開: python3 app_pipeline.py {args.vol} --from {s}")
+            print(f"  ⛔ {STEP_LABELS[s]} で停止しました ({reason}){rollback_note}")
+            print(f"  再開: python3 app_pipeline.py {args.vol} --from {resume_stage}")
             print(f"{'='*60}")
             sys.exit(1)
 
