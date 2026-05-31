@@ -1092,6 +1092,15 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
 
 /* 下部 5 タブ */
 .ct-bottom{background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-md);overflow:hidden}
+/* U4: ct-bottom / 承認設定 を details 化（一覧モードの縦長圧縮） */
+details.ct-bottom>summary{cursor:pointer;font-weight:600;font-size:var(--text-sm);list-style:none;padding:10px 16px;background:var(--bg-elevated)}
+details.ct-bottom>summary::-webkit-details-marker{display:none}
+details.ct-bottom>summary::before{content:'▶ ';font-size:10px;color:var(--text-tertiary)}
+details.ct-bottom[open]>summary::before{content:'▼ '}
+details.ct-rp-section>summary{cursor:pointer;list-style:none}
+details.ct-rp-section>summary::-webkit-details-marker{display:none}
+details.ct-rp-section>summary::before{content:'▶ ';font-size:10px;color:var(--text-tertiary)}
+details.ct-rp-section[open]>summary::before{content:'▼ '}
 .ct-bottom-tabs{display:flex;gap:0;border-bottom:1px solid var(--border-default);background:var(--bg-elevated)}
 .ct-tab{padding:10px 16px;background:transparent;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);font-size:var(--text-sm);cursor:pointer;transition:color .15s,border-color .15s}
 .ct-tab:hover{color:var(--text-primary)}
@@ -1523,7 +1532,8 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
         </details>
 
         <!-- ===== 下部 5 タブ ===== -->
-        <div class="ct-bottom">
+        <details class="ct-bottom">
+          <summary class="ct-bottom-summary">サムネ生成ワークフロー（プラン / 競合 / 結果 / 承認 / ログ）</summary>
           <div class="ct-bottom-tabs" role="tablist">
             <button type="button" class="ct-tab on" data-tab="plan" onclick="ctTab('plan')">生成プラン</button>
             <button type="button" class="ct-tab" data-tab="competitor" onclick="ctTab('competitor')">競合分析</button>
@@ -1618,13 +1628,13 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
               <div id="ctRunHistory" class="ct-log"></div>
             </div>
           </div>
-        </div>
+        </details>
       </main>
 
       <!-- ─── 右: 生成設定 + 承認設定 + 実行ボタン ─── -->
       <aside class="ct-rightpanel">
         <!-- フロー説明 (機能の所在を明示) -->
-        <div class="ct-rp-flow">
+        <div class="ct-rp-flow" data-u4-flow>
           <div class="ct-rp-flow-title">ベンチマーク横断 サムネ一括生成</div>
           <div class="ct-rp-flow-steps">
             <span>1. 動画選択</span>
@@ -1699,8 +1709,8 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
           </div>
         </div>
 
-        <div class="ct-rp-section">
-          <div class="ct-rp-title">承認設定</div>
+        <details class="ct-rp-section">
+          <summary class="ct-rp-title">承認設定</summary>
           <div class="ct-rp-fields">
             <label class="ct-rp-field">
               <span>自動承認モード</span>
@@ -1731,7 +1741,7 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
               <span>既存サムネは上書きしない (常時有効)</span>
             </label>
           </div>
-        </div>
+        </details>
 
         <div class="ct-rp-cta">
           <button class="btn btn-primary btn-block" onclick="ctStart(false)" id="ctStartBtn" disabled>
@@ -7563,6 +7573,8 @@ function ctTab(name){
   if(name==='result'){ctPopulateResultVideoOptions()}
   if(name==='approval'){ctRefreshApprovalStats()}
   if(name==='log'){ctRefreshLog()}
+  // U4: details.ct-bottom が閉じているとタブ内容が見えないので開く
+  const _ctb=document.querySelector('details.ct-bottom'); if(_ctb)_ctb.open=true;
 }
 
 /* ログタブの内容を最新化 (タブ切替 + 手動更新) */
