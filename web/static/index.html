@@ -265,6 +265,13 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .health-hero-icon{font-size:28px;line-height:1}
 .health-hero-title{font-size:var(--text-lg);font-weight:var(--font-semibold)}
 .health-warn-row{display:flex;align-items:center;gap:var(--space-2);padding:4px 0;flex-wrap:wrap}
+/* U3 自走運用パネル */
+.ap-cand-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:4px;margin-top:6px}
+.ap-cand{background:rgba(96,165,250,.14);color:var(--accent-info);border-radius:var(--radius-sm);padding:3px 6px;font-size:11px;text-align:center}
+.ap-ch-row{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) 0;border-bottom:1px solid var(--border,rgba(127,127,127,.15));flex-wrap:wrap}
+.ap-ch-name{font-weight:var(--font-semibold);min-width:120px}
+.ap-toggle{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.ap-prio-input{width:70px}
 
 /* ===== Stat ===== */
 .stat{background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-lg);padding:var(--space-4);overflow:hidden;min-width:0}
@@ -1330,6 +1337,7 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
     <button class="nav-btn" data-p="export" onclick="go('export')"><span class="nav-label">書き出し</span></button>
     <button class="nav-btn" data-p="ledger" onclick="go('ledger')"><span class="nav-label">実行履歴</span></button>
     <button class="nav-btn" data-p="health" onclick="go('health')"><span class="nav-label">接続ヘルス</span></button>
+    <button class="nav-btn" data-p="autopilot" onclick="go('autopilot')"><span class="nav-label">自走運用</span></button>
   </nav>
 
   <div class="sidebar-footer">
@@ -3203,6 +3211,18 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
     <div id="healthBody" style="margin-top:var(--space-3)"><div class="fh">読み込み中...</div></div>
   </div>
 
+  <!-- ===== 自走運用パネル（orchestrator / U3） ===== -->
+  <div class="page" id="p-autopilot">
+    <div class="page-head">
+      <div class="section-heading"><div class="page-title">自走運用</div></div>
+      <div class="fh" style="margin:0">各 vol で着手可能な工程（候補）・チャンネル健全性・quota 残・優先度を確認し、自走運用の ON/OFF を設定します。</div>
+    </div>
+    <div class="card" style="margin-bottom:var(--space-3);border-left:3px solid var(--accent-warning)">
+      <div class="fh" style="margin:0">⚠ <strong>autopilot を ON にしても設定が保存されるだけ</strong>で、実際の無人実行はまだ起動しません（安全のため定期実行は未配線）。本番の無人稼働は別途有効化が必要です。</div>
+    </div>
+    <div id="autopilotBody"><div class="fh">読み込み中...</div></div>
+  </div>
+
   <!-- ===== 詳細設定（旧マスター設定 / Sprint 5-D） ===== -->
   <div class="page" id="p-master">
     <div class="page-head">
@@ -3568,7 +3588,7 @@ const MODELS={
   claude:[{id:"cli-default",l:"claude CLI [既定モデル]"}],
   codex:[{id:"cli-default",l:"codex CLI [既定モデル]"}]
 };
-const PAGE_TITLES={dashboard:'ダッシュボード',videos:'コンテンツ',benchmark:'ベンチマーク分析',automation:'自動化',export:'書き出し',ledger:'実行履歴（台帳）',health:'接続ヘルス',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',notify:'Discord 通知',settings:'基本設定',master:'詳細設定'};
+const PAGE_TITLES={dashboard:'ダッシュボード',videos:'コンテンツ',benchmark:'ベンチマーク分析',automation:'自動化',export:'書き出し',ledger:'実行履歴（台帳）',health:'接続ヘルス',autopilot:'自走運用',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',notify:'Discord 通知',settings:'基本設定',master:'詳細設定'};
 
 // 動画詳細タブ定義（ワークフロー順）
 // stepKey: WORKFLOW_STEPS のキー（完了判定に使用）
@@ -3653,6 +3673,7 @@ function go(n, pushHistory=true){
   if(n==='youtube')loadYoutubeHistory();
   if(n==='ledger')loadLedger();
   if(n==='health')loadTokenHealth();
+  if(n==='autopilot')loadAutopilot();
   // ページ遷移でない場合は詳細を閉じる
   if(n!=='videos'&&_curVideo){_curVideo=null;document.getElementById('vDetail').style.display='none';document.getElementById('vList').style.display='block'}
   // History API
@@ -4639,6 +4660,92 @@ async function publishNow(videoName){
     toast(`✅ ${videoName} を public に公開しました`,'s');
     setTimeout(loadRunsActive, 1000);
   }catch(e){toast('接続エラー: '+e.message,'e')}
+}
+
+/* ==== 自走運用パネル（orchestrator / U3） ==== */
+let _apQuota={};
+
+async function loadAutopilot(){
+  const body=document.getElementById('autopilotBody');
+  if(!body) return;
+  body.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const [wsR,qsR]=await Promise.all([
+      fetch('/api/workers/status'),
+      fetch('/api/quota/status')
+    ]);
+    const ws=wsR.ok?await wsR.json():null;
+    const qs=qsR.ok?await qsR.json():null;
+    _apQuota={};
+    if(qs&&qs.channels){ qs.channels.forEach(c=>{ _apQuota[c.channel_id]=c; }); }
+    body.innerHTML=renderAutopilot(ws);
+  }catch(e){
+    body.innerHTML='<div class="fh">自走運用情報の取得に失敗しました（'+esc((e&&e.message)||e)+'）</div>';
+  }
+}
+
+function renderAutopilot(ws){
+  if(!ws) return '<div class="fh">取得失敗</div>';
+  const cands=ws.candidates||[];
+  const chs=ws.channels||[];
+  // 候補を channel_id ごとに集計
+  const byCh={};
+  cands.forEach(c=>{ (byCh[c.channel_id]=byCh[c.channel_id]||[]).push(c); });
+  let h=`<div class="ledger-stats">
+    <div class="lstat"><div class="lstat-num">${cands.length}</div><div class="lstat-lbl">着手可能候補</div></div>
+    <div class="lstat"><div class="lstat-num">${chs.length}</div><div class="lstat-lbl">チャンネル</div></div>
+    <div class="lstat"><div class="lstat-num">${chs.filter(c=>c.autopilot_enabled).length}</div><div class="lstat-lbl">自走ON</div></div>
+    <div class="lstat"><div class="lstat-num" style="color:var(--accent-danger)">${chs.filter(c=>c.tripped).length}</div><div class="lstat-lbl">停止中</div></div>
+    <div class="lstat"><div class="lstat-num">${esc(String(ws.breaker_threshold||3))}</div><div class="lstat-lbl">失敗閾値</div></div>
+    <button class="btn btn-ghost btn-sm" style="align-self:center;margin-left:auto" onclick="loadAutopilot()">🔄 更新</button>
+  </div>`;
+  if(!ws.scheduler_registered){
+    h+='<div class="ledger-hint" style="margin-bottom:var(--space-3)">ℹ️ 定期実行は未配線（<code>scheduler_registered: false</code>）。下の自走スイッチは設定保存のみで、実際の無人実行は行われません。</div>';
+  }
+  // チャンネル別カード
+  h+='<div class="card">';
+  if(!chs.length){ h+='<div class="fh">チャンネルがありません</div>'; }
+  chs.forEach(c=>{
+    const q=_apQuota[c.channel_id]||{};
+    const qtxt=(q.remaining!=null)?(`quota 残 ${esc(String(q.remaining))}/${esc(String(q.cap))}`):'quota -';
+    const tripBadge=c.tripped?` <span class="badge badge-danger">停止中(連続${esc(String(c.consecutive_failures))}失敗)</span>`:'';
+    const myCands=byCh[c.channel_id]||[];
+    const candChips=myCands.length
+      ? `<div class="ap-cand-grid">${myCands.map(x=>`<span class="ap-cand" title="vol.${esc(String(x.vol))} ${esc(x.domain)}">${esc(x.domain)}<br>v${esc(String(x.vol))}</span>`).join('')}</div>`
+      : '<div class="fh" style="margin-top:4px">着手可能な候補なし</div>';
+    h+=`<div class="ap-ch-row">
+      <span class="ap-ch-name">${esc(c.channel_name||c.channel_id)}${tripBadge}</span>
+      <label class="ap-toggle" title="設定保存のみ。実起動はしません">
+        <input type="checkbox" ${c.autopilot_enabled?'checked':''} onchange="toggleAutopilot('${esc(c.channel_id)}',this.checked)"> 自走運用
+      </label>
+      <span class="fh" style="margin:0">優先度</span>
+      <input type="number" class="fi ap-prio-input" value="${esc(String(c.priority!=null?c.priority:100))}" min="0" max="9999" onchange="saveChannelPriority('${esc(c.channel_id)}',this.value)">
+      <span class="fh" style="margin:0">${qtxt} ／ 候補 ${myCands.length}件</span>
+      <div style="flex-basis:100%">${candChips}</div>
+    </div>`;
+  });
+  h+='</div>';
+  return h;
+}
+
+async function toggleAutopilot(channelId, enabled){
+  try{
+    const r=await fetch('/api/workers/autopilot',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({channel_id:channelId,enabled:enabled})});
+    if(!r.ok){toast('保存失敗 (HTTP '+r.status+')','e');return;}
+    toast('自走運用設定を保存しました（'+(enabled?'ON':'OFF')+'・実起動はしません）','s');
+  }catch(e){toast('保存失敗: '+((e&&e.message)||e),'e');}
+}
+
+async function saveChannelPriority(channelId, value){
+  const p=parseInt(value,10);
+  if(isNaN(p)){toast('優先度は数値で','e');return;}
+  try{
+    const r=await fetch('/api/config/priority',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({channel_id:channelId,priority:p})});
+    if(!r.ok){toast('優先度の保存失敗 (HTTP '+r.status+')','e');return;}
+    toast('優先度を保存しました ('+p+')','s');
+  }catch(e){toast('優先度の保存失敗: '+((e&&e.message)||e),'e');}
 }
 
 /* ==== 接続ヘルス（token health / U2） ==== */
