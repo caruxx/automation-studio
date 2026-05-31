@@ -260,6 +260,11 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .ledger-hint{font-size:11px;color:var(--text-tertiary);margin-top:3px}
 .ledger-hint code{background:rgba(127,127,127,.15);padding:1px 5px;border-radius:4px}
 .ledger-sum{font-size:11px;color:var(--text-tertiary);margin-top:3px;max-width:360px;white-space:normal}
+/* U2 接続ヘルス（token health）ビュー */
+.health-hero{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3);background:var(--surface-2,rgba(127,127,127,.08));border-radius:var(--radius-md);margin-bottom:var(--space-3)}
+.health-hero-icon{font-size:28px;line-height:1}
+.health-hero-title{font-size:var(--text-lg);font-weight:var(--font-semibold)}
+.health-warn-row{display:flex;align-items:center;gap:var(--space-2);padding:4px 0;flex-wrap:wrap}
 
 /* ===== Stat ===== */
 .stat{background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-lg);padding:var(--space-4);overflow:hidden;min-width:0}
@@ -1324,6 +1329,7 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
     <button class="nav-btn" data-p="automation" onclick="go('automation')"><span class="nav-label">自動化</span></button>
     <button class="nav-btn" data-p="export" onclick="go('export')"><span class="nav-label">書き出し</span></button>
     <button class="nav-btn" data-p="ledger" onclick="go('ledger')"><span class="nav-label">実行履歴</span></button>
+    <button class="nav-btn" data-p="health" onclick="go('health')"><span class="nav-label">接続ヘルス</span></button>
   </nav>
 
   <div class="sidebar-footer">
@@ -3188,6 +3194,15 @@ html[data-theme="light"] .code-step-cmd,html[data-theme="sepia"] .code-step-cmd{
     <div id="ledgerBody" style="margin-top:var(--space-3)"><div class="fh">読み込み中...</div></div>
   </div>
 
+  <!-- ===== 接続ヘルス（token health / U2） ===== -->
+  <div class="page" id="p-health">
+    <div class="page-head">
+      <div class="section-heading"><div class="page-title">接続ヘルス</div></div>
+      <div class="fh" style="margin:0">YouTube OAuth トークンと SUNO/Flow ブラウザ Cookie の期限を点検します。失効すると自動アップロード・楽曲生成が止まります。</div>
+    </div>
+    <div id="healthBody" style="margin-top:var(--space-3)"><div class="fh">読み込み中...</div></div>
+  </div>
+
   <!-- ===== 詳細設定（旧マスター設定 / Sprint 5-D） ===== -->
   <div class="page" id="p-master">
     <div class="page-head">
@@ -3553,7 +3568,7 @@ const MODELS={
   claude:[{id:"cli-default",l:"claude CLI [既定モデル]"}],
   codex:[{id:"cli-default",l:"codex CLI [既定モデル]"}]
 };
-const PAGE_TITLES={dashboard:'ダッシュボード',videos:'コンテンツ',benchmark:'ベンチマーク分析',automation:'自動化',export:'書き出し',ledger:'実行履歴（台帳）',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',notify:'Discord 通知',settings:'基本設定',master:'詳細設定'};
+const PAGE_TITLES={dashboard:'ダッシュボード',videos:'コンテンツ',benchmark:'ベンチマーク分析',automation:'自動化',export:'書き出し',ledger:'実行履歴（台帳）',health:'接続ヘルス',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',notify:'Discord 通知',settings:'基本設定',master:'詳細設定'};
 
 // 動画詳細タブ定義（ワークフロー順）
 // stepKey: WORKFLOW_STEPS のキー（完了判定に使用）
@@ -3637,6 +3652,7 @@ function go(n, pushHistory=true){
   if(n==='photoshop'){loadPsVideoSelect();checkPhotoshop();}
   if(n==='youtube')loadYoutubeHistory();
   if(n==='ledger')loadLedger();
+  if(n==='health')loadTokenHealth();
   // ページ遷移でない場合は詳細を閉じる
   if(n!=='videos'&&_curVideo){_curVideo=null;document.getElementById('vDetail').style.display='none';document.getElementById('vList').style.display='block'}
   // History API
@@ -4623,6 +4639,69 @@ async function publishNow(videoName){
     toast(`✅ ${videoName} を public に公開しました`,'s');
     setTimeout(loadRunsActive, 1000);
   }catch(e){toast('接続エラー: '+e.message,'e')}
+}
+
+/* ==== 接続ヘルス（token health / U2） ==== */
+const _HEALTH_BADGE={ok:'badge-success',warn:'badge-warning',expired:'badge-danger',missing:'badge-danger',no_refresh:'badge-warning'};
+const _HEALTH_OVERALL={ok:{t:'正常',c:'var(--accent-success)',i:'🟢'},warn:{t:'要注意',c:'var(--accent-warning)',i:'🟡'},expired:{t:'要対応',c:'var(--accent-danger)',i:'🔴'}};
+
+async function loadTokenHealth(){
+  const body=document.getElementById('healthBody');
+  if(!body) return;
+  body.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const r=await fetch('/api/token-health');
+    if(!r.ok){body.innerHTML='<div class="fh">取得失敗 (HTTP '+r.status+')</div>';return;}
+    const d=await r.json();
+    body.innerHTML=renderHealth(d);
+    updateHealthNavDot(d.overall);
+  }catch(e){
+    body.innerHTML='<div class="fh">接続ヘルスの取得に失敗しました（'+esc((e&&e.message)||e)+'）</div>';
+  }
+}
+
+function _healthBadge(st){
+  const cls=_HEALTH_BADGE[st]||'badge-neutral';
+  return `<span class="badge ${cls}">${esc(st||'?')}</span>`;
+}
+
+function renderHealth(d){
+  const ov=_HEALTH_OVERALL[d.overall]||_HEALTH_OVERALL.ok;
+  const checked=String(d.checked_at||'').replace('T',' ').replace(/(\.\d+)?Z?$/,'');
+  let h=`<div class="health-hero" style="border-left:4px solid ${ov.c}">
+    <span class="health-hero-icon">${ov.i}</span>
+    <div><div class="health-hero-title" style="color:${ov.c}">接続ヘルス: ${ov.t}</div>
+    <div class="fh" style="margin:0">要対応 ${esc(String((d.warnings||[]).length))} 件 ／ 点検 ${esc(checked)}</div></div>
+    <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="loadTokenHealth()">🔄 再点検</button>
+  </div>`;
+  const w=d.warnings||[];
+  if(w.length){
+    h+='<div class="card" style="margin-bottom:var(--space-3);border-left:3px solid var(--accent-danger)"><div class="sec-title" style="margin:0 0 var(--space-2)">⚠ 要対応</div>';
+    w.forEach(x=>{ h+=`<div class="health-warn-row">${_healthBadge(x.status)} <strong>${esc(x.channel_name||x.kind||'')}</strong> <span class="fh">${esc(x.message||'')}</span></div>`; });
+    h+='<div class="ledger-hint" style="margin-top:var(--space-2)">YouTube 再認証: <code>python3 app_youtube.py --auth-only</code> ／ SUNO・Flow は各サービスへブラウザで手動ログイン</div></div>';
+  }
+  const ch=d.channels||[];
+  let rows='';
+  ch.forEach(c=>{
+    const dl=(c.days_left!=null)?(esc(String(c.days_left))+'日'):'-';
+    rows+=`<tr><td>${esc(c.channel_name||c.channel_id||'-')}</td><td>${_healthBadge(c.status)}</td><td>${dl}</td><td class="ledger-sum">${esc(c.message||'')}</td></tr>`;
+  });
+  h+=`<div class="card" style="margin-bottom:var(--space-3)"><div class="sec-title" style="margin:0 0 var(--space-2)">YouTube OAuth トークン（チャンネル別）</div>
+    <div class="ledger-table-wrap"><table class="ledger-table"><thead><tr><th>チャンネル</th><th>状態</th><th>残</th><th>詳細</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="fh">チャンネルなし</td></tr>'}</tbody></table></div></div>`;
+  const pw=d.playwright||{};
+  const pwdl=(pw.days_left!=null)?('（残 '+esc(String(pw.days_left))+'日）'):'';
+  h+=`<div class="card"><div class="sec-title" style="margin:0 0 var(--space-2)">SUNO / Flow ブラウザ Cookie</div>
+    <div class="health-warn-row">${_healthBadge(pw.status)} <span class="fh">${esc(pw.message||'')} ${pwdl}</span></div></div>`;
+  return h;
+}
+
+function updateHealthNavDot(overall){
+  const btn=document.querySelector('.nav-btn[data-p="health"]');
+  if(!btn) return;
+  let dot=btn.querySelector('.nav-health-dot');
+  if(!dot){ dot=document.createElement('span'); dot.className='nav-health-dot'; btn.appendChild(dot); }
+  const col=overall==='expired'?'var(--accent-danger)':overall==='warn'?'var(--accent-warning)':'var(--accent-success)';
+  dot.style.cssText='display:inline-block;width:8px;height:8px;border-radius:50%;margin-left:6px;vertical-align:middle;background:'+col;
 }
 
 /* ==== 実行履歴（台帳 runs.db / U1） ==== */
