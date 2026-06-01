@@ -39,6 +39,8 @@
 
 ### 参照画像の優先順位（step_bgimage 実装）
 
+> ⚠ **前提ゲート**: `persona` が空のときは **生成を一切行わず non-fatal で return True**（codex を呼ばない）。背景画像を作るには per-channel の `persona` 設定が必須。
+
 1. **`reference_image_dir`**（per-channel UI 設定で指定したフォルダ。最優先）
    - 設定タブ → 「参照画像フォルダ（背景画像生成）」で指定
    - 指定フォルダ内の `.jpg/.jpeg/.png/.webp` をランダムシャッフル → N 枚採用
@@ -46,9 +48,12 @@
 3. **rival_channels プール**（per-channel config の `rival_channels` URL から `UC...` 抽出 → benchmark/thumbs 配下を全部集めてシャッフル）
 4. **どれも無し** → 参照無しでプロンプトのみで生成（warn のみ。non-fatal）
 
+> ⚠ **プロンプトの実態**（誤解しやすい点）: プロンプトは「ベンチマーク画像から作る」のではなく、**`persona` と `channel_name` を埋め込んだ半固定の英語テンプレ**。固定のネガティブ列挙（`no on-screen text, no logos, no human faces, no pottery, no vases, no urns, no planters, no still life, no decorative ornaments`）と「参照画像の色/光/ムードは統合してよいが構図はオリジナル・要素のコピー禁止（do not copy any element verbatim）」を含む。**ベンチマーク画像は `--reference-image` で別途渡され、生成側（gpt-image-2 edits）が色/光/ムードのみ寄せる**。プロンプト本文に参照画像パスは含まれない。
+
 ### 出力
 - `<vol_folder>/vol{N}.png` — gpt-image-2 で生成された 1 枚（既定 16:9 / 高品質）
-- 既存の `vol{N}.png` または `vol{N}.jpg` があれば **既定でスキップ**（再生成は `APP_BGIMAGE_FORCE=1`）
+- `<vol_folder>/vol{N}_source.jpg` — 生成成功後、png を `sips` で JPEG 変換した**副生成物**（PSD 合成のフォールバック用＝PLAY LIST 焼き付き無しの素 AI 画像コピー）。既存があれば再変換しない。
+- 既存の `vol{N}.png` / `vol{N}.jpg` / `vol{N}_source.jpg` のいずれかがあれば **既定でスキップ**（再生成は `APP_BGIMAGE_FORCE=1`）。⚠ `source.jpg` だけ残っている状態でもスキップ対象。
 
 ## 環境変数
 
@@ -159,9 +164,20 @@ python3 codex_imagegen.py \
   --reference-image <ref1> --reference-image <ref2> --reference-image <ref3>
 ```
 
-- `--reference-image` を複数渡せる（Codex 側で `input_image` として処理）
+- `--reference-image` を複数渡せる。`--model` 未指定＝既定 `gpt-image-2`、`--size` 未指定＝既定 `1536x1024`(16:9)。
 - プロンプト末尾の `::vol{N}.png` は出力ファイル名指定（codex_imagegen 側のコンベンション）
 - `--n 1` で 1 枚のみ生成
+
+### 生成バックエンドの分岐（codex_imagegen.py 内部・誤解しやすい点）
+`backend=auto`（既定）で、**`OPENAI_API_KEY` の有無**により経路が変わる：
+
+| 条件 | 経路 |
+|------|------|
+| `OPENAI_API_KEY` あり ＋ 参照画像あり | **OpenAI Image API `/v1/images/edits`**（multipart で `image[]` 送信、`input_fidelity=high`）|
+| `OPENAI_API_KEY` あり ＋ 参照画像なし | OpenAI Image API `/v1/images/generations`（JSON POST）|
+| `OPENAI_API_KEY` なし | **Codex CLI フォールバック**（`codex exec` に「参照画像を分析して再構成せよ」の指示文を渡す）|
+
+> ⚠ つまり既定経路は「Codex で処理」ではなく **OpenAI Image API（gpt-image-2）**。`--reference-image` は API の `image[]` として送られる。Codex CLI は API キー未設定時のフォールバックのみ。
 
 参考: [Python/codex_imagegen.py](../Python/codex_imagegen.py)
 
