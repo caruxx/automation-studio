@@ -892,17 +892,20 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
         else:
             print("  ⚠ reference_image_dir / Picked / rival thumbs どれも無し。参照無しで生成")
 
-    prompt = (
-        f"Generate a horizontal 16:9 cinematic background image for a long-form BGM YouTube video"
-        f"{' on the channel ' + channel_name if channel_name else ''}. "
-        f"Channel concept: {persona} "
-        f"Style: atmospheric, calm, suitable for looping as the background of a multi-hour music video. "
-        f"Composition: spacious, no on-screen text, no logos, no readable signage, no human faces, "
-        f"no pottery, no vases, no urns, no planters, no still life objects, no decorative ornaments. "
-        f"If reference images are provided, combine their color palette, lighting and overall mood "
-        f"while making the composition original — do not copy any element verbatim."
-        f"\n::vol{vol}.png"
-    )
+    # P: 背景プロンプトを動的構築（ベンチマーク concept/visual_direction 由来）。
+    # APP_BGIMAGE_DYNAMIC_PROMPT=0 で旧固定テンプレに即ロールバック可能（移行安全弁）。
+    use_dynamic = os.environ.get("APP_BGIMAGE_DYNAMIC_PROMPT", "1").strip().lower() not in ("0", "false", "no")
+    if use_dynamic:
+        try:
+            base_prompt = _build_bgimage_prompt(folder)
+            print("  📝 背景プロンプト: ベンチマーク分析から動的構築")
+        except Exception as e:
+            print(f"  ⚠ 動的プロンプト構築失敗 → 固定テンプレにフォールバック: {e}")
+            base_prompt = _legacy_bgimage_prompt(persona, channel_name)
+    else:
+        base_prompt = _legacy_bgimage_prompt(persona, channel_name)
+    # ::vol{N}.png は最終行に独立して置く（codex_imagegen のファイル名コンベンション）
+    prompt = f"{base_prompt}\n::vol{vol}.png"
 
     cmd = [
         sys.executable, str(BASE / "codex_imagegen.py"),
@@ -1545,6 +1548,134 @@ def _build_thumbnail_prompt(folder: Path) -> str:
         return (
             f"{body}. Cinematic photorealistic 16:9 thumbnail, "
             "moody lighting, shallow depth of field, no text overlay, no logo, no watermark."
+        )
+
+
+# 背景画像用の禁止語（旧固定テンプレ L900-901 を逐語温存。avoid 先頭に二重注入する）
+_BGIMAGE_AVOID = (
+    "on-screen text, logos, readable signage, human faces, pottery, vases, urns, "
+    "planters, still life objects, decorative ornaments"
+)
+# 背景画像用ディレクティブ（ループ背景・テキスト無し・被写体控えめ・参照は色/光/雰囲気のみ）
+_BGIMAGE_DIRECTIVE = (
+    "Style: atmospheric, calm, suitable for looping as the background of a multi-hour BGM video. "
+    "Composition: spacious, ample negative space, subject understated, no readable signage. "
+    "Use any reference images only for color palette, lighting and mood; "
+    "keep the composition original and do not copy any element verbatim."
+)
+
+
+def _legacy_bgimage_prompt(persona: str, channel_name: str) -> str:
+    """旧・固定テンプレ背景プロンプト（APP_BGIMAGE_DYNAMIC_PROMPT=0 と動的失敗時のフォールバック）。
+    現行 step_bgimage の文言を逐語温存。末尾の ::vol{N}.png は呼び出し側で付与する。"""
+    return (
+        f"Generate a horizontal 16:9 cinematic background image for a long-form BGM YouTube video"
+        f"{' on the channel ' + channel_name if channel_name else ''}. "
+        f"Channel concept: {persona} "
+        f"Style: atmospheric, calm, suitable for looping as the background of a multi-hour music video. "
+        f"Composition: spacious, no on-screen text, no logos, no readable signage, no human faces, "
+        f"no pottery, no vases, no urns, no planters, no still life objects, no decorative ornaments. "
+        f"If reference images are provided, combine their color palette, lighting and overall mood "
+        f"while making the composition original — do not copy any element verbatim."
+    )
+
+
+def _build_bgimage_prompt(folder: Path) -> str:
+    """背景画像 vol{N}.png 用の動的プロンプトを構築（ベンチマーク concept/visual_direction 由来）。
+
+    収集ロジック（concept.txt → benchmark concept aggregate → benchmark thumbnail aggregate →
+    competitor visual_direction → persona fallback）は _build_thumbnail_prompt と同一。
+    背景固有の差分: include_text_overlay=False（テキスト無し）、背景禁止語を avoid 先頭に二重注入、
+    ループ背景ディレクティブを body 末尾に連結。サムネと違い被写体は控えめ。
+    末尾の ::vol{N}.png は呼び出し側で付与する。
+    """
+    parts = []
+    analysis = {}
+    thumbnail_axis = {}
+    # 動画固有のコンセプト（最優先）
+    concept_file = folder / "concept.txt"
+    if concept_file.exists():
+        try:
+            c = concept_file.read_text(encoding="utf-8").strip()
+            if c:
+                parts.append(c)
+        except Exception:
+            pass
+    # benchmark concept aggregate
+    try:
+        sys.path.insert(0, str(BASE))
+        import app_benchmark_concept as _bc
+        agg = _bc.get_aggregate()
+        rec = agg.get("recommendation_for_self") or {}
+        vibe = (rec.get("vibe_one_line") or "").strip()
+        if vibe:
+            parts.append(vibe)
+    except Exception:
+        pass
+    # benchmark thumbnail aggregate
+    try:
+        thumb_path = CONFIG_DIR / "benchmark" / "thumbnail.json"
+        if thumb_path.exists():
+            thumb_cache = json.loads(thumb_path.read_text(encoding="utf-8"))
+            thumbnail_axis = ((thumb_cache.get("analysis") or {}).get("aggregate") or {})
+            rec = thumbnail_axis.get("recommendation_for_self") or {}
+            vibe = (rec.get("vibe_one_line") or "").strip()
+            if vibe:
+                parts.append(vibe)
+    except Exception:
+        thumbnail_axis = {}
+    # benchmark visual_direction (competitor cache)
+    visual_hint = ""
+    try:
+        cache_path = CONFIG_DIR / "competitor_analysis_cache.json"
+        if cache_path.exists():
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            analysis = (cache or {}).get("analysis") or {}
+            vd = analysis.get("visual_direction") or {}
+            tod = (vd.get("time_of_day") or "").strip()
+            atm = (vd.get("atmosphere") or "").strip()
+            comp = (vd.get("composition") or "").strip()
+            palette = vd.get("color_palette") or []
+            avoid = vd.get("avoid") or []
+            bits = []
+            if tod: bits.append(tod)
+            if atm: bits.append(atm)
+            if comp: bits.append(comp)
+            if palette: bits.append("palette: " + ", ".join(palette[:3]))
+            # ⚠ 背景画像は被写体を強調しない → サムネと違い subjects は載せない
+            if bits:
+                visual_hint = " | ".join(bits)
+            if avoid:
+                visual_hint += f" | avoid: {', '.join(avoid[:3])}"
+    except Exception:
+        pass
+    if visual_hint:
+        parts.append(visual_hint)
+    # ペルソナ fallback
+    cfg = _load_dashboard_config()
+    persona = (cfg.get("persona") or "").strip()
+    if not parts and persona:
+        parts.append(persona[:200])
+    body = ". ".join(parts) if parts else "cinematic atmospheric scene for a BGM YouTube channel"
+    # 背景固有ディレクティブを body 末尾に連結（ループ背景・テキスト無し・コピー禁止）
+    body = f"{body}. {_BGIMAGE_DIRECTIVE}"
+    try:
+        from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
+        visual = normalize_visual_direction(analysis, thumbnail_axis)
+        # 背景禁止語を avoid の先頭に二重注入（_clean_text の 220 字切りで消えないよう先頭固定）
+        existing_avoid = (visual.get("avoid") or "").strip()
+        visual["avoid"] = (_BGIMAGE_AVOID + ("; " + existing_avoid if existing_avoid else ""))
+        return build_gpt_image2_prompt(
+            concept=body,
+            visual_direction=visual,
+            for_flow=False,
+            include_text_overlay=False,
+        )
+    except Exception:
+        # ビルダー import 失敗時は body + 背景禁止語 + 16:9/no text の固定文を返す
+        return (
+            f"{body}. Cinematic photorealistic 16:9 background, looping-friendly, "
+            f"no text overlay, no logo, no watermark. Avoid: {_BGIMAGE_AVOID}."
         )
 
 
