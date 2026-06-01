@@ -9,10 +9,17 @@
 - **Premiere JSX のフォールバック規約に従う**: JSX は `selected_images.json` が無い場合 `vol{N}.png` / `vol{N}-1.png`
   を背景画像として読む（[app-image-select.md](./app-image-select.md) 参照）。STEP 3 ではこの **フォールバック先**
   を必ず満たすように 1 枚生成し、ユーザーが画像を選ばなくても破綻しないようにする。
-- **チャンネルらしさを担保**: per-channel `persona` を embed したプロンプトで生成 → 同チャンネルの 1 巻ごとに
-  ばらつかず、ブランドガイドを保つ。
-- **ベンチマークの色温度・雰囲気を継承**: 競合チャンネルのサムネが集まる `~/.config/{app_id}/benchmark/thumbs/`
-  からランダム N 枚を `--reference-image` で渡す → 色設計・ライティングが市場に追従する。
+- **ベンチマーク分析から動的にプロンプト構築**（commit ad0c82d 以降）: サムネ（`step_thumbnail`）と同じく、
+  concept.txt → benchmark concept aggregate → benchmark thumbnail aggregate → competitor `visual_direction`
+  → persona の 5 段を集約し、`app_image_prompt.build_gpt_image2_prompt()` で `Subject/Background/Lighting/
+  Style/Camera/Constraints` のラベル付きプロンプトを生成。市場（ベンチ）の時間帯・雰囲気・配色・構図を継承する。
+  - 背景固有差分: `include_text_overlay=False`（テキスト無し）、被写体は控えめ（subjects を載せない）、
+    ループ背景ディレクティブを連結、背景禁止語を `avoid` 先頭に二重注入。
+  - `APP_BGIMAGE_DYNAMIC_PROMPT=0` で旧固定テンプレ（persona embed のみ）に即ロールバック可能（移行安全弁）。
+    動的構築に失敗した場合も自動で旧テンプレにフォールバック。
+- **ベンチマーク画像を参照画像として併用**: 競合サムネが集まる `~/.config/{app_id}/benchmark/thumbs/`
+  からランダム N 枚を `--reference-image` で渡す → 生成側（gpt-image-2 edits）が色設計・ライティングを寄せる。
+  動的プロンプト（テキスト指示）と参照画像（視覚指示）の両輪で市場に追従する。
 
 ## 関連スキルとの位置づけ
 
@@ -48,7 +55,10 @@
 3. **rival_channels プール**（per-channel config の `rival_channels` URL から `UC...` 抽出 → benchmark/thumbs 配下を全部集めてシャッフル）
 4. **どれも無し** → 参照無しでプロンプトのみで生成（warn のみ。non-fatal）
 
-> ⚠ **プロンプトの実態**（誤解しやすい点）: プロンプトは「ベンチマーク画像から作る」のではなく、**`persona` と `channel_name` を埋め込んだ半固定の英語テンプレ**。固定のネガティブ列挙（`no on-screen text, no logos, no human faces, no pottery, no vases, no urns, no planters, no still life, no decorative ornaments`）と「参照画像の色/光/ムードは統合してよいが構図はオリジナル・要素のコピー禁止（do not copy any element verbatim）」を含む。**ベンチマーク画像は `--reference-image` で別途渡され、生成側（gpt-image-2 edits）が色/光/ムードのみ寄せる**。プロンプト本文に参照画像パスは含まれない。
+> **プロンプトの作り方**（commit ad0c82d 以降＝動的構築）: `_build_bgimage_prompt(folder)` が **ベンチマーク分析から動的にプロンプトを構築**する。収集5段（concept.txt → benchmark concept aggregate → benchmark thumbnail aggregate → competitor `visual_direction`〔time_of_day/atmosphere/composition/color_palette〕→ persona fallback）→ `normalize_visual_direction()` + `build_gpt_image2_prompt(concept=body, visual_direction=visual, include_text_overlay=False)`。
+> - 背景固有差分: **被写体を載せない**（visual_direction の `subjects` は無視。背景は被写体控えめ）／ループ背景ディレクティブ（`Style: atmospheric, calm, suitable for looping … Composition: spacious, ample negative space, subject understated`）を body 末尾連結／**背景禁止語**（`on-screen text, logos, readable signage, human faces, pottery, vases, urns, planters, still life objects, decorative ornaments`）を `avoid` の**先頭**に二重注入（`_clean_text` の 220 字切りで消えないよう先頭固定）／「参照画像は色/光/ムードのみ流用・要素コピー禁止（do not copy any element verbatim）」を維持。
+> - **ベンチマーク画像は `--reference-image` で別途渡され**、生成側（gpt-image-2 edits）が色/光/ムードを寄せる。プロンプト本文に参照画像パスは含まれない。
+> - 旧挙動: `APP_BGIMAGE_DYNAMIC_PROMPT=0` で `_legacy_bgimage_prompt`（persona+channel名 embed の固定テンプレ）に戻せる。動的構築が例外時も自動フォールバック。
 
 ### 出力
 - `<vol_folder>/vol{N}.png` — gpt-image-2 で生成された 1 枚（既定 16:9 / 高品質）
