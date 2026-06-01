@@ -274,6 +274,11 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .ap-prio-input{width:70px}
 /* U5: サイドバー ツール区切りラベル */
 .nav-section-label{font-size:10px;color:var(--text-tertiary);padding:10px 12px 3px;margin-top:6px;font-weight:600;letter-spacing:.04em;border-top:1px solid var(--border-default,rgba(127,127,127,.15))}
+/* 詳細設定: プロンプト個別折りたたみ */
+details.ms-prompt>summary::-webkit-details-marker{display:none}
+details.ms-prompt>summary::before{content:'▶ ';font-size:10px;color:var(--text-tertiary)}
+details.ms-prompt[open]>summary::before{content:'▼ '}
+details.ms-prompt>summary:hover{background:rgba(127,127,127,.06)}
 
 /* ===== Stat ===== */
 .stat{background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-lg);padding:var(--space-4);overflow:hidden;min-width:0}
@@ -3903,7 +3908,7 @@ function relocateBenchmarkCardsToBenchmarkPage(){
 
 function groupMasterCards(){
   _groupCardsByAttr('masterCards','data-master-group',[
-    {key:'prompts',    title:'プロンプト編集',       desc:'AI への指示文をカスタマイズ', open:true},
+    {key:'prompts',    title:'プロンプト編集',       desc:'AI への指示文をカスタマイズ'},
     {key:'generation', title:'生成パラメータ',       desc:'SUNO ／ Flow ／メタ生成の細部'},
     {key:'schedule',   title:'自動実行スケジュール', desc:'cron 風の定期実行'},
     {key:'ops',        title:'運用・バックアップ',   desc:'テーマ・リモートアクセス・バックアップ'},
@@ -13282,19 +13287,21 @@ async function loadMaster(){
       list.innerHTML=Object.entries(promptKeys).map(([k,desc])=>{
         const v=promptVals[k]||'';
         const isOverride=!!v;
-        return `<div style="margin-bottom:var(--space-4);padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-md);border-left:3px solid ${isOverride?'var(--accent-success)':'var(--border-default)'}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:var(--space-2);gap:var(--space-2)">
-            <div>
+        return `<details class="ms-prompt"${isOverride?' open':''} style="margin-bottom:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-md);border-left:3px solid ${isOverride?'var(--accent-success)':'var(--border-default)'}">
+          <summary class="ms-prompt-summary" style="display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);padding:var(--space-3);cursor:pointer;list-style:none">
+            <div style="min-width:0">
               <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(k)} ${isOverride?'<span class="badge badge-success" style="font-size:10px">上書き中</span>':'<span class="badge badge-neutral" style="font-size:10px">既定</span>'}</div>
-              <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px">${esc(desc)}</div>
+              <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(desc)}</div>
             </div>
-            <button class="btn btn-ghost btn-sm" onclick="resetMasterPrompt('${k}')" title="既定（ハードコード）に戻す">リセット</button>
+            <button class="btn btn-ghost btn-sm" onclick="event.preventDefault();event.stopPropagation();resetMasterPrompt('${k}')" title="既定（ハードコード）に戻す" style="flex-shrink:0">リセット</button>
+          </summary>
+          <div style="padding:0 var(--space-3) var(--space-3)">
+            <textarea class="ft" id="msPrompt_${k}" rows="6" style="font-family:var(--font-mono);font-size:var(--text-xs)" placeholder="（既定プロンプトを使用中。上書きする場合のみ入力）">${esc(v)}</textarea>
+            <div class="btns" style="margin:var(--space-2) 0 0">
+              <button class="btn btn-primary btn-sm" onclick="saveMasterPrompt('${k}')">保存</button>
+            </div>
           </div>
-          <textarea class="ft" id="msPrompt_${k}" rows="6" style="font-family:var(--font-mono);font-size:var(--text-xs)" placeholder="（既定プロンプトを使用中。上書きする場合のみ入力）">${esc(v)}</textarea>
-          <div class="btns" style="margin:var(--space-2) 0 0">
-            <button class="btn btn-primary btn-sm" onclick="saveMasterPrompt('${k}')">保存</button>
-          </div>
-        </div>`;
+        </details>`;
       }).join('');
     }
     // SUNO 詳細
