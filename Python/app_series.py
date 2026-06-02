@@ -187,23 +187,13 @@ Respond with a SINGLE JSON object (no markdown fences):
 }}
 """
 
-    cli_path = shutil.which(cli_cmd) or cli_cmd
     print(f"🎨 Claude CLI でシリーズ案 {count} 件を生成中...")
-    try:
-        proc = subprocess.run(
-            [cli_path, "-p", prompt],
-            capture_output=True, text=True, timeout=DEFAULT_TIMEOUT,
-        )
-    except FileNotFoundError:
-        raise RuntimeError(f"claude CLI が見つかりません: {cli_cmd}")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Claude CLI タイムアウト ({DEFAULT_TIMEOUT}s)")
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
+    from app_llm_runner import run_llm
+    out = run_llm(prompt, cli_cmd=cli_cmd, timeout=DEFAULT_TIMEOUT, label="series")
 
-    obj = _extract_json_object(proc.stdout)
+    obj = _extract_json_object(out)
     if not obj or "proposals" not in obj:
-        raise RuntimeError(f"JSON 抽出失敗: {proc.stdout[:300]}")
+        raise RuntimeError(f"JSON 抽出失敗: {out[:300]}")
 
     proposals = obj.get("proposals") or []
     # サニタイズ + slug の重複解消 + id 補完

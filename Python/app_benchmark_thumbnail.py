@@ -297,22 +297,9 @@ def _build_aggregate_prompt(per_channel_results: list[dict]) -> str:
 
 def _run_claude_vision(cli_cmd: str, prompt: str, image_paths: list[Path],
                        timeout: int = ANALYSIS_TIMEOUT) -> str:
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    add_dirs: list[str] = []
-    seen: set[str] = set()
-    for p in image_paths:
-        parent = str(Path(p).parent)
-        if parent and parent not in seen:
-            add_dirs.extend(["--add-dir", parent])
-            seen.add(parent)
-    args = [cli_path, "-p", prompt, "--allowedTools", "Read", *add_dirs]
-    try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Claude CLI タイムアウト ({timeout}s)")
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー (rc={proc.returncode}): {(proc.stderr or proc.stdout or '')[:300]}")
-    return proc.stdout or ""
+    # Claude→Codex フォールバック共通ランナー(Vision)に委譲（全機能のバックアップ回路）
+    from app_llm_runner import run_llm_vision
+    return run_llm_vision(prompt, image_paths, cli_cmd=cli_cmd, timeout=timeout, label="thumbnail-vision")
 
 
 def analyze_channels(channels: list[dict], cli_cmd: str = DEFAULT_CLI,
@@ -373,17 +360,10 @@ def analyze_channels(channels: list[dict], cli_cmd: str = DEFAULT_CLI,
     if summaries:
         try:
             agg_prompt = _build_aggregate_prompt(summaries)
-            # aggregate は画像不要 → add-dir なし
-            cli_path = shutil.which(cli_cmd) or cli_cmd
-            proc = subprocess.run(
-                [cli_path, "-p", agg_prompt],
-                capture_output=True, text=True, timeout=ANALYSIS_TIMEOUT,
-            )
-            if proc.returncode == 0:
-                aggregate = _extract_json(proc.stdout) or {}
-                print("  ✓ aggregate 分析完了")
-            else:
-                print(f"  ⚠ aggregate 失敗: {(proc.stderr or proc.stdout or '')[:200]}")
+            # aggregate は画像不要 → テキスト共通ランナー（Claude→Codex）
+            from app_llm_runner import run_llm
+            aggregate = _extract_json(run_llm(agg_prompt, cli_cmd=cli_cmd, timeout=ANALYSIS_TIMEOUT, label="thumb-aggregate")) or {}
+            print("  ✓ aggregate 分析完了")
         except Exception as e:
             print(f"  ⚠ aggregate 失敗: {e}")
 

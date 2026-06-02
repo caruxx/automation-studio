@@ -91,23 +91,12 @@ def _extract_json_object(text: str):
 # ─── Claude CLI で楽曲タイトル提案 ───────────────────────
 
 def _run_claude_titles(cli_cmd: str, prompt: str, allow_read: bool = False, timeout: int = 180):
-    """Claude CLI を呼んで {"titles":[...]} を取得する共通ヘルパー"""
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    args = [cli_path, "-p", prompt]
-    if allow_read:
-        args += ["--allowedTools", "Read"]
-    try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError:
-        raise RuntimeError(f"claude CLI が見つかりません: {cli_cmd}")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"claude CLI タイムアウト ({timeout}s)")
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude CLI エラー (rc={proc.returncode}): "
-                           f"{(proc.stderr or proc.stdout or '').strip()[:300]}")
-    obj = _extract_json_object(proc.stdout)
+    """Claude→Codex フォールバック共通ランナーで {"titles":[...]} を取得する共通ヘルパー"""
+    from app_llm_runner import run_llm
+    out = run_llm(prompt, cli_cmd=cli_cmd, timeout=timeout, allow_read=allow_read, label="track-titles")
+    obj = _extract_json_object(out)
     if not obj or "titles" not in obj:
-        raise RuntimeError(f"JSON 抽出失敗: {proc.stdout[:200]}")
+        raise RuntimeError(f"JSON 抽出失敗: {out[:200]}")
     titles = [str(t).strip() for t in obj.get("titles", []) if str(t).strip()]
     if not titles:
         raise RuntimeError("タイトルが空")

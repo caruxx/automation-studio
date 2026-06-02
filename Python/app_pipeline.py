@@ -406,17 +406,12 @@ Plan (JSON):
 
 Output a single JSON object (no markdown fences):
 {{"score": 7.5, "feedback": "1〜2 文の改善ポイント"}}"""
-    import shutil as _sh
-    cli_path = _sh.which(cli) or cli
+    from app_llm_runner import run_llm
     try:
-        proc = subprocess.run([cli_path, "-p", prompt],
-                              capture_output=True, text=True, timeout=60)
+        text = run_llm(prompt, cli_cmd=cli, timeout=60, label="plan-score")
     except Exception as e:
         print(f"    ⚠ scoring 失敗（中立判定）: {e}")
         return 5.0, ""
-    if proc.returncode != 0:
-        return 5.0, ""
-    text = proc.stdout or ""
     m = re.search(r"\{[^{}]*\"score\"[^{}]*\}", text, re.DOTALL)
     if not m:
         return 5.0, ""
@@ -1115,13 +1110,9 @@ def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: in
         "Output only the phrase, nothing else."
     )
     try:
-        proc = subprocess.run(
-            [cli, "--print", prompt],
-            capture_output=True, text=True, timeout=120,
-        )
-        if proc.returncode != 0:
-            return ""
-        for line in (proc.stdout or "").splitlines():
+        from app_llm_runner import run_llm
+        out = run_llm(prompt, cli_cmd=cli, timeout=120, label="thumb-phrase")
+        for line in out.splitlines():
             line = line.strip().strip('"').strip("'").rstrip(".,!?")
             if line:
                 return line

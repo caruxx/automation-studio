@@ -223,19 +223,9 @@ def _build_aggregate_prompt(per_channel_results: list[dict], self_persona: str =
 # ─── Claude CLI ────────────────────────────────────
 
 def _run_claude(cli_cmd: str, prompt: str, timeout: int = ANALYSIS_TIMEOUT) -> str:
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    try:
-        proc = subprocess.run(
-            [cli_path, "-p", prompt],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except FileNotFoundError:
-        raise RuntimeError(f"claude CLI が見つかりません: {cli_cmd}")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Claude CLI タイムアウト ({timeout}s)")
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー (rc={proc.returncode}): {(proc.stderr or proc.stdout or '')[:300]}")
-    return proc.stdout or ""
+    # Claude→Codex フォールバック共通ランナーに委譲（全機能のバックアップ回路）
+    from app_llm_runner import run_llm
+    return run_llm(prompt, cli_cmd=cli_cmd, timeout=timeout, label="title")
 
 
 # ─── 分析 ─────────────────────────────────────────

@@ -414,23 +414,12 @@ JSON 内の説明・分析・提案・理由はすべて自然な日本語で書
 """
 
     print("🧠 Claude CLI で競合分析中...")
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    try:
-        proc = subprocess.run(
-            [cli_path, "-p", prompt],
-            capture_output=True, text=True, timeout=300,
-        )
-    except FileNotFoundError:
-        raise RuntimeError(f"claude CLI が見つかりません: {cli_cmd}")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Claude CLI タイムアウト (300s)")
+    from app_llm_runner import run_llm
+    out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="competitor-analyze")
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
-
-    obj = _extract_json_object(proc.stdout)
+    obj = _extract_json_object(out)
     if not obj:
-        raise RuntimeError(f"JSON 抽出失敗: {proc.stdout[:300]}")
+        raise RuntimeError(f"JSON 抽出失敗: {out[:300]}")
 
     print("  ✓ 分析完了")
     return obj
@@ -560,17 +549,12 @@ Output ONLY the JSON object.
 """
 
     print("🎯 Claude CLI で最適化提案中...")
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    proc = subprocess.run(
-        [cli_path, "-p", prompt],
-        capture_output=True, text=True, timeout=300,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
+    from app_llm_runner import run_llm
+    out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="propose-with-analysis")
 
-    obj = _extract_json_object(proc.stdout)
+    obj = _extract_json_object(out)
     if not obj:
-        raise RuntimeError(f"JSON 抽出失敗: {proc.stdout[:300]}")
+        raise RuntimeError(f"JSON 抽出失敗: {out[:300]}")
 
     print("  ✓ 提案完了")
     return obj
@@ -671,23 +655,17 @@ JSON オブジェクトのみを出力してください。
         }
 
     print("🎵 Claude CLI で SUNO プロンプト提案中...")
-    cli_path = shutil.which(cli_cmd) or cli_cmd
+    # Claude → Codex（共通ランナー）→ ローカル生成 の3段フォールバック
+    from app_llm_runner import run_llm, LLMError
     try:
-        proc = subprocess.run(
-            [cli_path, "-p", prompt],
-            capture_output=True, text=True, timeout=300,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"  ⚠ Claude CLI 失敗。ローカル生成にフォールバック: {e}")
+        out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="suno-prompt")
+    except LLMError as e:
+        print(f"  ⚠ Claude/Codex 失敗。ローカル生成にフォールバック: {e}")
         return _local_suno_prompt(str(e))
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:300]
-        print(f"  ⚠ Claude CLI エラー。ローカル生成にフォールバック: {err}")
-        return _local_suno_prompt(err)
 
-    obj = _extract_json_object(proc.stdout)
+    obj = _extract_json_object(out)
     if not obj or not obj.get("prompt"):
-        reason = f"JSON 抽出失敗: {proc.stdout[:300]}"
+        reason = f"JSON 抽出失敗: {out[:300]}"
         print(f"  ⚠ {reason}。ローカル生成にフォールバック")
         return _local_suno_prompt(reason)
 
@@ -769,17 +747,12 @@ Output ONLY the JSON object.
 """
 
     print("🖼 Claude CLI で Flow プロンプト提案中...")
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    proc = subprocess.run(
-        [cli_path, "-p", prompt],
-        capture_output=True, text=True, timeout=300,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
+    from app_llm_runner import run_llm
+    out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="flow-prompt")
 
-    obj = _extract_json_object(proc.stdout)
+    obj = _extract_json_object(out)
     if not obj or not obj.get("prompt"):
-        raise RuntimeError(f"JSON 抽出失敗: {proc.stdout[:300]}")
+        raise RuntimeError(f"JSON 抽出失敗: {out[:300]}")
     if not obj.get("gpt_image2_prompt") and five_part_prompt:
         obj["gpt_image2_prompt"] = five_part_prompt
 
@@ -891,17 +864,12 @@ Output ONLY the JSON object.
 """
 
     print(f"🧬 Claude CLI で {len(profiles)} プロファイルを融合中...")
-    cli_path = _sh.which(cli_cmd) or cli_cmd
-    proc = _sp.run(
-        [cli_path, "-p", prompt],
-        capture_output=True, text=True, timeout=420,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
+    from app_llm_runner import run_llm
+    out = run_llm(prompt, cli_cmd=cli_cmd, timeout=420, label="fuse")
 
-    obj = _extract_json_object(proc.stdout)
+    obj = _extract_json_object(out)
     if not obj or not obj.get("suno_prompt"):
-        raise RuntimeError(f"JSON 抽出失敗: {proc.stdout[:400]}")
+        raise RuntimeError(f"JSON 抽出失敗: {out[:400]}")
 
     print("  ✓ 融合完了")
     return obj
@@ -1005,36 +973,23 @@ JSON オブジェクトのみを出力してください。余計な説明文・
 """
 
     print(f"🖼 Claude Vision で {len(local_paths)} 枚のサムネ要素分析中...")
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    # 画像ファイルを読めるように親ディレクトリを --add-dir で許可
-    add_dirs = []
-    seen_dirs = set()
-    for p in local_paths:
-        parent = str(p.parent)
-        if parent not in seen_dirs:
-            add_dirs.extend(["--add-dir", parent])
-            seen_dirs.add(parent)
+    # Vision 共通ランナーに委譲（Claude→Codex フォールバック・画像は -i / --add-dir で渡す）
+    from app_llm_runner import run_llm_vision, LLMError
+    try:
+        out = run_llm_vision(prompt, local_paths, cli_cmd=cli_cmd, timeout=600, label="thumb-elements")
+    finally:
+        # tmpクリーンアップ（成否に関わらず）
+        if tmp_dir:
+            try:
+                for f in downloaded:
+                    f.unlink(missing_ok=True)
+                tmp_dir.rmdir()
+            except Exception:
+                pass
 
-    proc = subprocess.run(
-        [cli_path, "-p", prompt, *add_dirs],
-        capture_output=True, text=True, timeout=600,
-    )
-
-    # tmpクリーンアップ
-    if tmp_dir:
-        try:
-            for f in downloaded:
-                f.unlink(missing_ok=True)
-            tmp_dir.rmdir()
-        except Exception:
-            pass
-
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
-
-    obj = _extract_json_object(proc.stdout)
+    obj = _extract_json_object(out)
     if not obj or not obj.get("element_extraction"):
-        raise RuntimeError(f"JSON 抽出失敗: {proc.stdout[:300]}")
+        raise RuntimeError(f"JSON 抽出失敗: {out[:300]}")
 
     print(f"  ✓ サムネ要素抽出完了（{len(local_paths)} 枚）")
     return obj
@@ -1590,18 +1545,14 @@ def build_channel_profile(channel_meta: dict, comments_by_video: dict = None,
 IMPORTANT: The "adaptation_hints_for_orzz" field is for translating what makes this channel work into orzz.'s own aesthetic. DO NOT suggest copying or reproducing the channel's exact assets. Focus on extractable *principles* and *viewer appeal mechanisms*. All values MUST be in English.
 """
 
+    # Claude→Codex 共通ランナー。両方失敗時は {"error":...} で握る（プロファイル単位の劣化）
+    from app_llm_runner import run_llm
     try:
-        proc = subprocess.run(
-            [cli_cmd, "-p", prompt],
-            capture_output=True, text=True, timeout=300,
-        )
-        out = proc.stdout.strip()
+        out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="channel-profile").strip()
         parsed = _extract_json_object(out)
         if not parsed:
             return {"error": "JSON解析失敗", "raw": out[:500]}
         return parsed
-    except subprocess.TimeoutExpired:
-        return {"error": "Claude タイムアウト"}
     except Exception as e:
         return {"error": str(e)}
 

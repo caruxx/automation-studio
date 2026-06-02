@@ -70,27 +70,12 @@ STRICT RULES:
 Output ONLY the phrase. No quotes. No explanation. No prefix/suffix. Just the words.
 Example valid output: BLUE HORIZON"""
 
-    cmd = [
-        claude_cli, "-p", prompt,
-        "--add-dir", str(img.parent),
-    ]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"Claude CLI timeout ({timeout}s)") from e
-    except FileNotFoundError as e:
-        raise RuntimeError(f"Claude CLI 実行ファイルが見つかりません: {claude_cli}") from e
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Claude CLI failed (exit {result.returncode}): {result.stderr.strip()[:400]}"
-        )
-
-    raw = result.stdout.strip()
+    # Claude→Codex フォールバック共通ランナー(Vision)に委譲（全機能のバックアップ回路）。
+    # 画像は Claude へ --add-dir、Codex へ -i で渡る。
+    from app_llm_runner import run_llm_vision
+    raw = run_llm_vision(prompt, [str(img)], cli_cmd=claude_cli, timeout=timeout, label="scene-text").strip()
     if not raw:
-        raise RuntimeError("Claude CLI が空文字を返しました")
+        raise RuntimeError("LLM が空文字を返しました")
 
     # 最初の非空行から英大文字 + スペースだけを抽出
     for line in raw.split("\n"):

@@ -289,36 +289,13 @@ def call_chatgpt(api_key, model, prompt):
 
 
 def call_claude_cli(cli_cmd, prompt, timeout=180):
-    """claude CLI をターミナル経由で呼び出しテキスト生成（API不使用）
+    """claude CLI でテキスト生成（API不使用）。Claude→Codex フォールバック共通ランナー経由。
 
-    `claude -p "<prompt>"` の stdout を受け取る。
-    各ループで都度起動し、JSONを 1件返させる（考案 → 採用の繰り返し）。
+    provider="claude" 選択時、Claude が上限/エラーで失敗したら自動で Codex CLI に引き継ぐ
+    （全機能のバックアップ回路）。provider="codex" 明示時は call_codex_cli を使う。
     """
-    import shutil
-    import subprocess
-
-    # CLI の存在確認
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    try:
-        proc = subprocess.run(
-            [cli_path, "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except FileNotFoundError:
-        raise Exception(
-            f"claude CLI が見つかりません: '{cli_cmd}'. "
-            f"Claude Code CLI をインストールしてください。"
-        )
-    except subprocess.TimeoutExpired:
-        raise Exception(f"claude CLI タイムアウト ({timeout}s)")
-
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:400]
-        raise Exception(f"claude CLI エラー (rc={proc.returncode}): {err}")
-
-    return proc.stdout or ""
+    from app_llm_runner import run_llm
+    return run_llm(prompt, cli_cmd=cli_cmd, timeout=timeout, label="suno-ghostwriter")
 
 
 def call_codex_cli(cli_cmd, prompt, timeout=300):

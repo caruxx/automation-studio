@@ -22,29 +22,12 @@ DEFAULT_TIMEOUT = 180
 
 def _run_claude(cli_cmd: str, prompt: str, timeout: int = DEFAULT_TIMEOUT,
                 allow_read: bool = False, read_paths: list[Path] | None = None) -> str:
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    args = [cli_path, "-p", prompt]
-    if allow_read:
-        # Vision 入力: プロンプト内で Read ツール呼び出しを許可（サムネ画像読み取り用）
-        args += ["--allowedTools", "Read"]
-        seen: set[str] = set()
-        for p in read_paths or []:
-            parent = str(Path(p).parent)
-            if parent and parent not in seen:
-                args += ["--add-dir", parent]
-                seen.add(parent)
-    try:
-        proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout,
-        )
-    except FileNotFoundError:
-        raise RuntimeError(f"claude CLI が見つかりません: '{cli_cmd}'")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"claude CLI タイムアウト ({timeout}s)")
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:400]
-        raise RuntimeError(f"claude CLI エラー (rc={proc.returncode}): {err}")
-    return proc.stdout or ""
+    # Claude→Codex フォールバック共通ランナーに委譲（全機能のバックアップ回路）。
+    # allow_read/read_paths（サムネ画像読み取り）も Vision 入力としてそのまま渡す。
+    from app_llm_runner import run_llm
+    return run_llm(prompt, cli_cmd=cli_cmd, timeout=timeout,
+                   allow_read=allow_read, image_paths=(read_paths or None),
+                   label="proposer")
 
 
 def _find_thumbnail(folder: Path) -> Optional[Path]:

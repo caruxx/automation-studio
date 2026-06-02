@@ -914,9 +914,6 @@ def suggest_prompt_via_claude(context_hint: str, cli_cmd: str = "claude", analys
     """Claude CLI で Flow 向けの画像プロンプトを生成。
     analysis を渡すと competitor の visual_direction / viewer_needs をメタプロンプトに注入する。
     """
-    import shutil, subprocess
-    cli = shutil.which(cli_cmd) or cli_cmd
-
     analysis_section = ""
     if analysis:
         vd = (analysis or {}).get("visual_direction") or {}
@@ -944,13 +941,8 @@ def suggest_prompt_via_claude(context_hint: str, cli_cmd: str = "claude", analys
         "Return ONLY a single JSON object: "
         '{"prompt": "<the full English prompt, one paragraph>"}'
     )
-    proc = subprocess.run(
-        [cli, "-p", meta_prompt],
-        capture_output=True, text=True, timeout=180,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude CLI error: {(proc.stderr or proc.stdout)[:300]}")
-    text = proc.stdout or ""
+    from app_llm_runner import run_llm
+    text = run_llm(meta_prompt, cli_cmd=cli_cmd, timeout=180, label="flow-suggest")
     m = re.search(r'\{[\s\S]*\}', text)
     if not m:
         raise RuntimeError(f"Claude 応答から JSON を抽出できません: {text[:200]}")

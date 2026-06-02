@@ -1306,7 +1306,6 @@ def api_suno_suggest_prompt(req: SunoSuggestPromptRequest):
         raise HTTPException(400, "ペルソナが空です。設定タブでペルソナを入力してください")
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
-    cli_path = shutil.which(cli_cmd) or cli_cmd
     style_hint = (req.style_hint or "").strip()
 
     prompt = f"""You are crafting a single SUNO music generation prompt for a YouTube BGM channel.
@@ -1334,18 +1333,11 @@ Respond with a SINGLE JSON object:
 Output ONLY the JSON object."""
 
     try:
-        proc = subprocess.run(
-            [cli_path, "-p", prompt],
-            capture_output=True, text=True, timeout=300,
-        )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "Claude CLI タイムアウト (300s)")
-    except FileNotFoundError:
-        raise HTTPException(500, f"Claude CLI が見つかりません: {cli_cmd}")
-    if proc.returncode != 0:
-        raise HTTPException(500, f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
+        from app_llm_runner import run_llm, LLMError
+        out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="suno-persona")
+    except LLMError as e:
+        raise HTTPException(500, f"Claude/Codex 失敗: {str(e)[:300]}")
 
-    out = proc.stdout or ""
     # JSON 抽出
     m = re.search(r"\{[\s\S]*\}", out)
     if not m:
@@ -2697,15 +2689,10 @@ def api_generate_localizations(video_name: str, req: GenerateLocalizationsReques
             pass
 
     try:
-        proc = subprocess.run([cli, "--print", prompt], capture_output=True, text=True, timeout=180)
-    except FileNotFoundError:
-        raise HTTPException(500, f"Claude CLI ({cli}) が PATH に見つかりません")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "Claude CLI タイムアウト (180s)")
-    if proc.returncode != 0:
-        raise HTTPException(500, f"Claude CLI 失敗 (rc={proc.returncode}): {(proc.stderr or '')[:200]}")
-
-    raw = proc.stdout or ""
+        from app_llm_runner import run_llm, LLMError
+        raw = run_llm(prompt, cli_cmd=cli, timeout=180, label="localizations")
+    except LLMError as e:
+        raise HTTPException(500, f"Claude/Codex 失敗: {str(e)[:200]}")
     m = re.search(r"\{[\s\S]*\}", raw)
     if not m:
         raise HTTPException(500, f"JSON が抽出できませんでした: {raw[:200]}")
@@ -4526,16 +4513,14 @@ def api_suggest_imitate_evolve(video_name: str):
 JSON 以外は一切出力しないこと。すべての値は日本語で記述すること。"""
 
     prompt = (get_master_prompts().get("imitate_evolve") or "").strip() or default_prompt
-    cli_path = shutil.which(cli_cmd) or cli_cmd
     try:
-        proc = subprocess.run([cli_path, "-p", prompt], capture_output=True, text=True, timeout=300)
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "Claude CLI タイムアウト")
-    if proc.returncode != 0:
-        raise HTTPException(500, f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
-    m = re.search(r"\{[\s\S]*\}", proc.stdout or "")
+        from app_llm_runner import run_llm, LLMError
+        out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="imitate-evolve")
+    except LLMError as e:
+        raise HTTPException(500, f"Claude/Codex 失敗: {str(e)[:300]}")
+    m = re.search(r"\{[\s\S]*\}", out or "")
     if not m:
-        raise HTTPException(500, f"JSON 抽出失敗: {(proc.stdout or '')[:300]}")
+        raise HTTPException(500, f"JSON 抽出失敗: {(out or '')[:300]}")
     try:
         obj = json.loads(m.group(0))
     except Exception as e:
@@ -5264,8 +5249,6 @@ async def api_benchmark_suggest_persona(req: BenchmarkFuseRequest):
 
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
-    import shutil as _sh
-    cli_path = _sh.which(cli_cmd) or cli_cmd
 
     prompt = f"""You are a brand strategist for a YouTube BGM/instrumental music channel.
 Your task: synthesize **3 distinct persona drafts** for our own channel by extracting the strongest elements from the benchmark channels below.
@@ -5292,14 +5275,10 @@ Return ONLY a JSON object in this exact shape (no markdown fences, no prose):
 }}
 """
     try:
-        proc = subprocess.run([cli_path, "-p", prompt], capture_output=True, text=True, timeout=240)
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "Claude CLI タイムアウト")
-    except FileNotFoundError:
-        raise HTTPException(500, f"Claude CLI が見つかりません: {cli_cmd}")
-    if proc.returncode != 0:
-        raise HTTPException(500, f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
-    out = (proc.stdout or "").strip()
+        from app_llm_runner import run_llm, LLMError
+        out = run_llm(prompt, cli_cmd=cli_cmd, timeout=240, label="persona-suggest").strip()
+    except LLMError as e:
+        raise HTTPException(500, f"Claude/Codex 失敗: {str(e)[:300]}")
     m = re.search(r"\{[\s\S]*\}", out)
     if not m:
         raise HTTPException(502, f"Claude 応答から JSON を抽出できませんでした: {out[:300]}")
@@ -5957,8 +5936,6 @@ async def api_translate_video_yt(video_name: str, req: YouTubeTranslateRequest):
 
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
-    import shutil as _sh
-    cli_path = _sh.which(cli_cmd) or cli_cmd
 
     prompt = f"""You are a YouTube localization translator for a BGM/instrumental music channel.
 
@@ -5990,18 +5967,11 @@ Return ONLY a JSON object in this exact shape (no markdown fences, no prose):
 }}
 """
     try:
-        proc = subprocess.run(
-            [cli_path, "-p", prompt],
-            capture_output=True, text=True, timeout=300,
-        )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "Claude CLI タイムアウト")
-    except FileNotFoundError:
-        raise HTTPException(500, f"Claude CLI が見つかりません: {cli_cmd}")
-    if proc.returncode != 0:
-        raise HTTPException(500, f"Claude CLI エラー: {(proc.stderr or proc.stdout or '')[:300]}")
+        from app_llm_runner import run_llm, LLMError
+        out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="translate-meta").strip()
+    except LLMError as e:
+        raise HTTPException(500, f"Claude/Codex 失敗: {str(e)[:300]}")
 
-    out = (proc.stdout or "").strip()
     # JSON 抽出（ファンスやプリアンブルを許容）
     m = re.search(r"\{[\s\S]*\}", out)
     if not m:
@@ -7050,16 +7020,9 @@ def api_codex_imagegen_suggest_prompts(req: CodexImagegenSuggestRequest):
         if provider == "codex":
             text = _run_codex_text_prompt(cli_cmd, instruction, timeout=300)
         else:
-            proc = subprocess.run(
-                [cli_cmd, "-p", instruction],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=180,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError((proc.stderr or proc.stdout or "").strip()[:500])
-            text = proc.stdout or ""
+            # claude provider: 共通ランナーで Claude→Codex 自動フォールバック
+            from app_llm_runner import run_llm
+            text = run_llm(instruction, cli_cmd=cli_cmd, timeout=180, label="image-prompt-gen")
     except FileNotFoundError:
         raise HTTPException(500, f"{cli_cmd} CLI が見つかりません")
     except subprocess.TimeoutExpired:

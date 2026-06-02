@@ -134,22 +134,9 @@ def _extract_json(text: str) -> Optional[dict]:
 
 def _run_claude_vision(cli_cmd: str, prompt: str, image_paths: list[Path],
                        timeout: int = 600) -> str:
-    cli_path = shutil.which(cli_cmd) or cli_cmd
-    add_dirs: list[str] = []
-    seen: set[str] = set()
-    for p in image_paths:
-        parent = str(Path(p).parent)
-        if parent and parent not in seen:
-            add_dirs.extend(["--add-dir", parent])
-            seen.add(parent)
-    args = [cli_path, "-p", prompt, "--allowedTools", "Read", *add_dirs]
-    try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Claude CLI タイムアウト ({timeout}s)")
-    if proc.returncode != 0:
-        raise RuntimeError(f"Claude CLI エラー (rc={proc.returncode}): {(proc.stderr or proc.stdout or '')[:300]}")
-    return proc.stdout or ""
+    # Claude→Codex フォールバック共通ランナー(Vision)に委譲（全機能のバックアップ回路）
+    from app_llm_runner import run_llm_vision
+    return run_llm_vision(prompt, image_paths, cli_cmd=cli_cmd, timeout=timeout, label="score-vision")
 
 
 def score_thumbnails(
