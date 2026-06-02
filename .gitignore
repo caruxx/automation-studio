@@ -73,3 +73,28 @@ node_modules/
 
 # Chromium プロファイル（万一作業ツリー内にある場合）
 chromium_profile/
+
+# 機密パターン全般（誤コミット防止の保険・名前/拡張子ベース）
+# ※ .py 等のコードを誤除外しないよう、鍵/データ拡張子と明確な秘密名に限定
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+*.env
+.env
+.env.*
+!.env.example
+client_secret*.json
+service_account*.json
+*secret*.json
+*_secret.*
+*credential*.json
+*credentials*.json
+credentials*.json
+*token*.json
+*_token.txt
+*cookie*.json
+cookies*.txt
+*_apikey*
+apikey*.txt
