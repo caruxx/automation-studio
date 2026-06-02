@@ -191,8 +191,11 @@ def _extract_channel_id(youtube, url: str) -> str | None:
     return None
 
 
-def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50):
-    """チャンネルの動画一覧を取得（snippet + statistics）"""
+def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50, desc_limit: int = 500):
+    """チャンネルの動画一覧を取得（snippet + statistics）。
+
+    desc_limit: 説明文の切り詰め文字数（既定500=従来挙動）。投稿文軸の構成分析では
+    末尾のCTA/ハッシュタグ/後半tracklistまで必要なため、軸 run 時のみ大きく渡す。"""
     # 1) uploads playlist を取得
     ch_resp = youtube.channels().list(part="contentDetails,snippet", id=channel_id).execute()
     ch_items = ch_resp.get("items", [])
@@ -233,7 +236,7 @@ def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50):
             videos.append({
                 "videoId": v["id"],
                 "title": snip.get("title", ""),
-                "description": (snip.get("description") or "")[:500],
+                "description": (snip.get("description") or "")[:desc_limit],
                 "tags": snip.get("tags", [])[:15],
                 "publishedAt": snip.get("publishedAt", ""),
                 "viewCount": int(stats.get("viewCount", 0)),
@@ -246,8 +249,10 @@ def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50):
     return videos, ch_name
 
 
-def fetch_competitor_data(rival_urls: list[str]) -> dict:
-    """全ライバルチャンネルの動画を取得して分析用データにまとめる"""
+def fetch_competitor_data(rival_urls: list[str], desc_limit: int = 500) -> dict:
+    """全ライバルチャンネルの動画を取得して分析用データにまとめる。
+
+    desc_limit: 説明文切り詰め（既定500=従来）。投稿文軸の full 再取得時のみ大きく渡す。"""
     youtube = _get_youtube_service()
     result = {"channels": []}
 
@@ -261,7 +266,7 @@ def fetch_competitor_data(rival_urls: list[str]) -> dict:
             if not ch_id:
                 print("    ⚠️ channelId 解決失敗")
                 continue
-            videos, ch_name = _fetch_channel_videos(youtube, ch_id, max_results=50)
+            videos, ch_name = _fetch_channel_videos(youtube, ch_id, max_results=50, desc_limit=desc_limit)
             if not videos:
                 print("    ⚠️ 動画なし")
                 continue
@@ -465,6 +470,29 @@ def propose_with_analysis(
     viewer_needs = json.dumps(bp.get('viewer_needs', bp.get('title_patterns', [])), ensure_ascii=False)
     underserved = json.dumps(ts.get('underserved_niches', ts.get('emerging_needs', [])), ensure_ascii=False)
 
+    # 投稿文軸スキャフォールド（benchmark/description.json）を注入（あれば）。
+    # 指定チャンネルの説明文構成から導いた英語テンプレ／フック／CTA／ハッシュタグ。
+    desc_scaffold_block = ""
+    try:
+        import app_benchmark_description as _bdesc
+        _scaf = _bdesc.get_description_scaffolds()
+        if _scaf:
+            _parts = []
+            if _scaf.get("opening_hook"):
+                _parts.append(f"Opening hook style: {_scaf['opening_hook']}")
+            if _scaf.get("cta_block"):
+                _parts.append(f"CTA block:\n{_scaf['cta_block']}")
+            if _scaf.get("hashtag_set"):
+                _parts.append("Hashtag set: " + " ".join(_scaf["hashtag_set"]))
+            if _scaf.get("description_template"):
+                _parts.append("Proven description template (adapt to THIS video, do NOT copy verbatim):\n"
+                              + str(_scaf["description_template"]))
+            if _scaf.get("tone_one_line"):
+                _parts.append(f"Tone note (JP context): {_scaf['tone_one_line']}")
+            desc_scaffold_block = "\n".join(_parts)
+    except Exception:
+        desc_scaffold_block = ""
+
     prompt = f"""You are a viewer psychology expert and YouTube growth strategist crafting English metadata that deeply resonates with the audience.
 
 NOTE on input language:
@@ -492,6 +520,9 @@ Trend shift (Japanese context): {ts.get('from_buzz_to_recent', '')}
 === ChannelTracker Growth Signals (proof of what is currently moving) ===
 {growth_examples}
 
+=== Description Structure (from trending channels' posting style) ===
+{desc_scaffold_block or '(no description-axis analysis yet — use the Description Rules below)'}
+
 === Your Task ===
 Create English metadata that makes the viewer feel: "This is exactly what I was looking for."
 
@@ -518,6 +549,7 @@ Description Rules:
 - Ground the copy in viewer psychology: need recognition, relief, imagined scene, and a gentle reason to stay.
 - Include tracklist with timecodes
 - Close with hashtags matching viewer search behavior
+- If a "Description Structure" block is provided above, FOLLOW its proven structure (opening hook → tracklist with timecodes → CTA → hashtags) and adapt it to THIS video — never copy competitor text verbatim.
 
 Tag Rules:
 - 15-20 tags based on what viewers ACTUALLY SEARCH
@@ -1707,32 +1739,91 @@ def list_benchmark_sources(sheet_a_url: str = "", sheet_b_url: str = "",
         except Exception as e:
             all_channels.append({"channel_name": url, "url": url, "source": "extra_url", "error": str(e)})
 
-    return {
-        "channels": [
-            {
-                "channel_name": ch.get("channel_name", ""),
-                "url": ch.get("url", ""),
-                "subscribers": ch.get("subscribers", 0),
-                "total_views": ch.get("total_views", 0),
-                "thumbnail": ch.get("thumbnail", ""),
-                "growth": ch.get("growth"),
-                "source": ch.get("source", "unknown"),
-                "top_video_count": len(ch.get("top_videos") or []),
-            }
-            for ch in all_channels
-        ],
-    }
+    # 既存プロファイルと突合（S2: 分析済み可視化＝再分析の温床を断つ）
+    analyzed = {}  # key -> {generated_at, valid}
+    payload_generated_at = ""
+    if BENCHMARK_PROFILES_FILE.exists():
+        try:
+            bp = json.loads(BENCHMARK_PROFILES_FILE.read_text(encoding="utf-8"))
+            payload_generated_at = bp.get("generated_at", "") or ""
+            for p in (bp.get("profiles") or []):
+                k = _bm_profile_key(p.get("channel_name"), p.get("url"))
+                prof = p.get("profile")
+                analyzed[k] = {
+                    "generated_at": p.get("_analyzed_at") or payload_generated_at,
+                    "valid": isinstance(prof, dict) and not prof.get("error"),
+                }
+        except Exception:
+            analyzed = {}
+
+    out = []
+    for ch in all_channels:
+        k = _bm_profile_key(ch.get("channel_name"), ch.get("url"))
+        a = analyzed.get(k)
+        out.append({
+            "channel_name": ch.get("channel_name", ""),
+            "url": ch.get("url", ""),
+            "subscribers": ch.get("subscribers", 0),
+            "total_views": ch.get("total_views", 0),
+            "thumbnail": ch.get("thumbnail", ""),
+            "growth": ch.get("growth"),
+            "source": ch.get("source", "unknown"),
+            "top_video_count": len(ch.get("top_videos") or []),
+            "already_analyzed": bool(a and a["valid"]),
+            "last_analyzed_at": (a or {}).get("generated_at", ""),
+        })
+    return {"channels": out}
+
+
+def _bm_norm_url(url: str = "") -> str:
+    """チャンネル URL を実体識別子へ正規化（末尾タブ /videos 等を除去）。"""
+    u = (url or "").strip().lower().rstrip("/")
+    if not u:
+        return ""
+    u = re.sub(r"/(videos|featured|about|streams|community|playlists|shorts)$", "", u)
+    return u
+
+
+def _bm_profile_key(channel_name: str = "", url: str = "") -> str:
+    """プロファイルの一意キー。channel_name 優先・無ければ URL。
+
+    プロファイルの url とシートの url は形が乖離しがち（@handle / /channel/ID / 動画URL）で
+    URL 主キーにすると突合が壊れ無駄な再分析を招くため、安定する channel_name を主キーにする。
+    同名異チャンネルの衝突は _bm_upsert 側で url 曖昧性解消して両保持する。"""
+    n = (channel_name or "").strip().lower()
+    if n:
+        return "name:" + n
+    u = _bm_norm_url(url)
+    return ("url:" + u) if u else ""
+
+
+def _bm_upsert(by_key: dict, p: dict) -> None:
+    """既存 dict へプロファイルを channel_name 主キーで upsert（同名は後勝ち更新）。
+
+    注意: プロファイルの url とシートの url は同一チャンネルでも形が乖離する（@handle /
+    /channel/ID / 動画URL）ため、url で別チャンネル判定はできない（共通ケースで重複が出る）。
+    よって name 主キーの単純 upsert とし、同一表示名の別チャンネル共存は既知の軽微制約とする。"""
+    k = _bm_profile_key(p.get("channel_name"), p.get("url"))
+    if k:
+        by_key[k] = p
 
 
 def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
                       extra_urls: list = None, cli_cmd: str = DEFAULT_CLI,
-                      progress_cb=None, channel_filter: list = None) -> dict:
+                      progress_cb=None, channel_filter: list = None,
+                      skip_existing: bool = True, force: bool = False,
+                      max_age_days: int = None, dry_run: bool = False) -> dict:
     """ベンチマーク完成パイプライン：
     1. Sheet A + Sheet B から既存チャンネル情報を取得
     2. extra_urls のリスト外チャンネルを YouTube API で追加取得
     3. 各チャンネルの TOP3 動画のコメントを API key で取得
     4. Claude CLI で統合プロファイル生成
-    5. benchmark_profiles.json に保存
+    5. benchmark_profiles.json に保存（マージ＝既存を消さない）
+
+    skip_existing: 既存の有効プロファイルがあれば再生成しない（既定True）。
+    force: True で既存を無視して全対象を強制再生成。
+    max_age_days: スキップの鮮度しきい値。指定時、これより古い分析は再生成（None=無条件スキップ）。
+    dry_run: 生成せず {total,new_count,reanalyze_count,skip_count,est_seconds,cli_count} だけ返す。
     """
     extra_urls = [u.strip() for u in (extra_urls or []) if u.strip()]
 
@@ -1799,28 +1890,92 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
         all_channels = [ch for ch in all_channels if (ch.get("channel_name") or "").strip() in wanted]
         log(f"🎯 フィルタ適用: {before} → {len(all_channels)} チャンネル")
 
-    # 4) Sheet 由来チャンネルも Data API で最新人気/新着/再生数へ更新
+    # 既存プロファイルをロード（S0 マージ保存 / S1 スキップ判定の基盤）
+    import datetime as _dt
+    existing_payload = {}
+    existing_by_key = {}
+    existing_unkeyed = []  # name/url とも空でキー化できない既存プロファイル（消さず carry）
+    if BENCHMARK_PROFILES_FILE.exists():
+        try:
+            existing_payload = json.loads(BENCHMARK_PROFILES_FILE.read_text(encoding="utf-8"))
+            for p in (existing_payload.get("profiles") or []):
+                if _bm_profile_key(p.get("channel_name"), p.get("url")):
+                    _bm_upsert(existing_by_key, p)
+                else:
+                    existing_unkeyed.append(p)
+        except Exception:
+            existing_payload, existing_by_key, existing_unkeyed = {}, {}, []
+
+    def _is_valid(p):
+        prof = (p or {}).get("profile")
+        return isinstance(prof, dict) and not prof.get("error")
+
+    def _is_fresh(p):
+        if max_age_days is None:
+            return True
+        ga = (p or {}).get("_analyzed_at") or existing_payload.get("generated_at")
+        if not ga:
+            return False
+        try:
+            return (_dt.datetime.now() - _dt.datetime.fromisoformat(ga)).days < max_age_days
+        except Exception:
+            return False
+
+    # スキップ判定（S1）: force でなく skip_existing かつ 既存が有効＆鮮度内なら再生成しない。
+    # error 持ち / 古い / 未分析 は生成対象（失敗のみ自動再試行を含む）。
+    plan = []  # [(ch, action, existing_profile)]  action ∈ {"generate","reuse"}
+    for ch in all_channels:
+        k = _bm_profile_key(ch.get("channel_name"), ch.get("url"))
+        ex = existing_by_key.get(k)
+        if (not force) and skip_existing and ex is not None and _is_valid(ex) and _is_fresh(ex):
+            plan.append((ch, "reuse", ex))
+        else:
+            plan.append((ch, "generate", ex))
+
+    gen_new = sum(1 for _, a, ex in plan if a == "generate" and ex is None)
+    gen_re = sum(1 for _, a, ex in plan if a == "generate" and ex is not None)
+    reuse_n = sum(1 for _, a, _ in plan if a == "reuse")
+    gen_total = gen_new + gen_re
+
+    # dry_run（S3 コスト見積り）: 生成・refresh・comment を一切呼ばず内訳のみ返す
+    if dry_run:
+        return {
+            "dry_run": True,
+            "total": len(all_channels),
+            "new_count": gen_new,
+            "reanalyze_count": gen_re,
+            "skip_count": reuse_n,
+            "cli_count": gen_total,
+            "est_seconds": gen_total * 50,
+        }
+
+    # 4) 生成対象だけ Data API で最新化（reuse は最新化不要＝search.list quota 節約）
     if api_key:
-        refreshed = []
-        for ch in all_channels:
+        for i, (ch, action, ex) in enumerate(plan):
+            if action != "generate":
+                continue
             name = ch.get("channel_name") or ch.get("url") or "(unknown)"
             try:
                 log(f"🔄 最新動画情報を Data API で更新: {name}")
-                refreshed.append(refresh_channel_with_youtube_api(ch, api_key))
+                plan[i] = (refresh_channel_with_youtube_api(ch, api_key), action, ex)
             except Exception as e:
                 log(f"  ⚠️ 更新失敗（Sheet値で続行）: {e}")
-                refreshed.append(ch)
-        all_channels = refreshed
     else:
         log("⚠️ YouTube API key 未設定のため、Sheet の動画情報を使用します")
 
-    # 5) 各チャンネルの TOP3 コメント取得 + プロファイル生成
+    # 5) 各チャンネルの TOP3 コメント取得 + プロファイル生成（reuse は流用）
     profiles = []
-    total = len(all_channels)
-    log(f"\n🧠 {total} チャンネルのプロファイル生成開始...")
-    for idx, ch in enumerate(all_channels, 1):
+    total = len(plan)
+    log(f"\n🧠 対象 {total} ch（生成 {gen_total}・流用 {reuse_n}）プロファイル処理開始...")
+    done = 0
+    for idx, (ch, action, ex) in enumerate(plan, 1):
         name = ch.get("channel_name") or "(unknown)"
-        log(f"\n[{idx}/{total}] 🔍 {name}")
+        if action == "reuse":
+            log(f"[{idx}/{total}] ⏭ スキップ(分析済み・流用): {name}")
+            profiles.append(ex)
+            continue
+        done += 1
+        log(f"\n[{idx}/{total}] 🔍 {name}（生成 {done}/{gen_total}）")
         comments_by_video = {}
         if api_key:
             for v in (ch.get("top_videos") or [])[:3]:
@@ -1848,17 +2003,24 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
             "comments_sample": {vid: cs[:3] for vid, cs in comments_by_video.items()},
             "profile": profile,
             "source": ch.get("source", "unknown"),
+            "_analyzed_at": _dt.datetime.now().isoformat(),
         })
 
-    # 5) 保存
-    import datetime as _dt
+    # 6) 保存（S0 マージ＝既存全件を保持し、今回対象だけ upsert。選択外を消さない）
+    merged = dict(existing_by_key)
+    for p in profiles:
+        if _bm_profile_key(p.get("channel_name"), p.get("url")):
+            _bm_upsert(merged, p)
+        else:
+            existing_unkeyed.append(p)  # 今回分でキー化不能なものも消さず carry
+    final_profiles = list(merged.values()) + existing_unkeyed
     payload = {
         "generated_at": _dt.datetime.now().isoformat(),
         "sheet_a_url": sheet_a_url,
         "sheet_b_url": sheet_b_url,
         "extra_urls": extra_urls,
-        "profiles": profiles,
+        "profiles": final_profiles,
     }
     BENCHMARK_PROFILES_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    log(f"\n✅ 保存: {BENCHMARK_PROFILES_FILE} ({len(profiles)} プロファイル)")
+    log(f"\n✅ 保存: {BENCHMARK_PROFILES_FILE}（全{len(final_profiles)} / 今回生成{gen_total}・流用{reuse_n}）")
     return payload

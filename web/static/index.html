@@ -1822,6 +1822,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
       <button class="btn btn-ghost btn-sm bm-tab" data-bt="concept" onclick="bmTab('concept')" title="ライバルのタイトル/タグ/説明から「題材・感情ジョブ・シーン」を抽出">コンセプト</button>
       <button class="btn btn-ghost btn-sm bm-tab" data-bt="title" onclick="bmTab('title')" title="ライバルのタイトル群から「構造・テンプレ・キーワード・心理フック」を抽出">タイトル</button>
       <button class="btn btn-ghost btn-sm bm-tab" data-bt="thumbnail" onclick="bmTab('thumbnail')" title="ライバルのサムネを DL → Vision で要素抽出 → Flow / Image2 の参照画像として再利用">サムネ分析</button>
+      <button class="btn btn-ghost btn-sm bm-tab" data-bt="description" onclick="bmTab('description')" title="指定チャンネルの投稿文（説明欄）の構成傾向を抽出 → 自チャンネルの動画改善・投稿文構成案へ反映">投稿文</button>
+      <button class="btn btn-ghost btn-sm bm-tab" data-bt="tracking" onclick="bmTab('tracking')" title="新着チャンネル検知・個別の登録者推移/48h初速・新作投稿イベントを日次で追跡">追跡</button>
     </div>
 
     <!-- ingest タブ -->
@@ -1893,9 +1895,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
       </div>
       <div class="card" style="margin-bottom:var(--space-3);display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
         <div class="sec-title" style="margin:0">取り込み実行</div>
-        <span class="fh" style="flex:1;min-width:200px">スプレッドシート URL は基本設定の「スプシ登録」で管理されます。</span>
+        <span class="fh" style="flex:1;min-width:200px">プレビュー → 未分析のみ選択 → 選択分のみ分析 が推奨フローです。分析済みは自動でスキップされます。</span>
         <button class="btn btn-primary btn-sm" onclick="bmPreviewSources()">候補をプレビュー</button>
-        <button class="btn btn-ghost btn-sm" onclick="runBenchmarkFull()" title="フィルターせず全チャンネルをプロファイル生成します">全件を生成</button>
         <span id="bmRunStatus" style="font-size:var(--text-xs);color:var(--text-tertiary)"></span>
       </div>
 
@@ -1905,10 +1906,22 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <span id="bmSourcesMeta" style="font-size:var(--text-xs);color:var(--text-tertiary)"></span>
           <div style="flex:1"></div>
           <span id="bmSourcesCount" style="font-size:var(--text-xs);color:var(--text-tertiary)">0 件選択</span>
+          <button class="btn btn-secondary btn-sm" onclick="bmSelectUnanalyzed()" title="まだ分析していないチャンネルだけを一括選択（増分分析）">未分析のみ選択</button>
           <button class="btn btn-secondary btn-sm" onclick="bmSourcesSelectVisible()">表示中を選択</button>
           <button class="btn btn-secondary btn-sm" onclick="bmSourcesClear()">クリア</button>
+          <button class="btn btn-ghost btn-sm" id="bmAdoptSelectedBtn" onclick="bmAdoptSelected()" disabled title="選択チャンネルをベンチマークに採用（pinned）。再分析せず採用だけ行います">選択を採用</button>
           <button class="btn btn-primary btn-sm" id="bmRunSelectedBtn" onclick="bmRunSelected()" disabled>選択分のみ分析</button>
         </div>
+        <details style="margin-bottom:var(--space-2)">
+          <summary style="cursor:pointer;font-size:var(--text-xs);color:var(--text-tertiary)">⚙ 詳細オプション（全件再生成・しきい値）</summary>
+          <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;padding:var(--space-2) 0">
+            <label style="font-size:var(--text-xs);color:var(--text-secondary);display:flex;align-items:center;gap:4px" title="分析済みでも、この日数より古いものは再分析対象にします（0=分析済みは常にスキップ）">
+              再分析しきい値: <input type="range" id="bmMaxAgeDays" min="0" max="30" value="0" style="width:120px" oninput="document.getElementById('bmMaxAgeLabel').textContent=this.value==0?'常にスキップ':this.value+'日以上前のみ'"><span id="bmMaxAgeLabel" style="color:var(--text-tertiary)">常にスキップ</span>
+            </label>
+            <div style="flex:1"></div>
+            <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="runBenchmarkFull()" title="表示中の全チャンネルを対象に再生成（分析済みはしきい値に従いスキップ）">⚠ 全件を再生成</button>
+          </div>
+        </details>
         <div class="bm-filter-panel" style="display:grid;grid-template-columns:1.4fr 1.2fr repeat(4,minmax(110px,.6fr));gap:var(--space-2);align-items:end;margin-bottom:var(--space-2)">
           <div class="ff" style="margin:0">
             <label class="fl">含める語</label>
@@ -2029,6 +2042,69 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
 
       <div id="btAggregate" style="margin-bottom:var(--space-3)"></div>
       <div id="btChannels"></div>
+    </div>
+
+    <!-- description タブ（投稿文軸 — 説明欄の構成傾向 → 動画改善 / 投稿文構成案） -->
+    <div id="bmPane-description" class="bm-pane" style="display:none">
+      <div class="card" style="margin-bottom:var(--space-3)">
+        <div class="section-heading"><div class="sec-title" style="margin:0">投稿文（説明欄）軸の分析</div></div>
+        <div class="fh" style="margin-bottom:var(--space-2)">
+          指定チャンネルの動画説明文から、<strong>冒頭フック</strong>・<strong>構成順</strong>（opening/tracklist/CTA/links/hashtags）・<strong>ハッシュタグ運用</strong>を抽出。
+          自チャンネルが採用すべき<strong>投稿文テンプレート</strong>を提案し、(a)既存動画のメタ改善・(b)新規投稿文の構成案へ活かします。
+        </div>
+        <div class="fh" style="margin-bottom:var(--space-2);color:var(--text-tertiary)">⚠ 説明文は YouTube API（ライバルチャンネル）経路でのみ取得可能。実行時に末尾まで full 再取得します（API quota を消費）。</div>
+        <div class="btns" style="margin:0;flex-wrap:wrap;gap:var(--space-2)">
+          <button class="btn btn-primary btn-sm" id="bdescRunBtn" onclick="bdescRun()">分析を実行（full 再取得）</button>
+          <button class="btn btn-ghost btn-sm" onclick="bdescLoad()">再読込</button>
+          <span id="bdescStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-left:var(--space-2)"></span>
+        </div>
+      </div>
+
+      <div id="bdescAggregate" style="margin-bottom:var(--space-3)"></div>
+      <div id="bdescChannels"></div>
+    </div>
+
+    <!-- tracking タブ（個別チャンネル追跡） -->
+    <div id="bmPane-tracking" class="bm-pane" style="display:none">
+      <div class="card" style="margin-bottom:var(--space-3);display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+        <div class="sec-title" style="margin:0">チャンネル追跡</div>
+        <span class="fh" style="flex:1;min-width:220px">新着チャンネル検知・個別の登録者推移と 48h 初速・新作投稿を日次で追跡します（CHANNEL_TRACK + 個別タブ）。</span>
+        <button class="btn btn-secondary btn-sm" onclick="loadTrackingPane()">更新</button>
+        <button class="btn btn-ghost btn-sm" onclick="recordTrackingSnapshot()" title="今日のスナップショットを保存して前回比イベントを更新">日次記録</button>
+      </div>
+
+      <!-- 新着チャンネル -->
+      <div class="card" style="margin-bottom:var(--space-3)">
+        <div class="card-header">
+          <div class="sec-title" style="margin:0">🆕 新着チャンネル <span class="badge badge-neutral" id="trkNewCount">—</span></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="fh" style="margin:0">追跡開始 直近</span>
+            <select class="fi" id="trkNewDays" style="width:auto;padding:2px 6px" onchange="loadTrackingPane()">
+              <option value="7">7日</option><option value="14" selected>14日</option><option value="30">30日</option>
+            </select>
+          </div>
+        </div>
+        <div id="trkNewList"><div class="fh">読み込み中...</div></div>
+      </div>
+
+      <!-- 追跡イベント（前回スナップショット比） -->
+      <div class="card" style="margin-bottom:var(--space-3)">
+        <div class="card-header"><div class="sec-title" style="margin:0">📈 追跡イベント（前回比）</div>
+          <span class="fh" id="trkEventsMeta" style="margin:0"></span>
+        </div>
+        <div id="trkEvents"><div class="fh">読み込み中...</div></div>
+      </div>
+
+      <!-- 個別チャンネル深掘り -->
+      <div class="card">
+        <div class="card-header">
+          <div class="sec-title" style="margin:0">🔍 個別チャンネル深掘り</div>
+          <input class="fi" id="trkPickerFilter" placeholder="チャンネル名で絞り込み" style="width:auto;max-width:220px" oninput="renderChannelPicker()">
+        </div>
+        <div class="fh" style="margin-bottom:var(--space-2)">チャンネルを選ぶと個別タブ（1日4回取得の時系列）から登録者推移・48h 初速・新作動画を読み込みます。</div>
+        <div id="trkPicker" style="display:flex;flex-wrap:wrap;gap:6px;max-height:170px;overflow-y:auto;margin-bottom:var(--space-3)"><div class="fh">読み込み中...</div></div>
+        <div id="trkTimeline"></div>
+      </div>
     </div>
 
   </div>
@@ -8423,6 +8499,305 @@ function bmTab(key){
   if(key==='concept')bcLoad();
   if(key==='title')btitleLoad();
   if(key==='thumbnail')btLoad();
+  if(key==='description')bdescLoad();
+  if(key==='tracking')loadTrackingPane();
+}
+
+/* ==== ベンチマーク・投稿文(説明文)軸 ==== */
+let _bdescCache={per_channel:{},aggregate:{},generated_at:'',no_data:false};
+let _bdescPolling=null;
+
+async function bdescLoad(){
+  try{
+    const r=await fetch('/api/benchmark/description');
+    if(!r.ok) return;
+    const d=await r.json();
+    _bdescCache=d;
+    bdescRender();
+    if(d.running){
+      bdescUpdateStatus(d.phase, d.msg, true);
+      if(!_bdescPolling) _bdescPolling=setInterval(bdescPoll, 2500);
+    }else{
+      bdescUpdateStatus(d.phase, d.msg, false);
+      if(_bdescPolling){clearInterval(_bdescPolling); _bdescPolling=null}
+    }
+  }catch(e){console.error(e)}
+}
+
+async function bdescPoll(){
+  try{
+    const r=await fetch('/api/benchmark/description');
+    if(!r.ok) return;
+    const d=await r.json();
+    bdescUpdateStatus(d.phase, d.msg, d.running);
+    if(!d.running){
+      if(_bdescPolling){clearInterval(_bdescPolling); _bdescPolling=null}
+      _bdescCache=d;
+      bdescRender();
+    }
+  }catch(_){}
+}
+
+function bdescUpdateStatus(phase, msg, running){
+  const el=document.getElementById('bdescStatus');
+  const btn=document.getElementById('bdescRunBtn');
+  if(!el) return;
+  if(running){
+    el.style.color='var(--accent-warning)';
+    el.textContent=`⏳ ${phase||''} ${msg||''}`;
+    if(btn) btn.disabled=true;
+  }else if(phase==='error'){
+    el.style.color='var(--accent-danger)';
+    el.textContent=`✗ ${msg||'エラー'}`;
+    if(btn) btn.disabled=false;
+  }else if(phase==='done'){
+    el.style.color='var(--accent-success)';
+    el.textContent=`✓ ${msg||'完了'}`;
+    if(btn) btn.disabled=false;
+  }else{
+    el.textContent='';
+    if(btn) btn.disabled=false;
+  }
+}
+
+async function bdescRun(){
+  if(!(await ensureBenchmarkCoreCache('bdescStatus')))return;
+  try{
+    const r=await fetch('/api/benchmark/description/run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({per_channel_cap:8, refetch_full:true}),
+    });
+    const d=await r.json();
+    if(d.status==='already_running'){alert('すでに実行中');return}
+    bdescUpdateStatus('analyzing','full 再取得して分析を開始',true);
+    if(!_bdescPolling) _bdescPolling=setInterval(bdescPoll, 2500);
+  }catch(e){alert('開始失敗: '+e.message)}
+}
+
+function bdescRender(){
+  const aggWrap=document.getElementById('bdescAggregate');
+  const chWrap=document.getElementById('bdescChannels');
+  if(!aggWrap||!chWrap) return;
+  // no-data degrade（スプシ fallback 等で説明文ゼロ）
+  if(_bdescCache.no_data){
+    aggWrap.innerHTML=`<div class="card" style="border-left:3px solid var(--accent-warning)">
+      <div style="font-weight:600;color:var(--accent-warning);margin-bottom:4px">投稿文データがありません</div>
+      <div class="fh">${esc(_bdescCache.reason||'説明文が取得できませんでした。')}</div>
+      <div class="fh" style="margin-top:6px;color:var(--text-tertiary)">基本設定タブで「ライバルチャンネル」を登録すると、YouTube API 経路で説明文を取得して投稿文分析が可能になります。</div>
+    </div>`;
+    chWrap.innerHTML='';
+    return;
+  }
+  const perCh=_bdescCache.per_channel||{};
+  const ids=Object.keys(perCh);
+  if(ids.length===0){
+    chWrap.innerHTML='<div class="card empty"><div class="empty-title">未分析です</div><div class="empty-sub">取り込みタブで「制作分析」を実行し、ライバルチャンネルを登録してから「分析を実行」してください</div></div>';
+    aggWrap.innerHTML='';
+    return;
+  }
+  // aggregate（投稿文テンプレート提案）
+  const agg=_bdescCache.aggregate||{};
+  if(agg && Object.keys(agg).length){
+    const recs=agg.recommendation_for_self||{};
+    const tmpl=recs.description_template||'';
+    aggWrap.innerHTML=`<div class="card"><div class="section-heading"><div class="sec-title" style="margin:0">横断分析（投稿文テンプレート提案）</div><span class="fh" style="font-weight:normal;font-size:var(--text-xs)">${esc(_bdescCache.generated_at||'')}${_bdescCache.source?(' / '+esc(_bdescCache.source)):''}</span></div>
+      <div class="bt-analysis-block">
+        ${(agg.shared_structure||[]).length?`<div><strong>共通構成：</strong>${(agg.shared_structure||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(agg.differentiators||[]).length?`<div style="margin-top:6px"><strong>差別化：</strong><ul style="margin:4px 0 0 18px;padding:0">${(agg.differentiators||[]).map(d=>`<li>${esc(d.channel||'')}: ${esc(d.edge||'')}</li>`).join('')}</ul></div>`:''}
+        ${(agg.underserved_patterns||[]).length?`<div style="margin-top:6px"><strong>未活用：</strong>${(agg.underserved_patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${recs.tone_one_line?`<div style="margin-top:8px;color:var(--text-primary);font-weight:500">▶ ${esc(recs.tone_one_line)}</div>`:''}
+        ${recs.opening_hook?`<div style="margin-top:8px"><strong>冒頭フック(EN)：</strong><div style="font-size:var(--text-xs);color:var(--text-secondary);margin-top:2px">${esc(recs.opening_hook)}</div></div>`:''}
+        ${recs.cta_block?`<div style="margin-top:6px"><strong>CTA(EN)：</strong><div style="font-size:var(--text-xs);color:var(--text-secondary);white-space:pre-wrap;margin-top:2px">${esc(recs.cta_block)}</div></div>`:''}
+        ${(recs.hashtag_set||[]).length?`<div style="margin-top:6px"><strong>ハッシュタグ：</strong>${(recs.hashtag_set||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${tmpl?`<div style="margin-top:8px"><strong>投稿文テンプレート(EN)：</strong><pre style="white-space:pre-wrap;background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-sm);padding:8px;font-size:11px;margin-top:4px;max-height:240px;overflow:auto">${esc(tmpl)}</pre>
+          <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="bdescCopyTemplate()">テンプレートをコピー</button></div>`:''}
+      </div></div>`;
+  }else{
+    aggWrap.innerHTML='';
+  }
+  // per channel（投稿文の構成パターン）
+  chWrap.innerHTML=ids.map(id=>{
+    const c=perCh[id]||{};
+    return `<div class="bc-channel-card">
+      <div class="bc-channel-head">
+        <span>${esc(c.channel||id)}</span>
+        <span class="badge badge-success" style="font-size:10px">分析済み</span>
+      </div>
+      ${(c.structure_blocks||[]).length?`<div class="bc-row"><strong>構成順</strong>${(c.structure_blocks||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join(' ▸ ')}</div>`:''}
+      ${(c.opening_hooks||[]).length?`<div class="bc-row"><strong>冒頭フック</strong>${(c.opening_hooks||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.cta_patterns||[]).length?`<div class="bc-row"><strong>CTA</strong>${(c.cta_patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.hashtag_clusters||[]).length?`<div class="bc-row"><strong>ハッシュタグ</strong>${(c.hashtag_clusters||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${c.timestamp_usage?`<div class="bc-row"><strong>タイムコード</strong><span style="font-size:var(--text-xs);color:var(--text-secondary)">${esc(c.timestamp_usage)}</span></div>`:''}
+      ${c.link_policy?`<div class="bc-row"><strong>リンク方針</strong><span style="font-size:var(--text-xs);color:var(--text-secondary)">${esc(c.link_policy)}</span></div>`:''}
+      ${(c.examples||[]).length?`<ul class="bc-examples">${(c.examples||[]).map(e=>`<li><span style="white-space:pre-wrap">${esc(e.snippet||'')}</span> — ${esc(e.why||'')}</li>`).join('')}</ul>`:''}
+    </div>`;
+  }).join('');
+}
+
+function bdescCopyTemplate(){
+  const tmpl=((_bdescCache.aggregate||{}).recommendation_for_self||{}).description_template||'';
+  if(!tmpl){toast('テンプレートがありません','e');return}
+  navigator.clipboard.writeText(tmpl).then(()=>toast('投稿文テンプレートをコピーしました','s')).catch(()=>toast('コピー失敗','e'));
+}
+
+/* ==== チャンネル追跡（個別タブ時系列・新着検知・イベント） ==== */
+let _trkChannels=[];      // channel-list キャッシュ
+let _trkSelected='';      // 深掘り中のチャンネル名
+
+function _sparkline(points, w, h, color){
+  w=w||260; h=h||44; color=color||'var(--accent-info)';
+  const pts=(points||[]).filter(p=>typeof p[1]==='number');
+  if(pts.length<2) return '<span class="fh">データ不足</span>';
+  const vals=pts.map(p=>p[1]);
+  const min=Math.min(...vals), max=Math.max(...vals), rng=(max-min)||1;
+  const dx=w/(pts.length-1);
+  const coords=pts.map((p,i)=>`${(i*dx).toFixed(1)},${(h-((p[1]-min)/rng)*(h-4)-2).toFixed(1)}`);
+  const last=coords[coords.length-1].split(',');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;max-width:100%">
+    <polyline points="${coords.join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${color}"/></svg>`;
+}
+
+function _bar(value, maxv, color){
+  const pct=maxv>0?Math.min(100,Math.round(value/maxv*100)):0;
+  return `<div style="background:var(--bg-overlay);border-radius:3px;height:6px;overflow:hidden;flex:1;min-width:40px"><div style="width:${pct}%;height:100%;background:${color||'var(--accent-info)'}"></div></div>`;
+}
+
+async function loadTrackingPane(){
+  const days=document.getElementById('trkNewDays')?.value||14;
+  const nl=document.getElementById('trkNewList');
+  const ev=document.getElementById('trkEvents');
+  const pk=document.getElementById('trkPicker');
+  if(nl)nl.innerHTML='<div class="fh">読み込み中...</div>';
+  if(ev)ev.innerHTML='<div class="fh">読み込み中...</div>';
+  if(pk)pk.innerHTML='<div class="fh">読み込み中...</div>';
+  // 新着チャンネル
+  fetch(`/api/analysis/new-channels?within_days=${days}`).then(r=>r.json()).then(d=>{
+    const cnt=document.getElementById('trkNewCount');
+    if(!d.configured){if(cnt)cnt.textContent='未設定';if(nl)nl.innerHTML='<div class="fh" style="color:var(--accent-warning)">成長トラッキングシート URL が未設定（設定タブで入力）</div>';return}
+    const list=d.new_channels||[];
+    if(cnt)cnt.textContent=`${list.length} 件`;
+    if(!list.length){if(nl)nl.innerHTML='<div class="fh">直近の新着チャンネルはありません</div>';return}
+    const maxSub=Math.max(...list.map(c=>c.daily_subs||0),1);
+    const maxView=Math.max(...list.map(c=>c.daily_views||0),1);
+    nl.innerHTML=list.map(c=>`
+      <div style="display:flex;gap:var(--space-3);padding:var(--space-2) 0;border-top:1px solid var(--border-default);align-items:center">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:var(--font-semibold);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <span class="badge" style="background:rgba(34,197,94,.15);color:var(--accent-success);font-size:10px;margin-right:6px">${c.days_tracked}日前</span>${esc(c.name)}
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-tertiary)">登録 ${(c.subscribers||0).toLocaleString()} ・ 動画 ${c.video_count||0} ・ 直近投稿 ${esc(c.last_post_date||'—')}</div>
+        </div>
+        <div style="width:160px;flex-shrink:0;font-size:10px;color:var(--text-tertiary)">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="width:54px">登録+${(c.daily_subs||0).toLocaleString()}</span>${_bar(c.daily_subs,maxSub,'var(--accent-success)')}</div>
+          <div style="display:flex;align-items:center;gap:6px"><span style="width:54px">再生+${(c.daily_views||0).toLocaleString()}</span>${_bar(c.daily_views,maxView,'var(--accent-info)')}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="flex-shrink:0" onclick="openChannelTimeline('${esc(c.name).replace(/'/g,"\\'")}')">深掘り</button>
+      </div>`).join('');
+  }).catch(()=>{if(nl)nl.innerHTML='<div class="fh" style="color:var(--accent-danger)">新着取得エラー</div>'});
+  // 追跡イベント
+  fetch('/api/analysis/tracking-events?record=0').then(r=>r.json()).then(d=>{
+    const meta=document.getElementById('trkEventsMeta');
+    if(!d.configured){if(ev)ev.innerHTML='<div class="fh" style="color:var(--accent-warning)">未設定</div>';return}
+    const e=d.events||{};
+    if(d.first_run){if(meta)meta.textContent='初回（基準スナップショット未保存）';ev.innerHTML='<div class="fh">「日次記録」を押すと今日を基準に保存し、明日以降から前回比イベントを表示します。</div>';return}
+    if(meta)meta.textContent=`${e.prev_date||'—'} → ${e.curr_date||'今日'}`;
+    const sec=(title,rows)=>rows?`<div style="margin-bottom:var(--space-2)"><div style="font-size:var(--text-xs);font-weight:600;color:var(--text-secondary);margin-bottom:3px">${title}</div>${rows}</div>`:'';
+    const nc=(e.new_channels||[]).slice(0,8).map(c=>`<span class="badge badge-neutral" style="margin:2px">🆕 ${esc(c.name)} (登録${(c.subs||0).toLocaleString()})</span>`).join('');
+    const nv=(e.new_videos||[]).slice(0,8).map(v=>`<span class="badge badge-neutral" style="margin:2px">🎬 ${esc(v.name)} +${v.video_delta}本</span>`).join('');
+    const sg=(e.surging||[]).slice(0,8).map(s=>`<span class="badge" style="background:rgba(34,197,94,.12);color:var(--accent-success);margin:2px">▲ ${esc(s.name)} +${(s.sub_delta||0).toLocaleString()}登録</span>`).join('');
+    const html=sec('新着チャンネル',nc)+sec('新作投稿',nv)+sec('登録急伸',sg);
+    ev.innerHTML=html||'<div class="fh">前回比の変化はありません</div>';
+  }).catch(()=>{if(ev)ev.innerHTML='<div class="fh" style="color:var(--accent-danger)">イベント取得エラー</div>'});
+  // チャンネルピッカー
+  fetch('/api/analysis/channel-list').then(r=>r.json()).then(d=>{
+    _trkChannels=d.channels||[];
+    renderChannelPicker();
+  }).catch(()=>{if(pk)pk.innerHTML='<div class="fh" style="color:var(--accent-danger)">一覧取得エラー</div>'});
+}
+
+function renderChannelPicker(){
+  const pk=document.getElementById('trkPicker');if(!pk)return;
+  const q=(document.getElementById('trkPickerFilter')?.value||'').toLowerCase();
+  let list=_trkChannels;
+  if(q)list=list.filter(c=>(c.name||'').toLowerCase().includes(q));
+  if(!list.length){pk.innerHTML='<div class="fh">該当なし</div>';return}
+  pk.innerHTML=list.slice(0,120).map(c=>{
+    const on=c.name===_trkSelected;
+    const badge=c.is_new?'<span style="color:var(--accent-success)">🆕</span> ':'';
+    return `<button class="btn btn-sm ${on?'btn-primary':'btn-ghost'}" style="font-size:11px;padding:3px 8px" onclick="openChannelTimeline('${esc(c.name).replace(/'/g,"\\'")}')" title="登録 ${(c.subscribers||0).toLocaleString()}">${badge}${esc(c.name)}</button>`;
+  }).join('');
+}
+
+async function recordTrackingSnapshot(){
+  try{
+    const r=await fetch('/api/analysis/tracking-events?record=1');
+    if(!r.ok){toast('スナップショット記録に失敗','e');return}
+    toast('今日のスナップショットを記録しました','s');
+    loadTrackingPane();
+  }catch(e){toast('記録エラー','e')}
+}
+
+async function openChannelTimeline(name){
+  _trkSelected=name;
+  renderChannelPicker();
+  const box=document.getElementById('trkTimeline');if(!box)return;
+  box.innerHTML=`<div class="card" style="margin-top:var(--space-2)"><div class="fh">「${esc(name)}」の個別タブを読み込み中...（最大40秒）</div></div>`;
+  try{
+    const r=await fetch('/api/analysis/channel-timeline?'+new URLSearchParams({name}));
+    const d=await r.json();
+    if(!r.ok||!d.ok){
+      box.innerHTML=`<div class="card" style="margin-top:var(--space-2);border-left:3px solid var(--accent-warning)">
+        <div style="font-weight:600;color:var(--accent-warning);margin-bottom:4px">個別タブを取得できませんでした</div>
+        <div class="fh">${esc(d.error||('HTTP '+r.status))}</div>
+        <div class="fh" style="margin-top:6px;color:var(--text-tertiary)">個別タブは新スプレッドシート（CHANNEL_TRACK と同じブック）にのみ存在します。設定の成長トラッキング URL がそのブックを指しているか確認してください。</div>
+      </div>`;
+      return;
+    }
+    renderTimeline(d);
+  }catch(e){box.innerHTML='<div class="card" style="margin-top:var(--space-2)"><div class="fh" style="color:var(--accent-danger)">取得エラー</div></div>'}
+}
+
+function renderTimeline(tl){
+  const box=document.getElementById('trkTimeline');if(!box)return;
+  const accelColor=tl.accel_label==='加速'||tl.accel_label==='新規急加速'?'var(--accent-success)':(tl.accel_label==='減速'?'var(--accent-danger)':'var(--text-secondary)');
+  const staleBadge=tl.is_stale?`<span class="badge" style="background:rgba(239,68,68,.12);color:var(--accent-danger)">⚠ ${tl.fresh_days_ago}日前更新</span>`:`<span class="badge" style="background:rgba(34,197,94,.12);color:var(--accent-success)">最新 ${esc(tl.last_data_date)}</span>`;
+  const accelText=tl.accel_label==='新規急加速'?'新規急加速':(tl.accel>0?`x${tl.accel}`:'—');
+  const stat=(label,val,color)=>`<div style="text-align:center;padding:var(--space-2);background:var(--bg-surface);border-radius:var(--radius-md);border:1px solid var(--border-default)"><div style="font-size:10px;color:var(--text-tertiary)">${label}</div><div style="font-size:var(--text-lg);font-weight:700;font-family:var(--font-mono);color:${color||'var(--text-primary)'}">${val}</div></div>`;
+  const vids=(tl.new_videos||[]).map(v=>`
+    <div style="display:flex;gap:var(--space-2);padding:6px 0;border-top:1px solid var(--border-default);align-items:center;font-size:var(--text-xs)">
+      <span style="width:42px;color:var(--text-tertiary);flex-shrink:0">${esc(v.date)}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.title)}</span>
+      <span style="flex-shrink:0;color:var(--accent-info);font-family:var(--font-mono)" title="48h初速ピーク">⚡${(v.first_v48||0).toLocaleString()}</span>
+      ${v.ctr?`<span style="flex-shrink:0;color:var(--accent-success);font-family:var(--font-mono)" title="クリック率">${v.ctr.toFixed(1)}%</span>`:''}
+    </div>`).join('')||'<div class="fh">新着動画イベントなし</div>';
+  box.innerHTML=`
+    <div class="card" style="margin-top:var(--space-2)">
+      <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-3)">
+        <div class="sec-title" style="margin:0">${esc(tl.channel_name)}</div>
+        ${staleBadge}
+        <span class="badge" style="background:rgba(99,102,241,.12);color:${accelColor}">${esc(tl.accel_label)}</span>
+        <span style="flex:1"></span>
+        <span class="fh" style="margin:0">${tl.days}日分・${tl.rows_parsed}取得</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:var(--space-2);margin-bottom:var(--space-3)">
+        ${stat('登録者',(tl.latest_subs||0).toLocaleString())}
+        ${stat('総再生',(tl.latest_total_views||0).toLocaleString())}
+        ${stat('登録加速度',accelText,accelColor)}
+        ${stat('48h初速ピーク',(tl.v48_peak_recent||0).toLocaleString(),'var(--accent-info)')}
+      </div>
+      <div style="margin-bottom:var(--space-3)">
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+          <span>登録者推移</span><span style="font-family:var(--font-mono)">直近7日 +${(tl.sub_gain_7d||0).toLocaleString()} / 前7日 +${(tl.sub_gain_prev7d||0).toLocaleString()}</span>
+        </div>
+        ${_sparkline(tl.daily_subs,520,48,'var(--accent-success)')}
+      </div>
+      <div>
+        <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">新着動画（タイトル変化点・新しい順 / ⚡=48h初速）</div>
+        ${vids}
+      </div>
+    </div>`;
 }
 
 /* ==== ベンチマーク・タイトル軸（Phase 3） ==== */
@@ -8883,6 +9258,33 @@ let _bmSortKey='growth_rate',_bmSortDesc=true;
 let _bmSources=[];
 let _bmFilteredSources=[];
 let _bmSelectedNames=new Set();
+let _bmPinnedNames=new Set();      // ベンチマーク採用中(pinned_names)
+const BM_SEC_PER_CH=50;            // 1ch あたり生成秒数の目安（コスト見積り共通定数）
+function _bmDaysAgo(iso){
+  if(!iso)return '';
+  const t=Date.parse((iso||'').replace(' ','T'));
+  if(isNaN(t))return '';
+  const days=Math.floor((Date.now()-t)/86400000);
+  if(days<=0)return '今日';
+  return days+'日前';
+}
+async function loadBmPinned(){
+  try{
+    const r=await fetch('/api/analysis/benchmark-config');
+    if(!r.ok)return;
+    const d=await r.json();
+    const cfg=d.config||d||{};
+    _bmPinnedNames=new Set(cfg.pinned_names||cfg.benchmark_pinned_names||[]);
+  }catch(_){}
+}
+// 未分析(=already_analyzed でない)かつ表示中の行だけ一括選択（増分だけ1クリック）
+function bmSelectUnanalyzed(){
+  document.querySelectorAll('.bm-src-chk').forEach(c=>{
+    if(c.dataset.analyzed==='1'){c.checked=false;if(c.dataset.ch)_bmSelectedNames.delete(c.dataset.ch);}
+    else{c.checked=true;if(c.dataset.ch)_bmSelectedNames.add(c.dataset.ch);}
+  });
+  bmSourcesOnChange();
+}
 async function bmPreviewSources(){
   const {sheetA,sheetB,extras}=_bmInputs();
   if(!sheetA && !extras.length){toast('分析シート URL またはリスト外 URL を 1 つ以上指定してください','w');return;}
@@ -8893,13 +9295,15 @@ async function bmPreviewSources(){
   list.innerHTML='<div style="padding:var(--space-3);text-align:center;color:var(--text-tertiary);font-size:var(--text-sm)">⟳ 取り込み中...</div>';
   meta.textContent='';
   try{
+    await loadBmPinned();  // 採用(pinned)状態を取得してから描画
     const r=await fetch('/api/benchmark/preview-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sheet_a_url:sheetA,sheet_b_url:sheetB,extra_urls:extras})});
     if(!r.ok){const t=await r.text();throw new Error(t)}
     const d=await r.json();
     _bmSources=d.channels||[];
     _bmFilteredSources=_bmSources.slice();
     _bmSelectedNames=new Set();
-    meta.textContent=`${_bmSources.length} チャンネル (分析シート: ${_bmSources.filter(c=>c.source==='sheet_a').length} / 追加: ${_bmSources.filter(c=>c.source==='extra_url').length})`;
+    const anN=_bmSources.filter(c=>c.already_analyzed).length;
+    meta.textContent=`${_bmSources.length} チャンネル (分析済 ${anN} / 未分析 ${_bmSources.length-anN} ・ 分析シート: ${_bmSources.filter(c=>c.source==='sheet_a').length} / 追加: ${_bmSources.filter(c=>c.source==='extra_url').length})`;
     if(!_bmSources.length){list.innerHTML='<div style="padding:var(--space-3);text-align:center;color:var(--text-tertiary);font-size:var(--text-sm)">取得されたチャンネルがありません</div>';return;}
     _renderBmSourcesTable();
     toast(`${_bmSources.length} チャンネルを取得しました`,'s');
@@ -9011,6 +9415,7 @@ function _renderBmSourcesTable(preserveChecked){
       <thead><tr>
         <th style="width:32px;padding:6px 8px;background:var(--bg-elevated);border-bottom:1px solid var(--border-default);position:sticky;top:0;z-index:1"></th>
         <th style="width:44px;padding:6px 8px;background:var(--bg-elevated);border-bottom:1px solid var(--border-default);position:sticky;top:0;z-index:1">アイコン</th>
+        <th style="width:96px;padding:6px 8px;background:var(--bg-elevated);border-bottom:1px solid var(--border-default);position:sticky;top:0;z-index:1;font-size:var(--text-xs);font-weight:600;color:var(--text-secondary)">状態</th>
         ${th('channel_name','チャンネル名','left')}
         ${th('tracking_start','追跡開始日','center')}
         ${th('fetched_at','取得日時','center')}
@@ -9027,9 +9432,14 @@ function _renderBmSourcesTable(preserveChecked){
         const views=g.total_views||c.total_views||0;
         const thumb=c.thumbnail?`<img src="${esc(c.thumbnail)}" alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover">`:'<div style="width:32px;height:32px;border-radius:50%;background:var(--bg-elevated)"></div>';
         const isCh=_bmSelectedNames.has(c.channel_name);
-        return `<tr class="bm-src-tr" style="border-bottom:1px solid var(--border-subtle)">
-          <td style="padding:6px 8px;text-align:center"><input type="checkbox" class="bm-src-chk" data-ch="${esc(c.channel_name)}" onchange="bmSourcesOnChange()" ${isCh?'checked':''} style="width:16px;height:16px;cursor:pointer"></td>
+        const an=!!c.already_analyzed;
+        const pinned=_bmPinnedNames.has(c.channel_name);
+        const ago=an?_bmDaysAgo(c.last_analyzed_at):'';
+        const statusCell=`${an?`<span class="badge badge-success" style="font-size:9px" title="${esc(c.last_analyzed_at||'')}">分析済${ago?' '+ago:''}</span>`:'<span class="badge badge-neutral" style="font-size:9px">未分析</span>'}${pinned?'<span class="badge" style="font-size:9px;background:rgba(245,158,11,.15);color:var(--accent-warning);margin-left:3px" title="ベンチマーク採用中">★採用</span>':''}`;
+        return `<tr class="bm-src-tr" style="border-bottom:1px solid var(--border-subtle)${an?';opacity:.62':''}">
+          <td style="padding:6px 8px;text-align:center"><input type="checkbox" class="bm-src-chk" data-ch="${esc(c.channel_name)}" data-analyzed="${an?'1':'0'}" onchange="bmSourcesOnChange()" ${isCh?'checked':''} style="width:16px;height:16px;cursor:pointer"></td>
           <td style="padding:4px 8px">${thumb}</td>
+          <td style="padding:6px 8px;white-space:nowrap">${statusCell}</td>
           <td style="padding:6px 8px"><div style="font-weight:600">${esc(c.channel_name||'—')}</div>${c.url?`<a href="${esc(c.url)}" target="_blank" style="font-size:10px;color:var(--text-tertiary);text-decoration:none">${esc((c.url||'').slice(0,50))}</a>`:''}</td>
           <td style="padding:6px 8px;text-align:center;color:var(--text-tertiary)">${esc(g.tracking_start||'—')}</td>
           <td style="padding:6px 8px;text-align:center;color:var(--text-tertiary)">${esc(g.fetched_at||'—')}</td>
@@ -9069,8 +9479,16 @@ function bmSourcesOnChange(){
   const n=_bmSelectedNames.size;
   const cnt=document.getElementById('bmSourcesCount');
   const btn=document.getElementById('bmRunSelectedBtn');
-  if(cnt)cnt.textContent=`${n} 件選択`;
+  // 再分析(=選択∩分析済み)件数とコスト見積り（S3）
+  const analyzedSel=document.querySelectorAll('.bm-src-chk:checked[data-analyzed="1"]').length;
+  const min=Math.max(1,Math.round(n*BM_SEC_PER_CH/60));
+  if(cnt){
+    cnt.textContent=`${n} 件選択 ・ 約${min}分`+(analyzedSel>0?` ・ うち再分析${analyzedSel}件`:'');
+    cnt.style.color=analyzedSel>0?'var(--accent-warning)':'';
+  }
   if(btn)btn.disabled=n<1;
+  const adoptBtn=document.getElementById('bmAdoptSelectedBtn');
+  if(adoptBtn)adoptBtn.disabled=n<1;
   const summary=document.getElementById('bmFilterSummary');
   if(summary && _bmSources.length){
     const rows=(_bmFilteredSources.length||_hasActiveBmFilters()?_bmFilteredSources:_bmSources);
@@ -9097,34 +9515,66 @@ async function bmSaveSelectedBenchmarkPins(names, notify=true){
     return false;
   }
 }
+function _bmMaxAgeDays(){
+  const v=parseInt(document.getElementById('bmMaxAgeDays')?.value||'0',10);
+  return v>0?v:null;  // 0=常にスキップ(=max_age_days無効)
+}
+// dry_run を叩いて {total,new_count,reanalyze_count,skip_count,cli_count,est_seconds} を取得
+async function _bmDryRun(channelFilter, force){
+  const {sheetA,sheetB,extras}=_bmInputs();
+  const body={sheet_a_url:sheetA,sheet_b_url:sheetB,extra_urls:extras,dry_run:true,force:!!force,max_age_days:_bmMaxAgeDays()};
+  if(channelFilter&&channelFilter.length)body.channel_filter=channelFilter;
+  const r=await fetch('/api/benchmark/run-full',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok)return null;
+  return await r.json();
+}
 async function bmRunSelected(){
   const selected=_bmSelected();
   if(!selected.length){toast('チャンネルを選択してください','w');return;}
-  if(!confirm(`選択した ${selected.length} チャンネルを分析します（約 ${selected.length*45} 秒）。\n\n・TOP3 動画のコメント取得\n・Claude CLI で統合プロファイル生成`))return;
-  await bmSaveSelectedBenchmarkPins(selected, false);
-  await _bmRun(selected);
+  const est=await _bmDryRun(selected,false);
+  const cli=est?est.cli_count:selected.length, skip=est?est.skip_count:0, mins=Math.max(1,Math.round((est?est.est_seconds:selected.length*BM_SEC_PER_CH)/60));
+  const adopt=confirm(`選択 ${selected.length} ch を処理します。\n\n・Claude CLI 実行: ${cli} 回（新規/再分析）\n・スキップ(分析済み): ${skip} 件\n・想定時間: 約 ${mins} 分\n\n【OK】で実行します。`);
+  if(!adopt)return;
+  // 採用するかを別途確認（分析と採用を分離・通知あり）
+  const alsoPin=confirm(`この ${selected.length} ch を「ベンチマークに採用」(制作分析の対象=pinned)にも設定しますか？\n\n【OK】= 分析して採用 / 【キャンセル】= 分析のみ`);
+  if(alsoPin)await bmSaveSelectedBenchmarkPins(selected, true);
+  await _bmRun(selected,{force:false});
 }
 async function runBenchmarkFull(){
-  const {extras}=_bmInputs();
-  if(!confirm(`深掘りプロファイル生成を実行します。\n・分析シート/Channel Tracker 取り込み\n・リスト外 ${extras.length}ch の API 取得\n・各チャンネル TOP3 動画のコメント取得\n・Claude CLI で統合プロファイル生成\n\nチャンネル数 × 30-60秒 を想定（数十分かかる可能性があります）`))return;
-  await _bmRun(null);
+  const est=await _bmDryRun(null,false);
+  if(est){
+    if(!confirm(`表示中の全チャンネルを対象に再生成します。\n\n・対象: ${est.total} ch\n・Claude CLI 実行: ${est.cli_count} 回（新規 ${est.new_count} / 再分析 ${est.reanalyze_count}）\n・スキップ(分析済み): ${est.skip_count} 件\n・想定時間: 約 ${Math.max(1,Math.round(est.est_seconds/60))} 分\n\n⚠ 分析済みでも『再分析しきい値』に該当するものは再生成されます。`))return;
+  }else{
+    if(!confirm('全チャンネルを対象にプロファイル生成します（数十分かかる可能性）。続行しますか？'))return;
+  }
+  await _bmRun(null,{force:false});
 }
-async function _bmRun(channelFilter){
+async function _bmRun(channelFilter, opts){
+  opts=opts||{};
   const {sheetA,sheetB,extras}=_bmInputs();
   if(!sheetA && !extras.length){toast('分析シート URL またはリスト外 URL を 1 つ以上指定してください','w');return}
   document.getElementById('bmRunStatus').textContent='⟳ 起動中...';
   try{
-    const body={sheet_a_url:sheetA,sheet_b_url:sheetB,extra_urls:extras};
+    const body={sheet_a_url:sheetA,sheet_b_url:sheetB,extra_urls:extras,
+      skip_existing:true, force:!!opts.force, max_age_days:_bmMaxAgeDays()};
     if(channelFilter&&channelFilter.length)body.channel_filter=channelFilter;
     const r=await fetch('/api/benchmark/run-full',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok){const t=await r.text();throw new Error(t)}
-    document.getElementById('bmRunStatus').innerHTML=`<span style="color:var(--accent-success)">✓ ${channelFilter?`選択 ${channelFilter.length}ch`:'プロファイル生成'} 起動成功</span>`;
+    document.getElementById('bmRunStatus').innerHTML=`<span style="color:var(--accent-success)">✓ ${channelFilter?`選択 ${channelFilter.length}ch`:'全件'} 起動成功</span>`;
     toast('プロファイル生成を開始しました','s');
     loadBenchmarkContextStatus();
     pollBenchmarkStatus();
   }catch(e){
     document.getElementById('bmRunStatus').innerHTML=`<span style="color:var(--accent-danger)">${esc(String(e.message||e))}</span>`;
   }
+}
+// 採用のみ（再分析せず pinned に設定）。S4 採用導線の明示化
+async function bmAdoptSelected(){
+  const selected=_bmSelected();
+  if(!selected.length){toast('チャンネルを選択してください','w');return;}
+  if(!confirm(`選択した ${selected.length} ch をベンチマークに採用（制作分析の対象=pinned）します。再分析はしません。`))return;
+  const ok=await bmSaveSelectedBenchmarkPins(selected, true);
+  if(ok){selected.forEach(n=>_bmPinnedNames.add(n));_renderBmSourcesTable(true);}
 }
 async function pollBenchmarkStatus(){
   if(_bmPollTimer)clearInterval(_bmPollTimer);
@@ -9157,10 +9607,25 @@ async function pollBenchmarkStatus(){
   await tick();
   _bmPollTimer=setInterval(tick,3000);
 }
+async function bmTogglePin(name){
+  const on=_bmPinnedNames.has(name);
+  if(on)_bmPinnedNames.delete(name); else _bmPinnedNames.add(name);
+  const names=Array.from(_bmPinnedNames);
+  try{
+    const r=await fetch('/api/analysis/benchmark-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pinned_names:names})});
+    if(!r.ok)throw new Error(await r.text());
+    toast(on?`「${name}」を採用解除しました`:`「${name}」をベンチマークに採用しました`,'s');
+    loadBenchmarkProfiles();
+  }catch(e){
+    if(on)_bmPinnedNames.add(name); else _bmPinnedNames.delete(name);
+    toast('採用状態の保存に失敗: '+String(e.message||e),'e');
+  }
+}
 async function loadBenchmarkProfiles(){
   const el=document.getElementById('bmProfiles');
   const metaEl=document.getElementById('bmProfilesMeta');
   try{
+    await loadBmPinned();  // ★採用中バッジのため採用状態を取得
     const r=await fetch('/api/benchmark/profiles');
     const d=await r.json();
     const profiles=d.profiles||[];
@@ -9173,9 +9638,32 @@ async function loadBenchmarkProfiles(){
       el.innerHTML='<div class="empty" style="padding:var(--space-4);text-align:center;color:var(--text-tertiary)">プロファイル未生成。「取り込み」タブからプロファイル生成を実行してください。</div>';
       return;
     }
+    // 要素合成(bm-fuse-chk)の選択を再描画で消さない（採用トグル等の再読込対策）
+    const _checked=new Set([...el.querySelectorAll('.bm-fuse-chk:checked')].map(c=>c.dataset.ch));
     el.innerHTML=profiles.map(p=>renderBenchmarkProfile(p)).join('');
+    if(_checked.size)el.querySelectorAll('.bm-fuse-chk').forEach(c=>{if(_checked.has(c.dataset.ch))c.checked=true});
     bmFuseOnChange();
+    // アイコン未取得のプロファイルがあれば、背景で解決して再描画（初期描画はブロックしない）
+    bmResolveProfileIcons(profiles);
   }catch(e){el.innerHTML=`<div style="color:var(--accent-danger)">読み込み失敗: ${esc(String(e.message||e))}</div>`}
+}
+async function bmResolveProfileIcons(profiles){
+  try{
+    if(!Array.isArray(profiles)||!profiles.length)return;
+    if(!profiles.some(p=>!((p&&p.thumbnail)||'').trim()))return; // 全件アイコン有なら何もしない
+    const r=await fetch('/api/benchmark/profiles?resolve_icons=true');
+    if(!r.ok)return;
+    const d=await r.json();
+    const resolved=d.profiles||[];
+    if(!resolved.length)return;
+    const el=document.getElementById('bmProfiles');
+    if(!el)return;
+    // チェック状態を保ってから再描画（要素合成の選択を消さない）
+    const checked=new Set([...el.querySelectorAll('.bm-fuse-chk:checked')].map(c=>c.dataset.ch));
+    el.innerHTML=resolved.map(p=>renderBenchmarkProfile(p)).join('');
+    if(checked.size){el.querySelectorAll('.bm-fuse-chk').forEach(c=>{if(checked.has(c.dataset.ch))c.checked=true})}
+    bmFuseOnChange();
+  }catch(_){}
 }
 function renderBenchmarkProfile(p){
   const pf=p.profile||{};
@@ -9202,6 +9690,7 @@ function renderBenchmarkProfile(p){
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
             <div style="font-size:var(--text-lg);font-weight:700">${esc(p.channel_name||'—')}</div>
+            ${_bmPinnedNames.has(cn)?'<span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-warning)" title="ベンチマーク採用中">★採用中</span>':''}
             <span class="badge badge-neutral">${(p.subscribers||0).toLocaleString()} subs</span>
             <span class="badge badge-neutral">${(p.total_views||0).toLocaleString()} views</span>
             ${growth}
@@ -9209,7 +9698,10 @@ function renderBenchmarkProfile(p){
           </div>
           ${p.url?`<a href="${esc(p.url)}" target="_blank" style="font-size:var(--text-xs);color:var(--text-tertiary)">${esc(p.url)}</a>`:''}
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="bmDeleteOne('${esc((cn||'').replace(/'/g,"\\'"))}')" style="color:var(--accent-danger);flex-shrink:0;padding:4px 10px" title="このチャンネルをプロファイルから削除">✕ 削除</button>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="btn btn-ghost btn-sm" onclick="bmTogglePin('${esc((cn||'').replace(/'/g,"\\'"))}')" style="padding:4px 10px;${_bmPinnedNames.has(cn)?'color:var(--accent-warning)':'color:var(--text-secondary)'}" title="ベンチマーク採用(制作分析の対象)を切替">${_bmPinnedNames.has(cn)?'★ 採用中':'☆ 採用'}</button>
+          <button class="btn btn-ghost btn-sm" onclick="bmDeleteOne('${esc((cn||'').replace(/'/g,"\\'"))}')" style="color:var(--accent-danger);padding:4px 10px" title="このチャンネルをプロファイルから削除">✕ 削除</button>
+        </div>
       </div>
       ${vids.length?`<div class="bm-thumb-grid">${vids.map(v=>v.thumbnail?`<a href="${esc(v.url||'#')}" target="_blank" title="${esc(v.title||'')}"><img src="${esc(v.thumbnail)}" alt=""></a>`:'<div></div>').join('')}</div>`:''}
       ${recent.length?`<div style="margin:var(--space-2) 0 var(--space-3);font-size:var(--text-xs);color:var(--text-secondary)">
@@ -10296,7 +10788,9 @@ function _renderAnalysisCacheTo(res, cd, opts){
     <div style="margin-bottom:var(--space-2)"><strong>バズパターン:</strong> ${esc((bp.title_patterns||[]).join(' / '))}</div>
     <div style="margin-bottom:var(--space-2)"><strong>ホットキーワード:</strong> ${(bp.keywords||[]).map(k=>'<span class="badge badge-info" style="margin:2px">'+esc(k)+'</span>').join('')}</div>
     <div style="margin-bottom:var(--space-2)"><strong>トレンド変化:</strong> ${esc(ts.from_buzz_to_recent||'')}</div>
-    <div><strong>推奨:</strong> ${esc((rc.title_tips||[]).join(' / '))}</div>
+    <div style="margin-bottom:var(--space-2)"><strong>タイトル推奨:</strong> ${esc((rc.title_tips||[]).join(' / '))}</div>
+    ${(rc.description_tips&&rc.description_tips.length)?`<div style="margin-bottom:var(--space-2)"><strong>投稿文ヒント:</strong> ${esc((rc.description_tips||[]).join(' / '))}</div>`:''}
+    ${(rc.tag_suggestions&&rc.tag_suggestions.length)?`<div><strong>タグ候補:</strong> ${(rc.tag_suggestions||[]).map(k=>'<span class="badge badge-neutral" style="margin:2px">'+esc(k)+'</span>').join('')}</div>`:''}
   </div>`;
   return true;
 }

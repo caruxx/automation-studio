@@ -316,39 +316,58 @@ def _run_claude_vision(cli_cmd: str, prompt: str, image_paths: list[Path],
 
 
 def analyze_channels(channels: list[dict], cli_cmd: str = DEFAULT_CLI,
-                     per_channel_cap: int = 8) -> dict:
+                     per_channel_cap: int = 8,
+                     only_channel_ids=None, skip_unchanged: bool = True,
+                     existing_per_channel: dict = None) -> dict:
     """各チャンネルを Vision 分析 → 集約。
 
+    only_channel_ids: 選択 ch だけ分析。skip_unchanged: サムネ集合の指紋が既存と
+    一致なら Vision を再実行せず流用（Vision はコスト最大なので効果大）。
     Returns:
-      {
-        "per_channel": {channelId: {...}},
-        "aggregate": {...}
-      }
+      {"per_channel": {channelId: {...}}, "aggregate": {...}}
     """
+    from app_benchmark_common import channel_fingerprint, plan_channel, stamp_meta, normalize_ids
+    only_ids = normalize_ids(only_channel_ids)
+    existing = existing_per_channel or {}
     per_channel: dict[str, dict] = {}
-    summaries: list[dict] = []
+    n_run = n_skip = 0
 
     for ch in channels:
         ch_id = ch.get("channelId") or _safe_id(ch.get("channelName", ""))
+        ch_name = ch.get("channelName", "")
         thumbs = ch.get("thumbnails") or []
         if not thumbs:
             continue
         # views 上位を per_channel_cap 件まで
         items = sorted(thumbs, key=lambda t: t.get("viewCount", 0), reverse=True)[:per_channel_cap]
-        prompt = _build_per_channel_prompt(ch.get("channelName", ""), items)
+        fp = channel_fingerprint({"topByViews": items})
+        if plan_channel(ch_id, fp, existing, only_ids, skip_unchanged, ch_name) == "carry":
+            if ch_id in existing:
+                per_channel[ch_id] = existing[ch_id]
+                n_skip += 1
+            continue
+        prompt = _build_per_channel_prompt(ch_name, items)
         paths = [Path(t["localPath"]) for t in items]
         try:
             raw = _run_claude_vision(cli_cmd, prompt, paths)
         except RuntimeError as e:
-            print(f"  ⚠ {ch.get('channelName')}: {e}")
+            print(f"  ⚠ {ch_name}: {e}")
+            if ch_id in existing:
+                per_channel[ch_id] = existing[ch_id]
             continue
         obj = _extract_json(raw)
         if not obj:
-            print(f"  ⚠ {ch.get('channelName')}: JSON 抽出失敗")
+            print(f"  ⚠ {ch_name}: JSON 抽出失敗")
+            if ch_id in existing:
+                per_channel[ch_id] = existing[ch_id]
             continue
-        per_channel[ch_id] = obj
-        summaries.append({"channel": ch.get("channelName", ""), **obj})
-        print(f"  ✓ {ch.get('channelName')}: 分析完了")
+        per_channel[ch_id] = stamp_meta(obj, fp)
+        n_run += 1
+        print(f"  ✓ {ch_name}: 分析完了")
+
+    summaries = [{"channel": (v.get("channel") or k), **{kk: vv for kk, vv in v.items() if kk != "_meta"}}
+                 for k, v in per_channel.items()]
+    print(f"  ◎ Vision再分析 {n_run} / 流用 {n_skip} / 計 {len(per_channel)}")
 
     aggregate: dict = {}
     if summaries:
@@ -373,7 +392,8 @@ def analyze_channels(channels: list[dict], cli_cmd: str = DEFAULT_CLI,
 
 # ─── トップレベル: ダウンロード + 分析 + 保存 ───────────
 
-def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8) -> dict:
+def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
+             only_channel_ids=None, skip_unchanged: bool = True) -> dict:
     """既存の競合キャッシュをソースに、サムネ DL + 分析 + 保存を実行。"""
     print("📥 サムネ DL 開始")
     channels = download_thumbnails()
@@ -381,7 +401,10 @@ def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8) -> dict:
         raise RuntimeError("DL 対象がありません。先に競合データ取得を実行してください。")
 
     print("🧠 Claude Vision で分析中")
-    analysis = analyze_channels(channels, cli_cmd=cli_cmd, per_channel_cap=per_channel_cap)
+    existing_pc = (load_cache().get("analysis") or {}).get("per_channel", {}) or {}
+    analysis = analyze_channels(channels, cli_cmd=cli_cmd, per_channel_cap=per_channel_cap,
+                                only_channel_ids=only_channel_ids, skip_unchanged=skip_unchanged,
+                                existing_per_channel=existing_pc)
 
     existing = load_cache()
     payload = {

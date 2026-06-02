@@ -237,8 +237,15 @@ def _run_claude(cli_cmd: str, prompt: str, timeout: int = ANALYSIS_TIMEOUT) -> s
 def analyze_concepts(competitor_data: Optional[dict] = None,
                      cli_cmd: str = DEFAULT_CLI,
                      per_channel_cap: int = 8,
-                     self_persona: str = "") -> dict:
-    """各チャンネルのコンセプト → 横断 aggregate を生成。"""
+                     self_persona: str = "",
+                     only_channel_ids=None,
+                     skip_unchanged: bool = True) -> dict:
+    """各チャンネルのコンセプト → 横断 aggregate を生成。
+
+    only_channel_ids: 指定 ch だけ分析（未指定=全件）。skip_unchanged: 入力指紋が
+    既存と一致なら再分析せず流用。既存 per_channel はマージ保持（選択外を消さない）。
+    """
+    from app_benchmark_common import channel_fingerprint, plan_channel, stamp_meta, normalize_ids
     if competitor_data is None:
         outer = _load_competitor_cache() or {}
         competitor_data = outer.get("competitor_data") or {}
@@ -247,25 +254,42 @@ def analyze_concepts(competitor_data: Optional[dict] = None,
     if not channels:
         raise RuntimeError("competitor_data.channels が空です。先に競合データ取得を実行してください。")
 
+    only_ids = normalize_ids(only_channel_ids)
+    existing = (load_cache() or {}).get("per_channel", {}) or {}
     per_channel: dict[str, dict] = {}
-    summaries: list[dict] = []
+    n_run = n_skip = 0
 
     for ch in channels:
         ch_id = ch.get("channelId") or _safe_id(ch.get("channelName", ""))
         ch_name = ch.get("channelName", "")
+        fp = channel_fingerprint(ch)
+        if plan_channel(ch_id, fp, existing, only_ids, skip_unchanged, ch_name) == "carry":
+            if ch_id in existing:
+                per_channel[ch_id] = existing[ch_id]
+                n_skip += 1
+            continue
         prompt = _build_per_channel_prompt(ch, per_channel_cap)
         try:
             raw = _run_claude(cli_cmd, prompt)
         except RuntimeError as e:
             print(f"  ⚠ {ch_name}: {e}")
+            if ch_id in existing:
+                per_channel[ch_id] = existing[ch_id]
             continue
         obj = _extract_json(raw)
         if not obj:
             print(f"  ⚠ {ch_name}: JSON 抽出失敗")
+            if ch_id in existing:
+                per_channel[ch_id] = existing[ch_id]
             continue
-        per_channel[ch_id] = obj
-        summaries.append({"channel": ch_name, **obj})
+        per_channel[ch_id] = stamp_meta(obj, fp)
+        n_run += 1
         print(f"  ✓ {ch_name}: コンセプト抽出完了")
+
+    # aggregate は全 per_channel（流用含む）から再構成
+    summaries = [{"channel": (v.get("channel") or k), **{kk: vv for kk, vv in v.items() if kk != "_meta"}}
+                 for k, v in per_channel.items()]
+    print(f"  ◎ 再分析 {n_run} / 流用 {n_skip} / 計 {len(per_channel)}")
 
     aggregate: dict = {}
     if summaries:
@@ -281,11 +305,14 @@ def analyze_concepts(competitor_data: Optional[dict] = None,
 
 
 def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
-             self_persona: str = "") -> dict:
+             self_persona: str = "", only_channel_ids=None,
+             skip_unchanged: bool = True) -> dict:
     """エントリポイント: 競合キャッシュをソースに分析 → 保存。"""
     print("🧠 コンセプト軸分析を開始")
     result = analyze_concepts(cli_cmd=cli_cmd, per_channel_cap=per_channel_cap,
-                              self_persona=self_persona)
+                              self_persona=self_persona,
+                              only_channel_ids=only_channel_ids,
+                              skip_unchanged=skip_unchanged)
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         **result,

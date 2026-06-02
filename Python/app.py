@@ -3854,6 +3854,163 @@ def api_analysis_overview():
     }
 
 
+def _resolve_growth_url() -> str:
+    """成長トラッキング（CHANNEL_TRACK + 個別 TRACK_ タブ）スプシ URL を解決。"""
+    bc = get_benchmark_config()
+    config = get_dashboard_config()
+    return (bc.get("spreadsheet_growth_tracking_url")
+            or config.get("spreadsheet_growth_tracking_url", "")).strip()
+
+
+@app.get("/api/analysis/channel-list")
+def api_channel_list():
+    """CHANNEL_TRACK マスタの全チャンネル一覧（UI ピッカー用・15列フル）。
+
+    各 entry に新着判定（is_new/days_tracked）を付与して返す。個別タブの時系列は
+    重いので含めない（必要時に channel-timeline をオンデマンドで叩く）。
+    """
+    growth_url = _resolve_growth_url()
+    if not growth_url:
+        return {"configured": False, "channels": []}
+    try:
+        from app_sheets import (
+            fetch_csv, parse_growth_tracking, detect_new_channels, SheetFetchError,
+        )
+        try:
+            rows = fetch_csv(growth_url)
+        except SheetFetchError as e:
+            raise HTTPException(400, str(e))
+        entries = parse_growth_tracking(rows)
+        detect_new_channels(entries)  # is_new / days_tracked を副作用付与
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    chans = [{
+        "name": e.channel_name,
+        "subscribers": e.subscribers,
+        "total_views": e.total_views,
+        "daily_subs": e.daily_sub_change,
+        "daily_views": e.daily_view_change,
+        "growth_rate": e.growth_rate,
+        "video_count": e.video_count,
+        "last_post_date": e.last_post_date,
+        "recent5_avg_views": e.recent5_avg_views,
+        "weekly_growth_rate": e.weekly_growth_rate,
+        "monthly_growth_rate": e.monthly_growth_rate,
+        "tracking_start": e.tracking_start,
+        "last_updated": e.last_updated,
+        "is_new": e.is_new,
+        "days_tracked": e.days_tracked,
+    } for e in entries]
+    chans.sort(key=lambda c: c["subscribers"], reverse=True)
+    return {"configured": True, "count": len(chans), "channels": chans}
+
+
+@app.get("/api/analysis/new-channels")
+def api_new_channels(within_days: int = 14):
+    """追跡開始が直近 within_days 日以内の新着チャンネル（日次登録増順）。"""
+    growth_url = _resolve_growth_url()
+    if not growth_url:
+        return {"configured": False, "new_channels": []}
+    try:
+        from app_sheets import (
+            fetch_csv, parse_growth_tracking, detect_new_channels, SheetFetchError,
+        )
+        try:
+            rows = fetch_csv(growth_url)
+        except SheetFetchError as e:
+            raise HTTPException(400, str(e))
+        entries = parse_growth_tracking(rows)
+        new = detect_new_channels(entries, new_within_days=within_days)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    return {"configured": True, "within_days": within_days, "count": len(new),
+            "new_channels": [{
+                "name": e.channel_name,
+                "subscribers": e.subscribers,
+                "daily_subs": e.daily_sub_change,
+                "daily_views": e.daily_view_change,
+                "tracking_start": e.tracking_start,
+                "days_tracked": e.days_tracked,
+                "last_post_date": e.last_post_date,
+                "video_count": e.video_count,
+            } for e in new]}
+
+
+@app.get("/api/analysis/channel-timeline")
+def api_channel_timeline(name: str, spreadsheet: str = ""):
+    """個別 TRACK_<name> タブ（1日4回取得の時系列）をオンデマンド取得して指標化。
+
+    spreadsheet 省略時は設定中の成長トラッキング URL を使用。個別タブはこのブックに
+    のみ存在するため、旧スプシ設定のままだと「タブが見つかりません」になる（切替後に有効）。
+    """
+    from dataclasses import asdict
+    src = (spreadsheet or _resolve_growth_url()).strip()
+    if not src:
+        raise HTTPException(400, "成長トラッキングシート URL が未設定です")
+    if not name.strip():
+        raise HTTPException(400, "チャンネル名を指定してください")
+    try:
+        from app_sheets import fetch_channel_timeline
+        tl = fetch_channel_timeline(src, name.strip())
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    data = asdict(tl)
+    if tl.error:
+        # 404 ではなく 200 + error フィールドで返す（UI が個別にハンドリング）
+        data["ok"] = False
+    else:
+        data["ok"] = True
+    return data
+
+
+@app.get("/api/analysis/tracking-events")
+def api_tracking_events(record: int = 0):
+    """日次スナップショット差分（新着ch / 新作投稿 / 急伸）を返す。
+
+    record=1 のとき今日のスナップショットを保存してから差分を計算（日次更新フック用）。
+    record=0（既定）は保存済みスナップショットを使った読み取りのみ（最新2件の差分）。
+    """
+    growth_url = _resolve_growth_url()
+    if not growth_url:
+        return {"configured": False, "events": None}
+    try:
+        from app_sheets import (
+            fetch_csv, parse_growth_tracking, record_daily_snapshot,
+            snapshot_growth, load_latest_snapshot, diff_snapshots, SheetFetchError,
+        )
+        try:
+            rows = fetch_csv(growth_url)
+        except SheetFetchError as e:
+            raise HTTPException(400, str(e))
+        entries = parse_growth_tracking(rows)
+        if record:
+            result = record_daily_snapshot(entries)
+            events = result["events"]
+            first_run = result["first_run"]
+        else:
+            # 保存せず、現在値 vs 直近保存スナップショットで差分のみ
+            curr = snapshot_growth(entries)
+            prev = load_latest_snapshot(before=curr["date"]) or load_latest_snapshot()
+            if prev:
+                events = diff_snapshots(prev, curr)
+                first_run = False
+            else:
+                events = {"prev_date": None, "curr_date": curr["date"],
+                          "new_channels": [], "dropped_channels": [],
+                          "new_videos": [], "surging": []}
+                first_run = True
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    return {"configured": True, "recorded": bool(record),
+            "first_run": first_run, "events": events}
+
+
 @app.get("/api/analysis/cache")
 def api_analysis_cache():
     """キャッシュされた分析結果を返す"""
@@ -3886,6 +4043,8 @@ def api_delete_analysis_cache():
 class BenchThumbRunRequest(BaseModel):
     per_channel_cap: Optional[int] = 8
     dl_only: Optional[bool] = False  # true なら分析スキップ
+    channel_ids: Optional[List[str]] = None
+    skip_unchanged: Optional[bool] = True
 
 class BenchThumbPickedUpdate(BaseModel):
     picked: List[str]  # videoId のリスト
@@ -3956,8 +4115,12 @@ def api_benchmark_thumbnail_run(req: BenchThumbRunRequest = BenchThumbRunRequest
                 return
 
             _bt_set_status(phase="analyzing", msg="Claude Vision で分析中...")
+            _existing_pc = (cache.get("analysis") or {}).get("per_channel", {}) or {}
             analysis = _bt.analyze_channels(channels, cli_cmd=cli_cmd,
-                                            per_channel_cap=req.per_channel_cap or 8)
+                                            per_channel_cap=req.per_channel_cap or 8,
+                                            only_channel_ids=req.channel_ids,
+                                            skip_unchanged=True if req.skip_unchanged is None else bool(req.skip_unchanged),
+                                            existing_per_channel=_existing_pc)
             cache["analysis"] = analysis
             _bt.save_cache(cache)
             _bt_set_status(running=False, phase="done", msg="分析完了", finished_at=_bt_now_iso())
@@ -3985,6 +4148,8 @@ def api_benchmark_thumbnail_get_picked():
 
 class BenchConceptRunRequest(BaseModel):
     per_channel_cap: Optional[int] = 8
+    channel_ids: Optional[List[str]] = None  # 選択ch名/id 限定（未指定=全件）
+    skip_unchanged: Optional[bool] = True    # 入力指紋が一致なら再分析せず流用
 
 _bc_status: dict = {"running": False, "phase": "", "msg": "", "started_at": "", "finished_at": ""}
 
@@ -4025,7 +4190,9 @@ def api_benchmark_concept_run(req: BenchConceptRunRequest = BenchConceptRunReque
         try:
             _bc.run_full(cli_cmd=cli_cmd,
                          per_channel_cap=req.per_channel_cap or 8,
-                         self_persona=persona)
+                         self_persona=persona,
+                         only_channel_ids=req.channel_ids,
+                         skip_unchanged=True if req.skip_unchanged is None else bool(req.skip_unchanged))
             _bc_set_status(running=False, phase="done", msg="完了",
                            finished_at=_bt_now_iso())
         except Exception as e:
@@ -4042,6 +4209,8 @@ def api_benchmark_concept_run(req: BenchConceptRunRequest = BenchConceptRunReque
 
 class BenchTitleRunRequest(BaseModel):
     per_channel_cap: Optional[int] = 10
+    channel_ids: Optional[List[str]] = None
+    skip_unchanged: Optional[bool] = True
 
 _btitle_status: dict = {"running": False, "phase": "", "msg": "", "started_at": "", "finished_at": ""}
 
@@ -4080,12 +4249,85 @@ def api_benchmark_title_run(req: BenchTitleRunRequest = BenchTitleRunRequest()):
         try:
             _btm.run_full(cli_cmd=cli_cmd,
                           per_channel_cap=req.per_channel_cap or 10,
-                          self_persona=persona)
+                          self_persona=persona,
+                          only_channel_ids=req.channel_ids,
+                          skip_unchanged=True if req.skip_unchanged is None else bool(req.skip_unchanged))
             _btitle_set_status(running=False, phase="done", msg="完了",
                                finished_at=_bt_now_iso())
         except Exception as e:
             _btitle_set_status(running=False, phase="error",
                                msg=str(e)[:300], finished_at=_bt_now_iso())
+
+    t = _bt_threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+# ─── API: ベンチマーク・投稿文（説明文）軸 ───
+# 指定チャンネルの説明文構成 → per_channel + aggregate(recommendation_for_self)
+# (a)既存メタ改善 と (b)新規投稿文構成案 へ還流。説明文は API rivals 経路のみ取得可。
+
+class BenchDescriptionRunRequest(BaseModel):
+    per_channel_cap: Optional[int] = 8
+    refetch_full: Optional[bool] = True  # 軸 run 時に full 説明文を再取得（500字版の欠落を補う）
+    channel_ids: Optional[List[str]] = None
+    skip_unchanged: Optional[bool] = True
+
+_bdesc_status: dict = {"running": False, "phase": "", "msg": "", "started_at": "", "finished_at": ""}
+
+def _bdesc_set_status(**kw):
+    _bdesc_status.update(kw)
+
+@app.get("/api/benchmark/description")
+def api_benchmark_description_get():
+    import app_benchmark_description as _bdm
+    cache = _bdm.load_cache()
+    return {
+        "status": "ok",
+        "running": _bdesc_status.get("running", False),
+        "phase": _bdesc_status.get("phase", ""),
+        "msg": _bdesc_status.get("msg", ""),
+        "generated_at": cache.get("generated_at", ""),
+        "no_data": cache.get("no_data", False),
+        "reason": cache.get("reason", ""),
+        "source": cache.get("source", ""),
+        "per_channel": cache.get("per_channel", {}),
+        "aggregate": cache.get("aggregate", {}),
+    }
+
+@app.post("/api/benchmark/description/run")
+def api_benchmark_description_run(req: BenchDescriptionRunRequest = BenchDescriptionRunRequest()):
+    if _bdesc_status.get("running"):
+        return {"status": "already_running", **_bdesc_status}
+
+    import app_benchmark_description as _bdm
+    suno_cfg = get_suno_config()
+    cli_cmd = suno_cfg.get("claude_cli") or "claude"
+    cfg = get_dashboard_config()
+    persona = cfg.get("persona", "")
+    refetch_full = True if req.refetch_full is None else bool(req.refetch_full)
+
+    def _worker():
+        _bdesc_set_status(running=True, phase="analyzing",
+                          msg=("full 説明文を再取得して分析中..." if refetch_full else "投稿文構成を分析中..."),
+                          started_at=_bt_now_iso(), finished_at="")
+        try:
+            result = _bdm.run_full(cli_cmd=cli_cmd,
+                                   per_channel_cap=req.per_channel_cap or 8,
+                                   self_persona=persona,
+                                   refetch_full=refetch_full,
+                                   only_channel_ids=req.channel_ids,
+                                   skip_unchanged=True if req.skip_unchanged is None else bool(req.skip_unchanged))
+            if result.get("no_data"):
+                _bdesc_set_status(running=False, phase="done",
+                                  msg=(result.get("reason") or "説明文データなし"),
+                                  finished_at=_bt_now_iso())
+            else:
+                _bdesc_set_status(running=False, phase="done", msg="完了",
+                                  finished_at=_bt_now_iso())
+        except Exception as e:
+            _bdesc_set_status(running=False, phase="error",
+                              msg=str(e)[:300], finished_at=_bt_now_iso())
 
     t = _bt_threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -4634,6 +4876,10 @@ class BenchmarkRunRequest(BaseModel):
     sheet_b_url: Optional[str] = None
     extra_urls: Optional[List[str]] = None
     channel_filter: Optional[List[str]] = None   # 指定時は選択チャンネルだけ分析
+    skip_existing: Optional[bool] = True   # 既存の有効プロファイルは再生成しない
+    force: Optional[bool] = False          # True で既存無視の強制再生成
+    max_age_days: Optional[int] = None     # スキップの鮮度しきい値（None=常にスキップ）
+    dry_run: Optional[bool] = False        # 生成せず内訳見積りのみ返す
 
 
 class BenchmarkSourcesRequest(BaseModel):
@@ -4673,7 +4919,6 @@ async def api_benchmark_run_full(req: BenchmarkRunRequest):
     channel_filter 指定時は選択チャンネルだけ分析。
     進捗は /api/benchmark/status で取得可能。
     """
-    await _ensure_not_running("benchmark", "プロファイル生成が既に実行中です")
     cfg = get_dashboard_config()
     sheet_a = (req.sheet_a_url or cfg.get("spreadsheet_channel_detail_url") or "").strip()
     sheet_b = (req.sheet_b_url or cfg.get("spreadsheet_growth_tracking_url") or "").strip()
@@ -4684,6 +4929,22 @@ async def api_benchmark_run_full(req: BenchmarkRunRequest):
 
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
+
+    # dry_run（S3 コスト見積り）: 実行中でも即時に内訳だけ返す（生成しない＝排他不要）
+    if req.dry_run:
+        try:
+            from app_competitor import run_full_benchmark
+            return run_full_benchmark(
+                sheet_a_url=sheet_a, sheet_b_url=sheet_b,
+                extra_urls=extras, cli_cmd=cli_cmd,
+                channel_filter=channel_filter or None,
+                skip_existing=True if req.skip_existing is None else bool(req.skip_existing),
+                force=bool(req.force), max_age_days=req.max_age_days, dry_run=True,
+            )
+        except Exception as e:
+            raise HTTPException(500, f"見積り失敗: {e}")
+
+    await _ensure_not_running("benchmark", "プロファイル生成が既に実行中です")
 
     task_logs["benchmark"] = []
     import datetime as _dt
@@ -4708,6 +4969,8 @@ async def api_benchmark_run_full(req: BenchmarkRunRequest):
                 sheet_a_url=sheet_a, sheet_b_url=sheet_b,
                 extra_urls=extras, cli_cmd=cli_cmd, progress_cb=_log,
                 channel_filter=channel_filter or None,
+                skip_existing=True if req.skip_existing is None else bool(req.skip_existing),
+                force=bool(req.force), max_age_days=req.max_age_days,
             )
             task_meta["benchmark"]["status"] = "done"
             task_meta["benchmark"]["completed_at"] = _dt.datetime.now().isoformat()

@@ -717,6 +717,129 @@ def publish_video_to_public(folder, token_override=None) -> dict:
     }
 
 
+def update_video_snippet(folder, *, token_override=None,
+                          apply_localizations: bool = True) -> dict:
+    """既存動画 (video_id) の snippet を YouTube videos.update API で更新する。
+
+    動画ファイルは再アップロードしない（quota ~50 unit）。タイトル/説明/タグ/言語/
+    localizations を vol_folder 内のローカルファイルから読み取って反映。
+
+    Args:
+        folder: vol フォルダ。`youtube_upload.json` から video_id を読む。
+        token_override: トークンファイルの明示パス。
+        apply_localizations: True なら youtube_localizations.json も part に含める。
+
+    Returns:
+        {"status": "ok|missing|error|retryable", "video_id": ..., "applied_parts": [...],
+         "localizations_applied": [...], "previous_title": ..., "new_title": ...}
+    """
+    folder = Path(folder)
+    marker = folder / "youtube_upload.json"
+    if not marker.exists():
+        return {"status": "missing", "error": f"youtube_upload.json が無い: {folder}"}
+    try:
+        upload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"status": "error", "error": f"marker 読込失敗: {e}"}
+    video_id = upload.get("video_id")
+    if not video_id:
+        return {"status": "error", "error": "video_id が marker に無い"}
+
+    creds = get_credentials(video_folder=folder, token_override=token_override)
+    youtube = build("youtube", "v3", credentials=creds)
+
+    # ローカルファイルからメタを収集（upload_video の collect 部分を簡略再実装）
+    title_path = folder / "youtube_title.txt"
+    desc_path = folder / "youtube_description.txt"
+    tags_path = folder / "youtube_tags.txt"
+    if not title_path.exists() or not desc_path.exists():
+        return {"status": "error", "error": "youtube_title.txt または youtube_description.txt が無い"}
+    title = title_path.read_text(encoding="utf-8").strip()
+    description = desc_path.read_text(encoding="utf-8").strip()
+    tags = []
+    if tags_path.exists():
+        tags = [t.strip() for t in tags_path.read_text(encoding="utf-8").splitlines() if t.strip()]
+
+    # チャンネル既定値を反映
+    s = _collect_default_snippet(folder)
+
+    body: dict = {
+        "id": video_id,
+        "snippet": {
+            "title": title,
+            "description": description,
+            "tags": tags,
+            "categoryId": str(s.get("category_id") or 10),
+            "defaultLanguage": s.get("default_language") or "en",
+            "defaultAudioLanguage": s.get("default_audio_language") or "en",
+        },
+    }
+    parts = ["snippet"]
+
+    localizations_applied: list = []
+    if apply_localizations:
+        loc = load_localizations(folder)
+        if loc:
+            body["localizations"] = loc
+            parts.append("localizations")
+            localizations_applied = list(loc.keys())
+
+    # 現在のタイトルを取得（差分把握用）
+    previous_title = ""
+    try:
+        cur = youtube.videos().list(part="snippet", id=video_id).execute()
+        items = cur.get("items", [])
+        if items:
+            previous_title = items[0].get("snippet", {}).get("title", "")
+    except HttpError as e:
+        if _is_retryable_http_error(e):
+            return {"status": "retryable", "error": f"HttpError {e}"}
+        return {"status": "error", "error": f"HttpError {e}"}
+
+    try:
+        resp = youtube.videos().update(part=",".join(parts), body=body).execute()
+    except HttpError as e:
+        if _is_retryable_http_error(e):
+            return {"status": "retryable", "error": f"HttpError {e}"}
+        return {"status": "error", "error": f"HttpError {e}"}
+
+    new_title = resp.get("snippet", {}).get("title", title)
+    # marker 側にも反映
+    upload["title"] = new_title
+    if localizations_applied:
+        upload["localizations_applied"] = localizations_applied
+    upload["snippet_updated_at"] = datetime.datetime.now().isoformat()
+    marker.write_text(json.dumps(upload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "status": "ok",
+        "video_id": video_id,
+        "applied_parts": parts,
+        "localizations_applied": localizations_applied,
+        "previous_title": previous_title,
+        "new_title": new_title,
+    }
+
+
+def _collect_default_snippet(folder: Path) -> dict:
+    """チャンネル既定値（カテゴリ/言語等）を `.app_channel_config.json` から取得。"""
+    s = dict(DEFAULT_UPLOAD_SETTINGS) if "DEFAULT_UPLOAD_SETTINGS" in globals() else {
+        "category_id": 10, "default_language": "en", "default_audio_language": "en",
+    }
+    # vol_folder の親 = channel_folder
+    channel_folder = folder.parent
+    cfg = channel_folder / ".app_channel_config.json"
+    if cfg.exists():
+        try:
+            d = json.loads(cfg.read_text(encoding="utf-8"))
+            yu = d.get("youtube_upload_defaults") or {}
+            for k in ("category_id", "default_language", "default_audio_language"):
+                if yu.get(k):
+                    s[k] = yu[k]
+        except Exception:
+            pass
+    return s
+
+
 def _parse_tristate(value):
     """CLI 用: "true"/"false"/"" → True/False/None"""
     if value is None:

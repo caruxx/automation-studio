@@ -623,10 +623,14 @@ def ensure_workspace(page, workspace_name):
         return False
 
     # 既に同名のワークスペースがあればクリックして選択（重複作成を避ける）
-    # DOM 上の workspace カードは <div role="button"> で text に "orzz_vol77 80 Songs · 1d ago" のような形
-    # exact=False で部分一致検索する
+    # DOM 上の workspace カードは <div role="button"> で text に "orzz_vol77 80 Songs · 1d ago" のような形。
+    # 部分一致 (has_text=workspace_name) は prefix 衝突を起こす（例: "Harbor_Notes_vol1" を検索すると
+    # "Harbor_Notes_vol13" にもマッチし、DOM 順次第で誤った workspace を選んでしまう）。
+    # 解決: 「ワークスペース名で始まり、その直後がスペースか終端」の境界判定 regex で exact match に近づける。
     try:
-        existing = page.locator('div[role="button"]').filter(has_text=workspace_name).first
+        # re.escape で workspace_name 内のメタ文字をエスケープし、(?:\s|$) で名前の後ろを境界化。
+        ws_pattern = re.compile(rf"^{re.escape(workspace_name)}(?:\s|$)", re.MULTILINE)
+        existing = page.locator('div[role="button"]').filter(has_text=ws_pattern).first
         if existing.count() > 0 and existing.is_visible():
             existing.click(timeout=3000)
             time.sleep(2)

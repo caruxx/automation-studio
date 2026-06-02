@@ -279,9 +279,13 @@ def _format_thumbnail_section(thumbnail: Optional[Path]) -> str:
     )
 
 
-def _format_benchmark_section(analysis: Optional[dict]) -> str:
+def _format_benchmark_section(analysis: Optional[dict], for_japanese_output: bool = False) -> str:
     """propose_* プロンプトに埋め込むベンチマーク文脈ブロックを生成。
-    日本語フィールドはそのまま、英語フィールドは英語のままで両言語が混ざる形になる。"""
+    日本語フィールドはそのまま、英語フィールドは英語のままで両言語が混ざる形になる。
+
+    for_japanese_output=True（コンセプト軸など日本語1行出力の経路）では、投稿文軸の
+    英語スキャフォールド（description_template / opening_hook / cta_block / hashtag_set）を
+    注入しない（日本語出力への英語混入を防ぐ）。"""
     if not analysis:
         return "(no benchmark analysis available — proceed using persona only)"
     bp = analysis.get("buzz_patterns") or {}
@@ -304,6 +308,25 @@ def _format_benchmark_section(analysis: Optional[dict]) -> str:
         lines.append("Description tips (JP): " + json.dumps(rec.get("description_tips"), ensure_ascii=False))
     if rec.get("tag_suggestions"):
         lines.append("Tag seeds (EN): " + json.dumps(rec.get("tag_suggestions"), ensure_ascii=False))
+    # 投稿文軸スキャフォールド（benchmark/description.json）を注入（あれば）。
+    # 指定チャンネルの説明文構成から導いた英語テンプレ／フック／CTA／ハッシュタグ。
+    # 日本語出力経路（for_japanese_output）には英語テンプレを注入しない。
+    try:
+        import app_benchmark_description as _bdesc
+        scaf = {} if for_japanese_output else _bdesc.get_description_scaffolds()
+    except Exception:
+        scaf = {}
+    if scaf:
+        if scaf.get("opening_hook"):
+            lines.append("Description opening hook (EN, from trending channels): " + str(scaf.get("opening_hook")))
+        if scaf.get("cta_block"):
+            lines.append("Description CTA block (EN): " + str(scaf.get("cta_block")))
+        if scaf.get("hashtag_set"):
+            lines.append("Hashtag set (EN): " + json.dumps(scaf.get("hashtag_set"), ensure_ascii=False))
+        if scaf.get("description_template"):
+            lines.append("Proven description template (EN, adapt — do NOT copy verbatim): " + str(scaf.get("description_template")))
+        if scaf.get("tone_one_line"):
+            lines.append("Description tone (JP): " + str(scaf.get("tone_one_line")))
     return "\n".join(lines) if lines else "(benchmark cache present but empty)"
 
 
@@ -553,7 +576,8 @@ def propose_concept(
     ベンチマーク分析を主軸に、視聴者目線で 12〜22 字に凝縮する。"""
     songs_text = "\n".join(f"- {s}" for s in (songs or [])[:20]) or "(none)"
     benchmark_section = _format_benchmark_section(
-        benchmark_analysis if benchmark_analysis is not None else _load_benchmark_analysis()
+        benchmark_analysis if benchmark_analysis is not None else _load_benchmark_analysis(),
+        for_japanese_output=True,
     )
     prompt = _load_master_prompt("concept_generation", _CONCEPT_PROMPT).format(
         channel_name=channel_name or "orzz.",

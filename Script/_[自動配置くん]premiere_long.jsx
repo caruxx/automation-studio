@@ -504,6 +504,34 @@
         function placeSubtitleOnTimeline(srtItem, seq) {
             if (!srtItem || !seq) return false;
 
+            // 再配置運用でキャプショントラック (C1, C2, ...) が積み重なるのを防ぐため、
+            // 新規配置の前に既存トラックを全削除する。QE API は環境差分があるため、
+            // 失敗時はログのみで継続（既存動作と等価になる）。
+            try {
+                app.enableQE();
+                var qeSeq = (typeof qe !== "undefined" && qe && qe.project) ? qe.project.getActiveSequence() : null;
+                if (qeSeq) {
+                    var n = 0;
+                    try {
+                        var rawN = qeSeq.numCaptionTracks;
+                        n = (typeof rawN === "function") ? rawN.call(qeSeq) : (rawN || 0);
+                    } catch (_nE) { n = 0; }
+                    for (var ci = (n || 0) - 1; ci >= 0; ci--) {
+                        try {
+                            var ct = qeSeq.getCaptionTrackAt(ci);
+                            if (ct && ct.deleteTrack) {
+                                ct.deleteTrack();
+                                log("[clean] caption track #" + ci + " を削除");
+                            }
+                        } catch (delErr) {
+                            log("[clean] caption track #" + ci + " 削除失敗: " + delErr);
+                        }
+                    }
+                }
+            } catch (cleanErr) {
+                log("[clean] 既存キャプショントラックの削除をスキップ（QE API 未対応）: " + cleanErr);
+            }
+
             try {
                 // 最優先: SRT からキャプショントラックを直接作成する。
                 // createCaptionTrack(projectItem, startAtSeconds, captionFormat)
@@ -924,25 +952,25 @@
                 return;
             }
 
-            // 新規シーケンス作成時は種クリップが自動配置されるため削除
-            if (isNewSequence) {
-                try {
-                    // 自動配置された種クリップを全て削除
-                    for (var ci = a.clips.numItems - 1; ci >= 0; ci--) {
-                        a.clips[ci].remove(true, true);
-                    }
-                    // ビデオトラックも同様にクリア
-                    for (var vi = 0; vi < seq.videoTracks.numTracks; vi++) {
-                        var vt = seq.videoTracks[vi];
-                        for (var vci = vt.clips.numItems - 1; vci >= 0; vci--) {
-                            vt.clips[vci].remove(true, true);
-                        }
-                    }
-                    $.sleep(300);
-                    log("新規シーケンスの種クリップを削除しました");
-                } catch (e) {
-                    log("種クリップ削除エラー（無視して続行）: " + e);
+            // 再配置時の挙動: 新規/既存シーケンスを問わず、毎回全クリップ（音声・動画）を
+            // 削除してから新規配置する。これにより再実行=完全な上書きとして動作し、何度
+            // 再配置しても積み重ねが発生しない（旧仕様は新規シーケンス時のみ削除だった）。
+            try {
+                // 既存の音声クリップを全削除
+                for (var ci = a.clips.numItems - 1; ci >= 0; ci--) {
+                    a.clips[ci].remove(true, true);
                 }
+                // ビデオトラックも全クリア
+                for (var vi = 0; vi < seq.videoTracks.numTracks; vi++) {
+                    var vt = seq.videoTracks[vi];
+                    for (var vci = vt.clips.numItems - 1; vci >= 0; vci--) {
+                        vt.clips[vci].remove(true, true);
+                    }
+                }
+                $.sleep(300);
+                log("タイムライン全クリップ削除（リセット&再配置）: " + (isNewSequence ? "新規シーケンス" : "既存シーケンス上書き"));
+            } catch (e) {
+                log("クリップ削除エラー（無視して続行）: " + e);
             }
 
             // 3) 現在末尾から順に並べる
@@ -1022,10 +1050,10 @@
             // ファイルを探すヘルパー
             function findImageFile(baseNum, suffix) {
                 var nameBase = "vol" + baseNum + (suffix || "");
-                var png = new File(workDir + "/" + nameBase + ".png");
-                if (png.exists) return png;
                 var jpg = new File(workDir + "/" + nameBase + ".jpg");
                 if (jpg.exists) return jpg;
+                var png = new File(workDir + "/" + nameBase + ".png");
+                if (png.exists) return png;
                 return null;
             }
             function fileInWorkDirIfExists(fn) {
