@@ -5319,11 +5319,12 @@ Return ONLY a JSON object in this exact shape (no markdown fences, no prose):
 
 @app.post("/api/benchmark/fuse")
 async def api_benchmark_fuse(req: BenchmarkFuseRequest):
-    """指定したチャンネル（複数）のプロファイルを融合し、orzz. 向けの統合 direction と
-    SUNO / Flow プロンプトを返す。バックグラウンドではなく同期実行（最大 7 分）。"""
+    """指定したチャンネル（1 件以上）のプロファイルから、orzz. 向けの統合 direction と
+    SUNO / Flow プロンプトを返す。1 件なら単一チャンネルの抽出→翻案、複数なら融合。
+    バックグラウンドではなく同期実行（最大 7 分）。"""
     names = [n.strip() for n in (req.channel_names or []) if n and n.strip()]
-    if len(names) < 2:
-        raise HTTPException(400, "2 チャンネル以上を選択してください")
+    if len(names) < 1:
+        raise HTTPException(400, "チャンネルを 1 件以上選択してください")
     if not BENCHMARK_PROFILES_FILE.exists():
         raise HTTPException(409, "benchmark_profiles が未生成です。先にプロファイル生成を実行してください")
 
@@ -5333,8 +5334,8 @@ async def api_benchmark_fuse(req: BenchmarkFuseRequest):
     missing = [n for n in names if not any(p.get("channel_name") == n for p in all_profiles)]
     if missing:
         raise HTTPException(404, f"未登録のチャンネル: {', '.join(missing)}")
-    if len(selected) < 2:
-        raise HTTPException(400, "有効なプロファイルが 2 件未満です")
+    if len(selected) < 1:
+        raise HTTPException(400, "有効なプロファイルがありません")
 
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"

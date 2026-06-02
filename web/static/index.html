@@ -1971,12 +1971,12 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <div id="bmPane-profiles" class="bm-pane" style="display:none">
       <div id="bmProfilesMeta" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-2)"></div>
       <div class="card" style="margin-bottom:var(--space-3);padding:var(--space-2) var(--space-3);display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
-        <div style="font-size:var(--text-sm);font-weight:600">要素合成:</div>
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);flex:1;min-width:200px">2 件以上にチェック → 共通する視聴者訴求要素を Claude が抽出 → 自チャンネル向け SUNO / Flow プロンプトを生成</div>
+        <div style="font-size:var(--text-sm);font-weight:600">要素抽出 / 合成:</div>
+        <div style="font-size:var(--text-xs);color:var(--text-tertiary);flex:1;min-width:200px">1 件で抽出・2 件以上で融合 → 視聴者訴求要素を Claude が抽出 → 自チャンネル向け SUNO / Flow プロンプトを生成（分析は日本語）</div>
         <span id="bmFuseCount" style="font-size:var(--text-xs);color:var(--text-tertiary)">0 件選択</span>
         <button class="btn btn-secondary btn-sm" onclick="bmFuseSelectAll()">全選択</button>
         <button class="btn btn-secondary btn-sm" onclick="bmFuseClear()">クリア</button>
-        <button class="btn btn-primary btn-sm" id="bmFuseBtn" onclick="bmFuseRun()" disabled>融合してプロンプト生成</button>
+        <button class="btn btn-primary btn-sm" id="bmFuseBtn" onclick="bmFuseRun()" disabled>分析してプロンプト生成</button>
         <button class="btn btn-ghost btn-sm" id="bmDeleteBtn" onclick="bmDeleteSelected()" style="color:var(--accent-danger)" disabled title="選択したチャンネルをプロファイル一覧から削除">選択を削除</button>
       </div>
       <div id="bmFuseResult" style="margin-bottom:var(--space-3)"></div>
@@ -9753,7 +9753,7 @@ function bmFuseOnChange(){
   const delBtn=document.getElementById('bmDeleteBtn');
   const cnt=document.getElementById('bmFuseCount');
   if(cnt)cnt.textContent=`${sel.length} 件選択`;
-  if(btn)btn.disabled=sel.length<2;
+  if(btn)btn.disabled=sel.length<1;
   if(delBtn)delBtn.disabled=sel.length<1;
 }
 
@@ -9790,11 +9790,12 @@ function bmFuseClear(){
 }
 async function bmFuseRun(){
   const names=_bmFuseSelected();
-  if(names.length<2){toast('2 件以上を選択してください','w');return;}
+  if(names.length<1){toast('チャンネルを 1 件以上選択してください','w');return;}
   const btn=document.getElementById('bmFuseBtn');
   const resEl=document.getElementById('bmFuseResult');
-  if(btn){btn.disabled=true;btn.textContent='⟳ 融合中（1-3 分）...';}
-  resEl.innerHTML='<div class="card" style="padding:var(--space-3);font-size:var(--text-sm);color:var(--text-secondary)">⟳ Claude が '+names.length+' チャンネルの受け要素を抽出・orzz. 向けに再構成中...</div>';
+  if(btn){btn.disabled=true;btn.textContent='⟳ 分析中（1-3 分）...';}
+  const verb=names.length>=2?'チャンネルの受け要素を抽出・融合し orzz. 向けに再構成中':'チャンネルの勝ち筋を抽出し orzz. 向けに翻案中';
+  resEl.innerHTML='<div class="card" style="padding:var(--space-3);font-size:var(--text-sm);color:var(--text-secondary)">⟳ Claude が '+names.length+' '+verb+'...</div>';
   try{
     const r=await fetch('/api/benchmark/fuse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_names:names})});
     if(!r.ok){const t=await r.text();throw new Error(t)}
@@ -9823,7 +9824,7 @@ function _renderFusionCard(f,chs){
   const bpm=md.bpm_range?`${md.bpm_range.min||'?'}-${md.bpm_range.max||'?'}`:'—';
   return `<div class="card bm-production-plan" style="padding:var(--space-4)">
     <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2);flex-wrap:wrap">
-      <div style="font-size:var(--text-lg);font-weight:700">制作プラン: ${chs.length} チャンネルの要素合成</div>
+      <div style="font-size:var(--text-lg);font-weight:700">制作プラン: ${chs.length>=2?chs.length+' チャンネルの要素合成':'1 チャンネルから抽出'}</div>
       <span style="font-size:var(--text-xs);color:var(--text-tertiary)">${esc(chs.join(' / '))}</span>
     </div>
     ${f.rationale?`<div class="bm-plan-block" style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3)">${esc(f.rationale)}</div>`:''}

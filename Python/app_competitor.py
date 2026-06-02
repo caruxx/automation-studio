@@ -824,57 +824,67 @@ def fuse_benchmark_profiles(
             "comment_insights": pf.get("comment_insights", []),
         })
 
-    prompt = f"""You are fusing {len(extract)} competitor channel profiles into a single unified direction for a YouTube BGM channel called "orzz.".
+    _n = len(extract)
+    _scope = ("1 つの競合チャンネルプロファイルから、勝ち筋の要素を抽出して orzz. 向けに翻案する"
+              if _n == 1 else
+              f"{_n} 件の競合チャンネルプロファイルを 1 つの統合 direction に融合する")
+    prompt = f"""あなたは YouTube BGM チャンネル「orzz.」の制作ディレクターです。{_scope}のがタスクです。
 
-=== CRITICAL PRINCIPLE (STRICTLY ENFORCED) ===
-This is NOT about copying or cloning competitors. The goal is to **extract the viewer-resonance elements** (what hooks viewers across these channels) and **translate them into orzz.'s own aesthetic**. Do NOT reproduce specific trademarked imagery or sounds. Generic descriptors only — no real artist names, no real song/album titles, no channel-specific catchphrases.
+=== 大原則（厳守）===
+競合のコピー・クローンではありません。目的は **視聴者に刺さる要素（何が視聴者を惹きつけているか）を抽出**し、**orzz. 独自の世界観へ翻案**すること。商標的な画像・音を再現しないこと。固有名詞は禁止（実在アーティスト名・実在曲/アルバム名・チャンネル固有のキャッチフレーズは使わない）。
 
-=== Competitor Profiles ===
+=== 言語ルール（厳守・最重要）===
+- **分析・方向性・戦略の説明文は日本語**で書く: rationale / shared_hooks / fused_music_direction(mood_tags, reference_vibe, avoid) / fused_visual_direction(全項目) / fused_persona(全項目) / buzz_to_prompt_translation.title_angles / orzz_adaptation(keep/transform/avoid)。
+  - ジャンル名・楽器名・配色名など定着した英語表記は日本語文中にそのまま含めてよい（例: 「Instrumental Jazz Hop」「Rhodes」）。
+- **生成器に渡す/ YouTube 出力メタは英語**で書く: title_candidates（YouTube タイトル）/ suno_prompt / buzz_to_prompt_translation.suno_prompt_ingredients / flow_prompt / gpt_image2_prompt_template / image_prompts / buzz_to_prompt_translation.image_prompt_ingredients。
+- 日本語フィールドに英語の長文説明を書かない／英語フィールドに日本語を書かない。
+
+=== 競合プロファイル ===
 {json.dumps(extract, ensure_ascii=False, indent=2)}
 
-=== Your Task ===
-Fuse these profiles into ONE unified direction. Compare top-viewed videos against latest uploads and identify what is still working now. Extract the buzz elements, then reframe them as an orzz.-native direction that can directly guide titles, SUNO prompts, and image-generation prompts.
+=== タスク ===
+{'このチャンネルの' if _n == 1 else 'これらのプロファイルを比較し、'}再生上位動画と直近投稿を見比べて「今も効いている要素」を特定。バズ要素を抽出し、orzz. ネイティブな direction に再構成して、タイトル・SUNO プロンプト・画像生成プロンプトを直接ドライブできる形にする。
 
-Respond with a SINGLE JSON object:
+次の単一 JSON オブジェクトのみで回答（上記の言語ルール厳守）:
 {{
   "fused_music_direction": {{
-    "recommended_genres": ["..."],
+    "recommended_genres": ["ジャンル名（英語表記可）"],
     "bpm_range": {{"min": 60, "max": 85}},
-    "mood_tags": ["..."],
-    "instrumentation": ["..."],
-    "reference_vibe": "<one evocative scene>",
-    "avoid": ["..."]
+    "mood_tags": ["ムードを日本語で"],
+    "instrumentation": ["楽器（英語表記可）"],
+    "reference_vibe": "<印象的なシーンを1文・日本語>",
+    "avoid": ["避けるべき要素を日本語で"]
   }},
   "fused_visual_direction": {{
-    "color_palette": ["..."],
-    "time_of_day": "...",
-    "subjects": ["..."],
-    "composition": "...",
-    "atmosphere": "...",
-    "avoid": ["..."]
+    "color_palette": ["配色を日本語で（色名は一般語可）"],
+    "time_of_day": "時間帯（日本語）",
+    "subjects": ["被写体を日本語で"],
+    "composition": "構図（日本語）",
+    "atmosphere": "雰囲気（日本語）",
+    "avoid": ["避けるべき要素を日本語で"]
   }},
   "fused_persona": {{
-    "age_range": "...",
-    "viewing_scenes": ["..."],
-    "psychological_needs": ["..."]
+    "age_range": "年齢層（日本語）",
+    "viewing_scenes": ["視聴シーンを日本語で"],
+    "psychological_needs": ["心理的ニーズを日本語で"]
   }},
-  "shared_hooks": ["<hook 1 that appears across multiple competitors>", "..."],
+  "shared_hooks": ["<複数競合に共通する視聴者訴求要素を日本語で>", "..."],
   "buzz_to_prompt_translation": {{
-    "title_angles": ["<viewer moment / promise to use in titles>"],
-    "suno_prompt_ingredients": ["<genre, tempo, instruments, texture, scene>"],
-    "image_prompt_ingredients": ["<scene, palette, lighting, composition>"]
+    "title_angles": ["<タイトルで使う視聴者の瞬間/約束を日本語で>"],
+    "suno_prompt_ingredients": ["<English: genre, tempo, instruments, texture, scene>"],
+    "image_prompt_ingredients": ["<English: scene, palette, lighting, composition>"]
   }},
   "orzz_adaptation": {{
-    "keep": ["<elements worth adopting as-is>"],
-    "transform": ["<elements to reinterpret in orzz. aesthetic>"],
-    "avoid": ["<competitor traits that clash with orzz. brand>"]
+    "keep": ["<そのまま採用すべき要素を日本語で>"],
+    "transform": ["<orzz. の世界観へ翻案すべき要素を日本語で>"],
+    "avoid": ["<orzz. ブランドと衝突する競合特性を日本語で>"]
   }},
   "title_candidates": ["<English YouTube title under 60 chars>", "..."],
   "suno_prompt": "<a SINGLE-LINE SUNO prompt (150-250 chars, English). No real artist/song names. No vocals. Lead with genre+mood+instruments+BPM. Anchor one sensory scene.>",
   "flow_prompt": "<ONE English paragraph (60-120 words) for Google Flow thumbnail. 16:9, Kodak Portra 400, no watermarks, no logos. Compose scene + palette + lighting + composition.>",
   "gpt_image2_prompt_template": "<labeled English GPT Image 2 prompt using Subject, Background/context, Lighting, Style/rendering, Camera/composition, Constraints>",
   "image_prompts": ["<English GPT Image 2 prompt variant 1 using the five-part structure>", "<variant 2>", "<variant 3>", "<variant 4>"],
-  "rationale": "<2-3 sentences: why this fusion works for orzz. and which viewer needs it targets>"
+  "rationale": "<この方針が orzz. になぜ効くか・どの視聴者ニーズを狙うかを日本語で2〜3文>"
 }}
 
 Output ONLY the JSON object.
