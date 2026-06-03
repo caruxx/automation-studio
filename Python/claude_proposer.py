@@ -239,9 +239,8 @@ _CHANNEL_CONFIG_FILENAME = ".app_channel_config.json"
 def _load_benchmark_analysis() -> Optional[dict]:
     """ベンチマーク分析キャッシュを返す（あれば）。analysis 部分のみ。"""
     try:
-        if not _BENCHMARK_CACHE_FILE.exists():
-            return None
-        cache = json.loads(_BENCHMARK_CACHE_FILE.read_text(encoding="utf-8"))
+        from app_channel_cache import load_scoped_cache
+        cache = load_scoped_cache("competitor_analysis_cache.json", _BENCHMARK_CACHE_FILE, None)
         analysis = cache.get("analysis") if isinstance(cache, dict) else None
         return analysis if isinstance(analysis, dict) else None
     except Exception:

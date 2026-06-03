@@ -67,10 +67,9 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 
 def load_benchmark_analysis() -> Optional[dict]:
-    if not BENCHMARK_CACHE_FILE.exists():
-        return None
     try:
-        cache = json.loads(BENCHMARK_CACHE_FILE.read_text(encoding="utf-8"))
+        from app_channel_cache import load_scoped_cache
+        cache = load_scoped_cache("competitor_analysis_cache.json", BENCHMARK_CACHE_FILE, None)
         a = cache.get("analysis")
         return a if isinstance(a, dict) else None
     except Exception:

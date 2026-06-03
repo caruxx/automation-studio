@@ -161,6 +161,12 @@ DEFAULT_DASHBOARD_CONFIG = {
     "psd_base_layer": "base",            # 画像差し替え対象 SO レイヤー名（WW: Chicago_Willis）
     "psd_toggle_layer": "PLAY LIST",     # 表示/非表示で 2 種類書き出すレイヤー名（WW: WORKSPACE）
     "psd_image_subdir": "image",         # 動画フォルダ内の差し替え画像置き場（{video}/image/*）
+    # 文字入れ（シーンテキスト）設定（チャンネル別。空なら persona 準拠の中立生成。Harbor Notes 流用は撤去済み）
+    "scene_text_enabled": True,          # サムネに英大文字フレーズ（都市名_テキスト層）を入れるか
+    "scene_text_tone": "",               # トーン指定（例: "chill, lo-fi, study, cozy"）
+    "scene_text_examples": [],           # 語感の参考フレーズ（完全コピー禁止・style reference）
+    "scene_text_forbidden": [],          # 完全一致を避けるフレーズ（ライバルの実焼込文字等）
+    "scene_text_structure": "",          # 構文ヒント（空なら verb+noun / adjective+noun）
     "export_path": "",  # 外部SSD等の書き出し先（空ならチャンネルフォルダ内）
     "channel_icon": "",  # チャンネルアイコン画像パス
     "persona": "",  # チャンネルのペルソナ設定
@@ -216,6 +222,8 @@ PER_CHANNEL_KEYS = {
     "benchmark_pinned_names", "benchmark_filter", "benchmark_extra_urls",
     "channel_icon", "template_prproj", "template_psd", "export_path",
     "psd_base_layer", "psd_toggle_layer", "psd_image_subdir",
+    "scene_text_enabled", "scene_text_tone", "scene_text_examples",
+    "scene_text_forbidden", "scene_text_structure",  # 文字入れ（シーンテキスト）設定（チャンネル別）
     "export_ignore_list",  # AME 書き出し watcher が無視する video_name のリスト（2 PC 間自動同期）
     "publish_mode",  # P3-3: 公開方式（unlisted=限定公開 / public=即時公開 / delayed=N時間後自動公開）
     "publish_delay_hours",  # P2-7: upload 後の公開ゲート（0=即時、>0=N時間後 public化）
@@ -481,7 +489,7 @@ def save_suno_config_smart(patch: dict):
         cc["suno"] = suno
         save_channel_config(cc)
 
-# ─── ベンチマーク設定（チャンネル非依存・全体共通）───
+# ─── ベンチマーク設定（グローバル既定 + チャンネル別 override）───
 DEFAULT_BENCHMARK_CONFIG = {
     "pinned_names": [],
     "filter": {
@@ -523,7 +531,29 @@ def get_benchmark_config():
         bc["spreadsheet_channel_detail_url"] = dc["spreadsheet_channel_detail_url"]
     if not bc.get("spreadsheet_growth_tracking_url") and dc.get("spreadsheet_growth_tracking_url"):
         bc["spreadsheet_growth_tracking_url"] = dc["spreadsheet_growth_tracking_url"]
+    cc = load_channel_config()
+    if "benchmark_pinned_names" in cc:
+        bc["pinned_names"] = list(cc.get("benchmark_pinned_names") or [])
+    if isinstance(cc.get("benchmark_filter"), dict):
+        bc["filter"] = {**DEFAULT_BENCHMARK_CONFIG["filter"], **(cc.get("benchmark_filter") or {})}
+    if "spreadsheet_channel_detail_url" in cc:
+        bc["spreadsheet_channel_detail_url"] = cc.get("spreadsheet_channel_detail_url") or ""
+    if "spreadsheet_growth_tracking_url" in cc:
+        bc["spreadsheet_growth_tracking_url"] = cc.get("spreadsheet_growth_tracking_url") or ""
     return bc
+
+
+def save_benchmark_config(cfg: dict):
+    """ベンチマーク設定は active channel があれば per-channel に保存する。"""
+    if _channel_config_path():
+        cc = load_channel_config()
+        cc["benchmark_pinned_names"] = list(cfg.get("pinned_names") or [])
+        cc["benchmark_filter"] = {**DEFAULT_BENCHMARK_CONFIG["filter"], **(cfg.get("filter") or {})}
+        cc["spreadsheet_channel_detail_url"] = cfg.get("spreadsheet_channel_detail_url") or ""
+        cc["spreadsheet_growth_tracking_url"] = cfg.get("spreadsheet_growth_tracking_url") or ""
+        save_channel_config(cc)
+    else:
+        save_json(BENCHMARK_CONFIG, cfg)
 
 # 起動時マイグレーション
 _migrate_benchmark_config()
@@ -865,7 +895,7 @@ def api_put_unified_config(update: UnifiedConfigUpdate):
             cfg["filter"] = {**cfg.get("filter", {}), **patch["filter"]}
             patch = {k: v for k, v in patch.items() if k != "filter"}
         cfg.update(patch)
-        save_json(BENCHMARK_CONFIG, cfg)
+        save_benchmark_config(cfg)
         return {"status": "ok", "section": section, "config": cfg}
     raise HTTPException(400, f"未知の section: {section}")
 
@@ -1106,7 +1136,7 @@ def api_update_benchmark_config(update: BenchmarkConfigUpdate):
     if "filter" in body:
         cfg["filter"] = {**cfg.get("filter", {}), **body.pop("filter")}
     cfg.update(body)
-    save_json(BENCHMARK_CONFIG, cfg)
+    save_benchmark_config(cfg)
     return {"status": "ok", "config": cfg}
 
 # ─── API: マスター設定（プロンプト + 詳細パラメータの一元管理） ───
@@ -1237,7 +1267,7 @@ def api_put_master(update: MasterUpdate):
         cfg = get_benchmark_config()
         if "filter" in patch and isinstance(patch["filter"], dict):
             cfg["filter"] = {**cfg.get("filter", {}), **patch.pop("filter")}
-        cfg.update(patch); save_json(BENCHMARK_CONFIG, cfg)
+        cfg.update(patch); save_benchmark_config(cfg)
         return {"status": "ok", "section": section, "config": cfg}
     if section == "export":
         cfg = get_export_rules()
@@ -1280,7 +1310,7 @@ def api_master_import(req: MasterImportRequest):
         save_suno_config_smart(cfg); sections_applied.append("suno")
     if "benchmark" in d:
         cfg = d["benchmark"] if req.overwrite else {**get_benchmark_config(), **d["benchmark"]}
-        save_json(BENCHMARK_CONFIG, cfg); sections_applied.append("benchmark")
+        save_benchmark_config(cfg); sections_applied.append("benchmark")
     if "master_prompts" in d:
         save_master_prompts(d["master_prompts"]); sections_applied.append("master_prompts")
     if "master_settings" in d:
@@ -1844,6 +1874,30 @@ class ChannelCreate(BaseModel):
     open_in_finder: bool = True
     youtube_url: str = ""
 
+
+def _create_empty_channel_config(folder: Path, req: ChannelCreate) -> None:
+    """新規チャンネルに旧グローバル設定が流れ込まないよう初期 config を置く。"""
+    if not folder.exists():
+        return
+    p = folder / _CHANNEL_CONFIG_FILENAME
+    if p.exists():
+        return
+    seed = {
+        "persona": "",
+        "rival_channels": [],
+        "reference_image_dir": "",
+        "benchmark_pinned_names": [],
+        "benchmark_filter": DEFAULT_BENCHMARK_CONFIG["filter"],
+        "spreadsheet_channel_detail_url": "",
+        "spreadsheet_growth_tracking_url": "",
+        "template_prproj": req.template_prproj or "",
+        "template_psd": req.template_psd or "",
+        "_schema_version": 1,
+        "_created_at": datetime.utcnow().isoformat() + "Z",
+        "_created_for_channel": req.name or "",
+    }
+    p.write_text(json.dumps(seed, indent=2, ensure_ascii=False), encoding="utf-8")
+
 @app.get("/api/channels/suggest-folder")
 def api_suggest_channel_folder(name: str = ""):
     """YTフォルダ配下に番号付きチャンネルフォルダ名を提案"""
@@ -1871,6 +1925,7 @@ def api_create_channel(req: ChannelCreate):
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "プロジェクト").mkdir(exist_ok=True)
         (folder / "素材").mkdir(exist_ok=True)
+    _create_empty_channel_config(folder, req)
     inferred_prefix = infer_file_prefix_from_folder(folder)
     prefix = sanitize_file_prefix(req.prefix or inferred_prefix or req.name, fallback="vol")
     new_channel = {
@@ -3523,17 +3578,16 @@ async def api_create_from_benchmark(req: CreateFromBenchmarkRequest):
     suno_rationale = None
     if not suno_prompt:
         try:
-            cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-            if cache_file.exists():
+            import app_competitor as _ac
+            cache = _ac.load_cache() or {}
+            analysis = cache.get("analysis", {})
+            if analysis.get("music_direction"):
                 from app_competitor import propose_suno_prompt
-                cache = json.loads(cache_file.read_text(encoding="utf-8"))
-                analysis = cache.get("analysis", {})
-                if analysis.get("music_direction"):
-                    suno_cfg_local = get_suno_config()
-                    cli_cmd = suno_cfg_local.get("claude_cli") or "claude"
-                    proposal = propose_suno_prompt(analysis, cli_cmd=cli_cmd)
-                    suno_prompt = proposal.get("prompt")
-                    suno_rationale = proposal.get("rationale")
+                suno_cfg_local = get_suno_config()
+                cli_cmd = suno_cfg_local.get("claude_cli") or "claude"
+                proposal = propose_suno_prompt(analysis, cli_cmd=cli_cmd)
+                suno_prompt = proposal.get("prompt")
+                suno_rationale = proposal.get("rationale")
         except Exception as e:
             suno_rationale = f"（SUNO 自動提案失敗、既定プロンプト使用）: {e}"
 
@@ -4001,11 +4055,11 @@ def api_tracking_events(record: int = 0):
 @app.get("/api/analysis/cache")
 def api_analysis_cache():
     """キャッシュされた分析結果を返す"""
-    cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-    if not cache_file.exists():
-        return {"cached": False}
     try:
-        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        import app_competitor as _ac
+        data = _ac.load_cache()
+        if not data:
+            return {"cached": False}
         return {"cached": True, **data}
     except Exception:
         return {"cached": False}
@@ -4014,13 +4068,17 @@ def api_analysis_cache():
 def api_delete_analysis_cache():
     """キャッシュ削除（再分析を強制するため。英語メタデータ生成向けの再生成等に使用）"""
     cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-    if cache_file.exists():
-        try:
-            cache_file.unlink()
-            return {"status": "ok", "deleted": True}
-        except Exception as e:
-            raise HTTPException(500, f"削除失敗: {e}")
-    return {"status": "ok", "deleted": False}
+    try:
+        from app_channel_cache import delete_scoped_and_legacy
+        return {"status": "ok", "deleted": delete_scoped_and_legacy("competitor_analysis_cache.json", cache_file)}
+    except Exception:
+        if cache_file.exists():
+            try:
+                cache_file.unlink()
+                return {"status": "ok", "deleted": True}
+            except Exception as e:
+                raise HTTPException(500, f"削除失敗: {e}")
+        return {"status": "ok", "deleted": False}
 
 
 # ─── API: ベンチマーク・サムネイル軸（Phase 1） ───
@@ -4531,13 +4589,13 @@ JSON 以外は一切出力しないこと。すべての値は日本語で記述
 @app.post("/api/videos/{video_name}/suggest-with-analysis")
 def api_suggest_with_analysis(video_name: str):
     """競合分析を踏まえたタイトル・説明・タグ提案"""
-    cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-    if not cache_file.exists():
-        raise HTTPException(400, "先に競合分析を実行してください（📊 競合分析ボタン）")
     try:
-        cache = json.loads(cache_file.read_text(encoding="utf-8"))
+        import app_competitor as _ac
+        cache = _ac.load_cache()
     except Exception:
         raise HTTPException(500, "キャッシュ読み込み失敗")
+    if not cache:
+        raise HTTPException(400, "先に競合分析を実行してください（📊 競合分析ボタン）")
 
     config = get_dashboard_config()
     folder = Path(config["channel_folder"]) / video_name
@@ -4571,13 +4629,13 @@ def api_suggest_with_analysis(video_name: str):
 
 def _load_analysis_cache_or_409():
     """競合分析キャッシュを読み込み、未実行なら 400、music/visual_direction 不足なら 409"""
-    cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-    if not cache_file.exists():
-        raise HTTPException(400, "先に競合分析を実行してください（📡 競合分析ボタン）")
     try:
-        cache = json.loads(cache_file.read_text(encoding="utf-8"))
+        import app_competitor as _ac
+        cache = _ac.load_cache()
     except Exception:
         raise HTTPException(500, "キャッシュ読み込み失敗")
+    if not cache:
+        raise HTTPException(400, "先に競合分析を実行してください（📡 競合分析ボタン）")
     return cache
 
 
@@ -4739,18 +4797,18 @@ def api_benchmark_config_put(req: BenchmarkConfigUpdate):
     if req.exclude_names is not None:
         flt["exclude_names"] = [n.strip() for n in req.exclude_names if n and n.strip()]
     cfg["filter"] = flt
-    save_json(BENCHMARK_CONFIG, cfg)
+    save_benchmark_config(cfg)
     return {"status": "ok", "pinned_names": cfg.get("pinned_names", []), "filter": flt}
 
 
 @app.get("/api/analysis/cache-info")
 def api_analysis_cache_info():
     """キャッシュの鮮度情報（最終分析日時・経過日数・ソース）を返す"""
-    cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-    if not cache_file.exists():
-        return {"cached": False, "age_days": None, "analyzed_at": None, "source": None}
     try:
-        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        import app_competitor as _ac
+        data = _ac.load_cache()
+        if not data:
+            return {"cached": False, "age_days": None, "analyzed_at": None, "source": None}
         analyzed_at = data.get("analyzed_at")
         age_days = None
         if analyzed_at:
@@ -4815,18 +4873,19 @@ def api_analyze_thumbnails(req: ThumbnailAnalysisRequest):
             cli_cmd=cli_cmd,
         )
         # キャッシュに統合（上書き。手動トリガのため頻度は低い想定）
-        cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-        if cache_file.exists():
-            try:
-                cache = json.loads(cache_file.read_text(encoding="utf-8"))
+        try:
+            import app_competitor as _ac
+            cache = _ac.load_cache() or {}
+            if cache:
                 if "analysis" not in cache:
                     cache["analysis"] = {}
                 cache["analysis"]["thumbnail_elements"] = result
                 import datetime as _dt
                 cache["thumbnail_analyzed_at"] = _dt.datetime.now().isoformat()
-                cache_file.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
+                from app_channel_cache import save_scoped_cache
+                save_scoped_cache("competitor_analysis_cache.json", CONFIG_DIR / "competitor_analysis_cache.json", cache)
+        except Exception:
+            pass
         return {"status": "ok", **result}
     except RuntimeError as e:
         msg = str(e)
@@ -7285,9 +7344,8 @@ def api_codex_imagegen_build_5element(req: CodexImagegenBuild5ERequest):
     # ─── 4) 競合分析キャッシュ（任意・visual_direction だけ薄く参照） ───
     competitor_analysis: dict = {}
     try:
-        comp_file = CONFIG_DIR / "competitor_analysis_cache.json"
-        if comp_file.exists():
-            competitor_analysis = json.loads(comp_file.read_text(encoding="utf-8"))
+        import app_competitor as _ac
+        competitor_analysis = _ac.load_cache() or {}
     except Exception:
         competitor_analysis = {}
 
@@ -8112,17 +8170,16 @@ def api_channel_thumbnail_readiness():
     except Exception:
         pass
     try:
-        concept_file = CONFIG_DIR / "benchmark" / "concept.json"
-        if concept_file.exists():
-            d = json.loads(concept_file.read_text(encoding="utf-8"))
-            per = d.get("per_channel") or {}
-            out["benchmark_concept"] = bool(per)
-            out["benchmark_concept_channels"] = len(per)
+        import app_benchmark_concept as _bc
+        d = _bc.load_cache() or {}
+        per = d.get("per_channel") or {}
+        out["benchmark_concept"] = bool(per)
+        out["benchmark_concept_channels"] = len(per)
     except Exception:
         pass
     try:
-        comp = CONFIG_DIR / "competitor_analysis_cache.json"
-        out["competitor_analysis"] = comp.exists()
+        import app_competitor as _comp_cache
+        out["competitor_analysis"] = bool(_comp_cache.load_cache())
     except Exception:
         pass
 
@@ -9082,17 +9139,122 @@ def api_photoshop_generate_scene_text(req: PhotoshopGenerateSceneTextRequest):
                 raise HTTPException(404, f"画像が見つかりません: {folder}")
             image_path = str(swap)
 
+    _cfg = get_dashboard_config()
     persona = req.persona
     if persona is None:
-        persona = (get_dashboard_config().get("persona") or "").strip()
+        persona = (_cfg.get("persona") or "").strip()
 
     try:
-        text = generate_scene_text_for_image(image_path, persona=persona)
+        text = generate_scene_text_for_image(
+            image_path, persona=persona,
+            tone=(_cfg.get("scene_text_tone") or ""),
+            examples=_cfg.get("scene_text_examples") or [],
+            forbidden_phrases=_cfg.get("scene_text_forbidden") or [],
+            structure=(_cfg.get("scene_text_structure") or ""),
+        )
         return {"status": "ok", "scene_text": text, "image_path": image_path}
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
         raise HTTPException(500, f"generate-scene-text 失敗: {e}")
+
+
+class SceneTextSuggestRequest(BaseModel):
+    mode: str = "titles"   # "titles"（ライバルタイトル語彙・軽量） | "vision"（サムネ画像の実焼込文字・消費大）
+    count: int = 6         # vision で読むサムネ枚数 / titles の参照件数上限
+
+
+@app.post("/api/scene-text/suggest-from-benchmark")
+def api_scene_text_suggest(req: SceneTextSuggestRequest):
+    """アクティブチャンネルのベンチマーク（ライバル）から、文字入れ設定の提案を返す。
+
+    mode=titles: ライバル動画タイトルの語彙からテーマ・トーンを推定（軽量・LLM テキスト）。
+    mode=vision: ライバルサムネ画像の実際の焼込文字を読み取って抽出（Vision・消費大）。
+    返却: {tone, examples:[], forbidden:[], structure}（UI が各欄に流し込み、ユーザーが選択/編集）。
+    """
+    import app_benchmark_thumbnail as _bt
+    cfg = get_dashboard_config()
+    persona = (cfg.get("persona") or "").strip()
+    cli = (get_suno_config().get("claude_cli") or "claude").strip()
+    mode = (req.mode or "titles").strip().lower()
+    count = max(1, min(int(req.count or 6), 12))
+
+    bc = _bt.load_cache() or {}
+    items = []
+    for ch in (bc.get("channels") or []):
+        for t in (ch.get("thumbnails") or []):
+            items.append({
+                "title": (t.get("title") or "").strip(),
+                "localPath": t.get("localPath") or "",
+                "viewCount": int(t.get("viewCount", 0) or 0),
+            })
+    items.sort(key=lambda x: -x["viewCount"])   # 「効いてる」順
+    if not items:
+        raise HTTPException(409, "ベンチマークのサムネデータがありません。先にベンチマーク取込み + サムネ DL を実行してください。")
+
+    json_shape = (
+        '{\n'
+        '  "tone": "comma-separated mood keywords (e.g. chill, lo-fi, study, cozy)",\n'
+        '  "examples": ["3-6 ALL-CAPS 2-3 word sample phrases in the target register"],\n'
+        '  "forbidden": ["phrases to avoid copying verbatim"],\n'
+        '  "structure": "short syntax hint, e.g. verb+noun or adjective+noun"\n'
+        '}'
+    )
+
+    try:
+        from app_llm_runner import run_llm, run_llm_vision
+        if mode == "vision":
+            paths = [it["localPath"] for it in items
+                     if it["localPath"] and Path(it["localPath"]).exists()][:count]
+            if not paths:
+                raise HTTPException(409, "ライバルサムネ画像がローカルにありません（benchmark/thumbs 未DL）。titles モードをお試しください。")
+            prompt = (
+                "You are designing the on-thumbnail TEXT style for a YouTube BGM channel by analyzing rival thumbnails.\n"
+                f"Channel persona: {persona or '(unspecified)'}\n"
+                f"For the {len(paths)} rival thumbnail images, READ the actual text burned into each image, "
+                "then design a caption style that fits THIS channel and differentiates from the rivals.\n"
+                "Output a JSON object exactly in this shape:\n"
+                f"{json_shape}\n"
+                "- examples: FRESH phrases in the same register (do NOT copy the rivals' exact text).\n"
+                "- forbidden: the rivals' ACTUAL on-image phrases you read, verbatim.\n"
+                "Output ONLY the JSON, nothing else."
+            )
+            raw = run_llm_vision(prompt, paths, cli_cmd=cli, timeout=240, label="scene-suggest-vision")
+        else:
+            titles = [it["title"] for it in items if it["title"]][:max(count, 20)]
+            titles_joined = "\n".join(f"- {t}" for t in titles)
+            prompt = (
+                "You are designing the on-thumbnail TEXT style for a YouTube BGM channel by analyzing rival video titles.\n"
+                f"Channel persona: {persona or '(unspecified)'}\n"
+                f"Rival video titles ({len(titles)}):\n{titles_joined}\n\n"
+                "Design a short English ALL-CAPS caption style that fits THIS channel and differentiates from rivals.\n"
+                "Output a JSON object exactly in this shape:\n"
+                f"{json_shape}\n"
+                "Output ONLY the JSON, nothing else."
+            )
+            raw = run_llm(prompt, cli_cmd=cli, timeout=180, label="scene-suggest-titles")
+        obj = _bt._extract_json(raw) or {}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"提案生成に失敗: {e}")
+
+    def _as_list(v):
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, str):
+            return [s.strip() for s in re.split(r"[\n,/]", v) if s.strip()]
+        return []
+
+    return {
+        "ok": True,
+        "mode": mode,
+        "source_count": len(items),
+        "tone": (str(obj.get("tone") or "")).strip(),
+        "examples": _as_list(obj.get("examples")),
+        "forbidden": _as_list(obj.get("forbidden")),
+        "structure": (str(obj.get("structure") or "")).strip(),
+    }
 
 
 class PhotoshopRenderDualRequest(BaseModel):
@@ -9168,7 +9330,13 @@ def api_photoshop_render_dual_thumbnail(req: PhotoshopRenderDualRequest):
             if not scene_text:
                 try:
                     persona = (config.get("persona") or "").strip()
-                    scene_text = generate_scene_text_for_image(str(swap), persona=persona)
+                    scene_text = generate_scene_text_for_image(
+                        str(swap), persona=persona,
+                        tone=(config.get("scene_text_tone") or ""),
+                        examples=config.get("scene_text_examples") or [],
+                        forbidden_phrases=config.get("scene_text_forbidden") or [],
+                        structure=(config.get("scene_text_structure") or ""),
+                    )
                     if scene_text:
                         try:
                             cache_file.write_text(scene_text + "\n", encoding="utf-8")

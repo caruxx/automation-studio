@@ -37,6 +37,7 @@ BENCHMARK_DIR = CONFIG_DIR / "benchmark"
 THUMBS_DIR = BENCHMARK_DIR / "thumbs"
 ANALYSIS_FILE = BENCHMARK_DIR / "thumbnail.json"
 COMPETITOR_CACHE_FILE = CONFIG_DIR / "competitor_analysis_cache.json"
+ANALYSIS_FILENAME = "thumbnail.json"
 
 DEFAULT_CLI = "claude"
 ANALYSIS_TIMEOUT = 600
@@ -54,36 +55,55 @@ def _ensure_dirs() -> None:
 
 
 def load_cache() -> dict:
-    if not ANALYSIS_FILE.exists():
-        return {"channels": [], "analysis": {}, "picked": [], "generated_at": ""}
+    empty = {"channels": [], "analysis": {}, "picked": [], "generated_at": ""}
     try:
-        d = json.loads(ANALYSIS_FILE.read_text(encoding="utf-8"))
+        from app_channel_cache import load_scoped_cache
+        d = load_scoped_cache(ANALYSIS_FILENAME, ANALYSIS_FILE, empty)
+    except Exception:
+        d = None
+    if d is None:
+        if not ANALYSIS_FILE.exists():
+            return empty
+        try:
+            d = json.loads(ANALYSIS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return empty
+    try:
         if not isinstance(d, dict):
-            return {"channels": [], "analysis": {}, "picked": [], "generated_at": ""}
+            return empty
         d.setdefault("channels", [])
         d.setdefault("analysis", {})
         d.setdefault("picked", [])
         d.setdefault("generated_at", "")
         return d
     except Exception:
-        return {"channels": [], "analysis": {}, "picked": [], "generated_at": ""}
+        return empty
 
 
 def save_cache(payload: dict) -> None:
     _ensure_dirs()
-    ANALYSIS_FILE.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    try:
+        from app_channel_cache import save_scoped_cache
+        save_scoped_cache(ANALYSIS_FILENAME, ANALYSIS_FILE, payload)
+    except Exception:
+        ANALYSIS_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 def _load_competitor_cache() -> Optional[dict]:
-    if not COMPETITOR_CACHE_FILE.exists():
-        return None
     try:
-        d = json.loads(COMPETITOR_CACHE_FILE.read_text(encoding="utf-8"))
+        from app_channel_cache import load_scoped_cache
+        d = load_scoped_cache("competitor_analysis_cache.json", COMPETITOR_CACHE_FILE, None)
         return d if isinstance(d, dict) else None
     except Exception:
-        return None
+        if not COMPETITOR_CACHE_FILE.exists():
+            return None
+        try:
+            d = json.loads(COMPETITOR_CACHE_FILE.read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else None
+        except Exception:
+            return None
 
 
 # ─── ダウンロード ─────────────────────────────────

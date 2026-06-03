@@ -33,6 +33,7 @@ except Exception:
 CLIENT_SECRET = CONFIG_DIR / "youtube_client_secret.json"
 TOKEN_FILE = CONFIG_DIR / "youtube_token.json"
 CACHE_FILE = CONFIG_DIR / "competitor_analysis_cache.json"
+CACHE_FILENAME = "competitor_analysis_cache.json"
 BENCHMARK_CONFIG_FILE = CONFIG_DIR / "benchmark_config.json"
 _CHANNEL_CONFIG_FILENAME = ".app_channel_config.json"
 SCOPES = [
@@ -93,22 +94,33 @@ def _load_analysis_config() -> dict:
     benchmark = _load_json_dict(BENCHMARK_CONFIG_FILE)
     channel_cfg = _load_channel_config_for_analysis(dashboard)
 
+    detail_url = (
+        channel_cfg.get("spreadsheet_channel_detail_url", "")
+        if "spreadsheet_channel_detail_url" in channel_cfg
+        else (dashboard.get("spreadsheet_channel_detail_url") or benchmark.get("spreadsheet_channel_detail_url", ""))
+    )
+    growth_url = (
+        channel_cfg.get("spreadsheet_growth_tracking_url", "")
+        if "spreadsheet_growth_tracking_url" in channel_cfg
+        else (dashboard.get("spreadsheet_growth_tracking_url") or benchmark.get("spreadsheet_growth_tracking_url", ""))
+    )
+    bench_filter = (
+        channel_cfg.get("benchmark_filter", {})
+        if "benchmark_filter" in channel_cfg
+        else (dashboard.get("benchmark_filter") or benchmark.get("filter") or {})
+    )
+    pinned_names = (
+        channel_cfg.get("benchmark_pinned_names", [])
+        if "benchmark_pinned_names" in channel_cfg
+        else (dashboard.get("benchmark_pinned_names") or benchmark.get("pinned_names") or [])
+    )
+
     cfg = dict(dashboard)
     cfg.update({
-        "spreadsheet_channel_detail_url": benchmark.get("spreadsheet_channel_detail_url")
-        or dashboard.get("spreadsheet_channel_detail_url")
-        or channel_cfg.get("spreadsheet_channel_detail_url", ""),
-        "spreadsheet_growth_tracking_url": benchmark.get("spreadsheet_growth_tracking_url")
-        or dashboard.get("spreadsheet_growth_tracking_url")
-        or channel_cfg.get("spreadsheet_growth_tracking_url", ""),
-        "benchmark_filter": benchmark.get("filter")
-        or dashboard.get("benchmark_filter")
-        or channel_cfg.get("benchmark_filter")
-        or {},
-        "benchmark_pinned_names": benchmark.get("pinned_names")
-        or dashboard.get("benchmark_pinned_names")
-        or channel_cfg.get("benchmark_pinned_names")
-        or [],
+        "spreadsheet_channel_detail_url": detail_url,
+        "spreadsheet_growth_tracking_url": growth_url,
+        "benchmark_filter": bench_filter,
+        "benchmark_pinned_names": pinned_names,
         "rival_channels": channel_cfg.get("rival_channels")
         or dashboard.get("rival_channels")
         or [],
@@ -1155,17 +1167,26 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
     }
     if growth_summary:
         cache["growth_summary"] = growth_summary
-    CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        from app_channel_cache import save_scoped_cache
+        cache = save_scoped_cache(CACHE_FILENAME, CACHE_FILE, cache)
+    except Exception:
+        CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n💾 キャッシュ保存: {CACHE_FILE} (source: {source}, language: ja, v5)")
     return cache
 
 
 def load_cache() -> dict | None:
-    if CACHE_FILE.exists():
-        try:
-            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    try:
+        from app_channel_cache import load_scoped_cache
+        d = load_scoped_cache(CACHE_FILENAME, CACHE_FILE, None)
+        return d if isinstance(d, dict) else None
+    except Exception:
+        if CACHE_FILE.exists():
+            try:
+                return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
     return None
 
 

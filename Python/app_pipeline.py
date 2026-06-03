@@ -143,21 +143,22 @@ def _load_dashboard_config():
             cfg = {}
 
     override_folder = (os.environ.get("APP_CHANNEL_FOLDER") or "").strip()
-    if override_folder:
-        ch_dir = Path(override_folder).expanduser()
-        # per-channel 設定をマージ（env 指定の channel_folder を採用）
+    channel_folder = override_folder or (cfg.get("channel_folder") or "").strip()
+    if channel_folder:
+        ch_dir = Path(channel_folder).expanduser()
         per_channel_path = ch_dir / _CHANNEL_CONFIG_FILENAME
         if per_channel_path.exists():
             try:
                 pc = json.loads(per_channel_path.read_text(encoding="utf-8")) or {}
-                cfg.update(pc)
+                if isinstance(pc, dict):
+                    cfg.update(pc)
             except Exception:
                 pass
         cfg["channel_folder"] = str(ch_dir)
         env_name = (os.environ.get("APP_CHANNEL_NAME") or "").strip()
         if env_name:
             cfg["channel_name"] = env_name
-        elif "channel_name" not in cfg:
+        elif override_folder and "channel_name" not in cfg:
             cfg["channel_name"] = ch_dir.name
     return cfg
 
@@ -371,19 +372,28 @@ def _load_benchmark_axes() -> dict:
     axes = {"concept": None, "title": None, "thumbnail": None}
     for axis in axes:
         f = CONFIG_DIR / "benchmark" / f"{axis}.json"
-        if f.exists():
+        used_scoped_loader = False
+        try:
+            from app_channel_cache import load_scoped_cache
+            used_scoped_loader = True
+            d = load_scoped_cache(f"{axis}.json", f, None)
+        except Exception:
+            d = None
+        if d is None and not used_scoped_loader and f.exists():
             try:
                 d = json.loads(f.read_text(encoding="utf-8"))
-                if axis == "thumbnail":
-                    axes[axis] = (
-                        d.get("aggregate")
-                        or ((d.get("analysis") or {}).get("aggregate") if isinstance(d.get("analysis"), dict) else {})
-                        or {}
-                    )
-                else:
-                    axes[axis] = d.get("aggregate") or {}
             except Exception:
-                pass
+                d = None
+        if not isinstance(d, dict):
+            continue
+        if axis == "thumbnail":
+            axes[axis] = (
+                d.get("aggregate")
+                or ((d.get("analysis") or {}).get("aggregate") if isinstance(d.get("analysis"), dict) else {})
+                or {}
+            )
+        else:
+            axes[axis] = d.get("aggregate") or {}
     return axes
 
 
@@ -452,8 +462,12 @@ def step_plan(vol: int, folder: Path, via_api: bool, **kw):
         except Exception:
             pass
 
-    cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
-    if not cache_file.exists():
+    try:
+        import app_competitor as _ac
+        cache = _ac.load_cache() or {}
+    except Exception:
+        cache = {}
+    if not cache:
         print("  ⚠️ 競合分析キャッシュが見つかりません")
         print("     先に Web UI で「📡 競合データ取得 + 分析」を実行してください")
         print("     スキップして既定プロンプトで進みます")
@@ -464,7 +478,6 @@ def step_plan(vol: int, folder: Path, via_api: bool, **kw):
     benchmark_axes = _load_benchmark_axes()
 
     try:
-        cache = json.loads(cache_file.read_text(encoding="utf-8"))
         analysis = cache.get("analysis", {})
         if not analysis.get("music_direction"):
             print("  ⚠️ analysis.music_direction が空。スキップ")
@@ -1003,13 +1016,35 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
     # vol 作成プロセスの不具合に気づけないため、明示的に失敗させて運用者にフォローを促す。
     fm = re.match(r"^\d+_([^_]+)", folder.name)
     folder_prefix = fm.group(1) if fm else "vol"
+    # 正規名(ゼロ埋め無し) を優先。既存フォルダにありがちな ゼロ埋め名(sk_vol01.psd 等) や
+    # 末尾サフィックス差にも耐性を持たせる（候補が全滅したときだけ失敗させ運用者にフォローを促す）。
     psd_path = folder / f"{folder_prefix}_vol{vol}.psd"
     if not psd_path.exists():
-        print(f"  ❌ vol 固有 PSD が見つかりません: {psd_path.name}")
-        print(f"     期待される配置: {psd_path}")
-        print(f"     vol_folder 作成プロセスを確認してください（テンプレ {template_psd_name} の自動コピーが効いていない可能性）")
-        print(f"     復旧後に再実行: python3 app_pipeline.py {vol} --only psd_composite")
-        return False
+        cands = [psd_path]
+        try:
+            cands.append(folder / f"{folder_prefix}_vol{int(vol):02d}.psd")   # ゼロ埋め2桁
+        except (ValueError, TypeError):
+            pass
+        try:
+            for p in sorted(folder.glob(f"{folder_prefix}_vol*.psd")):
+                mm = re.search(r"vol0*(\d+)", p.stem)
+                if mm and int(mm.group(1)) == int(vol):
+                    cands.append(p)
+        except (ValueError, TypeError):
+            pass
+        found = next((c for c in cands if c.exists()), None)
+        if found:
+            psd_path = found
+        else:
+            try:
+                padded = f"{folder_prefix}_vol{int(vol):02d}.psd"
+            except (ValueError, TypeError):
+                padded = f"{folder_prefix}_vol0{vol}.psd"
+            print(f"  ❌ vol 固有 PSD が見つかりません: {folder_prefix}_vol{vol}.psd（ゼロ埋め名 {padded} も可）")
+            print(f"     期待される配置: {folder / f'{folder_prefix}_vol{vol}.psd'}")
+            print(f"     vol_folder 作成プロセスを確認してください（テンプレ {template_psd_name} の自動コピーが効いていない可能性）")
+            print(f"     復旧後に再実行: python3 app_pipeline.py {vol} --only psd_composite")
+            return False
     print(f"  📄 vol 固有 PSD を使用: {psd_path.name}")
 
     # NOTE: strip しない — PSD のレイヤー名には末尾スペースが含まれることがある
@@ -1019,28 +1054,39 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
     psd_text_layer = cfg.get("psd_text_layer") or ""
     psd_text_font = cfg.get("psd_text_font") or ""  # PostScript 名（例: "HelveticaNeue-UltraLight"）。空ならコード側でフォント指定しない
 
-    # 英語シーンコピー生成（LLM）— scene_en.txt にキャッシュ
+    # 英語シーンコピー生成（LLM）— scene_en.txt にキャッシュ。
+    # 文字のトーン/例/禁止語/構文はチャンネル別設定 scene_text_* から渡す（無ければ persona 中立）。
+    # scene_text_enabled=false なら文字を入れない（単一トグル方式に流れる）。
+    scene_enabled = cfg.get("scene_text_enabled")
+    scene_enabled = True if scene_enabled is None else bool(scene_enabled)
     scene_file = folder / "scene_en.txt"
     scene_text = ""
-    if scene_file.exists() and not force:
-        try:
-            scene_text = scene_file.read_text(encoding="utf-8").strip()
-        except Exception:
-            scene_text = ""
-    if not scene_text:
-        persona = (cfg.get("persona") or "").strip()
-        cli = _load_suno_config().get("claude_cli", "claude")
-        scene_text = _generate_scene_copy_en(
-            cli=cli, persona=persona, folder_name=folder.name, vol=vol,
-        )
-        if scene_text:
+    if not scene_enabled:
+        print("  ⊘ scene_text_enabled=false → シーン文字を入れない（単一トグル方式で続行）")
+    else:
+        if scene_file.exists() and not force:
             try:
-                scene_file.write_text(scene_text + "\n", encoding="utf-8")
-                print(f"  💬 scene_en: {scene_text!r}（{scene_file.name} に保存）")
-            except Exception as e:
-                print(f"  ⚠ scene_en.txt 書き込み失敗: {e}（続行）")
-        else:
-            print("  ⚠ scene_en 生成失敗。空文字で続行（テキスト層は変更されません）")
+                scene_text = scene_file.read_text(encoding="utf-8").strip()
+            except Exception:
+                scene_text = ""
+        if not scene_text:
+            persona = (cfg.get("persona") or "").strip()
+            cli = _load_suno_config().get("claude_cli", "claude")
+            scene_text = _generate_scene_copy_en(
+                cli=cli, persona=persona, folder_name=folder.name, vol=vol,
+                tone=(cfg.get("scene_text_tone") or ""),
+                examples=cfg.get("scene_text_examples") or [],
+                forbidden=cfg.get("scene_text_forbidden") or [],
+                structure=(cfg.get("scene_text_structure") or ""),
+            )
+            if scene_text:
+                try:
+                    scene_file.write_text(scene_text + "\n", encoding="utf-8")
+                    print(f"  💬 scene_en: {scene_text!r}（{scene_file.name} に保存）")
+                except Exception as e:
+                    print(f"  ⚠ scene_en.txt 書き込み失敗: {e}（続行）")
+            else:
+                print("  ⚠ scene_en 生成失敗。空文字で続行（テキスト層は変更されません）")
 
     # 書き出し解像度 — PSD キャンバスが 1280×720 等でも YouTube/Premiere 用に 1920×1080 へ
     # アップサンプル（BICUBICSMOOTHER）。per-channel で psd_export_width/height を指定可能。
@@ -1084,28 +1130,33 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
         return False
 
 
-def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: int) -> str:
-    """Claude CLI に persona / フォルダ名 / vol を渡して英語シーンコピーを 1 件生成。
+def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: int,
+                            tone: str = "", examples=None, forbidden=None,
+                            structure: str = "") -> str:
+    """LLM に persona / フォルダ名 / vol + チャンネル別文字設定を渡して英語シーンコピーを 1 件生成。
 
-    Harbor Notes ベンチマーク分析の実例（DEEP SILENCE / RELAX FLOW / NOTHING ELSE /
-    PEACE MODE / FIND BALANCE / DIVE IN / WAITING FOR YOU / SCENT OF THE SEA）に
-    倣い、**全大文字 2-3 語**の英語フレーズを生成。
+    文字のトーン・例・禁止語・構文は **チャンネル設定（scene_text_*）から渡す**設計。
+    旧仕様でハードコードしていた特定チャンネル（Harbor Notes）由来のルールは撤去済み。
+    引数が空のときは persona 準拠の中立指示で生成（特定チャンネル色を出さない）。
 
-    Returns: 全大文字 2〜3 語の英語フレーズ（例: 'DEEP SILENCE'）。失敗時は空文字。
+    Returns: 全大文字 2〜3 語の英語フレーズ（例: 'BLUE HORIZON'）。失敗時は空文字。
     """
+    examples = examples or []
+    forbidden = forbidden or []
+    tone_line = (tone or "").strip() or "a mood that fits the channel persona above"
+    structure_line = (structure or "").strip() or "verb+noun or adjective+noun"
+    examples_block = ("  - Style reference (match the register, do NOT copy verbatim): " + " / ".join(examples) + "\n") if examples else ""
+    forbidden_block = ("  - Forbidden exact matches (never output these): " + ", ".join(forbidden) + "\n") if forbidden else ""
     prompt = (
         "You generate a short English scene caption for a long-form BGM YouTube thumbnail.\n"
         f"Channel persona: {persona or '(unspecified)'}\n"
         f"Folder/video name: {folder_name} (vol.{vol})\n"
-        "Examples of the target style (DO NOT reuse these exactly):\n"
-        "  DEEP SILENCE / RELAX FLOW / NOTHING ELSE / PEACE MODE\n"
-        "  FIND BALANCE / DIVE IN / WAITING FOR YOU / SCENT OF THE SEA\n"
         "Rules:\n"
         "  - Output ONE phrase, ALL UPPERCASE, English only.\n"
         "  - 2 to 3 words (4 words OK only if natural).\n"
-        "  - Structure: verb+noun (DIVE IN, FIND BALANCE) or adjective+noun (DEEP SILENCE, PEACE MODE).\n"
-        "  - Tone: stillness / focus / immersion / resort / sea / introspection.\n"
-        "  - Do not match the example phrases exactly — produce a fresh variation in the same register.\n"
+        f"  - Structure: {structure_line}.\n"
+        f"  - Tone: {tone_line}.\n"
+        f"{examples_block}{forbidden_block}"
         "  - No quotes, no surrounding punctuation, no emojis, no labels, no explanation.\n"
         "Output only the phrase, nothing else."
     )
@@ -1480,40 +1531,38 @@ def _build_thumbnail_prompt(folder: Path) -> str:
         pass
     # benchmark thumbnail aggregate
     try:
-        thumb_path = CONFIG_DIR / "benchmark" / "thumbnail.json"
-        if thumb_path.exists():
-            thumb_cache = json.loads(thumb_path.read_text(encoding="utf-8"))
-            thumbnail_axis = ((thumb_cache.get("analysis") or {}).get("aggregate") or {})
-            rec = thumbnail_axis.get("recommendation_for_self") or {}
-            vibe = (rec.get("vibe_one_line") or "").strip()
-            if vibe:
-                parts.append(vibe)
+        import app_benchmark_thumbnail as _bt
+        thumb_cache = _bt.load_cache() or {}
+        thumbnail_axis = ((thumb_cache.get("analysis") or {}).get("aggregate") or {})
+        rec = thumbnail_axis.get("recommendation_for_self") or {}
+        vibe = (rec.get("vibe_one_line") or "").strip()
+        if vibe:
+            parts.append(vibe)
     except Exception:
         thumbnail_axis = {}
     # benchmark visual_direction (competitor cache)
     visual_hint = ""
     try:
-        cache_path = CONFIG_DIR / "competitor_analysis_cache.json"
-        if cache_path.exists():
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
-            analysis = (cache or {}).get("analysis") or {}
-            vd = analysis.get("visual_direction") or {}
-            tod = (vd.get("time_of_day") or "").strip()
-            atm = (vd.get("atmosphere") or "").strip()
-            comp = (vd.get("composition") or "").strip()
-            palette = vd.get("color_palette") or []
-            sub = vd.get("subjects") or []
-            avoid = vd.get("avoid") or []
-            bits = []
-            if tod: bits.append(tod)
-            if atm: bits.append(atm)
-            if comp: bits.append(comp)
-            if palette: bits.append("palette: " + ", ".join(palette[:3]))
-            if sub: bits.append("subjects: " + ", ".join(sub[:3]))
-            if bits:
-                visual_hint = " | ".join(bits)
-            if avoid:
-                visual_hint += f" | avoid: {', '.join(avoid[:3])}"
+        import app_competitor as _ac
+        cache = _ac.load_cache() or {}
+        analysis = (cache or {}).get("analysis") or {}
+        vd = analysis.get("visual_direction") or {}
+        tod = (vd.get("time_of_day") or "").strip()
+        atm = (vd.get("atmosphere") or "").strip()
+        comp = (vd.get("composition") or "").strip()
+        palette = vd.get("color_palette") or []
+        sub = vd.get("subjects") or []
+        avoid = vd.get("avoid") or []
+        bits = []
+        if tod: bits.append(tod)
+        if atm: bits.append(atm)
+        if comp: bits.append(comp)
+        if palette: bits.append("palette: " + ", ".join(palette[:3]))
+        if sub: bits.append("subjects: " + ", ".join(sub[:3]))
+        if bits:
+            visual_hint = " | ".join(bits)
+        if avoid:
+            visual_hint += f" | avoid: {', '.join(avoid[:3])}"
     except Exception:
         pass
     if visual_hint:
@@ -1605,39 +1654,37 @@ def _build_bgimage_prompt(folder: Path) -> str:
         pass
     # benchmark thumbnail aggregate
     try:
-        thumb_path = CONFIG_DIR / "benchmark" / "thumbnail.json"
-        if thumb_path.exists():
-            thumb_cache = json.loads(thumb_path.read_text(encoding="utf-8"))
-            thumbnail_axis = ((thumb_cache.get("analysis") or {}).get("aggregate") or {})
-            rec = thumbnail_axis.get("recommendation_for_self") or {}
-            vibe = (rec.get("vibe_one_line") or "").strip()
-            if vibe:
-                parts.append(vibe)
+        import app_benchmark_thumbnail as _bt
+        thumb_cache = _bt.load_cache() or {}
+        thumbnail_axis = ((thumb_cache.get("analysis") or {}).get("aggregate") or {})
+        rec = thumbnail_axis.get("recommendation_for_self") or {}
+        vibe = (rec.get("vibe_one_line") or "").strip()
+        if vibe:
+            parts.append(vibe)
     except Exception:
         thumbnail_axis = {}
     # benchmark visual_direction (competitor cache)
     visual_hint = ""
     try:
-        cache_path = CONFIG_DIR / "competitor_analysis_cache.json"
-        if cache_path.exists():
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
-            analysis = (cache or {}).get("analysis") or {}
-            vd = analysis.get("visual_direction") or {}
-            tod = (vd.get("time_of_day") or "").strip()
-            atm = (vd.get("atmosphere") or "").strip()
-            comp = (vd.get("composition") or "").strip()
-            palette = vd.get("color_palette") or []
-            avoid = vd.get("avoid") or []
-            bits = []
-            if tod: bits.append(tod)
-            if atm: bits.append(atm)
-            if comp: bits.append(comp)
-            if palette: bits.append("palette: " + ", ".join(palette[:3]))
-            # ⚠ 背景画像は被写体を強調しない → サムネと違い subjects は載せない
-            if bits:
-                visual_hint = " | ".join(bits)
-            if avoid:
-                visual_hint += f" | avoid: {', '.join(avoid[:3])}"
+        import app_competitor as _ac
+        cache = _ac.load_cache() or {}
+        analysis = (cache or {}).get("analysis") or {}
+        vd = analysis.get("visual_direction") or {}
+        tod = (vd.get("time_of_day") or "").strip()
+        atm = (vd.get("atmosphere") or "").strip()
+        comp = (vd.get("composition") or "").strip()
+        palette = vd.get("color_palette") or []
+        avoid = vd.get("avoid") or []
+        bits = []
+        if tod: bits.append(tod)
+        if atm: bits.append(atm)
+        if comp: bits.append(comp)
+        if palette: bits.append("palette: " + ", ".join(palette[:3]))
+        # ⚠ 背景画像は被写体を強調しない → サムネと違い subjects は載せない
+        if bits:
+            visual_hint = " | ".join(bits)
+        if avoid:
+            visual_hint += f" | avoid: {', '.join(avoid[:3])}"
     except Exception:
         pass
     if visual_hint:

@@ -1338,7 +1338,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <div class="sidebar-products-grid">
       <button class="product-shortcut" onclick="go('premiere')" title="Adobe Premiere Pro（内部ログ・実行画面）" aria-label="Adobe Premiere Pro"><span class="product-icon adobe-pr">Pr</span></button>
       <button class="product-shortcut" onclick="go('export')" title="Adobe Media Encoder（内部書き出しキュー）" aria-label="Adobe Media Encoder"><span class="product-icon adobe-me">Me</span></button>
-      <button class="product-shortcut" onclick="go('photoshop')" title="Adobe Photoshop（サムネ生成）" aria-label="Adobe Photoshop"><span class="product-icon adobe-ps">Ps</span></button>
       <button class="product-shortcut" onclick="go('suno')" title="SUNO（内部設定・実行画面）" aria-label="SUNO"><span class="product-icon service suno"><img src="https://www.google.com/s2/favicons?sz=64&domain=suno.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Su</span></span></button>
       <button class="product-shortcut" onclick="window.open('https://labs.google/fx/tools/flow','_blank','noopener')" title="Google Flow（公式サイトを新タブで開く）" aria-label="Google Flow"><span class="product-icon service flow"><img src="https://www.google.com/s2/favicons?sz=64&domain=labs.google" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Fl</span></span></button>
       <button class="product-shortcut" onclick="window.open('https://chatgpt.com/','_blank','noopener')" title="ChatGPT Image2（公式サイトを新タブで開く）" aria-label="ChatGPT Image2"><span class="product-icon service gpt-image"><img src="https://www.google.com/s2/favicons?sz=64&domain=chatgpt.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">I2</span></span></button>
@@ -1357,7 +1356,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <div class="nav-section-label">ツール</div>
     <button class="nav-btn" data-p="suno" onclick="go('suno')"><span class="nav-label">SUNO</span></button>
     <button class="nav-btn" data-p="premiere" onclick="go('premiere')"><span class="nav-label">Premiere</span></button>
-    <button class="nav-btn" data-p="photoshop" onclick="go('photoshop')"><span class="nav-label">Photoshop</span></button>
     <button class="nav-btn" data-p="youtube" onclick="go('youtube')"><span class="nav-label">YouTube</span></button>
   </nav>
 
@@ -1494,6 +1492,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           <button class="btn btn-secondary btn-sm" onclick="bulkSuggestMeta()" title="選択フォルダのタイトル・説明・タグを順次 AI 提案＋保存">メタ一括提案</button>
           <button class="btn btn-secondary btn-sm" onclick="bulkSuggestAll()" title="競合分析から楽曲/サムネ/メタを一括提案">一気通貫提案</button>
           <button class="btn btn-secondary btn-sm" onclick="bulkBatchUpload()" title="選択フォルダを限定公開で順次アップロード (YouTube quota 制限あり、1日6件まで)">📤 一括アップロード</button>
+          <button class="btn btn-secondary btn-sm" onclick="bulkMakeThumbnails()" title="選択フォルダのサムネを順次制作（背景生成→Photoshop文字入れ）。Photoshop 起動が必要">🎯 サムネ一括制作</button>
           <button class="btn btn-primary btn-sm" onclick="bulkRunPipeline()" title="選択フォルダを順次パイプライン実行">全工程を一括実行</button>
           <span style="width:1px;height:20px;background:var(--border-default)"></span>
           <button class="btn btn-secondary btn-sm" onclick="bulkToggleHidden(false)" id="vBulkHideBtn">選択を非表示</button>
@@ -1510,7 +1509,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <!-- ===== シリーズ画像案 (ベンチマーク分析駆動) ===== -->
         <details id="seriesPanel" class="card" style="margin-bottom:var(--space-3);padding:0;margin-top:var(--space-3)">
           <summary style="cursor:pointer;padding:var(--space-3) var(--space-4);font-weight:var(--font-semibold);display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap" onclick="setTimeout(loadSeriesProposals,0)">
-            次に作るべき画像 — シリーズ提案
+            次に作る「動画」のシリーズ提案（新規ドラフト・このサムネ制作とは別）
             <span class="fh" id="seriesMeta" style="font-weight:normal;font-size:var(--text-xs)"></span>
           </summary>
           <div style="padding:var(--space-3) var(--space-4);border-top:1px solid var(--border-default)">
@@ -1545,7 +1544,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
 
         <!-- ===== 下部 5 タブ ===== -->
         <details class="ct-bottom">
-          <summary class="ct-bottom-summary">サムネ生成ワークフロー（プラン / 競合 / 結果 / 承認 / ログ）</summary>
+          <summary class="ct-bottom-summary">AI サムネ生成（フォールバック）の詳細ワークフロー（プラン / 競合 / 結果 / 承認 / ログ）</summary>
           <div class="ct-bottom-tabs" role="tablist">
             <button type="button" class="ct-tab on" data-tab="plan" onclick="ctTab('plan')">生成プラン</button>
             <button type="button" class="ct-tab" data-tab="competitor" onclick="ctTab('competitor')">競合分析</button>
@@ -1647,7 +1646,10 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
       <aside class="ct-rightpanel">
         <!-- フロー説明 (機能の所在を明示) -->
         <div class="ct-rp-flow" data-u4-flow>
-          <div class="ct-rp-flow-title">ベンチマーク横断 サムネ一括生成</div>
+          <div class="ct-rp-flow-title">AI サムネ一括生成 <span style="font-weight:normal;font-size:10px;color:var(--accent-warning)">（PSD合成のフォールバック）</span></div>
+          <div style="font-size:11px;color:var(--text-tertiary);line-height:1.6;margin-bottom:6px;padding:6px 8px;background:rgba(234,179,8,.06);border-radius:var(--radius-sm)">
+            通常のサムネ制作は <strong>各動画を開いて「🎯 サムネを制作（背景→文字入れ）」</strong>、または下の一括バー <strong>「🎯 サムネ一括制作」</strong> を使用してください（正規フロー: 背景 → Photoshop文字入れ）。こちらは PSD テンプレが使えない時などの <strong>AI 直接生成フォールバック</strong>です（Imageフォルダに出力・文字入れ無し）。
+          </div>
           <div class="ct-rp-flow-steps">
             <span>1. 動画選択</span>
             <span>→</span>
@@ -1665,7 +1667,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         </div>
 
         <div class="ct-rp-section">
-          <div class="ct-rp-title">動画サムネ一括生成
+          <div class="ct-rp-title">AI サムネ一括生成（フォールバック）
             <span class="fh" id="ctSelCount" style="font-weight:normal">0 件選択中</span>
           </div>
           <div class="ct-rp-fields">
@@ -2482,76 +2484,9 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     </div>
   </div>
 
-  <!-- ===== Photoshop ===== -->
-  <div class="page" id="p-photoshop">
-    <div class="page-head">
-      <div class="section-heading"><span class="product-icon adobe-ps lg">Ps</span><div class="page-title">Photoshop サムネ生成</div></div>
-    </div>
-    <div class="g2">
-      <div>
-        <div class="card" style="padding-bottom:12px">
-          <div class="card-header" style="margin-bottom:var(--space-3)">
-            <div class="sec-title" style="margin:0">Photoshop 接続</div>
-            <button class="btn btn-ghost btn-sm" onclick="checkPhotoshop()">再確認</button>
-          </div>
-          <div id="psStatus" style="font-size:var(--text-sm);margin-bottom:var(--space-2);color:var(--text-tertiary)">確認中...</div>
-          <div class="fh">AppleScript do javascript で接続。プラグイン不要。Photoshop が起動していれば動作します。</div>
-        </div>
-
-        <div class="card">
-          <div class="sec-title">対象動画</div>
-          <div class="ff">
-            <select class="fs" id="psVideo" onchange="updatePsPreview()">
-              <option value="">— 動画フォルダを選択 —</option>
-            </select>
-            <div class="fh">フォルダ内の <code>*vol*.psd</code> と <code>{画像置き場}/*</code> から自動的に処理します。</div>
-          </div>
-
-          <div class="fh" style="margin-top:var(--space-3);margin-bottom:var(--space-2)">このチャンネルの設定（基本設定で変更可）</div>
-          <div class="fr">
-            <div class="ff">
-              <label class="fl">背景画像 SO</label>
-              <input type="text" class="fi" id="psBaseLayerOverride" placeholder="(設定値)">
-              <div class="fh">空欄なら設定値を使用</div>
-            </div>
-            <div class="ff">
-              <label class="fl">トグル文字レイヤー</label>
-              <input type="text" class="fi" id="psToggleLayerOverride" placeholder="(設定値)">
-            </div>
-            <div class="ff">
-              <label class="fl">画像置き場</label>
-              <input type="text" class="fi" id="psImageSubdirOverride" placeholder="(設定値)">
-            </div>
-          </div>
-
-          <div class="ff" style="margin-top:var(--space-3)">
-            <label class="fl">テキスト差し替え（任意・複数行）</label>
-            <textarea class="ft" id="psTextReplacements" rows="3" placeholder="LAYER名=置換テキスト&#10;例: TITLE=Golden Hour Reverie&#10;ARTIST=Chicago Willis"></textarea>
-            <div class="fh">1 行 1 件、<code>レイヤー名=新しいテキスト</code> 形式。</div>
-          </div>
-
-          <div class="btns">
-            <button class="btn btn-primary" id="psRenderBtn" onclick="runPhotoshopThumbs()">サムネ生成</button>
-            <button class="btn btn-secondary" id="psCompositeBtn" onclick="runPsdCompositePipeline()" title="pipeline の psd_composite step を単発実行（CLI と同等：scene_en 自動生成 + 1920×1080 アップサンプル + vol 固有 PSD save&close）">⚡ 自動 PSD 合成</button>
-            <button class="btn btn-secondary btn-sm" onclick="psListLayers()" title="アクティブな PSD のレイヤー名を一覧表示">レイヤー確認</button>
-          </div>
-        </div>
-
-        <div class="card" id="psResultCard" style="display:none">
-          <div class="sec-title">出力</div>
-          <div id="psResult"></div>
-        </div>
-      </div>
-
-      <div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:var(--space-2)">
-          <span class="sec-title" style="margin:0">実行ログ</span>
-          <button class="btn btn-ghost btn-sm" onclick="clrLog('psLogs')">クリア</button>
-        </div>
-        <div class="log" id="psLogs" style="height:460px"></div>
-      </div>
-    </div>
-  </div>
+  <!-- ===== Photoshop ページは撤去（サムネ制作フロー1本化）=====
+       文字入れ(PSD合成)は各動画の「画像」タブ → 「🎯 サムネを制作」/「文字だけ再合成」、
+       または一括バー「🎯 サムネ一括制作」に統合（正規パイプライン psd_composite）。 -->
 
   <!-- ===== YouTube ===== -->
   <div class="page" id="p-youtube">
@@ -2853,6 +2788,45 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div class="btns" style="margin-top:var(--space-2)">
           <button class="btn btn-primary btn-sm" onclick="saveSettings()">保存</button>
           <button class="btn btn-secondary btn-sm" onclick="testReferenceImageDirDryRun()" title="このチャンネルの設定でどの 3 枚が選ばれるか確認（ファイルは生成しません）">テスト実行（dry-run）</button>
+        </div>
+      </div>
+      <!-- 文字入れ（シーンテキスト）設定（チャンネル別。旧 Harbor Notes 流用を撤去し個別設定/提案可） -->
+      <div class="card" data-cfg-group="channel" data-cfg-card="scene-text">
+        <div class="card-header" style="margin-bottom:var(--space-3)">
+          <div class="section-heading"><span class="product-icon sm" style="background:linear-gradient(135deg,#0ea5e9,#6366f1);color:#fff">T</span><div class="sec-title">文字入れ（シーンテキスト）設定</div></div>
+          <div class="fh" style="margin:0">サムネ（PSD「都市名_テキスト」層）に入れる英大文字フレーズの生成ルール（チャンネル別保存）</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-bottom:var(--space-3);cursor:pointer">
+          <input type="checkbox" id="cfgSceneTextEnabled" checked style="width:15px;height:15px;accent-color:var(--accent-primary)">
+          <span style="font-size:var(--text-sm)">サムネに文字を入れる（OFF で文字なし＝単一トグル方式）</span>
+        </label>
+        <div class="ff">
+          <label class="fl">トーン</label>
+          <input type="text" class="fi" id="cfgSceneTextTone" placeholder="例: chill, lo-fi, study, cozy（空なら persona 準拠の中立）" autocomplete="off">
+        </div>
+        <div class="fr">
+          <div class="ff">
+            <label class="fl">語感の参考フレーズ（1行1件・完全コピー禁止）</label>
+            <textarea class="ft" id="cfgSceneTextExamples" rows="3" placeholder="例:&#10;QUIET HOURS&#10;CITY GLOW"></textarea>
+          </div>
+          <div class="ff">
+            <label class="fl">禁止フレーズ（1行1件・完全一致回避）</label>
+            <textarea class="ft" id="cfgSceneTextForbidden" rows="3" placeholder="ライバルの実際の焼込文字など"></textarea>
+          </div>
+        </div>
+        <div class="ff">
+          <label class="fl">構文ヒント（任意）</label>
+          <input type="text" class="fi" id="cfgSceneTextStructure" placeholder="空なら verb+noun / adjective+noun" autocomplete="off">
+        </div>
+        <div class="fh" style="margin-top:var(--space-2)">
+          空欄の項目は <strong>persona 準拠の中立生成</strong>になります（特定チャンネルのトーンは混入しません）。<br>
+          下のボタンで、このチャンネルの<strong>ベンチマーク（ライバル）</strong>から提案を取り込めます（取り込み後に編集・保存）。
+        </div>
+        <div id="cfgSceneTextSuggestMeta" class="fh" style="margin-top:var(--space-2);font-size:var(--text-xs);color:var(--text-tertiary)"></div>
+        <div class="btns" style="margin-top:var(--space-2)">
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">保存</button>
+          <button class="btn btn-secondary btn-sm" onclick="suggestSceneText('titles')" title="ライバル動画タイトルの語彙からトーン/例/禁止語を提案（軽量・高速）">タイトルから提案</button>
+          <button class="btn btn-secondary btn-sm" onclick="suggestSceneText('vision')" title="ライバルのサムネ画像の実際の焼込文字を Vision で読み取って提案（LLM消費大）">サムネ画像から提案（Vision）</button>
         </div>
       </div>
       <div class="card" data-cfg-group="channel" data-cfg-card="channel-management">
@@ -3809,7 +3783,6 @@ function go(n, pushHistory=true){
   if(n==='master'){loadMaster();groupMasterCards()}
   if(n==='benchmark')setTimeout(checkOnboardingState,150);
   if(n==='premiere'){loadPrVideoSelect();checkPremiere();startPanelLogPoll();}else{stopPanelLogPoll();}
-  if(n==='photoshop'){loadPsVideoSelect();checkPhotoshop();}
   if(n==='youtube')loadYoutubeHistory();
   if(n==='ledger')loadLedger();
   if(n==='health')loadTokenHealth();
@@ -4293,6 +4266,12 @@ async function loadConfig(){try{
     if((dc.reference_image_dir||'').trim()) loadReferenceImageDirPreview().catch(()=>{});
     else { const m=$('cfgReferenceImageDirMeta'); if(m) m.textContent=''; const t=$('cfgReferenceImageDirThumbs'); if(t) t.innerHTML=''; }
   }
+  // 文字入れ（シーンテキスト）設定
+  if($('cfgSceneTextEnabled')) $('cfgSceneTextEnabled').checked=(dc.scene_text_enabled!==false);
+  if($('cfgSceneTextTone')) $('cfgSceneTextTone').value=dc.scene_text_tone||'';
+  if($('cfgSceneTextExamples')) $('cfgSceneTextExamples').value=(dc.scene_text_examples||[]).join('\n');
+  if($('cfgSceneTextForbidden')) $('cfgSceneTextForbidden').value=(dc.scene_text_forbidden||[]).join('\n');
+  if($('cfgSceneTextStructure')) $('cfgSceneTextStructure').value=dc.scene_text_structure||'';
   // APIキー欄のステータスバッジを初期化（保存済み → 「保存済」）
   if(typeof _setApiStatus==='function'){
     _setApiStatus('stLlm', s.api_key?'ok':'idle', s.api_key?'保存済':'未入力');
@@ -4446,6 +4425,11 @@ async function _autoSaveSettingsNow(){
       youtube_api_key:($('cfgYtApiKey')?.value||'').trim(),
       sheets_api_key:($('cfgSheetsApiKey')?.value||'').trim(),
       reference_image_dir:($('cfgReferenceImageDir')?.value||'').trim(),
+      scene_text_enabled: $('cfgSceneTextEnabled') ? !!$('cfgSceneTextEnabled').checked : true,
+      scene_text_tone:($('cfgSceneTextTone')?.value||'').trim(),
+      scene_text_examples:($('cfgSceneTextExamples')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean),
+      scene_text_forbidden:($('cfgSceneTextForbidden')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean),
+      scene_text_structure:($('cfgSceneTextStructure')?.value||'').trim(),
     };
     // Premiere 規定尺（チャンネル別）。空欄/0/負数なら 0 を送信して per-channel から削除（フォールバック 10800 復帰）
     {
@@ -4544,6 +4528,34 @@ function onPublishModeChange(){
   const wrap=document.getElementById('cfgPublishDelayWrap');
   if(!sel||!wrap)return;
   wrap.style.display=(sel.value==='delayed')?'block':'none';
+}
+
+// 文字入れ（シーンテキスト）設定: ベンチマーク（ライバル）から提案を取り込む
+async function suggestSceneText(mode){
+  const meta=$('cfgSceneTextSuggestMeta');
+  const label = mode==='vision' ? 'サムネ画像(Vision)' : 'タイトル語彙';
+  if(meta){meta.style.color='var(--text-tertiary)';meta.textContent=`${label}から提案を生成中…（${mode==='vision'?'数十秒〜数分':'数十秒'}）`;}
+  try{
+    const r=await fetch('/api/scene-text/suggest-from-benchmark',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mode,count:6})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||!d.ok){
+      const msg=d.detail||'提案に失敗しました';
+      if(meta){meta.style.color='var(--accent-danger)';meta.textContent='✕ '+msg;}
+      toast(msg,'e');return;
+    }
+    if(d.tone && $('cfgSceneTextTone')) $('cfgSceneTextTone').value=d.tone;
+    if(Array.isArray(d.examples) && d.examples.length && $('cfgSceneTextExamples')) $('cfgSceneTextExamples').value=d.examples.join('\n');
+    if(Array.isArray(d.forbidden) && d.forbidden.length && $('cfgSceneTextForbidden')) $('cfgSceneTextForbidden').value=d.forbidden.join('\n');
+    if(d.structure && $('cfgSceneTextStructure')) $('cfgSceneTextStructure').value=d.structure;
+    if(meta){meta.style.color='var(--accent-success)';meta.textContent=`✓ ${label}から提案を反映（ライバル ${d.source_count||0} 件参照）。内容を確認して「保存」してください。`;}
+    toast('提案を反映しました。確認して保存してください','s');
+  }catch(e){
+    if(meta){meta.style.color='var(--accent-danger)';meta.textContent='✕ '+(e.message||e);}
+    toast('通信エラー','e');
+  }
 }
 
 async function saveSettings(){
@@ -5703,8 +5715,32 @@ async function showVideoDetail(name){
           </div>
 
           <div class="tab-panel" data-t="images">
+            <!-- ★ サムネ制作 一気通貫（正規フロー: pipeline bgimage→psd_composite）★ -->
+            <div class="card" id="mkThumbCard_${esc(name)}" style="margin-bottom:var(--space-3);border:1px solid var(--accent-primary)">
+              <div class="card-header">
+                <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+                  🎯 サムネを制作（背景 → 文字入れ）
+                  <span class="badge badge-info" style="font-size:10px">正規フロー・一気通貫</span>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--text-secondary);margin-bottom:var(--space-2)">
+                <span>① ベンチマーク参照</span><span style="opacity:.5">→</span><span>② 背景画像生成</span><span style="opacity:.5">→</span><span>③ 候補から自動採用</span><span style="opacity:.5">→</span><span>④ Photoshop文字入れ</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:var(--space-2);line-height:1.7">
+                ベンチマーク参照で背景を生成 → 続けて PSD テンプレで文字入れまで一括実行します（<code>vol{N}.png</code> → <code>vol{N}.jpg</code> + <code>サムネイル.jpg</code>）。<strong>Photoshop を起動</strong>しておいてください。既存ファイルがある工程は自動スキップされます（やり直しは下の「個別実行」から）。
+              </div>
+              <div class="btns" style="margin:0">
+                <button class="btn btn-primary" id="mkThumbBtn_${esc(name)}" onclick="makeThumbnail('${esc(name)}')">▶ サムネを制作（背景→文字入れ）</button>
+                <button class="btn btn-secondary btn-sm" onclick="makeThumbnail('${esc(name)}','psd_composite')" title="背景はそのまま、Photoshop文字入れ(PSD合成)だけ再実行">文字だけ再合成</button>
+              </div>
+              <div id="mkThumbLog_${esc(name)}" style="margin-top:var(--space-2);padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);max-height:220px;overflow-y:auto;display:none"></div>
+            </div>
+
+            <!-- 個別操作（上級者向け）: 手動の画像生成エンジン。通常は上の「サムネを制作」で完結します -->
+            <details class="mk-advanced" style="margin-bottom:var(--space-3)">
+              <summary style="cursor:pointer;font-size:var(--text-xs);color:var(--text-tertiary);user-select:none;padding:6px 0">▸ 手動で画像生成（Flow / gpt-image-2・上級者向け）</summary>
             <!-- 画像自動生成パネル（プロバイダー切替対応） -->
-            <div class="card" style="margin-bottom:var(--space-3)">
+            <div class="card" style="margin-bottom:var(--space-3);margin-top:var(--space-2)">
               <div class="card-header">
                 <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
                   画像を自動生成
@@ -5919,12 +5955,13 @@ async function showVideoDetail(name){
 
               <div id="flowLog_${esc(name)}" style="margin-top:10px;padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);max-height:200px;overflow-y:auto;display:none"></div>
             </div>
+            </details>
 
-            <!-- 背景画像（パイプライン STEP 3）: ベンチマーク参照 + チャンネルコンセプトで vol{N}.png を自動生成 -->
+            <!-- ② 背景画像（個別実行・パイプライン STEP 3）: ベンチマーク参照 + チャンネルコンセプトで vol{N}.png を生成。上の「サムネを制作」に内包 -->
             <div class="card" id="bgImageCard_${esc(name)}" style="margin-bottom:var(--space-3)">
               <div class="card-header">
                 <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
-                  背景画像（パイプライン STEP 3）
+                  ② 背景画像を生成（個別実行）
                   <span class="badge badge-info" style="font-size:10px">ベンチマーク参照 + チャンネルコンセプト</span>
                 </div>
                 <div class="btns" style="margin:0">
@@ -5982,7 +6019,7 @@ async function showVideoDetail(name){
               <div class="card-header">
                 <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
                   <span class="product-icon adobe-ps sm">Ps</span>
-                  Photoshop でサムネ生成
+                  ④ Photoshop で文字入れ（個別実行）
                   <span id="psThumbStatus_${esc(name)}" class="badge badge-neutral" style="font-size:10px">確認中…</span>
                 </div>
                 <div class="btns" style="margin:0">
@@ -8278,6 +8315,30 @@ async function bulkRunPipeline(){
     }catch{_bpUpdate(n,'✕','失敗','var(--accent-danger)');ng++}
   }
   toast(`全工程一括実行: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
+  loadVideos();
+}
+
+// サムネだけ一括制作（背景生成→Photoshop文字入れ = 正規パイプライン bgimage→psd_composite を選択分にN本）
+async function bulkMakeThumbnails(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('フォルダを選択してください','w');return}
+  if(!confirm(`${names.length} 件のサムネを順次制作します（背景生成 → Photoshop文字入れ）。\nPhotoshop を起動しておいてください。\n各フォルダ数分かかります。`))return;
+  bulkProgressModal(`サムネ一括制作 (${names.length}件)`,names);
+  let ok=0,ng=0;
+  for(const n of names){
+    _bpUpdate(n,'⟳','制作中...','var(--accent-warning)');
+    try{
+      const r=await fetch(`/api/videos/${encodeURIComponent(n)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:['bgimage','psd_composite']})});
+      if(!r.ok){_bpUpdate(n,'✕','起動失敗','var(--accent-danger)');ng++;continue}
+      while(true){
+        await new Promise(res=>setTimeout(res,4000));
+        const s=await fetch('/api/pipeline/status').then(x=>x.ok?x.json():{running:false});
+        if(!s.running)break;
+      }
+      _bpUpdate(n,'✓','完了','var(--accent-success)');ok++;
+    }catch{_bpUpdate(n,'✕','失敗','var(--accent-danger)');ng++}
+  }
+  toast(`サムネ一括制作: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
   loadVideos();
 }
 
@@ -12581,184 +12642,11 @@ async function runPremiereForVideo(name){
 async function regenerateSrt(){clrLog('prLogs');await fetch('/api/premiere/regenerate-srt',{method:'POST'});startPoll('premiere','prLogs');toast('字幕再生成','s')}
 async function exportOnly(){clrLog('prLogs');await fetch('/api/premiere/export',{method:'POST'});startPoll('premiere','prLogs');toast('書き出し開始','s')}
 
-/* ============= Photoshop（サムネ生成） ============= */
-async function loadPsVideoSelect(){
-  try{
-    const r=await fetch('/api/videos'),d=await r.json(),s=document.getElementById('psVideo');
-    if(!s)return;
-    const cur=s.value;
-    s.innerHTML='<option value="">— 動画フォルダを選択 —</option>';
-    (d.videos||[]).forEach(v=>{
-      const t=v.title||v.name;
-      s.innerHTML+=`<option value="${esc(v.name)}">vol.${v.num} - ${esc(t)}</option>`;
-    });
-    if(cur)s.value=cur;
-    else if(d.videos&&d.videos.length>0)s.value=d.videos[0].name;
-  }catch(e){}
-}
-
-async function checkPhotoshop(){
-  const el=document.getElementById('psStatus');if(!el)return;
-  el.innerHTML='確認中...';
-  try{
-    const r=await fetch('/api/photoshop/check'),d=await r.json();
-    if(d.connected){
-      const doc=d.active_document?` <span style="color:var(--text-tertiary);font-size:12px">(現在: ${esc(d.active_document)})</span>`:' <span style="color:var(--text-tertiary);font-size:12px">(ドキュメント未オープン)</span>';
-      el.innerHTML=`<span class="badge badge-success">接続OK</span>${doc}`;
-    } else {
-      el.innerHTML=`<span class="badge badge-danger">未接続</span> <span style="color:var(--text-tertiary);font-size:12px">${esc(d.reason||'')}</span>`;
-    }
-  }catch(e){el.innerHTML='<span class="badge badge-danger">エラー</span>';}
-}
-
-function _psLog(msg, type){
-  const el=document.getElementById('psLogs');if(!el)return;
-  const t=new Date().toLocaleTimeString('ja-JP',{hour12:false});
-  const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
-  el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
-  el.scrollTop=el.scrollHeight;
-}
-
-function _parseTextReplacements(){
-  const raw=(document.getElementById('psTextReplacements')?.value||'').trim();
-  if(!raw)return null;
-  const out={};
-  for(const line of raw.split('\n')){
-    const i=line.indexOf('=');
-    if(i<=0)continue;
-    out[line.slice(0,i).trim()]=line.slice(i+1);
-  }
-  return Object.keys(out).length?out:null;
-}
-
-async function psListLayers(){
-  _psLog('▶ レイヤー一覧を取得','info');
-  try{
-    const r=await fetch('/api/photoshop/layers'),d=await r.json();
-    if(!r.ok){_psLog('✕ '+(d.detail||'失敗'),'error');return;}
-    const layers=d.layers||[];
-    if(!layers.length){_psLog('(レイヤーなし。アクティブな PSD はある？)','info');return;}
-    _psLog(`✓ ${layers.length} 件:`,'done');
-    for(const l of layers){
-      _psLog(`  [${l.kind}] ${l.path}`,'info');
-    }
-  }catch(e){_psLog('✕ '+e.message,'error');}
-}
-
-// pipeline の psd_composite step を単発実行する。CLI の `python3 app_pipeline.py <vol> --only psd_composite`
-// と等価。scene_en の LLM 生成・vol 固有 PSD 解決・1920×1080 アップサンプル・PSD save&close
-// すべて pipeline 側のロジックが自動でやる。
-async function runPsdCompositePipeline(){
-  const vn=document.getElementById('psVideo')?.value||'';
-  if(!vn){toast('対象動画を選択してください','e');return;}
-  const btn=document.getElementById('psCompositeBtn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ 起動中...';}
-  _psLog(`▶ 自動 PSD 合成 (pipeline 経由): ${vn}`,'info');
-  try{
-    const r=await fetch(`/api/videos/${encodeURIComponent(vn)}/run-pipeline`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({steps:['psd_composite']}),
-    });
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok){
-      _psLog('✕ '+(d.detail||'起動失敗'),'error');
-      toast(d.detail||'起動失敗','e');
-      return;
-    }
-    _psLog(`✓ pipeline 起動 (job=${d.task_id||'pipeline'})`,'done');
-    if(btn)btn.textContent='⏳ 実行中...';
-    // 完了までポーリング
-    while(true){
-      await new Promise(res=>setTimeout(res,3000));
-      try{
-        const s=await fetch('/api/pipeline/status').then(x=>x.ok?x.json():null);
-        if(s && !s.running){
-          _psLog(`✓ pipeline 完了`,'done');
-          toast('PSD 合成完了（vol{N}.jpg + サムネイル.jpg）','s');
-          break;
-        }
-      }catch(_){/* 一時的エラーは継続 */}
-    }
-  }catch(e){
-    _psLog('✕ '+e.message,'error');
-    toast('通信エラー','e');
-  }finally{
-    if(btn){btn.disabled=false;btn.textContent='⚡ 自動 PSD 合成';}
-  }
-}
-
-async function runPhotoshopThumbs(){
-  const vn=document.getElementById('psVideo')?.value||'';
-  if(!vn){toast('対象動画を選択してください','e');return;}
-  const btn=document.getElementById('psRenderBtn');
-  if(btn){btn.disabled=true;btn.textContent='生成中...';}
-  const body={
-    video_name:vn,
-    text_replacements:_parseTextReplacements(),
-  };
-  // override 値があれば送信（空欄なら設定値を使う）
-  const bo=(document.getElementById('psBaseLayerOverride')?.value||'').trim();
-  const to=(document.getElementById('psToggleLayerOverride')?.value||'').trim();
-  const so=(document.getElementById('psImageSubdirOverride')?.value||'').trim();
-  if(bo)body.base_layer=bo;
-  if(to)body.toggle_layer=to;
-  if(so)body.image_subdir=so;
-
-  _psLog(`▶ サムネ生成: ${vn}`,'info');
-  try{
-    const r=await fetch('/api/photoshop/render-for-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok){
-      _psLog('✕ '+(d.detail||'失敗'),'error');
-      toast(d.detail||'失敗','e');
-      return;
-    }
-    _psLog(`✓ PSD: ${d.psd}`,'done');
-    if(d.swap_image)_psLog(`✓ 差し替え画像: ${d.swap_image}`,'done');
-    _psLog(`✓ ${d.with_toggle}`,'done');
-    _psLog(`✓ ${d.thumbnail}`,'done');
-    _renderPsResult(d);
-    toast('サムネ 2 枚生成完了','s');
-  }catch(e){
-    _psLog('✕ '+e.message,'error');
-    toast('通信エラー','e');
-  }finally{
-    if(btn){btn.disabled=false;btn.textContent='サムネ生成';}
-  }
-}
-
-function _renderPsResult(d){
-  const card=document.getElementById('psResultCard');
-  const wrap=document.getElementById('psResult');
-  if(!card||!wrap)return;
-  card.style.display='block';
-  const vn=document.getElementById('psVideo')?.value||'';
-  const v=Date.now();  // キャッシュバスター
-  const buildUrl=p=>{
-    // 絶対パスから basename を抽出して /api/videos/{vn}/image-file/{basename} を返す
-    const base=p.split('/').pop();
-    return `/api/videos/${encodeURIComponent(vn)}/image-file/${encodeURIComponent(base)}?v=${v}`;
-  };
-  wrap.innerHTML=`
-    <div style="display:flex;gap:var(--space-3);flex-wrap:wrap">
-      <div style="flex:1;min-width:240px">
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">トグル ON（vol*.jpg）</div>
-        <img src="${buildUrl(d.with_toggle)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="vol thumbnail" onerror="this.outerHTML='<div style=\\'color:var(--text-tertiary);word-break:break-all\\'>${esc(d.with_toggle)}</div>'">
-        <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px;font-family:var(--font-mono);word-break:break-all">${esc(d.with_toggle)}</div>
-      </div>
-      <div style="flex:1;min-width:240px">
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">トグル OFF（サムネイル.jpg）</div>
-        <img src="${buildUrl(d.thumbnail)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="thumbnail" onerror="this.outerHTML='<div style=\\'color:var(--text-tertiary);word-break:break-all\\'>${esc(d.thumbnail)}</div>'">
-        <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px;font-family:var(--font-mono);word-break:break-all">${esc(d.thumbnail)}</div>
-      </div>
-    </div>
-  `;
-}
-
-function updatePsPreview(){
-  // 動画選択時のプレビュー（現状は特別な処理なし、将来 image/ サブフォルダの中身プレビュー等に拡張可）
-}
+/* ============= Photoshop 単独ページの JS は撤去（サムネ制作フロー1本化）=============
+   旧 loadPsVideoSelect / checkPhotoshop / _psLog / _parseTextReplacements / psListLayers /
+   runPsdCompositePipeline / runPhotoshopThumbs / _renderPsResult / updatePsPreview は削除。
+   文字入れ(PSD合成)は makeThumbnail()（正規パイプライン psd_composite）に統合。
+   各動画の「画像」タブ内 Photoshop 操作は下記 *For 系（checkPhotoshopFor / runPhotoshopThumbsFor 等）を使用。 */
 
 /* ============= 動画詳細「画像」タブ内の Photoshop サムネ生成 ============= */
 async function checkPhotoshopFor(name){
@@ -12785,6 +12673,57 @@ function _psThumbLog(name, msg, type){
   const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
   el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
   el.scrollTop=el.scrollHeight;
+}
+
+/* ===== サムネ制作 一気通貫（正規パイプライン bgimage→psd_composite）=====
+   主CTA「サムネを制作」: run-pipeline に steps を渡し、/api/pipeline/status をポーリングして進捗表示。
+   only 未指定=['bgimage','psd_composite'] / 'psd_composite'=文字だけ / 'bgimage'=背景だけ */
+let _mkThumbPoll=null;
+function _mkThumbLog(name, msg, type){
+  const el=document.getElementById('mkThumbLog_'+name);if(!el)return;
+  el.style.display='block';
+  const t=new Date().toLocaleTimeString('ja-JP',{hour12:false});
+  const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
+  el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
+  el.scrollTop=el.scrollHeight;
+}
+async function makeThumbnail(name, only){
+  const steps = only ? [only] : ['bgimage','psd_composite'];
+  const label = only==='psd_composite' ? '文字入れ(PSD合成)' : (only==='bgimage' ? '背景画像生成' : 'サムネ制作（背景→文字入れ）');
+  if(_mkThumbPoll){toast('実行中です。完了までお待ちください','w');return;}
+  if(steps.includes('psd_composite') && !confirm('Photoshop を起動していますか？\nPSD合成（文字入れ）には Photoshop の起動が必要です。\n\nこのまま実行しますか？'))return;
+  const btn=document.getElementById('mkThumbBtn_'+name);
+  if(btn){btn.disabled=true;btn.dataset._t=btn.textContent;btn.textContent='⏳ 実行中...';}
+  _mkThumbLog(name,`▶ ${label} 開始（steps=${steps.join(' → ')}）`,'info');
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/run-pipeline`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({steps})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){_mkThumbLog(name,'✕ 起動失敗: '+(d.detail||r.status),'error');toast(d.detail||'起動失敗','e');return;}
+    _mkThumbLog(name,'✓ パイプライン起動。進捗を監視します…','info');
+    let lastLen=0;
+    await new Promise(resolve=>{
+      _mkThumbPoll=setInterval(async()=>{
+        let s=null;try{s=await fetch('/api/pipeline/status').then(x=>x.ok?x.json():null);}catch(_){return;}
+        if(!s)return;
+        const logs=s.logs||[];
+        for(let i=lastLen;i<logs.length;i++){_mkThumbLog(name,logs[i],'info');}
+        lastLen=logs.length;
+        if(!s.running){clearInterval(_mkThumbPoll);_mkThumbPoll=null;resolve();}
+      },2500);
+    });
+    _mkThumbLog(name,`✓ 完了: ${label}`,'done');
+    toast(`${label} 完了`,'s');
+    try{loadBgImagePreview(name);}catch(_){}
+    try{if(typeof loadVideos==='function')loadVideos();}catch(_){}
+  }catch(e){
+    _mkThumbLog(name,'✕ '+e.message,'error');toast('通信エラー','e');
+    if(_mkThumbPoll){clearInterval(_mkThumbPoll);_mkThumbPoll=null;}
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=btn.dataset._t||'▶ サムネを制作（背景→文字入れ）';}
+  }
 }
 
 function _parsePsTextRepl(name){

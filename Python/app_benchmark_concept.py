@@ -54,6 +54,7 @@ except Exception:
 BENCHMARK_DIR = CONFIG_DIR / "benchmark"
 ANALYSIS_FILE = BENCHMARK_DIR / "concept.json"
 COMPETITOR_CACHE_FILE = CONFIG_DIR / "competitor_analysis_cache.json"
+ANALYSIS_FILENAME = "concept.json"
 
 DEFAULT_CLI = "claude"
 ANALYSIS_TIMEOUT = 300
@@ -66,35 +67,54 @@ def _ensure_dirs() -> None:
 
 
 def load_cache() -> dict:
-    if not ANALYSIS_FILE.exists():
-        return {"per_channel": {}, "aggregate": {}, "generated_at": ""}
+    empty = {"per_channel": {}, "aggregate": {}, "generated_at": ""}
     try:
-        d = json.loads(ANALYSIS_FILE.read_text(encoding="utf-8"))
+        from app_channel_cache import load_scoped_cache
+        d = load_scoped_cache(ANALYSIS_FILENAME, ANALYSIS_FILE, empty)
+    except Exception:
+        d = None
+    if d is None:
+        if not ANALYSIS_FILE.exists():
+            return empty
+        try:
+            d = json.loads(ANALYSIS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return empty
+    try:
         if not isinstance(d, dict):
-            return {"per_channel": {}, "aggregate": {}, "generated_at": ""}
+            return empty
         d.setdefault("per_channel", {})
         d.setdefault("aggregate", {})
         d.setdefault("generated_at", "")
         return d
     except Exception:
-        return {"per_channel": {}, "aggregate": {}, "generated_at": ""}
+        return empty
 
 
 def save_cache(payload: dict) -> None:
     _ensure_dirs()
-    ANALYSIS_FILE.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    try:
+        from app_channel_cache import save_scoped_cache
+        save_scoped_cache(ANALYSIS_FILENAME, ANALYSIS_FILE, payload)
+    except Exception:
+        ANALYSIS_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 def _load_competitor_cache() -> Optional[dict]:
-    if not COMPETITOR_CACHE_FILE.exists():
-        return None
     try:
-        d = json.loads(COMPETITOR_CACHE_FILE.read_text(encoding="utf-8"))
+        from app_channel_cache import load_scoped_cache
+        d = load_scoped_cache("competitor_analysis_cache.json", COMPETITOR_CACHE_FILE, None)
         return d if isinstance(d, dict) else None
     except Exception:
-        return None
+        if not COMPETITOR_CACHE_FILE.exists():
+            return None
+        try:
+            d = json.loads(COMPETITOR_CACHE_FILE.read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else None
+        except Exception:
+            return None
 
 
 def _safe_id(s: str) -> str:

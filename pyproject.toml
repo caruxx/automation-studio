@@ -82,7 +82,6 @@ extend-exclude = [
     "youtube-oauth-2",
     "venv",
     ".venv",
-    "Python/orzz_*.py",  # 互換 shim は警告対象外
 ]
 
 [tool.ruff.lint]
