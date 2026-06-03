@@ -245,6 +245,22 @@ SUNO生成 → 画像選択 → JSX配置 → 書き出し → 動画メタ → 
 | GET | `/api/youtube-desc/references` | 過去説明文の参考リスト |
 | POST | `/api/youtube-desc/save` | 説明文保存 |
 
+### サムネ / 背景画像 / 文字入れ（PSD 合成）
+
+| メソッド | パス | 用途 |
+|---------|------|------|
+| POST | `/api/videos/{name}/run-pipeline` | `{steps:[...]}` で工程選択実行。**サムネ制作 = `["bgimage","psd_composite"]`** |
+| POST | `/api/bgimage/run` | `{video_name, ref_count, force}` → ベンチ参照で背景 `vol{N}.png` 生成 |
+| GET | `/api/bgimage/reference-dir/list` / POST `/dry-run` | 参照画像フォルダのプレビュー / 選択ソース確認 |
+| POST | `/api/photoshop/render-dual-thumbnail` | AI 背景 + シーンテキストで `vol{N}.jpg` + `サムネイル.jpg` を2枚出し |
+| POST | `/api/photoshop/render-for-video` | 動画フォルダ指定で PSD 合成（単一トグル方式） |
+| POST | `/api/photoshop/generate-scene-text` | `{video_name}` → AI 画像を Vision 分析しシーンテキスト1件生成（チャンネル設定 `scene_text_*` 準拠） |
+| POST | `/api/scene-text/suggest-from-benchmark` | `{mode:"titles"\|"vision", count}` → ベンチ（ライバル）からトーン/例/禁止語を提案 |
+| GET | `/api/photoshop/check` / `layers` | Photoshop 接続確認 / アクティブ PSD のレイヤー名一覧 |
+| POST | `/api/channel-thumbnail/start` | （フォールバック）Vision 駆動の AI サムネを `{vol}/Image/` に一括生成 + スコアリング |
+
+> サムネの**正規フロー** = `bgimage`(背景・ベンチ参照) → `psd_composite`(Photoshop 文字入れ)。`channel-thumbnail`（AI 直接生成）は PSD 合成が使えない時の**フォールバック**。文字（シーンテキスト）のトーン/例/禁止語は per-channel `scene_text_*` 設定で制御（空なら persona 中立、旧 Harbor Notes 固定は撤去済み）。
+
 ### システム
 
 | メソッド | パス | 用途 |
@@ -481,6 +497,10 @@ bash Python/start.sh                          # http://localhost:8888/
   - **日本語化** — `analyze_with_claude` / `propose_suno_prompt` / `propose_flow_prompt` / `claude_proposer` のプロンプトに日本語出力指示、SUNO/Flow プロンプト本文は英語仕様を維持、rationale のみ日本語化、キャッシュ削除 API + 「日本語で再生成」ボタン
   - **リモート + スケジュール** — 認証ミドルウェア（`ORZZ_AUTH_REQUIRED=1`、127.0.0.1 はスキップ）、APScheduler 統合（cron / date トリガー、Discord 通知連動）、Cloudflare Tunnel セットアップスクリプト、PWA（manifest.json + sw.js + login.html）、600px モバイルブレークポイント
   - **マスター設定タブ新設** — サイドバーに「⚙ マスター設定」追加、9 セクション（プロンプト管理 / SUNO 詳細 / Flow 生成 / メタ生成 / ベンチマーク / スケジュール / 書き出し / リモートアクセス / インポート・エクスポート）、`master_prompts.json` でハードコードプロンプト上書き可、`master_settings.json` で Flow `DEFAULT_COUNT` 等を上書き
+- **2026-06-03**: サムネ制作フロー1本化 + 文字入れのチャンネル別設定化
+  - **UI 統合** — 背景生成の入口（6 経路）を正規フロー1本に集約。各動画「画像」タブに一気通貫 CTA「🎯 サムネを制作（背景→文字入れ）」、一覧ツールバーに「🎯 サムネ一括制作」。Vision AI 一括（`channel-thumbnail`）を「PSD 合成のフォールバック」へ降格、独立「Photoshop」ナビ/ページ/孤立 JS を撤去
+  - **文字入れのチャンネル別化** — `scene_text` 生成（`_generate_scene_copy_en` / `scene_text_generator.py`）の Harbor Notes 流用を撤去。per-channel 設定 `scene_text_enabled/tone/examples/forbidden/structure`（空なら persona 中立）。`POST /api/scene-text/suggest-from-benchmark`（titles=タイトル語彙 / vision=ライバルサムネの実焼込文字 Vision 抽出）でベンチから提案、基本設定に UI カード追加
+  - **PSD 解決の堅牢化** — `step_psd_composite` の vol 固有 PSD 名をゼロ埋め耐性化（`{prefix}_vol{N}.psd` → `_vol{NN}.psd` → glob）。背景レイヤーはスマートオブジェクト必須
 
 ---
 
