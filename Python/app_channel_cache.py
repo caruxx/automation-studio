@@ -17,13 +17,19 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from _app_config import resolve_config_dir as _resolve_config_dir
+    from _app_config import (
+        resolve_config_dir as _resolve_config_dir,
+        resolve_shared_config_dir as _resolve_shared_config_dir,
+    )
     CONFIG_DIR = _resolve_config_dir()
+    SHARED_CONFIG_DIR = _resolve_shared_config_dir()
 except Exception:
     CONFIG_DIR = Path.home() / ".config" / "orzz"
+    SHARED_CONFIG_DIR = CONFIG_DIR
 
 DASHBOARD_CONFIG = CONFIG_DIR / "dashboard_config.json"
-CHANNELS_CONFIG = CONFIG_DIR / "channels.json"
+# channels.json は PC 間共有のため共有ドライブ側を読む（channel_id 解決を別 PC と一致させる）
+CHANNELS_CONFIG = SHARED_CONFIG_DIR / "channels.json"
 CHANNEL_CONTEXT_KEY = "_channel_context"
 ALLOW_UNSCOPED_ENV = "APP_ALLOW_UNSCOPED_BENCHMARK_CACHE"
 
@@ -92,8 +98,10 @@ def active_channel_context() -> dict:
 
 
 def scoped_cache_dir() -> Path:
+    # PC 間共有: scoped 分析(concept/title/thumbnail 等)を共有ドライブに置く。
+    # ※サムネ「画像」は別管理(CONFIG_DIR/benchmark/thumbs)でローカル維持。
     ctx = active_channel_context()
-    return CONFIG_DIR / "benchmark" / "channels" / ctx["key"]
+    return SHARED_CONFIG_DIR / "benchmark" / "channels" / ctx["key"]
 
 
 def scoped_cache_path(filename: str) -> Path:

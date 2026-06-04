@@ -95,6 +95,10 @@ DEFAULT_SETTINGS = {
     "headless": False,             # True にすると画面非表示
     "workspace": "",               # 指定時 SUNO ライブラリに同名ワークスペースを確保（例 "orzz_vol74"）
     "batch_mode": False,           # True なら CLI provider で N 曲分を事前生成してから順に投入
+    # ── 歌詞・楽曲の多様性制御（チャンネル別に上書き可能。UI/設定から変更）──
+    "diversity_threshold": 0.6,    # 類似度がこの値以上なら「似すぎ」とみなし作り直す（0.0〜1.0。1.0で実質無効）
+    "diversity_retry": 2,          # 似すぎたときの最大再生成回数（0で再生成しない）
+    "history_limit": 40,           # チャンネル別に保持する曲履歴件数（0で履歴・類似回避を無効化）
 }
 
 APPEND_PROMPT_STYLES_TITLE_ONLY = """
@@ -152,6 +156,38 @@ SUNO_SAFETY_CLAUSE = """
 - STRICT: do NOT include any real artist names, band names, composer/producer names, label names, channel names, or real song/album titles anywhere in `title`, `styles`, or `lyrics`. SUNO rejects such prompts. Use only generic descriptors (genre/mood/instrument/scene). Examples to AVOID: "Nujabes style", "like Bill Evans", "Lofi Girl vibe", "Ghibli soundtrack". Examples OK: "warm jazz trio", "cinematic strings", "dusty vinyl feel"."""
 
 
+# ─── Suno META タグ命令（歌あり前提・Ghost Writer userscript と同一形式）──
+# lyrics / lyrics_styles（=歌あり）モードの歌詞に、冒頭と各セクション先頭へ
+# Suno の META タグ（[Mood:][Instrument:][Vocal Tone:][Vocal FX:][Energy:][Hook:]）と
+# セクションタグ（[Intro][Verse][Pre-Chorus][Chorus][Bridge][Outro]）を付与させる。
+APPEND_META_TAG_INSTRUCTION = """
+
+【Suno METAタグについて】
+歌詞の冒頭と各セクションの先頭に、以下のSuno METAタグを英語で付加してください。
+曲の内容とプロンプトの世界観、styles の音楽性、各セクションの展開に一致するよう、曲の雰囲気・テンポに合わせて最適な値を選んで生成してください。
+
+使えるMETAタグ（すべて英語）:
+[Mood: <値>]  ← 例: Dreamy / Energetic / Nostalgic / Dark / Melancholic / Euphoric
+[Instrument: <値>]  ← 例: Piano / Electric Guitar / Synth Pad / Strings / 808 Bass
+[Vocal Tone: <値>]  ← 例: Whisper / Powerful / Soft / Raspy / Falsetto
+[Vocal FX: <値>]  ← 例: Reverb+Echo / AutoTune / Delay / Chorus
+[Energy: <値>]  ← 例: Low / Medium / High / Intense
+[Hook: Yes]
+
+セクションタグ（使用必須）: [Intro] [Verse] [Pre-Chorus] [Chorus] [Bridge] [Outro] など
+
+形式例:
+[Mood: Nostalgic] [Instrument: Piano] [Energy: Low]
+[Intro]
+...イントロの歌詞...
+
+[Mood: Euphoric] [Energy: High] [Vocal FX: Reverb+Echo]
+[Chorus]
+...サビの歌詞...
+
+※ METAタグは歌詞テキストの一部として出力してください。説明文は不要です。"""
+
+
 # ─── Claude CLI 用: JSON 単一オブジェクト出力プロンプト ─────────────
 # Claude CLI は対話的レスポンスを含みがちなので、JSON のみを厳格指示する
 
@@ -179,21 +215,14 @@ Respond with a SINGLE JSON object, no markdown fences, no commentary.
 Schema:
 {
   "title": "<song title>",
-  "styles": "<comma-separated English Suno styles INCLUDING song structure>",
-  "lyrics": "<bracket-only structural notation — NO SUNG LYRICS>"
+  "styles": "<comma-separated English Suno styles>",
+  "lyrics": "<full sung lyrics WITH Suno META tags and section tags>"
 }
 Rules:
-- `styles` must describe genre, BPM, instruments, and structural hints.
-  e.g. `jazz house, 120 BPM, four-on-the-floor kick, deep sub bass, 0-5s piano intro, gradual instrument layering, 30s+ full mix, outro fade`.
-- `lyrics` — THIS IS AN INSTRUMENTAL BGM TRACK. Output ONLY bracketed section directives, one per line. DO NOT write any sung words, verses, choruses, rhymes, or sentences.
-  Required format — each line is a single `[Section - instrumental description]` bracket:
-      [Intro - soft piano and muted trumpet]
-      [Verse - walking bass and brushed snare]
-      [Chorus - full arrangement with warm strings]
-      [Bridge - stripped back to piano and rhodes]
-      [Outro - gentle fade with reverb tail]
-  NEVER output lines outside brackets. NEVER include quoted phrases, pronouns ("I", "you", "we"), emotive words ("love", "heart", "night", "forever"), or any text resembling real song lyrics — SUNO's copyright filter rejects them as false positives.
-- Output ONLY the JSON object. No prose before or after.""" + SUNO_SAFETY_CLAUSE
+- THIS IS A VOCAL SONG. `lyrics` MUST contain real, singable lyrics (verses, choruses, etc.) in the language implied by the prompt (Japanese prompt → Japanese lyrics; English prompt → English lyrics).
+- `styles` must describe genre, BPM, mood, and instruments (English, comma-separated). e.g. `dreamy city pop, 95 BPM, warm electric piano, gated reverb drums, female vocal`.
+- `lyrics` MUST embed Suno META tags and section tags as described in the META section below.
+- Output ONLY the JSON object. No prose before or after.""" + APPEND_META_TAG_INSTRUCTION + SUNO_SAFETY_CLAUSE
 
 APPEND_PROMPT_JSON_LYRICS = """
 
@@ -202,17 +231,12 @@ Respond with a SINGLE JSON object, no markdown fences, no commentary.
 Schema:
 {
   "title": "<song title>",
-  "lyrics": "<bracket-only structural notation — NO SUNG LYRICS>"
+  "lyrics": "<full sung lyrics WITH Suno META tags and section tags>"
 }
 Rules:
-- `lyrics` — THIS IS AN INSTRUMENTAL BGM TRACK. Output ONLY bracketed section directives, one per line. DO NOT write sung words.
-  Required format:
-      [Intro - piano solo]
-      [Buildup - percussion layers in]
-      [Main - full arrangement]
-      [Outro - fade out]
-  NEVER output lines outside brackets. NEVER include quoted phrases, pronouns, or emotive words — SUNO's copyright filter triggers false positives on common lyric-like phrases.
-- Output ONLY the JSON object. No prose before or after.""" + SUNO_SAFETY_CLAUSE
+- THIS IS A VOCAL SONG. `lyrics` MUST contain real, singable lyrics in the language implied by the prompt (Japanese prompt → Japanese lyrics; English prompt → English lyrics).
+- `lyrics` MUST embed Suno META tags and section tags as described in the META section below.
+- Output ONLY the JSON object. No prose before or after.""" + APPEND_META_TAG_INSTRUCTION + SUNO_SAFETY_CLAUSE
 
 
 # ─── Claude CLI 一括生成用プロンプト（N 曲分を 1 回で返させる）───
@@ -400,6 +424,264 @@ def build_instrumental_filler(target_chars: int = INSTRUMENTAL_TARGET_CHARS) -> 
     return body
 
 
+# ─── 歌詞・タイトルの多様性制御（チャンネル別履歴・類似曲回避）──────────
+# Ghost Writer userscript (suno-ai-lyrics-creator.user.js) の多様性ロジックを移植。
+# 履歴は channels.json の channel id 単位で .suno_history.json に永続化する。
+
+SIMILARITY_THRESHOLD = 0.6      # これ以上似ていたら「類似」とみなす
+MAX_DIVERSITY_RETRY = 2         # 似ていたとき作り直す最大回数
+RECENT_SONG_LIMIT = 40          # 曲履歴の保持件数（チャンネル別）
+RECENT_TITLE_LIMIT = 20         # タイトル履歴の保持件数（チャンネル別）
+
+def _registry_dir():
+    """channels.json / .suno_history.json を置く設定ディレクトリを解決。
+
+    共有レジストリ（<repo>/config、app.py が同期する正本）を優先し、
+    無ければ従来の CONFIG_DIR（~/.config/orzz）にフォールバックする。
+    履歴を共有側に置くことで、複数PC運用でも多様性（重複回避）が持続する。
+    """
+    try:
+        shared = Path(__file__).resolve().parent.parent / "config"
+        if (shared / "channels.json").exists():
+            return shared
+    except Exception:
+        pass
+    return CONFIG_DIR
+
+
+def _suno_history_path():
+    return _registry_dir() / ".suno_history.json"
+
+LYRIC_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "of", "for", "with",
+    "is", "are", "was", "were", "be", "been", "im", "it", "its", "i", "you", "we", "he",
+    "she", "they", "my", "your", "me", "us", "this", "that", "these", "those", "so",
+    "just", "all", "no", "not", "do", "dont", "can", "will", "now", "up", "down",
+    "like", "oh", "yeah", "na", "la", "ooh", "uh", "hey", "let", "lets", "got", "get",
+}
+OVERUSED_TITLE_WORDS = [
+    "夜", "夢", "星", "光", "影", "君", "愛", "涙", "未来", "心",
+    "moon", "night", "dream", "star", "light", "shadow", "love", "tears", "heart",
+]
+
+
+def _clamp_float(value, default, lo, hi):
+    try:
+        if value in (None, ""):
+            return default
+        return max(lo, min(hi, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_int(value, default, lo, hi):
+    try:
+        if value in (None, ""):
+            return default
+        return max(lo, min(hi, int(float(value))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _diversity_params(settings):
+    """settings から多様性パラメータの実効値を取得（チャンネル別に上書き可能）。
+
+    戻り値: (threshold: float, retry: int, song_limit: int)
+      threshold … 類似度しきい値（既定 SIMILARITY_THRESHOLD、範囲 0.0〜1.0）
+      retry     … 再生成上限（既定 MAX_DIVERSITY_RETRY、範囲 0〜5）
+      song_limit… 曲履歴の保持件数（既定 RECENT_SONG_LIMIT、範囲 0〜200。0で履歴・類似回避を無効化）
+    """
+    threshold = _clamp_float(settings.get("diversity_threshold"), SIMILARITY_THRESHOLD, 0.0, 1.0)
+    retry = _clamp_int(settings.get("diversity_retry"), MAX_DIVERSITY_RETRY, 0, 5)
+    song_limit = _clamp_int(settings.get("history_limit"), RECENT_SONG_LIMIT, 0, 200)
+    return threshold, retry, song_limit
+
+
+def _sim_tokenize_words(text):
+    t = (text or "").lower()
+    t = re.sub(r"\[[^\]]*\]", " ", t)                 # [Mood] 等の META/セクションタグを除去
+    t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)  # 記号を除去
+    return [w for w in t.split() if len(w) >= 2]
+
+
+def _sim_styles_tokens(styles):
+    return {s.strip() for s in re.split(r"[,、\n]", (styles or "").lower()) if s.strip()}
+
+
+def _jaccard(a, b):
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return inter / (len(a) + len(b) - inter)
+
+
+def _lyric_word_set(song):
+    words = song.get("words")
+    if words:
+        return set(words)
+    return set(_sim_tokenize_words(song.get("lyrics", "")))
+
+
+def _song_similarity(a, b):
+    """2曲の類似度（0〜1）。styles と lyrics(語) を主軸に、title を補助に。"""
+    s_styles = _jaccard(_sim_styles_tokens(a.get("styles", "")), _sim_styles_tokens(b.get("styles", "")))
+    wa, wb = _lyric_word_set(a), _lyric_word_set(b)
+    s_lyrics = _jaccard(wa, wb)
+    s_title = _jaccard(set(_sim_tokenize_words(a.get("title", ""))), set(_sim_tokenize_words(b.get("title", ""))))
+    has_lyrics = bool(wa) and bool(wb)
+    # 歌詞が無い（styles_title_only/instrumental）場合は styles 重視に寄せる
+    if has_lyrics:
+        return 0.45 * s_styles + 0.45 * s_lyrics + 0.10 * s_title
+    return 0.80 * s_styles + 0.20 * s_title
+
+
+def _max_similarity_against(song, others):
+    return max((_song_similarity(song, o) for o in others), default=0.0)
+
+
+def _extract_keywords(lyrics, limit=15):
+    freq = {}
+    for w in _sim_tokenize_words(lyrics):
+        if w in LYRIC_STOPWORDS:
+            continue
+        freq[w] = freq.get(w, 0) + 1
+    return [w for w, _ in sorted(freq.items(), key=lambda kv: kv[1], reverse=True)[:limit]]
+
+
+def _get_overused_words(recent_songs, min_count=2, limit=25):
+    freq = {}
+    for s in recent_songs:
+        for w in (s.get("words") or []):
+            freq[w] = freq.get(w, 0) + 1
+    ranked = sorted(freq.items(), key=lambda kv: kv[1], reverse=True)
+    return [w for w, c in ranked if c >= min_count][:limit]
+
+
+def _clean_title_for_history(title):
+    t = re.sub(r'^["\'「『\[]+|["\'」』\]]+$', "", str(title or ""))
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:80]
+
+
+def _build_avoid_instruction(avoid_songs, strong=False, overused_words=None):
+    parts = []
+    if avoid_songs:
+        lines = "\n".join(
+            f"{i + 1}. title: {s.get('title') or '-'} / styles: {s.get('styles') or '-'}"
+            for i, s in enumerate(avoid_songs[-8:])
+        )
+        head = (
+            "\n\n【最重要・多様性の強制】直前の生成が下記の既存曲と似すぎました。ムード・ジャンル・楽器編成・テンポ・歌詞テーマ・コード進行感を大きく変え、明確に異なる曲にしてください。"
+            if strong else
+            "\n\n【多様性の確保】このチャンネル（過去に作成した曲を含む）で既に作った下記の曲と、ムード・ジャンル・楽器・テンポ・歌詞テーマが被らないようにし、聴き手が連続再生で飽きないよう変化をつけてください。"
+        )
+        parts.append(f"{head}\n{lines}")
+    if overused_words:
+        parts.append(
+            "\n\n【単語・主題の重複回避】最近の曲で繰り返し登場している下記の語・モチーフは、今回の歌詞・タイトル・stylesでは使わないでください。毎回同じ題材（例: コーヒーの歌ばかり）にならないよう、別の題材・情景・語彙を選んでください:\n"
+            + ", ".join(overused_words)
+        )
+    return "".join(parts)
+
+
+def _build_title_instruction(recent_titles):
+    rt = [t for t in (recent_titles or []) if t][:8]
+    recent_block = ("\n\n【直近タイトル（似せない）】\n" + "\n".join(f"- {t}" for t in rt)) if rt else ""
+    seed = "%06x" % random.randrange(16 ** 6)
+    return (
+        "\n\n【タイトル生成ルール】\n"
+        f"今回のタイトル発想ID: {seed}\n"
+        "・プロンプトや歌詞の中心モチーフから、具体的な名詞・場所・動作・手触りを1つ選び、短く印象的なタイトルにしてください。\n"
+        "・Styles欄に出すジャンル、ムード、楽器、テンポ感を先に整理し、その楽曲の雰囲気に合うタイトルにしてください。タイトルとstylesの温度感・時代感・質感が矛盾しないようにしてください。\n"
+        f"・毎回似た言葉に寄らないよう、定番語（{' / '.join(OVERUSED_TITLE_WORDS)}）は主題に必須な場合だけ使ってください。\n"
+        "・「〜の歌」「〜の夜」「〜へ」「〜を抱いて」のような汎用テンプレートを避け、曲ごとの固有の情景を出してください。\n"
+        "・タイトルは1案だけ。引用符、括弧、説明文、候補リストは不要です。\n"
+        "・日本語曲なら日本語タイトル、英語曲なら英語タイトルを基本にしてください。" + recent_block
+    )
+
+
+def _is_vocal_mode(mode):
+    """歌あり（実歌詞＋META タグ）モードか。instrumental 系は False。"""
+    return mode in ("lyrics", "lyrics_styles")
+
+
+# ── チャンネル別履歴の永続化（.suno_history.json）──
+
+def _channel_id_from_settings(settings):
+    """履歴キーに使う channel id を決定。
+
+    優先度: settings["channel_id"] 明示 > workspace/video_name を channels.json と照合 > "default"。
+    照合は各エントリの id / prefix / sanitize(name) のいずれかに対し、
+    完全一致 または `<candidate>_` 前方一致（workspace は通常 `{name}_vol{N}` 形式）で判定する。
+    """
+    cid = (settings.get("channel_id") or "").strip()
+    if cid:
+        return cid
+    hint = (settings.get("workspace") or settings.get("video_name") or "").strip().lower()
+    if not hint:
+        return "default"
+
+    def _san(s):
+        return re.sub(r"[^a-z0-9_-]+", "_", (s or "").lower()).strip("_")
+
+    try:
+        chans = json.loads((_registry_dir() / "channels.json").read_text(encoding="utf-8"))
+    except Exception:
+        chans = []
+    for ch in chans:
+        ch_id = (ch.get("id") or "").strip()
+        candidates = {c for c in ((ch.get("prefix") or "").lower(), _san(ch.get("name")), ch_id.lower()) if c}
+        for c in candidates:
+            if hint == c or hint.startswith(c + "_"):
+                return ch_id or "default"
+    return "default"
+
+
+def _load_suno_history():
+    try:
+        return json.loads(_suno_history_path().read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _save_suno_history(state):
+    path = _suno_history_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠️ .suno_history.json 保存失敗: {e}")
+
+
+def _channel_history(state, channel_id):
+    """(songs, titles) を返す。"""
+    entry = state.get(channel_id)
+    if not isinstance(entry, dict):
+        return [], []
+    return (entry.get("songs") or [], entry.get("titles") or [])
+
+
+def _record_recent_song(state, channel_id, song, song_limit=RECENT_SONG_LIMIT):
+    if song_limit <= 0:
+        return  # 履歴無効化（history_limit=0）
+    entry = state.get(channel_id)
+    if not isinstance(entry, dict):
+        entry = {}
+    songs = entry.get("songs") or []
+    titles = entry.get("titles") or []
+    songs.append({
+        "title": song.get("title", ""),
+        "styles": song.get("styles", ""),
+        "words": _extract_keywords(song.get("lyrics", "")),
+    })
+    entry["songs"] = songs[-song_limit:]
+    clean = _clean_title_for_history(song.get("title", ""))
+    if clean:
+        merged = [clean] + [t for t in titles if _clean_title_for_history(t) != clean]
+        entry["titles"] = merged[:min(RECENT_TITLE_LIMIT, song_limit)]
+    state[channel_id] = entry
+
+
 def generate_content_batch(settings, count):
     """CLI provider で N 曲分のメタデータを一度に生成してリストで返す。
 
@@ -422,11 +704,23 @@ def generate_content_batch(settings, count):
     if effective_mode == "styles_title_only":
         mode_hint, mode_rule = "styles_title_only", "omit the `lyrics` field from each song object."
     elif effective_mode == "lyrics_styles":
-        mode_hint, mode_rule = "lyrics_styles", "include `lyrics` with Suno section tags [Intro], [Verse], [Chorus], [Outro] or bracket structural notes."
+        mode_hint, mode_rule = "lyrics_styles", "include `lyrics` with FULL SUNG LYRICS plus Suno META tags ([Mood:][Instrument:][Energy:] ...) and section tags ([Intro][Verse][Chorus][Bridge][Outro])."
     else:
-        mode_hint, mode_rule = "lyrics", "include `lyrics` with Suno section tags. Omit `styles` if strict."
+        mode_hint, mode_rule = "lyrics", "include `lyrics` with FULL SUNG LYRICS plus Suno META tags and section tags."
 
-    full_prompt = base_prompt + APPEND_PROMPT_JSON_BATCH.format(
+    # 履歴に基づく多様性指示（avoid + title）と、歌ありモードの META 指示を付加
+    threshold, retry, song_limit = _diversity_params(settings)
+    state = _load_suno_history() if song_limit > 0 else {}
+    channel_id = _channel_id_from_settings(settings)
+    hist_songs, hist_titles = _channel_history(state, channel_id) if song_limit > 0 else ([], [])
+    overused = _get_overused_words(hist_songs)
+    diversity_suffix = (
+        _build_avoid_instruction(hist_songs, strong=False, overused_words=overused)
+        + _build_title_instruction(hist_titles)
+    )
+    meta_suffix = APPEND_META_TAG_INSTRUCTION if _is_vocal_mode(mode) else ""
+
+    full_prompt = base_prompt + diversity_suffix + meta_suffix + APPEND_PROMPT_JSON_BATCH.format(
         count=count, mode_hint=mode_hint, mode_rule=mode_rule,
     )
     if provider == "codex":
@@ -440,27 +734,64 @@ def generate_content_batch(settings, count):
     obj = _extract_json_object(response)
     if not obj or "songs" not in obj or not isinstance(obj["songs"], list):
         raise Exception(f"{provider} CLI の出力からsongs配列を抽出できませんでした: {response[:200]}")
-    songs = []
+
     instrumental_filler = (mode == "instrumental_filler")
     instrumental_lyrics = build_instrumental_filler() if instrumental_filler else ""
-    for s in obj["songs"][:count]:
-        # instrumental_filler: AI 出力の lyrics は捨て、固定の [instrumental] 充填で上書き
-        lyrics_value = instrumental_lyrics if instrumental_filler else str(s.get("lyrics", "")).strip()
-        songs.append({
+
+    def _norm(s):
+        return {
             "title": str(s.get("title", "")).strip(),
             "styles": str(s.get("styles", "")).strip(),
-            "lyrics": lyrics_value,
+            "lyrics": instrumental_lyrics if instrumental_filler else str(s.get("lyrics", "")).strip(),
             "mode": mode,
-        })
+        }
+
+    raw_songs = [_norm(s) for s in obj["songs"][:count]]
+
+    # ── 多様性チェック: 履歴＋同バッチ確定済みに似すぎる曲は個別に再生成して差し替え ──
+    accepted = []
+    for idx, song in enumerate(raw_songs, 1):
+        avoid_pool = hist_songs + accepted
+        sim = _max_similarity_against(song, avoid_pool)
+        best = (song, sim)
+        if avoid_pool and sim >= threshold and retry > 0:
+            for attempt in range(1, retry + 1):
+                print(f"  ↻ バッチ {idx}/{count}: 類似度 {sim:.2f} ≥ {threshold} → 個別再生成 ({attempt}/{retry})")
+                try:
+                    regen = _generate_content_once(
+                        settings, avoid_songs=avoid_pool, strong=True,
+                        recent_titles=hist_titles, overused=overused,
+                    )
+                    if instrumental_filler:
+                        regen["lyrics"] = instrumental_lyrics
+                    rsim = _max_similarity_against(regen, avoid_pool)
+                    if rsim < best[1]:
+                        best = (regen, rsim)
+                    if rsim < threshold:
+                        break
+                    sim = rsim
+                except Exception as e:
+                    print(f"  ⚠️ 個別再生成失敗: {e}")
+                    break
+        accepted.append(best[0])
+        _record_recent_song(state, channel_id, best[0], song_limit=song_limit)
+
+    if song_limit > 0:
+        _save_suno_history(state)
+
     if instrumental_filler:
-        print(f"  ✅ {len(songs)}曲分のメタデータを取得（lyrics は [instrumental] x {INSTRUMENTAL_TARGET_CHARS}文字 で充填）")
+        print(f"  ✅ {len(accepted)}曲分のメタデータを取得（lyrics は [instrumental] x {INSTRUMENTAL_TARGET_CHARS}文字 で充填）")
     else:
-        print(f"  ✅ {len(songs)}曲分のメタデータを取得しました")
-    return songs
+        print(f"  ✅ {len(accepted)}曲分のメタデータを取得しました（多様性チェック済み）")
+    return accepted
 
 
-def generate_content(settings):
-    """LLM / Claude CLI でタイトル・スタイル・歌詞を生成"""
+def _generate_content_once(settings, avoid_songs=None, strong=False, recent_titles=None, overused=None):
+    """1曲分を生成して {title, styles, lyrics, mode} を返す（履歴記録なし・SUNO投入なし）。
+
+    avoid_songs / recent_titles / overused が与えられた場合は多様性指示をプロンプトに付加する。
+    歌あり（lyrics / lyrics_styles）モードでは META タグ指示も付与する（JSON プロンプト側に内蔵）。
+    """
     mode = settings["generation_mode"]
     base_prompt = settings["prompt"]
     provider = settings["provider"]
@@ -468,21 +799,31 @@ def generate_content(settings):
     # instrumental_filler は AI には styles_title_only として依頼し、lyrics は機械生成で上書き
     effective_mode = "styles_title_only" if mode == "instrumental_filler" else mode
 
-    # CLI provider は JSON 出力用プロンプトを使用
+    # 履歴に基づく多様性指示（avoid + title）。プロンプト本文と出力形式指示の間に挟む。
+    diversity_suffix = (
+        _build_avoid_instruction(avoid_songs, strong=strong, overused_words=overused)
+        + _build_title_instruction(recent_titles)
+    )
+
+    # CLI provider は JSON 出力用プロンプトを使用（歌ありの JSON プロンプトには META 指示を内蔵済み）
     if provider in ("claude", "codex"):
         if effective_mode == "styles_title_only":
-            full_prompt = base_prompt + APPEND_PROMPT_JSON_STYLES_TITLE_ONLY
+            append = APPEND_PROMPT_JSON_STYLES_TITLE_ONLY
         elif effective_mode == "lyrics_styles":
-            full_prompt = base_prompt + APPEND_PROMPT_JSON_LYRICS_STYLES
+            append = APPEND_PROMPT_JSON_LYRICS_STYLES
         else:
-            full_prompt = base_prompt + APPEND_PROMPT_JSON_LYRICS
+            append = APPEND_PROMPT_JSON_LYRICS
     else:
+        # 非 CLI（gemini/chatgpt）は従来の自由形式。歌ありモードのみ META 指示を追記。
+        meta = APPEND_META_TAG_INSTRUCTION if _is_vocal_mode(mode) else ""
         if effective_mode == "styles_title_only":
-            full_prompt = base_prompt + APPEND_PROMPT_STYLES_TITLE_ONLY
+            append = APPEND_PROMPT_STYLES_TITLE_ONLY
         elif effective_mode == "lyrics_styles":
-            full_prompt = base_prompt + APPEND_PROMPT_WITH_STYLES
+            append = APPEND_PROMPT_WITH_STYLES + meta
         else:
-            full_prompt = base_prompt + APPEND_PROMPT_WITHOUT_STYLES
+            append = APPEND_PROMPT_WITHOUT_STYLES + meta
+
+    full_prompt = base_prompt + diversity_suffix + append
 
     api_key = settings.get("api_key", "")
     model = settings.get("model", "")
@@ -529,6 +870,40 @@ def generate_content(settings):
     # instrumental_filler: AI 出力の lyrics は捨て、固定の [instrumental] 充填で上書き
     if mode == "instrumental_filler":
         lyrics = build_instrumental_filler()
+
+    return {"title": title, "styles": styles, "lyrics": lyrics, "mode": mode}
+
+
+def generate_content(settings):
+    """1曲を生成。チャンネル履歴に基づく多様性リトライ＋履歴記録つき。"""
+    threshold, retry, song_limit = _diversity_params(settings)
+    state = _load_suno_history() if song_limit > 0 else {}
+    channel_id = _channel_id_from_settings(settings)
+    songs, titles = _channel_history(state, channel_id) if song_limit > 0 else ([], [])
+    overused = _get_overused_words(songs)
+
+    chosen = None
+    best = None  # (song, sim) — 閾値を超えられなかった場合に最も似ていない候補を採用
+    for attempt in range(retry + 1):
+        result = _generate_content_once(
+            settings, avoid_songs=songs, strong=(attempt > 0),
+            recent_titles=titles, overused=overused,
+        )
+        sim = _max_similarity_against(result, songs)
+        if best is None or sim < best[1]:
+            best = (result, sim)
+        if not songs or sim < threshold:
+            chosen = result
+            break
+        if attempt < retry:
+            print(f"  ↻ 類似度 {sim:.2f} ≥ {threshold} → 多様化のため再生成 ({attempt + 1}/{retry})")
+
+    if chosen is None and best is not None:
+        chosen = best[0]
+        print(f"  ⚠️ 閾値内に収まらず、最も似ていない候補を採用（類似度 {best[1]:.2f}）")
+
+    title, styles, lyrics = chosen["title"], chosen["styles"], chosen["lyrics"]
+    if chosen["mode"] == "instrumental_filler":
         print(f"  タイトル: {title}")
         print(f"  スタイル: {styles[:80]}...")
         print(f"  歌詞: [instrumental] x {INSTRUMENTAL_TARGET_CHARS}文字 で充填（{len(lyrics)}文字）")
@@ -538,7 +913,10 @@ def generate_content(settings):
         if lyrics:
             print(f"  歌詞: {lyrics[:50]}...")
 
-    return {"title": title, "styles": styles, "lyrics": lyrics, "mode": mode}
+    _record_recent_song(state, channel_id, chosen, song_limit=song_limit)
+    if song_limit > 0:
+        _save_suno_history(state)
+    return chosen
 
 
 # ─── ブラウザ自動操作 ──────────────────────────────────
@@ -1110,8 +1488,13 @@ def run_browser_automation(settings):
         print(f"ページ読み込み完了: {page.url}\n")
 
         # ─── バッチモード: Claude CLI を 1 回だけ呼んで N 曲分を事前生成 ───
+        # 事前生成済み（--songs-file / settings["pregenerated_songs"]）があれば LLM 生成をスキップしてそのまま投入
         batch_songs = None
-        if settings.get("batch_mode") and settings.get("provider") in ("claude", "codex"):
+        pregenerated = settings.get("pregenerated_songs")
+        if pregenerated:
+            batch_songs = pregenerated
+            print(f"🎯 事前生成済み {len(batch_songs)} 曲をそのまま投入します（LLM生成スキップ）")
+        elif settings.get("batch_mode") and settings.get("provider") in ("claude", "codex"):
             try:
                 print(f"🎯 バッチモード: {settings.get('provider')} CLI でまとめて生成します")
                 batch_songs = generate_content_batch(settings, loop_count)
@@ -1276,6 +1659,67 @@ def run_browser_automation(settings):
                 pass
 
 
+def _ensure_custom_mode(page):
+    """SUNO の Create フォームを Custom モードにする。
+
+    Simple モードでは title/styles/lyrics 欄が DOM に存在せず、注入が黙って失敗する。
+    対象フィールドが未検出なら "Custom" トグルをクリックして切り替える。
+    既に Custom（=フィールドが存在）なら何もしない。トグル未検出でも致命的にはしない。
+    """
+    def _fields_present():
+        try:
+            return page.evaluate("""() => {
+                const hasTitle = !!document.querySelector('input[placeholder*="Title" i]');
+                const hasLyrics = !!document.querySelector('textarea[placeholder*="lyrics" i]');
+                const hasStyles = Array.from(document.querySelectorAll('div'))
+                    .some(d => d.children.length === 0 && d.textContent.trim() === 'Styles');
+                return hasTitle || hasLyrics || hasStyles;
+            }""")
+        except Exception:
+            return False
+
+    if _fields_present():
+        return True
+
+    print("  ⚙️ Custom モードへ切り替えを試行（title/styles/lyrics 欄が未検出）")
+    # 1) Playwright のテキスト完全一致でトグルをクリック
+    for label in ("Custom", "カスタム"):
+        try:
+            el = page.get_by_text(label, exact=True).first
+            if el.count() > 0 and el.is_visible():
+                el.click(timeout=2000)
+                time.sleep(1.2)
+                if _fields_present():
+                    print("  ✓ Custom モードに切り替えました")
+                    return True
+        except Exception:
+            pass
+    # 2) JS で "Custom" 要素/トグルを走査クリック（aria-selected 済みは除外）
+    try:
+        clicked = page.evaluate("""() => {
+            const cand = Array.from(document.querySelectorAll('button, [role="tab"], [role="switch"], div, span, label'))
+                .filter(e => {
+                    const t = (e.textContent || '').trim();
+                    return t === 'Custom' || t === 'カスタム';
+                });
+            for (const e of cand) {
+                if (e.getAttribute && e.getAttribute('aria-selected') === 'true') continue;
+                e.click();
+                return true;
+            }
+            return false;
+        }""")
+        if clicked:
+            time.sleep(1.2)
+            if _fields_present():
+                print("  ✓ Custom モードに切り替えました (JS)")
+                return True
+    except Exception:
+        pass
+    print("  ⚠️ Custom トグルが見つかりませんでした（既に Custom か、UI 変更の可能性）")
+    return _fields_present()
+
+
 def inject_into_suno(page, content):
     """SUNO のフォームに値を注入 — Ghost Writer (Tampermonkey) と完全同一のロジック。
 
@@ -1287,6 +1731,9 @@ def inject_into_suno(page, content):
     title = content.get("title", "")
     styles = content.get("styles", "")
     lyrics = content.get("lyrics", "")
+
+    # Simple モード対策: 入力欄が存在しなければ Custom へ切り替える
+    _ensure_custom_mode(page)
 
     # Ghost Writer と完全同一の JS を page.evaluate で実行
     results = page.evaluate("""(args) => {
@@ -1366,16 +1813,40 @@ def inject_into_suno(page, content):
             }
         }
 
-        // ── 歌詞: Ghost Writer と同一セレクタ ──
+        // ── 歌詞: 複数戦略で textarea を探索（Ghost Writer findLyricsTextarea 移植）──
         if (lyrics && mode !== "styles_title_only") {
-            const textarea = document.querySelector('textarea[placeholder*="Write some lyrics"]');
+            let textarea = null;
+            // 1) placeholder ベース（文言バリエーション対応・大小無視・後方互換）
+            const lyricSelectors = [
+                'textarea[placeholder*="Write some lyrics" i]',
+                'textarea[placeholder*="Add your own lyrics" i]',
+                'textarea[placeholder*="own lyrics" i]',
+                'textarea[placeholder*="lyrics" i]',
+                'textarea[placeholder*="歌詞"]'
+            ];
+            for (const sel of lyricSelectors) {
+                const el = document.querySelector(sel);
+                if (el) { textarea = el; break; }
+            }
+            // 2) "Lyrics" ラベルから祖先方向（最大8階層）の textarea を辿る
+            if (!textarea) {
+                const labelEl = Array.from(document.querySelectorAll('div, span, label'))
+                    .find(d => d.children.length === 0 && d.textContent.trim() === "Lyrics");
+                if (labelEl) {
+                    let p = labelEl;
+                    for (let i = 0; i < 8 && p; i++) {
+                        p = p.parentElement;
+                        const ta = p && p.querySelector('textarea');
+                        if (ta) { textarea = ta; break; }
+                    }
+                }
+            }
             if (textarea) {
                 setReactValue(textarea, lyrics, true);
                 results.lyrics = true;
             } else {
-                const fb = document.querySelector('textarea[placeholder*="lyrics" i]')
-                        || document.querySelector('textarea[placeholder*="歌詞"]');
-                if (fb) { setReactValue(fb, lyrics, true); results.lyrics = true; }
+                results.debug.lyrics_textareas = Array.from(document.querySelectorAll('textarea'))
+                    .map(t => (t.placeholder || '').slice(0, 40)).filter(Boolean).slice(0, 10);
             }
         }
 
@@ -1401,6 +1872,8 @@ def inject_into_suno(page, content):
                 print(f"     ⚠️ 'Styles' div が見つかりません。空div一覧: {dbg['styles_divs'][:10]}")
     if lyrics and mode != "styles_title_only":
         print(f"  🎵 歌詞: {'✅' if results.get('lyrics') else '❌'} {lyrics[:50]}...")
+        if not results.get('lyrics') and results.get('debug', {}).get('lyrics_textareas'):
+            print(f"     ⚠️ 歌詞 textarea が見つかりません。textarea placeholder 一覧: {results['debug']['lyrics_textareas']}")
 
 
 _BRACKET_LINE_RE = re.compile(r'^\s*\[[^\]]+\]\s*$')
@@ -1763,7 +2236,14 @@ def main():
     parser.add_argument("--download-workspace", help="指定 Workspace の楽曲を一括ダウンロード（生成せず）")
     parser.add_argument("--download-dir", help="ダウンロード先フォルダ（--download-workspace と併用）")
     parser.add_argument("--batch", action="store_true", help="CLI 一括生成モード（N曲分を1回で生成）")
+    parser.add_argument("--diversity-threshold", type=float, default=None,
+                        help="類似度しきい値 0.0〜1.0（既定 0.6、1.0で実質無効）")
+    parser.add_argument("--diversity-retry", type=int, default=None,
+                        help="似すぎたときの再生成上限 0〜5（既定 2、0で再生成しない）")
+    parser.add_argument("--history-limit", type=int, default=None,
+                        help="チャンネル別の曲履歴保持件数 0〜200（既定 40、0で履歴・類似回避を無効化）")
     parser.add_argument("--save-config", action="store_true", help="現在の設定を保存して終了")
+    parser.add_argument("--songs-file", help="事前生成済み楽曲JSON（[{title,styles,lyrics},...] または {\"songs\":[...]}）をそのまま投入。LLM生成をスキップし、合意済みドラフトを確実に使う")
     args = parser.parse_args()
 
     # 設定読み込み
@@ -1790,6 +2270,21 @@ def main():
         settings["workspace"] = args.workspace
     if args.batch:
         settings["batch_mode"] = True
+    if args.diversity_threshold is not None:
+        settings["diversity_threshold"] = args.diversity_threshold
+    if args.diversity_retry is not None:
+        settings["diversity_retry"] = args.diversity_retry
+    if args.history_limit is not None:
+        settings["history_limit"] = args.history_limit
+    if args.songs_file:
+        _pre = json.loads(Path(args.songs_file).read_text(encoding="utf-8"))
+        if isinstance(_pre, dict) and "songs" in _pre:
+            _pre = _pre["songs"]
+        if not isinstance(_pre, list) or not _pre:
+            print(f"❌ --songs-file の中身が空か不正です: {args.songs_file}")
+            sys.exit(1)
+        settings["pregenerated_songs"] = _pre
+        settings["loop_count"] = len(_pre)
 
     # 設定保存モード
     if args.save_config:

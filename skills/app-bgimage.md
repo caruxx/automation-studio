@@ -40,7 +40,8 @@
 |------|------|
 | チャンネル persona | `<channel_folder>/.app_channel_config.json` の `persona` |
 | チャンネル名 | per-channel config の `channel_name` または folder 名 |
-| 参照画像（最優先） | per-channel config の `reference_image_dir`（UI 設定タブで指定したフォルダ） |
+| 固定参照画像（最優先） | per-channel config の `reference_image`（UI 設定タブで指定した代表画像） |
+| 参照画像フォルダ | per-channel config の `reference_image_dir`（UI 設定タブで指定したフォルダ） |
 | 参照画像（picked） | `~/.config/{app_id}/benchmark/thumbnail.json` の `picked[]` → 各 video のローカルサムネ |
 | 参照画像（最終 fallback） | `<channel_folder>/.app_channel_config.json` の `rival_channels[]` から `channel/UC...` を抽出 → `~/.config/{app_id}/benchmark/thumbs/{ch_id}/*.{jpg,jpeg,png}` |
 
@@ -48,12 +49,15 @@
 
 > ⚠ **前提ゲート**: `persona` が空のときは **生成を一切行わず non-fatal で return True**（codex を呼ばない）。背景画像を作るには per-channel の `persona` 設定が必須。
 
-1. **`reference_image_dir`**（per-channel UI 設定で指定したフォルダ。最優先）
+1. **`reference_image`**（per-channel UI 設定で指定した代表画像。最優先）
+   - 設定タブ → 「固定参照画像パス」で指定
+   - SUKIMA のように「水辺の歩道・橋・俯瞰」を安定させたい時のスタイルアンカー
+2. **`reference_image_dir`**（per-channel UI 設定で指定したフォルダ）
    - 設定タブ → 「参照画像フォルダ（背景画像生成）」で指定
    - 指定フォルダ内の `.jpg/.jpeg/.png/.webp` をランダムシャッフル → N 枚採用
-2. **Picked**（人間が UI で✓を入れた canonical 参照） — `app_benchmark_thumbnail.get_picked_paths(limit=ref_count)`
-3. **rival_channels プール**（per-channel config の `rival_channels` URL から `UC...` 抽出 → benchmark/thumbs 配下を全部集めてシャッフル）
-4. **どれも無し** → 参照無しでプロンプトのみで生成（warn のみ。non-fatal）
+3. **Picked**（人間が UI で✓を入れた canonical 参照） — `app_benchmark_thumbnail.get_picked_paths(limit=ref_count)`
+4. **rival_channels プール**（per-channel config の `rival_channels` URL から `UC...` 抽出 → benchmark/thumbs 配下を全部集めてシャッフル）
+5. **どれも無し** → 参照無しでプロンプトのみで生成（warn のみ。non-fatal）
 
 > **プロンプトの作り方**（commit ad0c82d 以降＝動的構築）: `_build_bgimage_prompt(folder)` が **ベンチマーク分析から動的にプロンプトを構築**する。収集5段（concept.txt → benchmark concept aggregate → benchmark thumbnail aggregate → competitor `visual_direction`〔time_of_day/atmosphere/composition/color_palette〕→ persona fallback）→ `normalize_visual_direction()` + `build_gpt_image2_prompt(concept=body, visual_direction=visual, include_text_overlay=False)`。
 > - 背景固有差分: **被写体を載せない**（visual_direction の `subjects` は無視。背景は被写体控えめ）／ループ背景ディレクティブ（`Style: atmospheric, calm, suitable for looping … Composition: spacious, ample negative space, subject understated`）を body 末尾連結／**背景禁止語**（`on-screen text, logos, readable signage, human faces, pottery, vases, urns, planters, still life objects, decorative ornaments`）を `avoid` の**先頭**に二重注入（`_clean_text` の 220 字切りで消えないよう先頭固定）／「参照画像は色/光/ムードのみ流用・要素コピー禁止（do not copy any element verbatim）」を維持。
@@ -72,6 +76,8 @@
 | `APP_BGIMAGE_DISABLE` | 未設定 | `1`/`true`/`yes` で step 全体をスキップ |
 | `APP_BGIMAGE_REFCOUNT` | `3` | 参照画像の最大枚数 |
 | `APP_BGIMAGE_FORCE` | 未設定 | `1`/`true`/`yes` で既存 vol{N}.png/.jpg を無視して再生成 |
+| `APP_BGIMAGE_TIMEOUT_SEC` | `1800` | 画像生成 1 件あたりのタイムアウト秒。参照画像あり・high 品質で遅い場合に伸ばす |
+| `APP_BGIMAGE_REFERENCE_IMAGE` | 未設定 | 固定参照画像パス。複数は `:` 区切り。指定時はランダム参照より優先 |
 
 ## CLI 例
 
@@ -79,11 +85,17 @@
 # 単発で background image だけ生成（CLI 直叩き、subprocess で codex_imagegen.py を実行）
 python3 app_pipeline.py 78 --only bgimage
 
-# 強制再生成（既存 vol{N}.png/.jpg を上書き）
+# 強制再生成（既存 vol{N}.png / vol{N}_source.jpg は rejected 名で退避）
 APP_BGIMAGE_FORCE=1 python3 app_pipeline.py 78 --only bgimage
 
 # 参照枚数を 5 枚に
 APP_BGIMAGE_REFCOUNT=5 python3 app_pipeline.py 78 --only bgimage
+
+# 参照画像ありで時間がかかる場合は 40 分まで待つ
+APP_BGIMAGE_TIMEOUT_SEC=2400 python3 app_pipeline.py 78 --only bgimage
+
+# 特定の参照画像に必ず寄せる
+APP_BGIMAGE_FORCE=1 APP_BGIMAGE_REFERENCE_IMAGE="/path/to/ref.jpeg" python3 app_pipeline.py 78 --only bgimage
 
 # 完全に無効化（パイプライン全体を回しつつ bgimage だけ抜く）
 APP_BGIMAGE_DISABLE=1 python3 app_pipeline.py 78
@@ -223,14 +235,15 @@ per-channel `.app_channel_config.json` の `rival_channels[]` が空、または
 （現在の実装は `channel/UC...` の正規表現でのみ抽出するため `@handle` だと参照プールに入らない）の場合:
 
 ### 採用ポリシー（実装と本ドキュメントで一致）
-1. **`reference_image_dir` がフォルダ指定済みかつ画像入り** → 最優先で採用
-2. **Picked が 1 枚でもあれば** → Picked を採用（rival_channels 関係なし）
-3. **どちらも無し かつ rival プールも空** → **参照無しでプロンプトのみで生成**（warn ログを出すが non-fatal）
+1. **`reference_image` が画像指定済み** → 最優先で採用
+2. **`reference_image_dir` がフォルダ指定済みかつ画像入り** → フォルダから採用
+3. **Picked が 1 枚でもあれば** → Picked を採用（rival_channels 関係なし）
+4. **どれも無し かつ rival プールも空** → **参照無しでプロンプトのみで生成**（warn ログを出すが non-fatal）
 
 「rival_channels が `@handle` 形式しか持っていなくて benchmark/thumbs が空」というケースは
-**UI で `reference_image_dir` を指定すれば回避**できる（推奨運用）。
-本実装は `@handle` の YouTube API による channel_id 解決はせず、運用側で `reference_image_dir` か
-Picked のどちらかを最低 1 つ用意する設計を想定している。
+**UI で `reference_image` または `reference_image_dir` を指定すれば回避**できる（推奨運用）。
+本実装は `@handle` の YouTube API による channel_id 解決はせず、運用側で `reference_image` /
+`reference_image_dir` / Picked のいずれかを最低 1 つ用意する設計を想定している。
 
 具体的に step_bgimage のログには:
 ```
@@ -253,8 +266,8 @@ Picked のどちらかを最低 1 つ用意する設計を想定している。
 |------|------|------|
 | `⚠ persona 未設定` で step スキップ | per-channel config の `persona` が空 | 設定タブ → チャンネル → ペルソナを入力 |
 | `⚠ Picked / rival thumbs どちらも無し` | Picked 未設定 + rival_channels URL が `@handle` のみ | サムネ分析タブで Picked を設定する、または rival_channels に `channel/UC...` 形式 URL を追加 |
-| 既存 vol{N}.png をどうしても再生成したい | `APP_BGIMAGE_FORCE` 未設定 | `APP_BGIMAGE_FORCE=1` で起動 or UI から「上書き再生成」ON で実行 |
-| codex_imagegen.py が timeout | OpenAI API 側の遅延 | step は 900s で timeout。それでも失敗するなら API 障害の可能性、`/api/codex-imagegen/status` で別の Codex ジョブが詰まっていないか確認 |
+| 既存 vol{N}.png をどうしても再生成したい | `APP_BGIMAGE_FORCE` 未設定 | `APP_BGIMAGE_FORCE=1` で起動 or UI から「上書き再生成」ON で実行。既存 PNG/source JPG は `*_rejected_YYYYMMDD_HHMMSS` に退避 |
+| codex_imagegen.py が timeout | OpenAI API / Codex CLI 側の遅延 | step は既定 1800s で timeout。参照画像あり・high 品質で遅い場合は `APP_BGIMAGE_TIMEOUT_SEC=2400` などで延長。それでも失敗するなら API 障害や `/api/codex-imagegen/status` の別ジョブ詰まりを確認 |
 | 9 工程の途中で bgimage だけ止めたい | API quota 節約 / 既に手動で画像配置済み | `APP_BGIMAGE_DISABLE=1` で起動 |
 
 ## 関連ファイル

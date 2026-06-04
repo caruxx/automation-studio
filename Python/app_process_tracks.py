@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 FADE_SECONDS = 8
@@ -58,6 +59,75 @@ def _apply_likes(base_filename: str, count: int) -> str:
     if count <= 0:
         return base_filename
     return f"{'z' * count}_{base_filename}"
+
+
+def _mp3_duration(path: Path):
+    """ffprobe で MP3 の長さ（秒）を返す。失敗時は None。"""
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(probe.stdout.strip())
+    except Exception:
+        return None
+
+
+def _dedup_group_key(filename: str):
+    """同一 Suno タイトルのテイクをまとめるグループキー。
+
+    likes プレフィックス(z_/zz_)・末尾の衝突サフィックス(_2,_3)・拡張子を除去し NFC 正規化。
+    SUNO は1回の生成で同タイトルの2テイクを作るため、DL 時に `<title>.mp3` と
+    `<title>_2.mp3` として落ちる。これらを同一グループに束ねる。
+    """
+    _, base = _parse_likes(filename)              # likes プレフィックス除去後の base 名
+    stem = os.path.splitext(base)[0]
+    stem = re.sub(r"_\d+$", "", stem)             # 衝突サフィックス _2/_3 を除去
+    return unicodedata.normalize("NFC", stem).strip().lower()
+
+
+def _dedup_same_title_keep_shorter(mp3s, dry_run: bool = False):
+    """同一タイトル（SUNO の2テイク等）のうち最も短いものを残し、長い方を削除する。
+
+    リネーム前に実行することで、2テイクが別タイトルに化けて両方残るのを防ぐ。
+    戻り値: 生き残った Path のリスト（ソート済み）。
+    """
+    groups = {}
+    for p in mp3s:
+        groups.setdefault(_dedup_group_key(p.name), []).append(p)
+
+    if not any(len(v) > 1 for v in groups.values()):
+        return sorted(mp3s)
+
+    print("\n--- 同タイトル重複の整理（長い方を削除）---")
+    survivors = []
+    removed = 0
+    for files in groups.values():
+        if len(files) <= 1:
+            survivors.extend(files)
+            continue
+        # duration 取得（失敗は +inf 扱い＝削除候補側へ寄せる）。同尺ならファイル名が短い方を残す。
+        with_dur = [(f, (_mp3_duration(f) if _mp3_duration(f) is not None else float("inf"))) for f in files]
+        with_dur.sort(key=lambda fd: (fd[1], len(fd[0].name)))
+        keep, keep_dur = with_dur[0]
+        survivors.append(keep)
+        keep_s = "?" if keep_dur == float("inf") else f"{keep_dur:.1f}s"
+        print(f"  🧹 同タイトル {len(files)}件 → 残す: {keep.name} ({keep_s})")
+        for f, d in with_dur[1:]:
+            dur_s = "?" if d == float("inf") else f"{d:.1f}s"
+            if dry_run:
+                print(f"       (dry-run) 削除予定: {f.name} ({dur_s})")
+            else:
+                try:
+                    f.unlink()
+                    print(f"       🗑 削除: {f.name} ({dur_s}, 長い方)")
+                    removed += 1
+                except Exception as e:
+                    print(f"       ⚠️ 削除失敗 {f.name}: {e}")
+                    survivors.append(f)
+    print(f"  🧹 重複削除: {removed} 件削除 / 残 {len(survivors)} 件")
+    return sorted(survivors)
 
 
 def _find_thumbnail(folder: Path):
@@ -335,7 +405,8 @@ def process_mp3(src: Path, dst: Path):
 # ─── メイン処理 ──────────────────────────────────────────
 
 def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
-                   dry_run: bool = False, rename_only: bool = False):
+                   dry_run: bool = False, rename_only: bool = False,
+                   no_dedup: bool = False, keep_names: bool = False):
     folder = folder.resolve()
     if not folder.is_dir():
         print(f"❌ フォルダが存在しません: {folder}")
@@ -353,13 +424,24 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
         print(f"⚠️ MP3 ファイルが見つかりません: {folder}")
         return 0
 
+    # ── 後処理の順序: ① 同タイトル重複（SUNO の2テイク）の長い方を削除 ──
+    #    リネーム/フェードより前に行う。リネーム後はタイトルが別々に化けて束ねられなくなるため。
+    if not no_dedup:
+        mp3s = _dedup_same_title_keep_shorter(mp3s, dry_run=dry_run)
+        if not mp3s:
+            print("⚠️ 重複削除後に対象が 0 件になりました")
+            return 0
+
     print("=" * 60)
     print(f"  楽曲{'リネームのみ' if rename_only else '後処理'}: {folder.name}")
     print(f"  対象: {len(mp3s)} ファイル")
     print("=" * 60)
 
     # タイトル生成: サムネ優先 → 無ければチャンネルペルソナ → 失敗なら保持
-    thumbnail = _find_thumbnail(folder)
+    # keep_names=True なら既存ファイル名を維持（タイトル再生成を一切スキップ）
+    if keep_names:
+        print("  📌 --keep-names: 既存ファイル名を維持（タイトル再生成スキップ）")
+    thumbnail = None if keep_names else _find_thumbnail(folder)
     titles = None
     if thumbnail:
         print(f"  サムネ: {thumbnail.name}")
@@ -372,7 +454,7 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
             print(f"⚠️ サムネ由来のタイトル生成失敗: {e}")
             titles = None
 
-    if not titles:
+    if not titles and not keep_names:
         # フォールバック: チャンネルペルソナから提案
         ch_name, persona = _load_channel_context(folder)
         # ペルソナ空なら既定コンセプトを使用（ハードコード最終フォールバック）
@@ -503,6 +585,11 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="プレビューのみ")
     parser.add_argument("--rename-only", action="store_true",
                         help="リネームのみ実行（ffmpeg 処理スキップ）")
+    parser.add_argument("--no-dedup", action="store_true",
+                        help="同タイトル重複（SUNO の2テイク）の長い方削除をスキップ")
+    parser.add_argument("--keep-names", action="store_true",
+                        help="既存ファイル名を維持（サムネ/ペルソナからのタイトル再生成をスキップ）")
     args = parser.parse_args()
     sys.exit(process_folder(Path(args.folder), cli_cmd=args.cli,
-                             dry_run=args.dry_run, rename_only=args.rename_only) or 0)
+                             dry_run=args.dry_run, rename_only=args.rename_only,
+                             no_dedup=args.no_dedup, keep_names=args.keep_names) or 0)

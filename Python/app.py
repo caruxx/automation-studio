@@ -11,6 +11,7 @@ import subprocess
 import sys
 import gzip
 import platform
+import unicodedata
 import time
 import threading
 from pathlib import Path
@@ -65,10 +66,16 @@ PYTHON_DIR = SHARED_BASE / "Python"
 # 設定ファイル（ローカル: PC固有の設定）
 DASHBOARD_CONFIG = CONFIG_DIR / "dashboard_config.json"
 SUNO_CONFIG = CONFIG_DIR / "suno_config.json"
-CHANNELS_CONFIG = CONFIG_DIR / "channels.json"
+# チャンネルレジストリは PC 間で共有する（共有ドライブ上に置く）。
+# per-channel 設定は各チャンネルフォルダ内 .app_channel_config.json で既に共有済みだが、
+# 「どのチャンネルが存在するか」のレジストリだけがローカルだったため別 PC に伝播しなかった。
+# 旧ローカル版(LOCAL_CHANNELS_CONFIG)は起動時に共有版へマージして引き継ぐ。
+SHARED_CONFIG_DIR = SHARED_BASE / "config"
+CHANNELS_CONFIG = SHARED_CONFIG_DIR / "channels.json"
+LOCAL_CHANNELS_CONFIG = CONFIG_DIR / "channels.json"
 PROMPTS_CONFIG = CONFIG_DIR / "prompts.json"
 SCHEDULE_CONFIG = CONFIG_DIR / "schedule.json"
-BENCHMARK_CONFIG = CONFIG_DIR / "benchmark_config.json"  # チャンネル横断・全体共通
+BENCHMARK_CONFIG = SHARED_CONFIG_DIR / "benchmark_config.json"  # チャンネル横断・全体共通（PC間共有）
 SCHEDULE_JOBS_FILE = CONFIG_DIR / "schedule_jobs.json"   # APScheduler 用
 AUTH_TOKEN_FILE = CONFIG_DIR / "auth_token.txt"
 
@@ -227,7 +234,8 @@ PER_CHANNEL_KEYS = {
     "export_ignore_list",  # AME 書き出し watcher が無視する video_name のリスト（2 PC 間自動同期）
     "publish_mode",  # P3-3: 公開方式（unlisted=限定公開 / public=即時公開 / delayed=N時間後自動公開）
     "publish_delay_hours",  # P2-7: upload 後の公開ゲート（0=即時、>0=N時間後 public化）
-    "reference_image_dir",  # step_bgimage: 参照画像フォルダ（最優先。空なら Picked → rival thumbs にフォールバック）
+    "reference_image_dir",  # step_bgimage: 参照画像フォルダ（空なら Picked → rival thumbs にフォールバック）
+    "reference_image",  # step_bgimage: 固定参照画像（最優先。水辺プロムナード等の代表参照）
     "default_duration_sec",  # Premiere 自動配置の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
     "priority",  # U3: orchestrator policy 配分の channel 優先度（大きいほど優先。既定 100）
     "autopilot_enabled",  # U3: 自走運用 ON/OFF（保存のみ。実 scheduler 起動は別途 GO 後）
@@ -429,6 +437,165 @@ def infer_file_prefix_from_folder(channel_dir: Path) -> str:
     if not counts:
         return ""
     return sorted(counts.items(), key=lambda x: (-x[1], x[0].lower()))[0][0]
+
+
+def _norm_folder(f) -> str:
+    """フォルダパスを実体ベースに正規化する（比較キー用）。
+    - Google Drive は ~/Google Drive と ~/Library/CloudStorage/GoogleDrive-* の
+      2 系統パスで同じ実体を指すため、resolve() で実パスに畳む。
+    - macOS の FS から resolve() で得たパスは NFD（濁点が結合文字に分解）になる一方、
+      JSON 由来の文字列は NFC のことが多く、見た目同一でも != になる。NFC に統一して吸収。"""
+    if not f:
+        return ""
+    try:
+        s = str(Path(f).expanduser().resolve())
+    except Exception:
+        s = os.path.normpath(str(f))
+    return unicodedata.normalize("NFC", s)
+
+
+def _yt_root_candidates() -> List[Path]:
+    """チャンネルフォルダを束ねる YT ルートの候補を返す（存在するもののみ・実体で重複排除）。"""
+    roots: List[Path] = []
+    # 既存チャンネルの folder の親（最も確実）
+    for ch in (load_json(CHANNELS_CONFIG, []) or []):
+        f = ch.get("folder")
+        if f:
+            roots.append(Path(f).parent)
+    for ch in (load_json(LOCAL_CHANNELS_CONFIG, []) or []):
+        f = ch.get("folder")
+        if f:
+            roots.append(Path(f).parent)
+    # 標準パターン（共有ドライブ/YT）
+    roots += list((HOME / "Library/CloudStorage").glob("GoogleDrive-*/共有ドライブ/YT"))
+    seen, out = set(), []
+    for r in roots:
+        if not (r.exists() and r.is_dir()):
+            continue
+        rs = _norm_folder(r)
+        if rs not in seen:
+            seen.add(rs)
+            out.append(r)
+    return out
+
+
+def sync_channel_registry(verbose: bool = True) -> list:
+    """チャンネルレジストリ(channels.json)を PC 間で同期・自己修復する。
+
+    1) 共有版を基準に、旧ローカル版(LOCAL_CHANNELS_CONFIG)の未登録 id をマージ（初回移行）。
+    2) YT フォルダを走査し、.app_channel_config.json を持つ「番号付き」フォルダで
+       未登録のものを自動的にチャンネルとして登録（別 PC で作られたチャンネルを取りこぼさない）。
+    結果を共有版へ書き戻して返す。
+    """
+    try:
+        SHARED_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        if verbose:
+            print(f"[registry] shared dir 作成失敗: {e} — ローカルにフォールバック")
+        return load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+
+    shared = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+
+    # 順序を保ちつつ id 重複を排除して取り込む（共有版を正とし、先に出たものを優先）
+    entries: list = []
+    seen_ids: set = set()
+    seen_folders: set = set()
+
+    def _add(c: dict) -> bool:
+        cid = c.get("id")
+        folder_key = _norm_folder(c.get("folder", ""))
+        # id 重複・同一実体フォルダ重複はスキップ（先勝ち＝既存の手書き id を温存）
+        if not cid or cid in seen_ids:
+            return False
+        if folder_key and folder_key in seen_folders:
+            return False
+        seen_ids.add(cid)
+        if folder_key:
+            seen_folders.add(folder_key)
+        entries.append(c)
+        return True
+
+    for c in shared:
+        _add(c)
+
+    # 1) 旧ローカル版のマージ（共有に無いものだけ取り込む＝共有を正とする）
+    for c in (load_json(LOCAL_CHANNELS_CONFIG, []) or []):
+        if _add(c) and verbose:
+            print(f"[registry] ローカルから移行: {c.get('name')} ({c.get('id')})")
+
+    # 2) YT フォルダ自動スキャンで未登録チャンネルを発見
+    for yt in _yt_root_candidates():
+        try:
+            children = sorted(yt.iterdir(), key=lambda p: p.name)
+        except Exception:
+            continue
+        for d in children:
+            if not d.is_dir():
+                continue
+            # 規約: チャンネルフォルダは "<番号>.<名前>" 形式（非チャンネルフォルダを除外）
+            if not re.match(r'^\d+[\.\．]', d.name):
+                continue
+            if not (d / _CHANNEL_CONFIG_FILENAME).exists():
+                continue
+            if _norm_folder(str(d)) in seen_folders:
+                continue
+            name = re.sub(r'^\d+[\.\．]\s*', '', d.name).strip('【】[]　 ').strip() or d.name
+            base_cid = re.sub(r'[^a-zA-Z0-9]', '_', name.lower()).strip('_') or f"ch{len(entries)}"
+            cid, n = base_cid, 2
+            while cid in seen_ids:
+                cid = f"{base_cid}_{n}"
+                n += 1
+            cc = load_json(d / _CHANNEL_CONFIG_FILENAME, {}) or {}
+            entry = {
+                "id": cid, "name": name, "folder": str(d),
+                "prefix": infer_file_prefix_from_folder(d) or "",
+                "template_prproj": cc.get("template_prproj", ""),
+                "template_psd": cc.get("template_psd", ""),
+                "youtube_url": "", "youtube_channel_id": "", "handle": "", "icon_cache": {},
+            }
+            if _add(entry) and verbose:
+                print(f"[registry] 新規チャンネル検出: {name} ({d})")
+
+    save_json(CHANNELS_CONFIG, entries)
+    if verbose:
+        print(f"[registry] synced: {len(entries)} channels -> {CHANNELS_CONFIG}")
+    return entries
+
+
+def migrate_benchmark_to_shared(verbose: bool = True) -> None:
+    """ベンチマークのプロファイル/設定/分析を旧ローカル(CONFIG_DIR)から共有(SHARED_CONFIG_DIR)へ
+    未存在のみコピー移行する（初回のみ実質コピー、以降は no-op）。
+    サムネ「画像」(benchmark/thumbs)は容量が大きいためローカル維持＝移行しない。"""
+    try:
+        if _norm_folder(str(CONFIG_DIR)) == _norm_folder(str(SHARED_CONFIG_DIR)):
+            return  # フォールバック時は同一 → 何もしない
+        SHARED_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        copied = []
+        # 1) 単一ファイル
+        for fn in ("benchmark_profiles.json", "benchmark_config.json", "competitor_analysis_cache.json"):
+            s, d = CONFIG_DIR / fn, SHARED_CONFIG_DIR / fn
+            if s.exists() and not d.exists():
+                shutil.copy2(s, d)
+                copied.append(fn)
+        # 2) benchmark 配下（scoped 分析・legacy 直下 json）。ただし thumbs(画像)は除外
+        src_bench = CONFIG_DIR / "benchmark"
+        if src_bench.exists():
+            for s in src_bench.rglob("*"):
+                rel = s.relative_to(src_bench)
+                if "thumbs" in rel.parts:
+                    continue  # 画像はローカル維持
+                d = SHARED_CONFIG_DIR / "benchmark" / rel
+                if s.is_dir():
+                    d.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not d.exists():
+                    d.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(s, d)
+                    copied.append(str(Path("benchmark") / rel))
+        if verbose and copied:
+            print(f"[benchmark] 共有へ移行: {len(copied)} 件 -> {SHARED_CONFIG_DIR}")
+    except Exception as e:
+        print(f"[benchmark] 移行失敗（続行）: {e}")
 
 
 def folder_name_pattern() -> "re.Pattern":
@@ -928,6 +1095,9 @@ class AutomationConfigUpdate(BaseModel):
     suno_interval: Optional[int] = None
     suno_batch: Optional[bool] = None
     suno_headless: Optional[bool] = None
+    suno_diversity_threshold: Optional[float] = None
+    suno_diversity_retry: Optional[int] = None
+    suno_history_limit: Optional[int] = None
     dl_wait_sec: Optional[int] = None
     premiere_duration: Optional[int] = None
     premiere_auto_export: Optional[bool] = None
@@ -997,6 +1167,7 @@ class DashboardConfigUpdate(BaseModel):
     publish_mode: Optional[str] = None  # P3-3: unlisted / public / delayed
     publish_delay_hours: Optional[float] = None  # P2-7: upload 後 N 時間で public 化（0=即時）
     reference_image_dir: Optional[str] = None    # step_bgimage: 参照画像フォルダ（空文字でクリア）
+    reference_image: Optional[str] = None        # step_bgimage: 固定参照画像（空文字でクリア）
     default_duration_sec: Optional[int] = None   # Premiere 自動配置の規定尺（秒）。0/空でクリア（10800 にフォールバック）
 
 @app.put("/api/config/dashboard")
@@ -1026,6 +1197,19 @@ def api_update_dashboard_config(update: DashboardConfigUpdate):
                 try:
                     if not Path(expanded).is_dir():
                         print(f"⚠ reference_image_dir 保存: ディレクトリが存在しません ({expanded}) — 後から作成すれば step_bgimage で参照されます")
+                except Exception:
+                    pass
+        elif k == "reference_image":
+            # step_bgimage: 固定参照画像。指定時は reference_image_dir のランダム選択より優先。
+            raw = (v or "").strip()
+            if not raw:
+                config["reference_image"] = ""
+            else:
+                expanded = str(Path(raw).expanduser())
+                config["reference_image"] = expanded
+                try:
+                    if not Path(expanded).is_file():
+                        print(f"⚠ reference_image 保存: ファイルが存在しません ({expanded}) — 後から作成すれば step_bgimage で参照されます")
                 except Exception:
                     pass
         elif k == "default_duration_sec":
@@ -1543,6 +1727,10 @@ class SunoRunRequest(BaseModel):
     dl_wait_sec: Optional[int] = None
     dl_min_duration: Optional[int] = None
     auto_download: Optional[bool] = None
+    # 多様性制御（チャンネル別に上書き可能。未指定なら suno_auto_create 側の既定/設定を使用）
+    diversity_threshold: Optional[float] = None
+    diversity_retry: Optional[int] = None
+    history_limit: Optional[int] = None
 
 @app.post("/api/suno/start")
 async def api_suno_start(req: SunoRunRequest):
@@ -1589,6 +1777,13 @@ async def api_suno_start(req: SunoRunRequest):
         cmd += ["--mode", req.generation_mode]
     if req.headless:
         cmd += ["--headless"]
+    # 多様性制御（チャンネル別。フォームで指定があれば CLI に渡す）
+    if req.diversity_threshold is not None:
+        cmd += ["--diversity-threshold", str(req.diversity_threshold)]
+    if req.diversity_retry is not None:
+        cmd += ["--diversity-retry", str(req.diversity_retry)]
+    if req.history_limit is not None:
+        cmd += ["--history-limit", str(req.history_limit)]
     # 起動時ログ先頭に prompt 全文を出して、後追いでも何で作ったか確認できるようにする
     task_logs["suno"] = [
         "─" * 60,
@@ -1886,6 +2081,7 @@ def _create_empty_channel_config(folder: Path, req: ChannelCreate) -> None:
         "persona": "",
         "rival_channels": [],
         "reference_image_dir": "",
+        "reference_image": "",
         "benchmark_pinned_names": [],
         "benchmark_filter": DEFAULT_BENCHMARK_CONFIG["filter"],
         "spreadsheet_channel_detail_url": "",
@@ -3476,6 +3672,10 @@ class PipelineRunRequest(BaseModel):
     suno_mode: Optional[str] = None  # styles_title_only / lyrics_styles / lyrics
     suno_batch: Optional[bool] = None
     suno_headless: Optional[bool] = None
+    # 多様性制御（チャンネル別。明示があれば自動化設定より優先）
+    diversity_threshold: Optional[float] = None
+    diversity_retry: Optional[int] = None
+    history_limit: Optional[int] = None
     # DL + 整理
     dl_wait_sec: Optional[int] = None
     dl_min_duration: Optional[int] = None
@@ -3532,6 +3732,9 @@ async def api_run_pipeline(video_name: str, req: PipelineRunRequest):
     _env("APP_SUNO_MODE",     req.suno_mode,     "suno_mode")
     _env("APP_SUNO_BATCH",    req.suno_batch,    "suno_batch", bool)
     _env("APP_SUNO_HEADLESS", req.suno_headless, "suno_headless", bool)
+    _env("APP_SUNO_DIVERSITY_THRESHOLD", req.diversity_threshold, "suno_diversity_threshold", str)
+    _env("APP_SUNO_DIVERSITY_RETRY",     req.diversity_retry,     "suno_diversity_retry", str)
+    _env("APP_SUNO_HISTORY_LIMIT",       req.history_limit,       "suno_history_limit", str)
     _env("APP_DL_WAIT_SEC",   req.dl_wait_sec,   "dl_wait_sec", str)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1, env=env)
@@ -4067,7 +4270,7 @@ def api_analysis_cache():
 @app.delete("/api/analysis/cache")
 def api_delete_analysis_cache():
     """キャッシュ削除（再分析を強制するため。英語メタデータ生成向けの再生成等に使用）"""
-    cache_file = CONFIG_DIR / "competitor_analysis_cache.json"
+    cache_file = SHARED_CONFIG_DIR / "competitor_analysis_cache.json"
     try:
         from app_channel_cache import delete_scoped_and_legacy
         return {"status": "ok", "deleted": delete_scoped_and_legacy("competitor_analysis_cache.json", cache_file)}
@@ -4883,7 +5086,7 @@ def api_analyze_thumbnails(req: ThumbnailAnalysisRequest):
                 import datetime as _dt
                 cache["thumbnail_analyzed_at"] = _dt.datetime.now().isoformat()
                 from app_channel_cache import save_scoped_cache
-                save_scoped_cache("competitor_analysis_cache.json", CONFIG_DIR / "competitor_analysis_cache.json", cache)
+                save_scoped_cache("competitor_analysis_cache.json", SHARED_CONFIG_DIR / "competitor_analysis_cache.json", cache)
         except Exception:
             pass
         return {"status": "ok", **result}
@@ -4913,7 +5116,7 @@ def api_sheets_import(req: SheetImportRequest):
 
 # ─── API: ベンチマーク完成パイプライン（全自動） ───
 
-BENCHMARK_PROFILES_FILE = CONFIG_DIR / "benchmark_profiles.json"
+BENCHMARK_PROFILES_FILE = SHARED_CONFIG_DIR / "benchmark_profiles.json"  # PC間共有
 
 class BenchmarkRunRequest(BaseModel):
     sheet_a_url: Optional[str] = None   # 未指定時は dashboard_config から
@@ -6827,6 +7030,8 @@ class BgImageRunRequest(BaseModel):
     video_name: str
     ref_count: Optional[int] = 3
     force: Optional[bool] = False
+    timeout_sec: Optional[int] = 1800
+    reference_image: Optional[str] = None
 
 
 @app.post("/api/bgimage/run")
@@ -6887,6 +7092,13 @@ async def api_bgimage_run(req: BgImageRunRequest):
         env["APP_BGIMAGE_REFCOUNT"] = str(max(1, int(req.ref_count or 3)))
     except (TypeError, ValueError):
         env["APP_BGIMAGE_REFCOUNT"] = "3"
+    try:
+        env["APP_BGIMAGE_TIMEOUT_SEC"] = str(max(60, int(req.timeout_sec or 1800)))
+    except (TypeError, ValueError):
+        env["APP_BGIMAGE_TIMEOUT_SEC"] = "1800"
+    ref_image = (req.reference_image or config.get("reference_image") or "").strip()
+    if ref_image:
+        env["APP_BGIMAGE_REFERENCE_IMAGE"] = ref_image
     if req.force:
         env["APP_BGIMAGE_FORCE"] = "1"
     cmd = [
@@ -6901,6 +7113,8 @@ async def api_bgimage_run(req: BgImageRunRequest):
         "video_name": req.video_name,
         "vol": vol,
         "ref_count": int(env["APP_BGIMAGE_REFCOUNT"]),
+        "timeout_sec": int(env["APP_BGIMAGE_TIMEOUT_SEC"]),
+        "reference_image": env.get("APP_BGIMAGE_REFERENCE_IMAGE", ""),
         "force": bool(req.force),
         "skipped": False,
     }
@@ -11801,6 +12015,16 @@ async def _validate_channel_registry():
     あくまで「UI のアクティブビュー」のポインタなので、registry に無い folder を
     指していたら警告（自動修正はしない、運営者の判断を待つ）。"""
     try:
+        # PC 間共有: 共有ドライブ上の registry を旧ローカル版＋YT フォルダスキャンで同期・自己修復
+        try:
+            sync_channel_registry(verbose=True)
+        except Exception as e:
+            print(f"[registry] sync 失敗（続行）: {e}")
+        # PC 間共有: ベンチマークのプロファイル/設定/分析を共有ドライブへ移行（thumbs 画像は除く）
+        try:
+            migrate_benchmark_to_shared(verbose=True)
+        except Exception as e:
+            print(f"[benchmark] 移行呼び出し失敗（続行）: {e}")
         chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
         if not chs:
             print("[registry] channels.json が空。基本設定 > チャンネル管理から追加してください。")

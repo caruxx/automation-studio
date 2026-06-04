@@ -60,14 +60,20 @@ from typing import Optional
 
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from _app_config import resolve_config_dir as _resolve_config_dir
+    from _app_config import (
+        resolve_config_dir as _resolve_config_dir,
+        resolve_shared_config_dir as _resolve_shared_config_dir,
+    )
     CONFIG_DIR = _resolve_config_dir()
+    SHARED_CONFIG_DIR = _resolve_shared_config_dir()
 except Exception:
     CONFIG_DIR = Path.home() / ".config" / "orzz"
+    SHARED_CONFIG_DIR = CONFIG_DIR
 
-BENCHMARK_DIR = CONFIG_DIR / "benchmark"
+# 分析データ/競合キャッシュは PC 間共有（共有ドライブ側）
+BENCHMARK_DIR = SHARED_CONFIG_DIR / "benchmark"
 ANALYSIS_FILE = BENCHMARK_DIR / "description.json"
-COMPETITOR_CACHE_FILE = CONFIG_DIR / "competitor_analysis_cache.json"
+COMPETITOR_CACHE_FILE = SHARED_CONFIG_DIR / "competitor_analysis_cache.json"
 ANALYSIS_FILENAME = "description.json"
 
 DEFAULT_CLI = "claude"

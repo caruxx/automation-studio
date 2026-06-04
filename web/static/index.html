@@ -1808,23 +1808,32 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           <div class="sec-title" style="margin:0">分析データの状態</div>
           <div class="fh" style="margin-top:var(--space-1)">制作提案・タイトル/コンセプト/サムネ分析は「制作分析」を共通入力にします。候補を絞って選択済みなら、そのチャンネルだけを制作分析の対象にします。</div>
         </div>
-        <div class="btns" style="margin:0">
-          <button class="btn btn-secondary btn-sm" id="bmRunCoreAnalysisBtn" onclick="runBenchmarkCoreAnalysis()">制作分析を実行</button>
-          <button class="btn btn-primary btn-sm" onclick="bmTab('ingest');bmPreviewSources()">候補を絞る</button>
+        <div class="btns" style="margin:0;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" id="bmRunBatchAnalysisBtn" onclick="runBenchmarkBatchAnalysis()" title="制作分析 → コンセプト/タイトル/サムネ（+任意で投稿文）を1クリックで順次実行">⚡ 一括分析</button>
+          <button class="btn btn-secondary btn-sm" id="bmRunCoreAnalysisBtn" onclick="runBenchmarkCoreAnalysis()" title="制作分析（core）のみ。各軸の連鎖はしません">制作分析のみ</button>
+          <button class="btn btn-ghost btn-sm" onclick="bmPreviewSources()">候補を絞る</button>
           <button class="btn btn-ghost btn-sm" onclick="loadBenchmarkContextStatus()">更新</button>
         </div>
       </div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:var(--space-2);font-size:var(--text-xs);color:var(--text-secondary);cursor:pointer">
+        <input type="checkbox" id="bmBatchIncludeDesc" style="width:14px;height:14px;accent-color:var(--accent-primary)">
+        投稿文（説明欄）軸も一括に含める <span style="color:var(--accent-warning)">⚠ YouTube API quota を消費</span>（既定OFF）
+      </label>
       <div id="bmUnifiedStatusDetail" style="font-size:var(--text-xs);color:var(--text-secondary);line-height:1.7">読み込み中...</div>
+      <!-- 制作分析の実行中ライブ進捗（70秒前後かかるため無反応に見えるのを防ぐ） -->
+      <div id="bmCoreProgress" style="display:none;margin-top:var(--space-3);border-top:1px dashed var(--border-default);padding-top:var(--space-2)">
+        <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1)">
+          <span class="spinner" style="width:14px;height:14px;border:2px solid var(--border-default);border-top-color:var(--accent-primary);border-radius:50%;display:inline-block;animation:spin 1s linear infinite"></span>
+          <span id="bmCoreProgressLabel" style="font-size:var(--text-xs);font-weight:600;color:var(--accent-info)">制作分析を実行中...</span>
+        </div>
+        <div id="bmCoreProgressLog" class="log" style="height:120px;overflow-y:auto;font-size:11px;font-family:monospace;background:var(--bg-surface);padding:var(--space-2);border-radius:var(--radius-sm);white-space:pre-wrap;line-height:1.5">起動中...</div>
+      </div>
     </div>
 
-    <!-- タブ -->
+    <!-- タブ（7→3 再編：取り込み・分析 / プロファイル・融合 / 追跡） -->
     <div style="display:flex;gap:var(--space-1);margin-bottom:var(--space-3);border-bottom:1px solid var(--border-default)">
-      <button class="btn btn-ghost btn-sm bm-tab on" data-bt="ingest" onclick="bmTab('ingest')">取り込み</button>
-      <button class="btn btn-ghost btn-sm bm-tab" data-bt="profiles" onclick="bmTab('profiles')">プロファイル</button>
-      <button class="btn btn-ghost btn-sm bm-tab" data-bt="concept" onclick="bmTab('concept')" title="ライバルのタイトル/タグ/説明から「題材・感情ジョブ・シーン」を抽出">コンセプト</button>
-      <button class="btn btn-ghost btn-sm bm-tab" data-bt="title" onclick="bmTab('title')" title="ライバルのタイトル群から「構造・テンプレ・キーワード・心理フック」を抽出">タイトル</button>
-      <button class="btn btn-ghost btn-sm bm-tab" data-bt="thumbnail" onclick="bmTab('thumbnail')" title="ライバルのサムネを DL → Vision で要素抽出 → Flow / Image2 の参照画像として再利用">サムネ分析</button>
-      <button class="btn btn-ghost btn-sm bm-tab" data-bt="description" onclick="bmTab('description')" title="指定チャンネルの投稿文（説明欄）の構成傾向を抽出 → 自チャンネルの動画改善・投稿文構成案へ反映">投稿文</button>
+      <button class="btn btn-ghost btn-sm bm-tab on" data-bt="ingest" onclick="bmTab('ingest')" title="候補プレビュー → 選択 → 一括分析（制作分析＋コンセプト/タイトル/サムネ/投稿文を自動連鎖）">取り込み・分析</button>
+      <button class="btn btn-ghost btn-sm bm-tab" data-bt="profiles" onclick="bmTab('profiles')" title="プロファイル抽出・複数チャンネルの要素融合・ピン留め・削除（深掘り系統）">プロファイル / 融合</button>
       <button class="btn btn-ghost btn-sm bm-tab" data-bt="tracking" onclick="bmTab('tracking')" title="新着チャンネル検知・個別の登録者推移/48h初速・新作投稿イベントを日次で追跡">追跡</button>
     </div>
 
@@ -1967,9 +1976,137 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div class="sec-title">進行ログ</div>
         <div id="bmLogs" class="log" style="height:300px;overflow-y:auto;font-size:var(--text-xs);font-family:monospace;background:var(--bg-surface);padding:var(--space-2);border-radius:var(--radius-sm)">（まだ実行されていません）</div>
       </div>
+
+      <!-- ===== 分析結果（4軸アコーディオン） ===== -->
+      <!-- 旧 concept/title/thumbnail/description タブを縦並びの結果セクションへ統合。
+           「一括分析」は core 完了後にこれらを自動連鎖実行し、各セクションを再読込する。
+           初回展開（toggle）時に対応の load 関数を遅延ロード。 -->
+      <div class="sec-title" style="margin:var(--space-4) 0 var(--space-2)">分析結果（制作分析を入力に各軸を抽出）</div>
+
+      <!-- concept 軸（Phase 2：コンセプト軸 — 題材 / 感情ジョブ / シーン） -->
+      <details class="bm-acc" id="bmAcc-concept" data-bm-acc="concept" ontoggle="bmAccToggle(this)" style="margin-bottom:var(--space-2);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface)">
+        <summary style="cursor:pointer;padding:var(--space-3);font-weight:600;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+          <span>コンセプト軸</span>
+          <span id="bcStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);font-weight:normal"></span>
+          <span style="flex:1"></span>
+          <span class="fh" style="font-weight:normal">題材 / 感情ジョブ / シーン</span>
+        </summary>
+        <div style="padding:0 var(--space-3) var(--space-3)">
+          <div class="fh" style="margin-bottom:var(--space-2)">
+            ライバルのタイトル / タグ / 説明文から、繰り返し現れる<strong>題材（themes）</strong>・<strong>感情ジョブ</strong>・<strong>シーンアンカー</strong>を抽出。
+            自チャンネルが狙うべき焦点と避けるべき飽和領域を提案します（aggregate）。
+          </div>
+          <div class="btns" style="margin:0 0 var(--space-3);flex-wrap:wrap;gap:var(--space-2)">
+            <button class="btn btn-primary btn-sm" id="bcRunBtn" onclick="bcRun()">分析を実行</button>
+            <button class="btn btn-ghost btn-sm" onclick="bcLoad()">再読込</button>
+          </div>
+          <div id="bcAggregate" style="margin-bottom:var(--space-3)"></div>
+          <div id="bcChannels"></div>
+        </div>
+      </details>
+
+      <!-- title 軸（Phase 3：タイトル軸 — 構造 / テンプレ / キーワード / 心理フック） -->
+      <details class="bm-acc" id="bmAcc-title" data-bm-acc="title" ontoggle="bmAccToggle(this)" style="margin-bottom:var(--space-2);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface)">
+        <summary style="cursor:pointer;padding:var(--space-3);font-weight:600;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+          <span>タイトル軸</span>
+          <span id="btitleStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);font-weight:normal"></span>
+          <span style="flex:1"></span>
+          <span class="fh" style="font-weight:normal">構造 / テンプレ / KW / フック</span>
+        </summary>
+        <div style="padding:0 var(--space-3) var(--space-3)">
+          <div class="fh" style="margin-bottom:var(--space-2)">
+            ライバルのタイトル群を <strong>構造パターン</strong> / <strong>具体テンプレ</strong> / <strong>キーワード</strong> / <strong>心理フック</strong> に分解。
+            自チャンネルが使える「埋めれば 1 本分」スキャフォールドを生成します。
+          </div>
+          <div class="btns" style="margin:0 0 var(--space-3);flex-wrap:wrap;gap:var(--space-2)">
+            <button class="btn btn-primary btn-sm" id="btitleRunBtn" onclick="btitleRun()">分析を実行</button>
+            <button class="btn btn-ghost btn-sm" onclick="btitleLoad()">再読込</button>
+          </div>
+          <div id="btitleAggregate" style="margin-bottom:var(--space-3)"></div>
+          <div id="btitleChannels"></div>
+        </div>
+      </details>
+
+      <!-- thumbnail 軸（Phase 1：サムネ軸の分析 + Picked → Flow/Image2 参照） -->
+      <details class="bm-acc" id="bmAcc-thumbnail" data-bm-acc="thumbnail" ontoggle="bmAccToggle(this)" style="margin-bottom:var(--space-2);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface)">
+        <summary style="cursor:pointer;padding:var(--space-3);font-weight:600;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+          <span>サムネ軸（DL + Vision）</span>
+          <span id="btStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);font-weight:normal"></span>
+          <span style="flex:1"></span>
+          <span id="btPickedCount" class="badge badge-neutral" style="font-weight:normal">Picked 0 件</span>
+        </summary>
+        <div style="padding:0 var(--space-3) var(--space-3)">
+          <div class="fh" style="margin-bottom:var(--space-2)">
+            競合キャッシュの videoId からサムネ画像をローカル保存 → Claude Vision でチャンネル別 + 横断の要素抽出。
+            ✓ を入れたサムネは「Picked」に登録され、Flow / Image2 の参照画像として再利用できます。
+          </div>
+          <div class="btns" style="margin:0 0 var(--space-3);flex-wrap:wrap;gap:var(--space-2)">
+            <button class="btn btn-primary btn-sm" id="btRunBtn" onclick="btRun(false)">DL + 分析を実行</button>
+            <button class="btn btn-secondary btn-sm" onclick="btRun(true)" title="DL のみ。分析は走らせない">DL のみ</button>
+            <button class="btn btn-ghost btn-sm" onclick="btLoad()">再読込</button>
+            <span style="flex:1"></span>
+            <button class="btn btn-secondary btn-sm" onclick="btSavePicked()">Picked を保存</button>
+          </div>
+          <div id="btAggregate" style="margin-bottom:var(--space-3)"></div>
+          <div id="btChannels"></div>
+
+          <!-- サブ機能：競合キャッシュに無い任意画像を手動アップロードして Vision 分析（別用途・厳守：要素抽出→翻訳） -->
+          <details style="margin-top:var(--space-3);border-top:1px dashed var(--border-default);padding-top:var(--space-2)">
+            <summary style="cursor:pointer;font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)">＋ 画像を手動追加して分析（任意画像・コピーではなく要素抽出）</summary>
+            <div style="padding-top:var(--space-2)">
+              <div class="fh" style="margin-bottom:var(--space-2)">
+                <strong>趣旨：</strong>同一画像の生成・模倣ではなく、競合サムネの視覚要素（構図・配色・被写体）と視聴者訴求点を抽出し、orzz. の世界観に翻訳するためのヒント抽出です。コスト高のため手動トリガのみ。
+              </div>
+              <div class="ff">
+                <label class="fl">画像ファイル（複数選択可）</label>
+                <input type="file" class="fi" id="benchThumbFiles" accept="image/*" multiple>
+                <div class="fh">ローカルから画像を添付。選択順で分析されます。</div>
+              </div>
+              <div class="ff">
+                <label class="fl">画像 URL（1 行 1 URL）</label>
+                <textarea class="ft" id="benchThumbUrls" rows="3" placeholder="https://i.ytimg.com/vi/xxx/maxresdefault.jpg"></textarea>
+                <div class="fh">YouTube サムネ URL など。添付ファイルと併用可。</div>
+              </div>
+              <div class="ff">
+                <label class="fl">自チャンネルの方向性ヒント（任意）</label>
+                <textarea class="ft" id="benchThumbContextHint" rows="2" placeholder="例: 深夜カフェ・静寂・映画的・ローキー"></textarea>
+                <div class="fh">抽出要素を orzz. へ翻訳する際の軸。空欄なら既定の世界観で解釈。</div>
+              </div>
+              <div class="btns" style="margin:0">
+                <button class="btn btn-primary btn-sm" onclick="runThumbAnalysis()">サムネ要素を抽出</button>
+                <span id="benchThumbStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-left:var(--space-2)"></span>
+              </div>
+              <div id="benchThumbResult" style="margin-top:var(--space-3)"></div>
+            </div>
+          </details>
+        </div>
+      </details>
+
+      <!-- description 軸（投稿文軸 — 説明欄の構成傾向 → 動画改善 / 投稿文構成案） -->
+      <details class="bm-acc" id="bmAcc-description" data-bm-acc="description" ontoggle="bmAccToggle(this)" style="margin-bottom:var(--space-2);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface)">
+        <summary style="cursor:pointer;padding:var(--space-3);font-weight:600;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+          <span>投稿文（説明欄）軸</span>
+          <span id="bdescStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);font-weight:normal"></span>
+          <span style="flex:1"></span>
+          <span class="badge badge-warning" style="font-weight:normal">⚠ API quota 消費</span>
+        </summary>
+        <div style="padding:0 var(--space-3) var(--space-3)">
+          <div class="fh" style="margin-bottom:var(--space-2)">
+            指定チャンネルの動画説明文から、<strong>冒頭フック</strong>・<strong>構成順</strong>（opening/tracklist/CTA/links/hashtags）・<strong>ハッシュタグ運用</strong>を抽出。
+            自チャンネルが採用すべき<strong>投稿文テンプレート</strong>を提案し、(a)既存動画のメタ改善・(b)新規投稿文の構成案へ活かします。
+          </div>
+          <div class="fh" style="margin-bottom:var(--space-2);color:var(--text-tertiary)">⚠ 説明文は YouTube API（ライバルチャンネル）経路でのみ取得可能。実行時に末尾まで full 再取得します（API quota を消費）。一括分析では既定OFFです。</div>
+          <div class="btns" style="margin:0 0 var(--space-3);flex-wrap:wrap;gap:var(--space-2)">
+            <button class="btn btn-primary btn-sm" id="bdescRunBtn" onclick="bdescRun()">分析を実行（full 再取得）</button>
+            <button class="btn btn-ghost btn-sm" onclick="bdescLoad()">再読込</button>
+          </div>
+          <div id="bdescAggregate" style="margin-bottom:var(--space-3)"></div>
+          <div id="bdescChannels"></div>
+        </div>
+      </details>
     </div>
 
-    <!-- profiles タブ -->
+    <!-- profiles タブ（プロファイル / 融合：深掘り系統） -->
     <div id="bmPane-profiles" class="bm-pane" style="display:none">
       <div id="bmProfilesMeta" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-2)"></div>
       <div class="card" style="margin-bottom:var(--space-3);padding:var(--space-2) var(--space-3);display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
@@ -1983,87 +2120,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
       </div>
       <div id="bmFuseResult" style="margin-bottom:var(--space-3)"></div>
       <div id="bmProfiles"></div>
-    </div>
-
-    <!-- concept タブ（Phase 2：コンセプト軸 — 題材 / 感情ジョブ / シーン） -->
-    <div id="bmPane-concept" class="bm-pane" style="display:none">
-      <div class="card" style="margin-bottom:var(--space-3)">
-        <div class="section-heading"><div class="sec-title" style="margin:0">コンセプト軸の分析</div></div>
-        <div class="fh" style="margin-bottom:var(--space-2)">
-          ライバルのタイトル / タグ / 説明文から、繰り返し現れる<strong>題材（themes）</strong>・<strong>感情ジョブ</strong>・<strong>シーンアンカー</strong>を抽出。
-          自チャンネルが狙うべき焦点と避けるべき飽和領域を提案します（aggregate）。
-        </div>
-        <div class="btns" style="margin:0;flex-wrap:wrap;gap:var(--space-2)">
-          <button class="btn btn-primary btn-sm" id="bcRunBtn" onclick="bcRun()">分析を実行</button>
-          <button class="btn btn-ghost btn-sm" onclick="bcLoad()">再読込</button>
-          <span id="bcStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-left:var(--space-2)"></span>
-        </div>
-      </div>
-
-      <div id="bcAggregate" style="margin-bottom:var(--space-3)"></div>
-      <div id="bcChannels"></div>
-    </div>
-
-    <!-- title タブ（Phase 3：タイトル軸 — 構造 / テンプレ / キーワード / 心理フック） -->
-    <div id="bmPane-title" class="bm-pane" style="display:none">
-      <div class="card" style="margin-bottom:var(--space-3)">
-        <div class="section-heading"><div class="sec-title" style="margin:0">タイトル軸の分析</div></div>
-        <div class="fh" style="margin-bottom:var(--space-2)">
-          ライバルのタイトル群を <strong>構造パターン</strong> / <strong>具体テンプレ</strong> / <strong>キーワード</strong> / <strong>心理フック</strong> に分解。
-          自チャンネルが使える「埋めれば 1 本分」スキャフォールドを生成します。
-        </div>
-        <div class="btns" style="margin:0;flex-wrap:wrap;gap:var(--space-2)">
-          <button class="btn btn-primary btn-sm" id="btitleRunBtn" onclick="btitleRun()">分析を実行</button>
-          <button class="btn btn-ghost btn-sm" onclick="btitleLoad()">再読込</button>
-          <span id="btitleStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-left:var(--space-2)"></span>
-        </div>
-      </div>
-
-      <div id="btitleAggregate" style="margin-bottom:var(--space-3)"></div>
-      <div id="btitleChannels"></div>
-    </div>
-
-    <!-- thumbnail タブ（Phase 1：サムネ軸の分析 + Picked → Flow/Image2 参照） -->
-    <div id="bmPane-thumbnail" class="bm-pane" style="display:none">
-      <div class="card" style="margin-bottom:var(--space-3)">
-        <div class="section-heading"><div class="sec-title" style="margin:0">サムネ DL + Vision 分析</div></div>
-        <div class="fh" style="margin-bottom:var(--space-2)">
-          競合キャッシュの videoId からサムネ画像をローカル保存 → Claude Vision でチャンネル別 + 横断の要素抽出。
-          ✓ を入れたサムネは「Picked」に登録され、Flow / Image2 の参照画像として再利用できます。
-        </div>
-        <div class="btns" style="margin:0;flex-wrap:wrap;gap:var(--space-2)">
-          <button class="btn btn-primary btn-sm" id="btRunBtn" onclick="btRun(false)">DL + 分析を実行</button>
-          <button class="btn btn-secondary btn-sm" onclick="btRun(true)" title="DL のみ。分析は走らせない">DL のみ</button>
-          <button class="btn btn-ghost btn-sm" onclick="btLoad()">再読込</button>
-          <span id="btStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-left:var(--space-2)"></span>
-          <span style="flex:1"></span>
-          <span id="btPickedCount" class="badge badge-neutral">Picked 0 件</span>
-          <button class="btn btn-secondary btn-sm" onclick="btSavePicked()">Picked を保存</button>
-        </div>
-      </div>
-
-      <div id="btAggregate" style="margin-bottom:var(--space-3)"></div>
-      <div id="btChannels"></div>
-    </div>
-
-    <!-- description タブ（投稿文軸 — 説明欄の構成傾向 → 動画改善 / 投稿文構成案） -->
-    <div id="bmPane-description" class="bm-pane" style="display:none">
-      <div class="card" style="margin-bottom:var(--space-3)">
-        <div class="section-heading"><div class="sec-title" style="margin:0">投稿文（説明欄）軸の分析</div></div>
-        <div class="fh" style="margin-bottom:var(--space-2)">
-          指定チャンネルの動画説明文から、<strong>冒頭フック</strong>・<strong>構成順</strong>（opening/tracklist/CTA/links/hashtags）・<strong>ハッシュタグ運用</strong>を抽出。
-          自チャンネルが採用すべき<strong>投稿文テンプレート</strong>を提案し、(a)既存動画のメタ改善・(b)新規投稿文の構成案へ活かします。
-        </div>
-        <div class="fh" style="margin-bottom:var(--space-2);color:var(--text-tertiary)">⚠ 説明文は YouTube API（ライバルチャンネル）経路でのみ取得可能。実行時に末尾まで full 再取得します（API quota を消費）。</div>
-        <div class="btns" style="margin:0;flex-wrap:wrap;gap:var(--space-2)">
-          <button class="btn btn-primary btn-sm" id="bdescRunBtn" onclick="bdescRun()">分析を実行（full 再取得）</button>
-          <button class="btn btn-ghost btn-sm" onclick="bdescLoad()">再読込</button>
-          <span id="bdescStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-left:var(--space-2)"></span>
-        </div>
-      </div>
-
-      <div id="bdescAggregate" style="margin-bottom:var(--space-3)"></div>
-      <div id="bdescChannels"></div>
     </div>
 
     <!-- tracking タブ（個別チャンネル追跡） -->
@@ -2183,8 +2239,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
             <div class="ff"><label class="fl">生成モード</label>
               <select class="fs" id="autMode">
                 <option value="styles_title_only">Style + Title（インスト）</option>
-                <option value="lyrics_styles">Lyrics + Style + Title</option>
-                <option value="lyrics">Lyrics only</option>
+                <option value="lyrics_styles">Lyrics + Style + Title（歌あり）</option>
+                <option value="lyrics">Lyrics only（歌あり）</option>
                 <option value="instrumental_filler">インストゥル一括（[instrumental] x 5000 文字）</option>
               </select>
             </div>
@@ -2208,6 +2264,12 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
               <option value="0">OFF（1曲ずつ）</option>
             </select>
           </div>
+          <div class="aut-field-grid aut-quad" style="margin-top:var(--space-3)">
+            <div class="ff"><label class="fl" title="類似度がこの値以上だと「似すぎ」と判定し作り直す。1.00で実質無効">類似回避しきい値</label><input type="number" class="fi" id="autDivThreshold" value="0.6" min="0" max="1" step="0.05"></div>
+            <div class="ff"><label class="fl" title="似すぎたときの最大再生成回数。0で再生成しない">再生成回数</label><input type="number" class="fi" id="autDivRetry" value="2" min="0" max="5"></div>
+            <div class="ff"><label class="fl" title="チャンネル別に保持する曲履歴件数。0で履歴・類似回避を無効化">履歴件数</label><input type="number" class="fi" id="autHistoryLimit" value="40" min="0" max="200"></div>
+          </div>
+          <div class="fh" style="margin-top:2px">多様性: しきい値↓・再生成↑・履歴↑ほど「似た曲」を避けます（チャンネル別に保存）。履歴0で無効。</div>
         </div>
 
         <div class="aut-card">
@@ -2771,6 +2833,14 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           <div class="fh" style="margin:0">step_bgimage が codex_imagegen に渡す参照画像の元フォルダ（チャンネル別保存）</div>
         </div>
         <div class="ff">
+          <label class="fl">固定参照画像パス</label>
+          <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-2)">
+            <input type="text" class="fi" id="cfgReferenceImage" style="flex:1;min-width:240px" placeholder="例: /Users/.../waterfront-reference.jpeg" autocomplete="off">
+            <button class="btn btn-ghost btn-sm" onclick="openF(document.getElementById('cfgReferenceImage').value)" title="Finder で開く">開く</button>
+          </div>
+          <div class="fh" style="margin-bottom:var(--space-3)">
+            指定時はこの 1 枚を最優先の参照画像として使います。SUKIMA は水辺の歩道・橋・俯瞰の代表画像を入れておくと安定します。
+          </div>
           <label class="fl">フォルダパス</label>
           <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
             <input type="text" class="fi" id="cfgReferenceImageDir" style="flex:1;min-width:240px" placeholder="例: /Users/asobimori/.../references" autocomplete="off">
@@ -2893,8 +2963,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div class="ff"><label class="fl">生成モード</label>
           <select class="fs" id="cfgSunoMode" onchange="onCfgSunoModeChange()">
             <option value="styles_title_only">Style + Title（インスト）</option>
-            <option value="lyrics_styles">Lyrics + Style + Title</option>
-            <option value="lyrics">Lyrics only</option>
+            <option value="lyrics_styles">Lyrics + Style + Title（歌あり）</option>
+            <option value="lyrics">Lyrics only（歌あり）</option>
             <option value="instrumental_filler">インストゥル一括（[instrumental] x 5000 文字）</option>
           </select>
           <div class="fh" id="cfgSunoModeHint" style="margin-top:var(--space-1)"></div>
@@ -2965,33 +3035,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <input type="number" id="cfgBenchMaxSubs">
         <textarea id="cfgBenchExclude"></textarea>
       </div>
-      <div class="card" data-cfg-group="benchmark" data-cfg-card="bm-thumb-analysis">
-        <div class="section-heading"><span class="product-icon service sm flow"><img src="https://www.google.com/s2/favicons?sz=64&domain=labs.google" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Fl</span></span><div class="sec-title">競合サムネ要素分析（手動）</div></div>
-        <div class="fh" style="margin-bottom:var(--space-2)">
-          <strong>趣旨：</strong>同一画像の生成・模倣ではなく、競合サムネの視覚要素（構図・配色・被写体）と視聴者訴求点を抽出し、orzz. の世界観に翻訳するためのヒント抽出です。
-          コスト高のため手動トリガのみ。結果はキャッシュされ再分析するまで保持されます。
-        </div>
-        <div class="ff">
-          <label class="fl">画像ファイル（複数選択可）</label>
-          <input type="file" class="fi" id="benchThumbFiles" accept="image/*" multiple>
-          <div class="fh">ローカルから画像を添付。ドラッグで並び替え不要、選択順で分析されます。</div>
-        </div>
-        <div class="ff">
-          <label class="fl">画像 URL（1 行 1 URL）</label>
-          <textarea class="ft" id="benchThumbUrls" rows="3" placeholder="https://i.ytimg.com/vi/xxx/maxresdefault.jpg"></textarea>
-          <div class="fh">YouTube サムネ URL など。添付ファイルと併用可。</div>
-        </div>
-        <div class="ff">
-          <label class="fl">自チャンネルの方向性ヒント（任意）</label>
-          <textarea class="ft" id="benchThumbContextHint" rows="2" placeholder="例: 深夜カフェ・静寂・映画的・ローキー"></textarea>
-          <div class="fh">抽出要素を orzz. へ翻訳する際の軸。空欄なら既定の世界観で解釈。</div>
-        </div>
-        <div class="btns" style="margin:0">
-          <button class="btn btn-primary btn-sm" onclick="runThumbAnalysis()">サムネ要素を抽出</button>
-          <span id="benchThumbStatus" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-left:var(--space-2)"></span>
-        </div>
-        <div id="benchThumbResult" style="margin-top:var(--space-3)"></div>
-      </div>
+      <!-- 競合サムネ要素分析（手動）カードは「ベンチマーク分析 → サムネ軸」アコーディオン内の
+           「＋ 画像を手動追加して分析」へ移設済み（重複 ID 回避のためここからは削除）。 -->
       <!-- 「スプレッドシートから取り込み」カードは削除（ユーザー要望） -->
 
       <div class="card" data-cfg-group="benchmark" data-cfg-card="bm-cache">
@@ -3390,22 +3435,9 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div class="btns" style="margin:0"><button class="btn btn-primary btn-sm" onclick="saveMasterSection('meta')">メタ設定を保存</button></div>
       </div>
 
-      <!-- Section 5: ベンチマーク -->
-      <div class="card" data-master-group="schedule" data-master-card="bm-shortcut">
-        <div class="section-heading"><div class="sec-title">ベンチマーク分析（共通ショートカット）</div></div>
-        <div class="lock-notice">
-          <span class="lock-notice-icon">→</span>
-          <div class="lock-notice-body">
-            <strong>ピン留めや除外条件は「基本設定」で編集します</strong>
-            この画面ではショートカットのみ。実データは <code>~/.config/orzz/benchmark_config.json</code> に保存されます。
-          </div>
-          <button class="btn btn-secondary btn-sm" onclick="go('settings');setTimeout(()=>document.getElementById('cfgBenchPinned')?.scrollIntoView({behavior:'smooth'}),200)">基本設定で編集</button>
-        </div>
-        <div class="btns" style="margin:0">
-          <button class="btn btn-secondary btn-sm" onclick="regenerateAnalysisJa()">英語向けに再分析</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="clearAnalysisCache()">キャッシュをクリア</button>
-        </div>
-      </div>
+      <!-- Section 5: ベンチマーク（共通ショートカット）カードは削除。
+           bm-cache カード（競合分析キャッシュ）と機能重複かつデッドリンクだったため。
+           再分析/英語向け再生成は bm-cache カードに集約。 -->
 
       <!-- Section 6: 自動化スケジュール -->
       <div class="card" data-master-group="schedule" data-master-card="schedule">
@@ -4260,6 +4292,7 @@ async function loadConfig(){try{
     $('cfgDefaultDurationSec').value=(dds!=null && Number(dds)>0)?Number(dds):'';
   }
   // step_bgimage: 参照画像フォルダ（チャンネル別）
+  if($('cfgReferenceImage'))$('cfgReferenceImage').value=dc.reference_image||'';
   if($('cfgReferenceImageDir')){
     $('cfgReferenceImageDir').value=dc.reference_image_dir||'';
     // 値があれば自動で枚数/サムネを取りに行く（非ブロッキング）
@@ -4424,6 +4457,7 @@ async function _autoSaveSettingsNow(){
       spreadsheet_growth_tracking_url:($('cfgSheetGrowth')?.value||'').trim(),
       youtube_api_key:($('cfgYtApiKey')?.value||'').trim(),
       sheets_api_key:($('cfgSheetsApiKey')?.value||'').trim(),
+      reference_image:($('cfgReferenceImage')?.value||'').trim(),
       reference_image_dir:($('cfgReferenceImageDir')?.value||'').trim(),
       scene_text_enabled: $('cfgSceneTextEnabled') ? !!$('cfgSceneTextEnabled').checked : true,
       scene_text_tone:($('cfgSceneTextTone')?.value||'').trim(),
@@ -4487,6 +4521,7 @@ function wireSettingsAutoSave(){
     'cfgName','cfgFolder','cfgExport',
     'cfgSheetDetail','cfgSheetGrowth',
     'cfgYtApiKey','cfgSheetsApiKey',
+    'cfgReferenceImage',
     'cfgReferenceImageDir',
     'cfgDefaultDurationSec',
     // SUNO
@@ -4583,6 +4618,7 @@ async function saveSettings(){
   const psdToggleLayer=(document.getElementById('cfgPsdToggleLayer')?.value || '').trim();
   const psdImageSubdir=(document.getElementById('cfgPsdImageSubdir')?.value || '').trim();
   // step_bgimage: 参照画像フォルダ（空文字でフォールバックに戻す）
+  const referenceImage=(document.getElementById('cfgReferenceImage')?.value || '').trim();
   const referenceImageDir=(document.getElementById('cfgReferenceImageDir')?.value || '').trim();
   const body={
     channel_name:document.getElementById('cfgName').value,
@@ -4599,6 +4635,7 @@ async function saveSettings(){
     psd_base_layer:psdBaseLayer,
     psd_toggle_layer:psdToggleLayer,
     psd_image_subdir:psdImageSubdir,
+    reference_image:referenceImage,
     reference_image_dir:referenceImageDir,
   };
   // Premiere 規定尺（チャンネル別）。空欄/0/負数なら 0 を送信してクリア
@@ -6131,14 +6168,20 @@ async function showVideoDetail(name){
                 <div class="ff"><label class="fl">生成モード</label>
                   <select class="fs" id="miniMode" onchange="onMiniModeChange()">
                     <option value="styles_title_only">Style + Title（インスト）</option>
-                    <option value="lyrics_styles">Lyrics + Style + Title</option>
-                    <option value="lyrics">Lyrics only</option>
+                    <option value="lyrics_styles">Lyrics + Style + Title（歌あり）</option>
+                    <option value="lyrics">Lyrics only（歌あり）</option>
                     <option value="instrumental_filler">インストゥル一括（[instrumental] x 5000）</option>
                   </select>
                 </div>
                 <div class="ff"><label class="fl">生成回数</label><input type="number" class="fi" id="miniCount" value="5" min="1" max="50"></div>
                 <div class="ff"><label class="fl">間隔（秒）</label><input type="number" class="fi" id="miniInterval" value="180" min="30"></div>
               </div>
+              <div class="fr">
+                <div class="ff"><label class="fl" title="類似度がこの値以上だと「似すぎ」と判定し作り直す。1.00で実質無効">類似回避しきい値</label><input type="number" class="fi" id="miniDivThreshold" value="0.6" min="0" max="1" step="0.05"></div>
+                <div class="ff"><label class="fl" title="似すぎたときの最大再生成回数。0で再生成しない">再生成回数</label><input type="number" class="fi" id="miniDivRetry" value="2" min="0" max="5"></div>
+                <div class="ff"><label class="fl" title="チャンネル別に保持する曲履歴件数。0で履歴・類似回避を無効化">履歴件数</label><input type="number" class="fi" id="miniHistoryLimit" value="40" min="0" max="200"></div>
+              </div>
+              <div class="fh" style="margin-top:calc(-1 * var(--space-2));margin-bottom:var(--space-2)">多様性: しきい値↓・再生成↑・履歴↑ほど「似た曲」を避けます（チャンネル別に保存）。履歴0で無効。</div>
               <div class="ff">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-1)">
                   <label class="fl" style="margin:0">プロンプト</label>
@@ -7013,11 +7056,12 @@ function _startBgImagePoll(name){
 async function bgImageRun(name){
   const refCount=parseInt(document.getElementById('bgImageRefCount_'+name)?.value||'3',10)||3;
   const force=!!document.getElementById('bgImageForce_'+name)?.checked;
+  const referenceImage=(document.getElementById('cfgReferenceImage')?.value||'').trim();
   const btn=document.getElementById('bgImageRunBtn_'+name);
   if(btn)btn.disabled=true;
   try{
     const r=await fetch('/api/bgimage/run',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({video_name:name, ref_count:refCount, force})});
+      body:JSON.stringify({video_name:name, ref_count:refCount, force, reference_image:referenceImage})});
     const d=await r.json();
     if(!r.ok){toast(d.detail||'失敗','e');_bgImageAppend(name,'[起動失敗] '+(d.detail||''),'accent-danger');return}
     if(d.status==='ok' && d.skipped){
@@ -7026,8 +7070,9 @@ async function bgImageRun(name){
       loadBgImagePreview(name);
       return;
     }
-    toast(`背景画像生成 開始: ${d.output}（参照 ${refCount} 枚, force=${force?'on':'off'}）`,'s');
-    _bgImageAppend(name,`[起動] output=${d.output}, ref_count=${refCount}, force=${force?'on':'off'}`);
+    const refLabel=referenceImage?`fixed=${referenceImage.split('/').pop()}`:`ref_count=${refCount}`;
+    toast(`背景画像生成 開始: ${d.output}（${referenceImage?'固定参照':'参照 '+refCount+' 枚'}, force=${force?'on':'off'}）`,'s');
+    _bgImageAppend(name,`[起動] output=${d.output}, ${refLabel}, force=${force?'on':'off'}`);
     _startBgImagePoll(name);
   }catch(e){toast('接続エラー: '+e,'e')}
   finally{if(btn)btn.disabled=false}
@@ -7178,6 +7223,9 @@ function _runPipeline(name,steps,sunoParams){
     body.dl_wait_sec=sunoParams.dl_wait_sec;
     body.dl_min_duration=sunoParams.dl_min_duration;
     body.suno_headless=sunoParams.headless;
+    if(sunoParams.diversity_threshold!==undefined)body.diversity_threshold=sunoParams.diversity_threshold;
+    if(sunoParams.diversity_retry!==undefined)body.diversity_retry=sunoParams.diversity_retry;
+    if(sunoParams.history_limit!==undefined)body.history_limit=sunoParams.history_limit;
   }
   fetch(`/api/videos/${encodeURIComponent(name)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>r.json())
@@ -8414,43 +8462,192 @@ async function loadBenchmarkContextStatus(){
     el.innerHTML='<span style="color:var(--accent-danger)">状態取得に失敗しました</span>';
   }
 }
-async function runBenchmarkCoreAnalysis(){
+let _bmCorePollTimer=null;
+function _bmCoreProgressShow(show){
+  const box=document.getElementById('bmCoreProgress');
+  if(box)box.style.display=show?'block':'none';
+}
+function _bmCoreProgressRender(logs){
+  const el=document.getElementById('bmCoreProgressLog');
+  if(!el)return;
+  const lines=(logs||[]).filter(l=>String(l).trim());
+  el.textContent=lines.length?lines.slice(-40).join('\n'):'起動中...';
+  el.scrollTop=el.scrollHeight;
+}
+async function runBenchmarkCoreAnalysis(onFinish){
+  // onFinish: 任意。core 完了時に finish(ok) を渡して呼ぶフック（一括分析の連鎖に使用）。
   const btn=document.getElementById('bmRunCoreAnalysisBtn');
-  const detail=document.getElementById('bmUnifiedStatusDetail');
+  const label=document.getElementById('bmCoreProgressLabel');
   const selected=_bmSelected();
   if(selected.length)await bmSaveSelectedBenchmarkPins(selected, false);
+  if(_bmCorePollTimer){clearInterval(_bmCorePollTimer);_bmCorePollTimer=null;}
   if(btn){btn.disabled=true;btn.textContent='制作分析中...'}
-  if(detail)detail.innerHTML='<div style="color:var(--accent-info)">ライバル/スプシ取得 → Claude 分析中...（1〜2分）</div>';
+  _bmCoreProgressShow(true);
+  if(label)label.textContent='ライバル/スプシ取得 → Claude 分析中...（約1分）';
+  _bmCoreProgressRender(['スプレッドシート読み取り → ライバル取得 → Claude 分析を開始します...']);
   try{
     const r=await fetch('/api/analysis/competitors',{method:'POST'});
     if(!r.ok){
       const e=await r.json().catch(()=>({}));
-      toast(e.detail||'制作分析の開始に失敗','e');
+      const msg=e.detail||'制作分析の開始に失敗しました';
+      toast(msg,'e');
+      if(label)label.textContent='開始できませんでした';
+      _bmCoreProgressRender([msg, (r.status===400?'※ 既に実行中です。完了を待つか、しばらくしてから再実行してください。':'')]);
       if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
+      setTimeout(()=>_bmCoreProgressShow(false),4000);
       loadBenchmarkContextStatus();
+      if(typeof onFinish==='function')onFinish(false);
       return false;
     }
+    let _done=false;
+    const finish=(ok,errLine)=>{
+      _done=true;
+      if(_bmCorePollTimer){clearInterval(_bmCorePollTimer);_bmCorePollTimer=null;}
+      if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
+      const spin=document.querySelector('#bmCoreProgress .spinner');
+      if(spin)spin.style.display='none';
+      if(label)label.textContent=ok?'✓ 制作分析が完了しました':'✕ 制作分析が失敗しました';
+      // 結果ビューを再読込（状態カード・キャッシュ情報・概況・サムネ等の各タブ入力を更新）
+      loadBenchmarkContextStatus();
+      loadCacheInfo?.();
+      loadBmOverview?.();
+      // 一括分析の連鎖フック（指定時はトーストと自動クローズを抑制し、連鎖側で制御）
+      if(typeof onFinish==='function'){onFinish(ok);return;}
+      if(ok){toast('制作分析が完了しました。各タブに反映されました','s');}
+      else{toast('制作分析が失敗しました。ログを確認してください'+(errLine?'：'+errLine:''),'e');}
+      // 完了ログはしばらく残し、スピナーを戻す（次回用）
+      setTimeout(()=>{
+        _bmCoreProgressShow(false);
+        if(spin)spin.style.display='inline-block';
+      }, ok?6000:12000);
+    };
     const poll=async()=>{
       try{
         const sr=await fetch('/api/analysis/status');
         const sd=await sr.json();
-        if(sd.running){setTimeout(poll,2500);return}
-        if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
-        await loadBenchmarkContextStatus();
-        loadCacheInfo?.();
-        toast('制作分析が完了しました','s');
-      }catch(e){
-        if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
-      }
+        _bmCoreProgressRender(sd.logs);
+        if(sd.running)return;
+        // 完走: ログ末尾でエラー終了コードを検出
+        const logs=sd.logs||[];
+        const tail=logs.slice(-8).join('\n');
+        const failed=/終了コード: (?!0\b)\d/.test(tail) || /\[エラー\]|❌/.test(tail);
+        const errLine=failed?(logs.filter(l=>/❌|\[エラー\]/.test(l)).slice(-1)[0]||'').slice(0,140):'';
+        finish(!failed, errLine);
+      }catch(e){ /* 一時的なポーリング失敗は無視して継続 */ }
     };
-    setTimeout(poll,2500);
+    await poll();
+    if(!_done){_bmCorePollTimer=setInterval(poll,2500);}
     return true;
   }catch(e){
     toast('接続エラー','e');
+    if(label)label.textContent='接続エラー';
     if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
+    setTimeout(()=>_bmCoreProgressShow(false),4000);
     loadBenchmarkContextStatus();
+    if(typeof onFinish==='function')onFinish(false);
     return false;
   }
+}
+/* ==== ⚡ 一括分析：制作分析(core) → コンセプト/タイトル/サムネ(+任意で投稿文)を自動連鎖 ====
+   各軸は同一の competitor_analysis_cache.json を入力にする非同期 run。
+   core 完了フックから順次 /api/benchmark/{...}/run をキックし、完了を待って次へ進む。
+   description は YouTube API quota を消費するため、既定OFF（チェックボックスで明示同意）。 */
+let _bmBatchRunning=false;
+function _bmBatchLog(line){
+  const el=document.getElementById('bmCoreProgressLog');
+  if(!el)return;
+  const prev=el.textContent==='起動中...'?'':el.textContent;
+  el.textContent=(prev?prev+'\n':'')+line;
+  el.scrollTop=el.scrollHeight;
+}
+function _bmBatchSetLabel(text){
+  const label=document.getElementById('bmCoreProgressLabel');
+  if(label)label.textContent=text;
+}
+// 1軸を run → 完了までポーリング（GET エンドポイントの running フラグで判定）
+async function _bmRunAxis(axis, label, body){
+  _bmBatchSetLabel(label+'中...');
+  _bmBatchLog('▶ '+label+' を開始');
+  try{
+    const r=await fetch(`/api/benchmark/${axis}/run`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body||{}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(d.status==='already_running'){_bmBatchLog('… '+label+'：既に実行中。完了を待ちます');}
+  }catch(e){
+    _bmBatchLog('✕ '+label+'：開始失敗 '+(e.message||e));
+    return false;
+  }
+  // ポーリング（GET /api/benchmark/{axis} の running を監視）
+  for(let i=0;i<240;i++){   // 最大 ~10 分（2.5s × 240）
+    await new Promise(res=>setTimeout(res,2500));
+    try{
+      const sr=await fetch(`/api/benchmark/${axis}`);
+      if(!sr.ok)continue;
+      const sd=await sr.json();
+      if(!sd.running){
+        const ok=sd.phase!=='error';
+        _bmBatchLog((ok?'✓ ':'✕ ')+label+'：'+(sd.phase==='error'?('失敗 '+(sd.msg||'')):'完了'));
+        return ok;
+      }
+    }catch(_){ /* 一時失敗は無視 */ }
+  }
+  _bmBatchLog('… '+label+'：タイムアウト（バックグラウンドで継続中の可能性）');
+  return false;
+}
+async function runBenchmarkBatchAnalysis(){
+  if(_bmBatchRunning){toast('一括分析を実行中です','w');return}
+  const batchBtn=document.getElementById('bmRunBatchAnalysisBtn');
+  const coreBtn=document.getElementById('bmRunCoreAnalysisBtn');
+  const includeDesc=!!document.getElementById('bmBatchIncludeDesc')?.checked;
+  _bmBatchRunning=true;
+  if(batchBtn){batchBtn.disabled=true;batchBtn.textContent='一括分析中...'}
+  if(coreBtn)coreBtn.disabled=true;
+  _bmCoreProgressShow(true);
+  _bmBatchSetLabel('制作分析（core）を実行中...');
+  // core 完了フックで各軸を連鎖
+  await runBenchmarkCoreAnalysis(async(coreOk)=>{
+    if(!coreOk){
+      _bmBatchSetLabel('✕ 制作分析が失敗したため中断しました');
+      _bmBatchLog('✕ 制作分析が失敗。各軸の連鎖を中止します');
+      _bmBatchFinish(false,batchBtn,coreBtn);
+      return;
+    }
+    _bmBatchLog('✓ 制作分析が完了。各軸の連鎖を開始します');
+    // 1) コンセプト
+    await _bmRunAxis('concept','コンセプト分析',{per_channel_cap:8});
+    bcLoad?.();
+    // 2) タイトル
+    await _bmRunAxis('title','タイトル分析',{per_channel_cap:10});
+    btitleLoad?.();
+    // 3) サムネ（DL + Vision）
+    await _bmRunAxis('thumbnail','サムネ分析',{dl_only:false,per_channel_cap:8});
+    btLoad?.();
+    // 4) 投稿文（既定OFF。明示同意時のみ。quota 消費）
+    if(includeDesc){
+      await _bmRunAxis('description','投稿文分析',{per_channel_cap:8,refetch_full:true});
+      bdescLoad?.();
+    }else{
+      _bmBatchLog('⏭ 投稿文分析はスキップ（quota 消費のため既定OFF）');
+    }
+    _bmBatchSetLabel('✓ 一括分析が完了しました');
+    _bmBatchLog('🎉 一括分析が完了しました');
+    toast('一括分析が完了しました（各軸の結果を反映済み）','s');
+    _bmBatchFinish(true,batchBtn,coreBtn);
+  });
+}
+function _bmBatchFinish(ok,batchBtn,coreBtn){
+  _bmBatchRunning=false;
+  if(batchBtn){batchBtn.disabled=false;batchBtn.textContent='⚡ 一括分析'}
+  if(coreBtn)coreBtn.disabled=false;
+  const spin=document.querySelector('#bmCoreProgress .spinner');
+  if(spin)spin.style.display='none';
+  loadBenchmarkContextStatus?.();
+  setTimeout(()=>{
+    _bmCoreProgressShow(false);
+    if(spin)spin.style.display='inline-block';
+  }, ok?8000:14000);
 }
 async function ensureBenchmarkCoreCache(statusElId){
   try{
@@ -8552,16 +8749,33 @@ async function loadBmHotChannels(){
 function bmTab(key){
   // drive タブは廃止（ダッシュボードの「ベンチマークから制作」に集約）
   if(key==='drive'){go('dashboard');return}
+  // 7→3 再編後の旧キー（concept/title/thumbnail/description）は「取り込み・分析」タブ内の
+  // アコーディオンへ統合。旧キーで呼ばれたら ingest を開いて該当アコーディオンを展開する。
+  const accKeys=['concept','title','thumbnail','description'];
+  if(accKeys.includes(key)){
+    bmTab('ingest');
+    const acc=document.getElementById('bmAcc-'+key);
+    if(acc){acc.open=true;acc.scrollIntoView({behavior:'smooth',block:'start'});}
+    return;
+  }
   document.querySelectorAll('.bm-tab').forEach(t=>t.classList.toggle('on',t.dataset.bt===key));
   document.querySelectorAll('.bm-pane').forEach(p=>p.style.display='none');
   const el=document.getElementById('bmPane-'+key);
   if(el)el.style.display='block';
   if(key==='profiles')loadBenchmarkProfiles();
-  if(key==='concept')bcLoad();
-  if(key==='title')btitleLoad();
-  if(key==='thumbnail')btLoad();
-  if(key==='description')bdescLoad();
   if(key==='tracking')loadTrackingPane();
+}
+// アコーディオン展開時の遅延ロード（初回展開で各軸の結果を読む）
+const _bmAccLoaded={};
+function bmAccToggle(det){
+  if(!det||!det.open)return;
+  const k=det.dataset.bmAcc;
+  if(_bmAccLoaded[k])return;          // 初回展開のみロード（再読込は各軸の「再読込」ボタンで）
+  _bmAccLoaded[k]=true;
+  if(k==='concept')bcLoad();
+  else if(k==='title')btitleLoad();
+  else if(k==='thumbnail')btLoad();
+  else if(k==='description')bdescLoad();
 }
 
 /* ==== ベンチマーク・投稿文(説明文)軸 ==== */
@@ -11195,7 +11409,16 @@ function _collectMiniSunoParams(){
     batch:document.getElementById('miniBatch')?.checked||false,
     dl_wait_sec:parseInt(document.getElementById('miniDlWait')?.value)||30,
     headless:document.getElementById('miniHeadless')?.value==='1',
+    diversity_threshold:_numOrUndef(document.getElementById('miniDivThreshold')?.value,true),
+    diversity_retry:_numOrUndef(document.getElementById('miniDivRetry')?.value,false),
+    history_limit:_numOrUndef(document.getElementById('miniHistoryLimit')?.value,false),
   };
+}
+/* 数値入力を number に。空欄/不正は undefined（= サーバー側の既定/チャンネル設定を使う）*/
+function _numOrUndef(v,isFloat){
+  if(v===undefined||v===null||String(v).trim()==='')return undefined;
+  const n=isFloat?parseFloat(v):parseInt(v,10);
+  return isNaN(n)?undefined:n;
 }
 async function startSunoForVideo(name){
   const p=_collectMiniSunoParams();
@@ -11298,6 +11521,10 @@ async function setupMiniSunoPanel(name){
     const md=document.getElementById('miniMode');if(md&&s.generation_mode){md.value=s.generation_mode;onMiniModeChange();}
     const cn=document.getElementById('miniCount');if(cn&&s.loop_count)cn.value=s.loop_count;
     const iv=document.getElementById('miniInterval');if(iv&&s.loop_interval_sec)iv.value=s.loop_interval_sec;
+    // 多様性（チャンネル別 suno 設定の既定値を反映）
+    const dt=document.getElementById('miniDivThreshold');if(dt)dt.value=(s.diversity_threshold!=null?s.diversity_threshold:0.6);
+    const dr=document.getElementById('miniDivRetry');if(dr)dr.value=(s.diversity_retry!=null?s.diversity_retry:2);
+    const hl=document.getElementById('miniHistoryLimit');if(hl)hl.value=(s.history_limit!=null?s.history_limit:40);
     // Workspace バッジ
     const channel=(d.dashboard.channel_name||'orzz').trim().replace(/[^A-Za-z0-9_-]+/g,'_').replace(/^_|_$/g,'')||'orzz';
     const m=name.match(/^(\d+)_/);
@@ -12055,6 +12282,9 @@ async function loadAutomationConfig(){
     document.getElementById('autDlWait').value=g('dl_wait_sec',30);
     document.getElementById('autHeadless').value=g('suno_headless',false)?'1':'0';
     document.getElementById('autBatch').value=g('suno_batch',true)?'1':'0';
+    document.getElementById('autDivThreshold').value=g('suno_diversity_threshold',s.diversity_threshold!=null?s.diversity_threshold:0.6);
+    document.getElementById('autDivRetry').value=g('suno_diversity_retry',s.diversity_retry!=null?s.diversity_retry:2);
+    document.getElementById('autHistoryLimit').value=g('suno_history_limit',s.history_limit!=null?s.history_limit:40);
     const dur=g('premiere_duration',10800);
     document.getElementById('autPrH').value=Math.floor(dur/3600);
     document.getElementById('autPrM').value=Math.floor((dur%3600)/60);
@@ -12105,6 +12335,9 @@ async function saveAutomationConfig(){
     suno_interval:parseInt(document.getElementById('autInterval').value)||180,
     suno_batch:document.getElementById('autBatch').value==='1',
     suno_headless:document.getElementById('autHeadless').value==='1',
+    suno_diversity_threshold:_numOrUndef(document.getElementById('autDivThreshold').value,true),
+    suno_diversity_retry:_numOrUndef(document.getElementById('autDivRetry').value,false),
+    suno_history_limit:_numOrUndef(document.getElementById('autHistoryLimit').value,false),
     dl_wait_sec:parseInt(document.getElementById('autDlWait').value)||30,
     premiere_duration:h*3600+m*60+s,
     premiere_auto_export:document.getElementById('autAutoExport').checked,

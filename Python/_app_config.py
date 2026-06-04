@@ -65,6 +65,26 @@ def resolve_config_dir() -> Path:
     return HOME / ".config" / app_id
 
 
+def resolve_shared_base() -> Path:
+    """共有ドライブ上のアプリベース（<共有ドライブ>/DEV/_claude）を解決する。
+
+    優先順位: 環境変数 APP_SHARED_BASE / ORZZ_SHARED_BASE → このモジュール自身の位置。
+    本モジュール（およびアプリ一式）は共有ドライブ上の <SHARED>/Python/ 配下に置かれる
+    前提なので、__file__ の親の親が共有ベースになる（最も確実）。"""
+    env_path = os.environ.get("APP_SHARED_BASE") or os.environ.get("ORZZ_SHARED_BASE")
+    if env_path:
+        p = Path(env_path).expanduser()
+        if p.exists():
+            return p
+    return Path(__file__).resolve().parent.parent
+
+
+def resolve_shared_config_dir() -> Path:
+    """PC 間で共有する設定/データの置き場（<共有ドライブ>/DEV/_claude/config）。
+    channels.json・ベンチマークのプロファイル/設定/分析などを置く。"""
+    return resolve_shared_base() / "config"
+
+
 def _is_safe_legacy_subpath(p: Path, base: Path) -> bool:
     """シンボリックリンクや base 外への脱出を防ぐ"""
     try:

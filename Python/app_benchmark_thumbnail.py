@@ -28,15 +28,22 @@ from typing import Optional
 
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from _app_config import resolve_config_dir as _resolve_config_dir
+    from _app_config import (
+        resolve_config_dir as _resolve_config_dir,
+        resolve_shared_config_dir as _resolve_shared_config_dir,
+    )
     CONFIG_DIR = _resolve_config_dir()
+    SHARED_CONFIG_DIR = _resolve_shared_config_dir()
 except Exception:
     CONFIG_DIR = Path.home() / ".config" / "orzz"
+    SHARED_CONFIG_DIR = CONFIG_DIR
 
-BENCHMARK_DIR = CONFIG_DIR / "benchmark"
-THUMBS_DIR = BENCHMARK_DIR / "thumbs"
+# 分析(thumbnail.json)/競合キャッシュは PC 間共有（共有ドライブ側）
+BENCHMARK_DIR = SHARED_CONFIG_DIR / "benchmark"
 ANALYSIS_FILE = BENCHMARK_DIR / "thumbnail.json"
-COMPETITOR_CACHE_FILE = CONFIG_DIR / "competitor_analysis_cache.json"
+COMPETITOR_CACHE_FILE = SHARED_CONFIG_DIR / "competitor_analysis_cache.json"
+# サムネ「画像」は容量が大きいためローカル維持（共有しない）
+THUMBS_DIR = CONFIG_DIR / "benchmark" / "thumbs"
 ANALYSIS_FILENAME = "thumbnail.json"
 
 DEFAULT_CLI = "claude"

@@ -257,7 +257,8 @@ def _run(cmd, label, timeout=None, env_overrides=None):
         print(f"\n✅ {label} 完了")
         return True
     except subprocess.TimeoutExpired:
-        print(f"\n⏰ {label} タイムアウト")
+        suffix = f" ({timeout}s)" if timeout else ""
+        print(f"\n⏰ {label} タイムアウト{suffix}")
         return False
     except Exception as e:
         print(f"\n❌ {label} エラー: {e}")
@@ -615,6 +616,18 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             batch = (provider in ("claude", "codex"))
     dl_wait = int((os.environ.get("APP_DL_WAIT_SEC") or os.environ.get("ORZZ_DL_WAIT_SEC")) or 30)
 
+    # 多様性制御（env 上書き > per-channel suno block > suno 側の既定）。未設定は None のまま渡さない。
+    def _norm_num(v, is_int):
+        if v in (None, ""):
+            return None
+        try:
+            return int(float(v)) if is_int else float(v)
+        except (TypeError, ValueError):
+            return None
+    div_threshold = _norm_num(os.environ.get("APP_SUNO_DIVERSITY_THRESHOLD") or _cfg("diversity_threshold"), False)
+    div_retry = _norm_num(os.environ.get("APP_SUNO_DIVERSITY_RETRY") or _cfg("diversity_retry"), True)
+    hist_limit = _norm_num(os.environ.get("APP_SUNO_HISTORY_LIMIT") or _cfg("history_limit"), True)
+
     ch_cfg = _load_dashboard_config()
     ch_name = re.sub(r"[^A-Za-z0-9_-]+", "_", ch_cfg.get("channel_name", "orzz")).strip("_") or "orzz"
     workspace = f"{ch_name}_vol{vol}"
@@ -629,6 +642,12 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             "provider": provider, "generation_mode": mode, "batch": batch,
             "workspace": workspace, "video_name": folder.name,
         }
+        if div_threshold is not None:
+            body["diversity_threshold"] = div_threshold
+        if div_retry is not None:
+            body["diversity_retry"] = div_retry
+        if hist_limit is not None:
+            body["history_limit"] = hist_limit
         r = _api_post("/api/suno/start", body, "SUNO 生成開始")
         if not r:
             return False
@@ -660,6 +679,12 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
         ]
         if batch:
             cmd += ["--batch"]
+        if div_threshold is not None:
+            cmd += ["--diversity-threshold", str(div_threshold)]
+        if div_retry is not None:
+            cmd += ["--diversity-retry", str(div_retry)]
+        if hist_limit is not None:
+            cmd += ["--history-limit", str(hist_limit)]
         # 絶対 timeout: count × (interval + 60s) + 起動/最終 close 余裕 600s。
         # 子プロセスが固まっても親側で打ち切れるようにする（最終曲ハング対策）。
         suno_timeout = count * (interval + 60) + 600
@@ -784,6 +809,8 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
       APP_BGIMAGE_DISABLE=1     step 全体をスキップ
       APP_BGIMAGE_REFCOUNT=N    参照画像枚数（既定 3）
       APP_BGIMAGE_FORCE=1       既存があっても強制再生成
+      APP_BGIMAGE_TIMEOUT_SEC=N  画像生成 1 件あたりのタイムアウト秒（既定 1800）
+      APP_BGIMAGE_REFERENCE_IMAGE=/path/to/ref.jpg[:...]  固定参照画像（os.pathsep 区切り）
     """
     import random as _random
     print(f"  {STEP_LABELS.get('bgimage', '3/9 背景画像生成')}")
@@ -791,6 +818,11 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
     if os.environ.get("APP_BGIMAGE_DISABLE", "").strip() in ("1", "true", "yes"):
         print("  ⊘ APP_BGIMAGE_DISABLE=1 によりスキップ")
         return True
+
+    try:
+        bg_timeout = max(60, int(os.environ.get("APP_BGIMAGE_TIMEOUT_SEC", "1800")))
+    except ValueError:
+        bg_timeout = 1800
 
     force = os.environ.get("APP_BGIMAGE_FORCE", "").strip() in ("1", "true", "yes")
     if not force:
@@ -822,7 +854,7 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
             return False
         return _api_poll("/api/bgimage/status",
                          STEP_LABELS.get('bgimage', '3/9 背景画像生成'),
-                         timeout=900)
+                         timeout=bg_timeout + 180)
 
     cfg = _load_dashboard_config()
     persona = (cfg.get("persona") or "").strip()
@@ -838,14 +870,30 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
         pass
 
     # 参照画像ソース優先順位:
+    #   0. APP_BGIMAGE_REFERENCE_IMAGE（単発指定。最優先）
     #   1. per-channel config の reference_image_dir（UI で設定したフォルダパス。最優先）
     #   2. Picked（サムネ分析で人間が✓を入れたもの。canonical）
     #   3. rival_channels の thumbs フォルダ全体からランダム（最終フォールバック）
     ref_images: list[Path] = []
 
+    # 0. 明示参照画像（今回の「このイメージに寄せたい」用）
+    fixed_refs = (os.environ.get("APP_BGIMAGE_REFERENCE_IMAGE") or "").strip()
+    if fixed_refs:
+        for raw in fixed_refs.split(os.pathsep):
+            p = Path(raw).expanduser()
+            if p.exists() and p.is_file():
+                ref_images.append(p)
+            else:
+                print(f"  ⚠ APP_BGIMAGE_REFERENCE_IMAGE が存在しません: {p}")
+        ref_images = ref_images[:ref_count]
+        if ref_images:
+            print(f"  📎 固定参照画像 {len(ref_images)}/{ref_count} 枚")
+            for r in ref_images:
+                print(f"     - {r.name}")
+
     # 1. reference_image_dir（per-channel UI 設定）
     ref_dir_str = (cfg.get("reference_image_dir") or "").strip()
-    if ref_dir_str:
+    if not ref_images and ref_dir_str:
         ref_dir = Path(ref_dir_str).expanduser()
         if ref_dir.is_dir():
             dir_pool = (
@@ -922,11 +970,27 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
         "--quality", "high",
         "--output-format", "png",
         "--n", "1",
+        "--timeout", str(bg_timeout),
     ]
     for ref in ref_images:
         cmd += ["--reference-image", str(ref)]
 
-    ok = _run(cmd, STEP_LABELS.get('bgimage', '3/10 背景画像生成'), timeout=900)
+    if force:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        for old in (folder / f"vol{vol}.png", folder / f"vol{vol}_source.jpg"):
+            if old.exists():
+                backup = old.with_name(f"{old.stem}_rejected_{stamp}{old.suffix}")
+                try:
+                    old.rename(backup)
+                    print(f"  ↩ 既存画像を退避: {old.name} → {backup.name}")
+                except Exception as e:
+                    print(f"  ⚠ 既存画像の退避失敗: {old.name}: {e}")
+
+    ok = _run(
+        cmd,
+        STEP_LABELS.get('bgimage', '3/10 背景画像生成'),
+        timeout=bg_timeout + 120,
+    )
     if ok:
         # PNG 削除運用と両立するための source 用 JPG を並べて出す。
         # PSD 合成（step_psd_composite）の base 入力は AI 生成素材を必要とするが、
@@ -1594,12 +1658,24 @@ def _build_thumbnail_prompt(folder: Path) -> str:
 # 背景画像用の禁止語（旧固定テンプレ L900-901 を逐語温存。avoid 先頭に二重注入する）
 _BGIMAGE_AVOID = (
     "on-screen text, logos, readable signage, human faces, pottery, vases, urns, "
-    "planters, still life objects, decorative ornaments"
+    "planters, still life objects, decorative ornaments, desks, tables, laptops, "
+    "keyboards, phones, earbuds, headphones, cups, glasses, mugs, books, notebooks, "
+    "pens, indoor rooms, window-side workspaces"
+)
+_BGIMAGE_SCENE = (
+    "A pale, airy elevated waterfront promenade scene: a curving pedestrian bridge or riverside path "
+    "seen from a slightly high angle, muted teal water beside it, soft greenery around the edges, "
+    "tiny distant people may appear only as scale cues with no readable faces. "
+    "The feeling is a quiet sunny holiday walk, clean Japanese/Korean lifestyle snapshot, "
+    "with large open space reserved for later text design."
 )
 # 背景画像用ディレクティブ（ループ背景・テキスト無し・被写体控えめ・参照は色/光/雰囲気のみ）
 _BGIMAGE_DIRECTIVE = (
+    "Primary scene: an elevated waterside walkway, pedestrian bridge, riverside path, or quiet waterfront park; "
+    "not a generic beach panorama and not an indoor desk scene. "
     "Style: atmospheric, calm, suitable for looping as the background of a multi-hour BGM video. "
-    "Composition: spacious, ample negative space, subject understated, no readable signage. "
+    "Composition: spacious, diagonal or curved leading lines, ample negative space, no close-up objects, "
+    "no tabletop still life, no readable signage. "
     "Use any reference images only for color palette, lighting and mood; "
     "keep the composition original and do not copy any element verbatim."
 )
@@ -1694,12 +1770,21 @@ def _build_bgimage_prompt(folder: Path) -> str:
     persona = (cfg.get("persona") or "").strip()
     if not parts and persona:
         parts.append(persona[:200])
-    body = ". ".join(parts) if parts else "cinematic atmospheric scene for a BGM YouTube channel"
+    context = ". ".join(parts) if parts else "cinematic atmospheric scene for a BGM YouTube channel"
     # 背景固有ディレクティブを body 末尾に連結（ループ背景・テキスト無し・コピー禁止）
-    body = f"{body}. {_BGIMAGE_DIRECTIVE}"
+    body = f"{_BGIMAGE_SCENE} Channel mood context, do not depict literally: {context}. {_BGIMAGE_DIRECTIVE}"
     try:
         from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
         visual = normalize_visual_direction(analysis, thumbnail_axis)
+        visual["background_context"] = (
+            "elevated waterfront promenade, curving pedestrian bridge, riverside path, muted teal water, "
+            "soft greenery, pale sunny holiday atmosphere, large negative space; "
+            "no interior, no desk, no tabletop, no close-up lifestyle objects"
+        )
+        visual["camera_composition"] = (
+            "16:9 wide landscape shot from a slightly high angle, diagonal or curved leading lines, "
+            "tiny distant people allowed as scale only, spacious composition, no tabletop foreground"
+        )
         # 背景禁止語を avoid の先頭に二重注入（_clean_text の 220 字切りで消えないよう先頭固定）
         existing_avoid = (visual.get("avoid") or "").strip()
         visual["avoid"] = (_BGIMAGE_AVOID + ("; " + existing_avoid if existing_avoid else ""))

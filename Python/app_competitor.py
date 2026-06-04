@@ -26,15 +26,21 @@ from pathlib import Path
 # 設定ディレクトリ（v2 配布化対応・共通モジュール経由）
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from _app_config import resolve_config_dir as _resolve_config_dir
+    from _app_config import (
+        resolve_config_dir as _resolve_config_dir,
+        resolve_shared_config_dir as _resolve_shared_config_dir,
+    )
     CONFIG_DIR = _resolve_config_dir()
+    SHARED_CONFIG_DIR = _resolve_shared_config_dir()
 except Exception:
     CONFIG_DIR = Path.home() / ".config" / "orzz"
+    SHARED_CONFIG_DIR = CONFIG_DIR
 CLIENT_SECRET = CONFIG_DIR / "youtube_client_secret.json"
 TOKEN_FILE = CONFIG_DIR / "youtube_token.json"
-CACHE_FILE = CONFIG_DIR / "competitor_analysis_cache.json"
+# ベンチマーク先の分析データ/プロファイル/設定は PC 間共有（共有ドライブ側）
+CACHE_FILE = SHARED_CONFIG_DIR / "competitor_analysis_cache.json"
 CACHE_FILENAME = "competitor_analysis_cache.json"
-BENCHMARK_CONFIG_FILE = CONFIG_DIR / "benchmark_config.json"
+BENCHMARK_CONFIG_FILE = SHARED_CONFIG_DIR / "benchmark_config.json"
 _CHANNEL_CONFIG_FILENAME = ".app_channel_config.json"
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
@@ -1233,7 +1239,7 @@ if __name__ == "__main__":
 
 # ─── ベンチマーク完成パイプライン（API key ベース・全自動） ──────────
 
-BENCHMARK_PROFILES_FILE = CONFIG_DIR / "benchmark_profiles.json"
+BENCHMARK_PROFILES_FILE = SHARED_CONFIG_DIR / "benchmark_profiles.json"
 
 
 def _get_dashboard_cfg() -> dict:
