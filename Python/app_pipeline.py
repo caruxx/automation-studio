@@ -741,9 +741,59 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
         return True
 
 
+def _tag_args_from_channel(vol: int, folder: Path):
+    """channel config の suno.tag_defaults から整備(タグ付与)用の引数を組む。
+
+    tag_defaults が無いチャンネルは ([], {}) を返す＝整備しない従来挙動を維持。
+    戻り値: (cli_extra_args, api_query) のタプル。
+      cli_extra_args: app_process_tracks.py に渡す ['--apply-tags', '--artist', ...]
+      api_query: /api/videos/{name}/process-tracks のクエリ dict
+    """
+    td = (_load_channel_suno_config().get("tag_defaults") or {})
+    if not td:
+        return [], {}
+    artist = str(td.get("artist") or "SUKIMA")
+    genre_default = str(td.get("genre_default") or "Bossa Nova")
+    album = None
+    tmpl = td.get("album_template")
+    if tmpl:
+        album = str(tmpl).replace("{N}", str(vol))
+    cli_extra = ["--apply-tags", "--artist", artist, "--genre", genre_default]
+    # genre_by_kind は dict なので CLI 経路のみ --genre-map(JSON) で渡す。
+    # API 経路は app.py 側が channel config から同じ値を補完するため query には載せない。
+    gbk = td.get("genre_by_kind")
+    if isinstance(gbk, dict) and gbk:
+        cli_extra += ["--genre-map", json.dumps(gbk, ensure_ascii=False)]
+    query = {"apply_tags": "true", "artist": artist, "genre": genre_default}
+    if album:
+        cli_extra += ["--album", album]
+        query["album"] = album
+    # keep_names: 整備時にタイトル再生成（サムネ/ペルソナ由来）をスキップし draft 正式名を維持。
+    #   - channel config の `rename_keep_names` で明示制御。
+    #   - 未設定なら genre_by_kind ありのチャンネル（=draft 駆動でタイトル/genre を持つ）を既定 True に。
+    #     draft 由来の正式名を尊重しないと曲別 genre とタイトルが乖離するため。
+    #   今日の手動フロー（/tmp/sukima_tag.py + --keep-names）と同じ挙動を pipeline に載せる。
+    keep_names_cfg = _load_dashboard_config().get("rename_keep_names")
+    if keep_names_cfg is None:
+        keep_names = isinstance(gbk, dict) and bool(gbk)
+    else:
+        keep_names = bool(keep_names_cfg)
+    if keep_names:
+        cli_extra.append("--keep-names")
+        query["keep_names"] = "true"
+    return cli_extra, query
+
+
 def step_rename(vol: int, folder: Path, via_api: bool, **kw):
+    tag_cli, tag_query = _tag_args_from_channel(vol, folder)
     if via_api:
-        r = _api_post(f"/api/videos/{folder.name}/process-tracks", {}, "後処理開始")
+        if tag_query:
+            from urllib.parse import quote
+            qs = "&".join(f"{k}={quote(str(v))}" for k, v in tag_query.items())
+            path = f"/api/videos/{folder.name}/process-tracks?{qs}"
+        else:
+            path = f"/api/videos/{folder.name}/process-tracks"
+        r = _api_post(path, {}, "後処理開始")
         if not r:
             return False
         return _api_poll("/api/process/status", "後処理")
@@ -751,7 +801,7 @@ def step_rename(vol: int, folder: Path, via_api: bool, **kw):
         cli = _load_suno_config().get("claude_cli", "claude")
         return _run([
             sys.executable, str(BASE / "app_process_tracks.py"),
-            str(folder), "--cli", cli,
+            str(folder), "--cli", cli, *tag_cli,
         ], STEP_LABELS["rename"], timeout=1800)
 
 
@@ -1115,6 +1165,10 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
     # （例: Harbor Notes hn_base.psd の "PLAY LIST " は末尾スペース必須）
     base_layer = cfg.get("psd_base_layer") or "base"
     toggle_layer = cfg.get("psd_toggle_layer") or "PLAY LIST"
+    # toggle 層を「背景=ON / サムネ=OFF で切替」ではなく「両出力で常時表示」にするか。
+    # competitor 踏襲: headline（例 SUKIMA "Playlist"）は背景/サムネ両方で出すのが正しい。
+    # 未設定/False なら従来の英語専用 toggle 挙動（orzz/Harbor Notes）と完全に同一。
+    toggle_always_visible = bool(cfg.get("psd_toggle_always_visible"))
     psd_text_layer = cfg.get("psd_text_layer") or ""
     psd_text_font = cfg.get("psd_text_font") or ""  # PostScript 名（例: "HelveticaNeue-UltraLight"）。空ならコード側でフォント指定しない
 
@@ -1152,6 +1206,43 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             else:
                 print("  ⚠ scene_en 生成失敗。空文字で続行（テキスト層は変更されません）")
 
+    # 日本語前向きキャッチコピー生成（LLM）— scene_ja.txt にキャッシュ。
+    # competitor 風サムネ（「Playlist.（英）大 + 日本語コピー1行 + 英語サブ小」）の
+    # 日本語コピー部分を担当。英語専用挙動とは scene_text_ja_enabled で完全分離する。
+    # scene_text_ja_enabled が未設定/false なら一切走らない（既存挙動と完全に同一）。
+    scene_ja_enabled = bool(cfg.get("scene_text_ja_enabled"))
+    scene_ja_text = ""
+    scene_ja_layer = (cfg.get("scene_text_ja_layer") or "").strip()
+    scene_ja_font = (cfg.get("scene_text_ja_font") or "").strip()
+    if scene_ja_enabled:
+        if not scene_ja_layer:
+            print("  ⚠ scene_text_ja_enabled=true だが scene_text_ja_layer 未設定 → 日本語コピーをスキップ（英語のみで続行）")
+        else:
+            scene_ja_file = folder / "scene_ja.txt"
+            if scene_ja_file.exists() and not force:
+                try:
+                    scene_ja_text = scene_ja_file.read_text(encoding="utf-8").strip()
+                except Exception:
+                    scene_ja_text = ""
+            if not scene_ja_text:
+                persona = (cfg.get("persona") or "").strip()
+                cli = _load_suno_config().get("claude_cli", "claude")
+                scene_ja_text = _generate_scene_copy_ja(
+                    cli=cli, persona=persona, folder_name=folder.name, vol=vol,
+                    tone=(cfg.get("scene_text_ja_tone") or ""),
+                    examples=cfg.get("scene_text_ja_examples") or [],
+                    forbidden=cfg.get("scene_text_ja_forbidden") or [],
+                    structure=(cfg.get("scene_text_ja_structure") or ""),
+                )
+                if scene_ja_text:
+                    try:
+                        scene_ja_file.write_text(scene_ja_text + "\n", encoding="utf-8")
+                        print(f"  💬 scene_ja: {scene_ja_text!r}（{scene_ja_file.name} に保存・layer={scene_ja_layer!r}）")
+                    except Exception as e:
+                        print(f"  ⚠ scene_ja.txt 書き込み失敗: {e}（続行）")
+                else:
+                    print("  ⚠ scene_ja 生成失敗。空文字で続行（日本語テキスト層は変更されません）")
+
     # 書き出し解像度 — PSD キャンバスが 1280×720 等でも YouTube/Premiere 用に 1920×1080 へ
     # アップサンプル（BICUBICSMOOTHER）。per-channel で psd_export_width/height を指定可能。
     try:
@@ -1171,6 +1262,13 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             extra["scene_text_layer"] = psd_text_layer
         if psd_text_font:
             extra["scene_text_font"] = psd_text_font
+        # 日本語コピー（competitor 風）— enabled かつ layer/text が揃ったときだけ渡す。
+        # 渡さなければ render_dual_thumbnail の挙動は従来の英語専用と完全に同一。
+        if scene_ja_enabled and scene_ja_layer and scene_ja_text:
+            extra["scene_text_ja"] = scene_ja_text
+            extra["scene_text_ja_layer"] = scene_ja_layer
+            if scene_ja_font:
+                extra["scene_text_ja_font"] = scene_ja_font
         result = render_dual_thumbnail(
             psd_path=str(psd_path),
             base_image=str(base_image),
@@ -1179,6 +1277,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             vol_name=f"vol{vol}",
             base_layer=base_layer,
             playlist_layer=toggle_layer,
+            toggle_always_visible=toggle_always_visible,
             target_width=target_width,
             target_height=target_height,
             save_psd=True,
@@ -1229,6 +1328,56 @@ def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: in
         out = run_llm(prompt, cli_cmd=cli, timeout=120, label="thumb-phrase")
         for line in out.splitlines():
             line = line.strip().strip('"').strip("'").rstrip(".,!?")
+            if line:
+                return line
+        return ""
+    except Exception:
+        return ""
+
+
+def _generate_scene_copy_ja(*, cli: str, persona: str, folder_name: str, vol: int,
+                            tone: str = "", examples=None, forbidden=None,
+                            structure: str = "") -> str:
+    """LLM に persona / フォルダ名 / vol + チャンネル別文字設定を渡して日本語コピーを 1 件生成。
+
+    competitor 風サムネ（「Playlist.（英）大 + 日本語コピー1行 + 英語サブ小」）の
+    日本語キャッチコピー部分（例「軽やかに、一日が動き出す。」）を生成する。
+    英語シーンコピー（_generate_scene_copy_en）とは完全に独立。
+    トーン・例・禁止語・構文は **チャンネル設定（scene_text_ja_*）から渡す**設計。
+
+    生成方針:
+      - 前向き・cozy・カフェの朝（chanel persona 準拠）。読点込みで全角 2 行以内。
+      - 句点「。」で終える 1 文（competitor 例「静かに没頭する時間に。」に倣う）。
+
+    Returns: 日本語 1 文（句点込み）。失敗時は空文字。
+    """
+    examples = examples or []
+    forbidden = forbidden or []
+    tone_line = (tone or "").strip() or "チャンネルの世界観に合う、前向きで心地よいトーン"
+    structure_line = (structure or "").strip() or "句点「。」で終える、自然な日本語 1 文（読点はあってよい）"
+    examples_block = ("  - 文体の参考（レジスターを合わせる。そのままコピーしない）: " + " / ".join(examples) + "\n") if examples else ""
+    forbidden_block = ("  - 使用禁止の語（出力に含めない）: " + "、".join(forbidden) + "\n") if forbidden else ""
+    prompt = (
+        "あなたは長尺 BGM YouTube サムネイル用の、日本語の短いキャッチコピーを 1 件だけ作ります。\n"
+        f"チャンネルのペルソナ: {persona or '（未設定）'}\n"
+        f"動画フォルダ/名称: {folder_name}（vol.{vol}）\n"
+        "ルール:\n"
+        "  - 出力は日本語のコピー 1 件のみ。説明・前置き・番号・引用符・絵文字は一切付けない。\n"
+        f"  - 構文: {structure_line}。\n"
+        f"  - トーン: {tone_line}。\n"
+        "  - 全角で 2 行以内（おおむね 9〜16 文字程度の 1 文。長くしすぎない）。\n"
+        "  - 前向き・cozy・カフェの朝のような心地よさ。ノスタルジー/悲しさ/夜/孤独は避ける。\n"
+        f"{examples_block}{forbidden_block}"
+        "  - 句点「。」で終える 1 文にする（例の文体に倣う）。\n"
+        "コピー本文だけを出力してください。"
+    )
+    try:
+        from app_llm_runner import run_llm
+        # 日本語生成は Claude が timeout しやすい（タスク注記）。run_llm の Claude→Codex
+        # フォールバックに加え、余裕を持った timeout を取る。
+        out = run_llm(prompt, cli_cmd=cli, timeout=180, label="thumb-phrase-ja")
+        for line in out.splitlines():
+            line = line.strip().strip('"').strip("'").strip("「」『』")
             if line:
                 return line
         return ""
@@ -1655,29 +1804,38 @@ def _build_thumbnail_prompt(folder: Path) -> str:
         )
 
 
-# 背景画像用の禁止語（旧固定テンプレ L900-901 を逐語温存。avoid 先頭に二重注入する）
+# 背景画像用の禁止語（cozy tune＝カフェの朝。テキスト/ロゴ/人の顔と雑多なゴチャつきは禁止だが、
+# カフェ什器〔木製テーブル・コーヒー・観葉植物・窓〕は cozy tune の主役なので禁止しない）
 _BGIMAGE_AVOID = (
-    "on-screen text, logos, readable signage, human faces, pottery, vases, urns, "
-    "planters, still life objects, decorative ornaments, desks, tables, laptops, "
-    "keyboards, phones, earbuds, headphones, cups, glasses, mugs, books, notebooks, "
-    "pens, indoor rooms, window-side workspaces"
+    "on-screen text, text overlay, captions, subtitles, japanese text, hangul, "
+    "korean text, chinese text, lettering, typography, readable text, words, "
+    "watermark, signage, logos, readable signage, brand names, human faces, "
+    "cluttered still life, decorative ornaments, vases, urns, "
+    "dark moody interiors, neon, nightclub lighting, lofi anime illustration style, "
+    "dusty grain, heavy vignette, oversaturated pop colors, busy crowds"
 )
 _BGIMAGE_SCENE = (
-    "A pale, airy elevated waterfront promenade scene: a curving pedestrian bridge or riverside path "
-    "seen from a slightly high angle, muted teal water beside it, soft greenery around the edges, "
-    "tiny distant people may appear only as scale cues with no readable faces. "
-    "The feeling is a quiet sunny holiday walk, clean Japanese/Korean lifestyle snapshot, "
-    "with large open space reserved for later text design."
+    "A bright, airy cozy cafe-morning scene: a clean, modern Japanese/Korean style cafe interior "
+    "(or a sunlit window-side nook) with natural wood furniture, lush green houseplants and a touch of "
+    "fresh citrus greenery, a cup of coffee with gentle steam, soft daylight pouring through large windows. "
+    "If any people appear they are only distant, blurred and faceless. "
+    "The feeling is a calm, refined morning of relaxed me-time with a stylish boss-nova / cafe-R&B "
+    "playlist mood — clean lifestyle snapshot with large open space reserved for later text design."
 )
 # 背景画像用ディレクティブ（ループ背景・テキスト無し・被写体控えめ・参照は色/光/雰囲気のみ）
 _BGIMAGE_DIRECTIVE = (
-    "Primary scene: an elevated waterside walkway, pedestrian bridge, riverside path, or quiet waterfront park; "
-    "not a generic beach panorama and not an indoor desk scene. "
-    "Style: atmospheric, calm, suitable for looping as the background of a multi-hour BGM video. "
-    "Composition: spacious, diagonal or curved leading lines, ample negative space, no close-up objects, "
-    "no tabletop still life, no readable signage. "
-    "Use any reference images only for color palette, lighting and mood; "
-    "keep the composition original and do not copy any element verbatim."
+    "Primary scene: a cozy, light-filled cafe morning — natural-wood tabletop or window-side nook, "
+    "green plants, a coffee cup, bright clean daylight; not a dark lofi room, not a waterfront, not a beach. "
+    "Style: warm, natural, bright and clean, atmospheric and calm, suitable for looping as the background "
+    "of a multi-hour cafe-BGM video. "
+    "Composition: spacious, soft natural side/front light, shallow depth on foreground details, "
+    "ample negative space, no readable signage, no busy clutter. "
+    "Absolutely NO on-screen text, NO captions, NO subtitles, NO Japanese/Korean/Chinese "
+    "characters, NO lettering, NO typography, NO logos, NO watermark anywhere in the image "
+    "(text is added later in a separate step; the AI image must contain zero readable text). "
+    "Reference images: IGNORE all text, captions, letters, words and logos in them; "
+    "use ONLY their color palette, lighting, mood and composition. "
+    "Keep the composition original and do not copy any element verbatim and do not reproduce any text."
 )
 
 
@@ -1689,10 +1847,14 @@ def _legacy_bgimage_prompt(persona: str, channel_name: str) -> str:
         f"{' on the channel ' + channel_name if channel_name else ''}. "
         f"Channel concept: {persona} "
         f"Style: atmospheric, calm, suitable for looping as the background of a multi-hour music video. "
-        f"Composition: spacious, no on-screen text, no logos, no readable signage, no human faces, "
+        f"Composition: spacious, no on-screen text, no text overlay, no captions, no subtitles, "
+        f"no Japanese/Korean/Chinese characters, no lettering, no typography, no readable text, "
+        f"no logos, no watermark, no readable signage, no human faces, "
         f"no pottery, no vases, no urns, no planters, no still life objects, no decorative ornaments. "
-        f"If reference images are provided, combine their color palette, lighting and overall mood "
-        f"while making the composition original — do not copy any element verbatim."
+        f"The AI image must contain zero readable text (text is added later in a separate step). "
+        f"If reference images are provided, IGNORE all text, captions, letters and logos in them and "
+        f"combine ONLY their color palette, lighting and overall mood "
+        f"while making the composition original — do not copy any element verbatim and do not reproduce any text."
     )
 
 
@@ -1777,13 +1939,14 @@ def _build_bgimage_prompt(folder: Path) -> str:
         from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
         visual = normalize_visual_direction(analysis, thumbnail_axis)
         visual["background_context"] = (
-            "elevated waterfront promenade, curving pedestrian bridge, riverside path, muted teal water, "
-            "soft greenery, pale sunny holiday atmosphere, large negative space; "
-            "no interior, no desk, no tabletop, no close-up lifestyle objects"
+            "cozy bright cafe morning interior or sunlit window-side nook, natural wood furniture, "
+            "green houseplants and fresh citrus greenery, a coffee cup with soft steam, "
+            "clean daylight through large windows, warm natural lifestyle atmosphere, large negative space; "
+            "no waterfront, no riverside, no beach, no dark lofi room"
         )
         visual["camera_composition"] = (
-            "16:9 wide landscape shot from a slightly high angle, diagonal or curved leading lines, "
-            "tiny distant people allowed as scale only, spacious composition, no tabletop foreground"
+            "16:9 wide landscape shot, eye-level or slightly elevated, soft natural side/front light, "
+            "shallow depth of field on foreground cafe details, spacious airy composition with ample negative space"
         )
         # 背景禁止語を avoid の先頭に二重注入（_clean_text の 220 字切りで消えないよう先頭固定）
         existing_avoid = (visual.get("avoid") or "").strip()
@@ -1803,18 +1966,17 @@ def _build_bgimage_prompt(folder: Path) -> str:
 
 
 def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
-    """サムネ自動生成（P2-5）。Flow / Codex（任意で両方並列）でプロンプト生成。
+    """サムネ自動生成（P2-5）。Codex（gpt-image）でプロンプト生成。
 
     出力先:
-      <vol_folder>/thumbnail_candidates/{flow,codex}_*.png
+      <vol_folder>/thumbnail_candidates/codex_*.png
       → 先頭 1 枚を <vol_folder>/thumbnail.png に昇格
 
     既存の thumbnail.png（手動配置 or vol*.jpg）があればスキップ。
 
-    プロバイダ選択:
-      env APP_THUMBNAIL_PROVIDERS=flow         → Flow のみ（既定）
-      env APP_THUMBNAIL_PROVIDERS=codex        → Codex のみ
-      env APP_THUMBNAIL_PROVIDERS=flow,codex   → 両方並列実行
+    プロバイダ選択（自動サムネ生成は codex 一本化。Flow は削除済み）:
+      env APP_THUMBNAIL_PROVIDERS=codex        → Codex のみ（既定）
+      env APP_THUMBNAIL_PROVIDERS=flow         → 警告のうえ codex にフォールバック
       env APP_THUMBNAIL_DISABLE=1              → step 全体スキップ
 
     失敗は upload を止めない（最終的な thumbnail.png が無くても upload は続行可能）。"""
@@ -1831,11 +1993,19 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
         print(f"  ⏭ 既存サムネあり → スキップ ({final_path if final_path.exists() else next(folder.glob('vol*.jpg'), None) or folder/'サムネイル.jpg'})")
         return True
 
-    providers_raw = (os.environ.get("APP_THUMBNAIL_PROVIDERS") or "flow").lower()
-    providers = [p.strip() for p in providers_raw.split(",") if p.strip() in ("flow", "codex")]
+    providers_raw = (os.environ.get("APP_THUMBNAIL_PROVIDERS") or "codex").lower()
+    raw_list = [p.strip() for p in providers_raw.split(",") if p.strip()]
+    if "flow" in raw_list:
+        print("  ⚠ Flow は削除済み → codex で生成します")
+    # Flow は除外。残るは codex のみ（自動サムネ生成は codex 一本化）
+    providers = [p for p in raw_list if p == "codex"]
     if not providers:
-        print(f"  ⚠ APP_THUMBNAIL_PROVIDERS={providers_raw!r} が無効 → step スキップ")
-        return True
+        # raw に flow しか無かった場合は codex にフォールバック、完全に空なら従来どおりスキップ
+        if "flow" in raw_list:
+            providers = ["codex"]
+        else:
+            print(f"  ⚠ APP_THUMBNAIL_PROVIDERS={providers_raw!r} が無効 → step スキップ")
+            return True
 
     prompt = _build_thumbnail_prompt(folder)
     print(f"  📝 prompt: {prompt[:180]}{'…' if len(prompt) > 180 else ''}")
@@ -1843,39 +2013,7 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     procs: list = []
-    # Flow（持続セッション必要・並列で 1 件のみ）
-    if "flow" in providers:
-        flow_cmd = [
-            sys.executable, "-u", str(BASE / "flow_automation.py"),
-            "--prompt", prompt,
-            "--aspect", "16:9",
-            "--count", "x4",
-            "--model", "Nano Banana 2",
-            "--resolution", "2K",
-            "--project-name", f"thumb_vol{vol}",
-            "--output-dir", str(out_dir),
-            "--no-wait",
-        ]
-        # picked サムネを参照画像として使う（あれば）
-        try:
-            import app_benchmark_thumbnail as _bt
-            picked_paths = _bt.get_picked_paths(limit=1)
-            if picked_paths:
-                flow_cmd += ["--reference-image", picked_paths[0]]
-                print(f"  📎 reference: {Path(picked_paths[0]).name}")
-        except Exception as e:
-            print(f"  ⚠ picked 参照失敗: {e}")
-        if os.environ.get("APP_NO_INTERACTIVE", "").strip() in ("1", "true", "yes"):
-            flow_cmd.append("--headless")
-        try:
-            p = subprocess.Popen(flow_cmd, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
-            procs.append(("flow", p))
-            print(f"  🚀 flow_automation.py を起動 (pid={p.pid})")
-        except Exception as e:
-            print(f"  ❌ Flow 起動失敗: {e}")
-
-    # Codex（API 並列・OK）
+    # Codex（API 並列・OK）— 自動サムネ生成は codex 一本化（Flow は削除済み）
     if "codex" in providers:
         codex_max_parallel = os.environ.get("APP_THUMBNAIL_CODEX_MAX_PARALLEL", "1")
         codex_cmd = [
@@ -1903,7 +2041,7 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
         except Exception as e:
             print(f"  ❌ Codex 起動失敗: {e}")
 
-    # 両方の終了を待つ（タイムアウト 600s）
+    # 起動した生成プロセスの終了を待つ（タイムアウト 600s）
     results = {}
     for name, p in procs:
         try:
@@ -1916,7 +2054,7 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
             results[name] = (-1, "timeout")
             print(f"  ⏰ {name}: timeout 600s")
 
-    # 候補を thumbnail.png に昇格（先頭 1 枚を選ぶ。優先: codex > flow の順）
+    # 候補を thumbnail.png に昇格（先頭 1 枚を選ぶ。codex 生成物のみ）
     candidates = []
     for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
         candidates.extend(out_dir.glob(ext))
@@ -1924,13 +2062,8 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
         print(f"  ⚠ サムネ候補が生成されませんでした（results={results}）")
         # upload を止めない
         return True
-    # 優先順: codex_ で始まる → flow → その他
-    def _rank(p: Path):
-        n = p.name.lower()
-        if n.startswith("codex"): return 0
-        if n.startswith("flow"): return 1
-        return 2
-    candidates.sort(key=lambda p: (_rank(p), p.stat().st_mtime))
+    # codex 一本化のため優先順位は不要。最も古い生成物を先頭に（mtime 昇順）
+    candidates.sort(key=lambda p: p.stat().st_mtime)
     chosen = candidates[0]
     try:
         import shutil as _sh

@@ -1731,6 +1731,109 @@ class SunoRunRequest(BaseModel):
     diversity_threshold: Optional[float] = None
     diversity_retry: Optional[int] = None
     history_limit: Optional[int] = None
+    # 合意済みドラフト投入経路: ここに [{title,styles,lyrics,mode}, ...] を渡すと
+    # LLM 再生成をスキップし、そのまま SUNO に投入する（--songs-file 起動）。
+    songs_draft_json: Optional[List[dict]] = None
+
+
+# ─── 設定→suno_auto_create.generate_content_batch 用 settings 組み立て ───
+def _build_suno_batch_settings(prompt: str, generation_mode: Optional[str],
+                               provider: Optional[str], video_name: Optional[str],
+                               workspace: Optional[str],
+                               diversity_threshold: Optional[float],
+                               diversity_retry: Optional[int],
+                               history_limit: Optional[int]) -> dict:
+    """ドラフト一括生成（generate_content_batch）に渡す settings を、
+    既存 suno 設定（get_suno_config / .app_channel_config.json）に倣って組み立てる。
+    機密キー（api_key / claude_cli / codex_cli）はグローバル設定から引き継ぐ。
+    """
+    sc = get_suno_config()
+    settings = {
+        "provider": (provider or sc.get("provider") or "claude").strip(),
+        "model": sc.get("model") or "",
+        "api_key": sc.get("api_key") or "",
+        "claude_cli": sc.get("claude_cli") or "claude",
+        "codex_cli": sc.get("codex_cli") or "codex",
+        "generation_mode": (generation_mode or sc.get("generation_mode") or "styles_title_only"),
+        "prompt": prompt,
+    }
+    # 多様性パラメータ（明示があれば採用、なければチャンネル設定→suno_auto_create 既定）
+    settings["diversity_threshold"] = (
+        diversity_threshold if diversity_threshold is not None else sc.get("diversity_threshold")
+    )
+    settings["diversity_retry"] = (
+        diversity_retry if diversity_retry is not None else sc.get("diversity_retry")
+    )
+    settings["history_limit"] = (
+        history_limit if history_limit is not None else sc.get("history_limit")
+    )
+    # 履歴キー解決のヒント（workspace / video_name → channels.json と照合）
+    if workspace:
+        settings["workspace"] = workspace
+    if video_name:
+        settings["video_name"] = video_name
+    return settings
+
+
+class SunoDraftRequest(BaseModel):
+    prompt: Optional[str] = None
+    count: Optional[int] = None
+    generation_mode: Optional[str] = None
+    provider: Optional[str] = None
+    video_name: Optional[str] = None
+    workspace: Optional[str] = None
+    diversity_threshold: Optional[float] = None
+    diversity_retry: Optional[int] = None
+    history_limit: Optional[int] = None
+
+
+@app.post("/api/suno/generate-drafts")
+async def api_suno_generate_drafts(req: SunoDraftRequest):
+    """SUNO を起動せず LLM だけで N 曲分のドラフト（title/styles/lyrics/mode）を返す。
+    人間が WEB で確認・編集 → /api/suno/start に songs_draft_json で投入する前段。
+    """
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(400, "prompt が空です。ドラフト生成前にプロンプト本文を明示してください。")
+    if len(prompt) < 10:
+        raise HTTPException(400, f"prompt が短すぎます（{len(prompt)} chars）。フルテキストを送信してください。")
+    count = max(1, min(int(req.count or 5), 50))
+
+    settings = _build_suno_batch_settings(
+        prompt=prompt,
+        generation_mode=req.generation_mode,
+        provider=req.provider,
+        video_name=req.video_name,
+        workspace=req.workspace,
+        diversity_threshold=req.diversity_threshold,
+        diversity_retry=req.diversity_retry,
+        history_limit=req.history_limit,
+    )
+    # batch 生成は Claude/Codex CLI provider のみ対応（generate_content_batch の制約）
+    if settings["provider"] not in ("claude", "codex"):
+        raise HTTPException(
+            400,
+            f"ドラフト一括生成は Claude / Codex CLI のみ対応です（指定: {settings['provider']}）。"
+            "プロバイダーを Claude または Codex に切り替えてください。",
+        )
+
+    def _run():
+        sys.path.insert(0, str(SUNO_SCRIPT.parent))
+        import suno_auto_create as _suno
+        return _suno.generate_content_batch(settings, count)
+
+    try:
+        songs = await asyncio.to_thread(_run)
+    except Exception as e:
+        raise HTTPException(500, f"ドラフト生成に失敗しました: {e}")
+    return {
+        "status": "ok",
+        "count": len(songs),
+        "generation_mode": settings["generation_mode"],
+        "provider": settings["provider"],
+        "songs": songs,
+    }
+
 
 @app.post("/api/suno/start")
 async def api_suno_start(req: SunoRunRequest):
@@ -1754,7 +1857,36 @@ async def api_suno_start(req: SunoRunRequest):
         )
     cmd = [sys.executable, "-u", str(SUNO_SCRIPT)]  # -u: unbuffered
     cmd += ["--prompt", prompt]
-    if req.count: cmd += ["--count", str(req.count)]
+    # ─── 合意済みドラフト投入経路（--songs-file）───
+    # songs_draft_json があれば LLM 再生成をスキップし、確認済みドラフトをそのまま投入。
+    # 一時 JSON に書き出して suno_auto_create.py を --songs-file で起動する。
+    songs_file_path = None
+    if req.songs_draft_json:
+        if not isinstance(req.songs_draft_json, list) or not req.songs_draft_json:
+            raise HTTPException(400, "songs_draft_json が空です。投入するドラフトを配列で渡してください。")
+        # title / styles のどちらか欠けた行は不正。lyrics は instrumental 系で空でも可。
+        cleaned = []
+        for i, s in enumerate(req.songs_draft_json):
+            if not isinstance(s, dict):
+                raise HTTPException(400, f"songs_draft_json[{i}] が dict ではありません。")
+            title = str(s.get("title", "")).strip()
+            styles = str(s.get("styles", "")).strip()
+            if not title and not styles:
+                raise HTTPException(400, f"songs_draft_json[{i}] は title / styles の両方が空です。")
+            cleaned.append({
+                "title": title,
+                "styles": styles,
+                "lyrics": str(s.get("lyrics", "")).strip(),
+                "mode": str(s.get("mode", "") or (req.generation_mode or "")).strip(),
+            })
+        import tempfile as _tempfile
+        fd, songs_file_path = _tempfile.mkstemp(prefix="suno_draft_", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cleaned, f, ensure_ascii=False, indent=2)
+        cmd += ["--songs-file", songs_file_path]
+        # --songs-file は loop_count を配列長から決めるので --count は渡さない
+    elif req.count:
+        cmd += ["--count", str(req.count)]
     if req.interval: cmd += ["--interval", str(req.interval)]
     if req.provider: cmd += ["--provider", req.provider]
     if req.model: cmd += ["--model", req.model]
@@ -1771,7 +1903,8 @@ async def api_suno_start(req: SunoRunRequest):
         workspace = f"{channel_slug}_vol{vol}" if vol else channel_slug
     if workspace:
         cmd += ["--workspace", workspace]
-    if req.batch:
+    # 合意済みドラフト投入時は LLM 生成自体を行わないので --batch は無意味（付けない）
+    if req.batch and not songs_file_path:
         cmd += ["--batch"]
     if req.generation_mode:
         cmd += ["--mode", req.generation_mode]
@@ -1791,15 +1924,20 @@ async def api_suno_start(req: SunoRunRequest):
         prompt,
         "─" * 60,
     ]
+    if songs_file_path:
+        task_logs["suno"].insert(
+            1, f"🎯 合意済みドラフト {len(req.songs_draft_json)} 曲を投入（--songs-file、LLM生成スキップ）"
+        )
     import datetime as _dt
     task_meta["suno"] = {
         "started_at": _dt.datetime.now().isoformat(),
         "workspace": workspace or "",
-        "count": req.count,
+        "count": len(req.songs_draft_json) if songs_file_path else req.count,
         "interval": req.interval,
         "video_name": req.video_name or "",
         "prompt": prompt,  # 採用 prompt を meta に保存（後追い監査用）
         "prompt_length": len(prompt),
+        "songs_file": songs_file_path or "",  # ドラフト投入時のみ
     }
     # Cloudflare Bot 判定対策: 既定で APP_KEEP_BROWSER=1 を立てる（vol.7 で実証、vol.6 で再発）
     # 明示的に "0" が立っていればユーザー意図を尊重して上書きしない
@@ -3463,10 +3601,22 @@ def api_video_track_delete(video_name: str, rel_path: str):
 PROCESS_TRACKS_SCRIPT = SHARED_BASE / "Python" / "app_process_tracks.py"
 
 @app.post("/api/videos/{video_name}/process-tracks")
-async def api_video_process_tracks(video_name: str, rename_only: bool = False):
+async def api_video_process_tracks(video_name: str, rename_only: bool = False,
+                                   apply_tags: bool = False,
+                                   keep_names: bool = False,
+                                   genre: Optional[str] = None,
+                                   album: Optional[str] = None,
+                                   artist: Optional[str] = None):
     """Claude CLI でタイトル提案 + ffmpeg で無音トリム+フェードアウト+ゲイン正規化 → music/ に出力
 
-    Query param `rename_only=true` でリネームのみ（ffmpeg スキップ）
+    Query param:
+      - `rename_only=true` でリネームのみ（ffmpeg スキップ）
+      - `apply_tags=true` で後処理後に公開前整備（透かし除去+ID3タグ+ファイル名正規化）。
+        既定 false=従来挙動（整備しない）。
+      - `keep_names=true` でタイトル再生成（サムネ/ペルソナ由来）をスキップし既存
+        ファイル名（draft 正式名）を維持。曲別 genre を draft から効かせたいとき用。
+      - `genre` / `album` / `artist` は apply_tags 時の ID3。未指定は channel config
+        の suno.tag_defaults → フォルダ連番由来で補完。
     """
     await _ensure_not_running("process", "後処理が既に実行中です")
     config = get_dashboard_config()
@@ -3480,6 +3630,29 @@ async def api_video_process_tracks(video_name: str, rename_only: bool = False):
            "--cli", cli_cmd]
     if rename_only:
         cmd += ["--rename-only"]
+    if keep_names:
+        cmd += ["--keep-names"]
+    if apply_tags:
+        cmd += ["--apply-tags"]
+        # channel config の suno.tag_defaults を既定値に
+        td = ((load_channel_config().get("suno") or {}).get("tag_defaults") or {})
+        eff_artist = artist or td.get("artist") or "SUKIMA"
+        cmd += ["--artist", eff_artist]
+        if album or td.get("album_template"):
+            # album 明示が優先。template の {N} はフォルダ連番で置換。
+            eff_album = album
+            if not eff_album and td.get("album_template"):
+                m = re.match(r"^(\d+)_", video_name)
+                if m:
+                    eff_album = str(td["album_template"]).replace("{N}", m.group(1))
+            if eff_album:
+                cmd += ["--album", eff_album]
+        eff_genre = genre or td.get("genre_default")
+        if eff_genre:
+            cmd += ["--genre", eff_genre]
+        gbk = td.get("genre_by_kind")
+        if isinstance(gbk, dict) and gbk:
+            cmd += ["--genre-map", json.dumps(gbk, ensure_ascii=False)]
     task_logs["process"] = []
     import datetime as _dt
     task_meta["process"] = {
@@ -3823,6 +3996,234 @@ async def api_create_from_benchmark(req: CreateFromBenchmarkRequest):
         "suno_rationale": suno_rationale,
         "steps": steps,
     }
+
+
+# ─── 混成（複数 Style）ドラフト生成 ───
+# SUNO は 1 prompt = 1 Style なので「ボサ14＋R&B6」のような混成は Style グループごとに
+# 生成して統合する必要がある。/tmp/sukima_mix20_draft_gen.py をやめ、
+# .app_channel_config.json の suno.cozy_mix を読む config 駆動（S6）。
+class MixDraftRequest(BaseModel):
+    video_name: Optional[str] = None     # 履歴/workspace ヒント（{channel}_vol{N}）。無くても可。
+    provider: Optional[str] = None        # 未指定なら DRAFT_PROVIDER env→suno.provider→codex
+    diversity_threshold: Optional[float] = None
+    diversity_retry: Optional[int] = None
+    history_limit: Optional[int] = None
+
+
+@app.post("/api/suno/generate-mix-drafts")
+async def api_suno_generate_mix_drafts(req: MixDraftRequest):
+    """SUNO を起動せず、suno.cozy_mix を読んで混成ドラフト（複数 Style）を生成して返す。
+
+    ブラウザ不要・LLM 生成のみ。返した songs[] を確認・編集 → /api/suno/start に
+    songs_draft_json で投入する前段（混成版の generate-drafts 相当）。
+    """
+    channel_config = load_channel_config()
+    cozy = ((channel_config.get("suno") or {}).get("cozy_mix") or {})
+    if not cozy:
+        raise HTTPException(
+            400,
+            "このチャンネルには suno.cozy_mix（混成 Style 定義）がありません。"
+            ".app_channel_config.json に cozy_mix を設定してください。",
+        )
+
+    # workspace ヒント解決（履歴キー用。video_name から {channel}_vol{N} を作る）
+    workspace = None
+    if req.video_name:
+        cfg = get_dashboard_config()
+        channel_name = (cfg.get("channel_name") or "orzz").strip()
+        channel_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", channel_name).strip("_") or "orzz"
+        m = re.match(r"^(\d+)_", req.video_name)
+        vol = m.group(1) if m else ""
+        workspace = f"{channel_slug}_vol{vol}" if vol else channel_slug
+
+    sc = get_suno_config()
+
+    def _run():
+        sys.path.insert(0, str(SUNO_SCRIPT.parent))
+        import suno_auto_create as _suno
+        return _suno.generate_mixed_drafts(
+            channel_config,
+            provider=req.provider,
+            claude_cli=sc.get("claude_cli"),
+            codex_cli=sc.get("codex_cli"),
+            workspace=workspace,
+            diversity_threshold=req.diversity_threshold,
+            diversity_retry=req.diversity_retry,
+            history_limit=req.history_limit,
+        )
+
+    try:
+        songs = await asyncio.to_thread(_run)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"混成ドラフト生成に失敗しました: {e}")
+
+    mix = cozy.get("mix") or {}
+    expected = sum(v for k, v in mix.items()
+                   if not str(k).startswith("_") and isinstance(v, int))
+    return {
+        "status": "ok",
+        "count": len(songs),
+        "expected": expected,
+        "songs": songs,
+    }
+
+
+# ─── 一気通貫オーケストレーション（投稿手前まで） ───
+# SUKIMA の一連（フォルダ作成→混成ドラフト→SUNO投入→DL→整備→bgimage→psd→
+# premiere→export→qa→meta→thumbnail）を 1 アクションで駆動する入口。
+# ⚠ auto_upload は厳守で false。upload step は絶対に呼ばない（投稿は手動）。
+# ⚠ dry_run=true では SUNO ブラウザ投入 / Premiere / export を実行せず、
+#    「どの工程がどの順序で呼ばれるか」だけをログに記録して返す（配線検証用）。
+
+# pipeline に委譲する後半工程（SUNO/DL/整備の後）。upload は含めない（投稿手前で停止）。
+_ORCHESTRATE_PIPELINE_STEPS = [
+    "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "thumbnail",
+]
+
+
+class OrchestrateRequest(BaseModel):
+    publish_date: Optional[str] = None    # 発行日（vol フォルダ命名用）。未指定は今日。
+    duration: Optional[int] = None        # Premiere 尺秒。未指定は channel default_duration_sec。
+    privacy: Optional[str] = "unlisted"
+    dry_run: bool = True                  # 既定 true（実走は明示 false ＋ ユーザー合意が必要）
+    suno_interval: Optional[int] = None   # SUNO 投入間隔秒（既定は cozy 運用の 90）
+    provider: Optional[str] = None        # 混成ドラフト LLM provider
+
+
+@app.post("/api/orchestrate/create-and-run")
+async def api_orchestrate_create_and_run(req: OrchestrateRequest):
+    """SUKIMA 一連を「投稿手前まで」一気通貫で駆動する統合エンドポイント。
+
+    工程順:
+      1. フォルダ作成 + テンプレ自動コピー（/api/videos/create 流用）
+      2. 混成ドラフト生成（suno.cozy_mix → generate_mixed_drafts）
+      3. SUNO 投入（songs_draft_json 経路、--songs-file）  ※dry_run はスキップ
+      4. DL（/api/suno/download）                         ※dry_run はスキップ
+      5. 整備（process-tracks: apply_tags=true, keep_names=true）※dry_run はスキップ
+      6. 後半 pipeline（bgimage→psd_composite→premiere→export→qa→meta→thumbnail）
+         を APP_PIPELINE_STEPS で委譲。upload は含めない。      ※dry_run はスキップ
+
+    auto_upload は常に false（upload step を渡さない）。dry_run=true では実走系
+    （SUNO ブラウザ投入 / DL / 整備 / Premiere / export）を一切実行せず、
+    呼び出す工程の順序とパラメータを plan として返す（配線検証用）。
+    """
+    config = get_dashboard_config()
+    channel_dir = Path(config.get("channel_folder") or "")
+    if not channel_dir.exists():
+        raise HTTPException(400, "チャンネルフォルダが存在しません")
+
+    channel_config = load_channel_config()
+    cozy = ((channel_config.get("suno") or {}).get("cozy_mix") or {})
+    if not cozy:
+        raise HTTPException(
+            400,
+            "このチャンネルには suno.cozy_mix（混成 Style 定義）がありません。"
+            "一気通貫は cozy_mix を持つチャンネル（SUKIMA 等）でのみ実行できます。",
+        )
+
+    import datetime as _dt
+    publish_date = req.publish_date or _dt.date.today().strftime("%Y-%m-%d")
+    interval = req.suno_interval if req.suno_interval is not None else 90
+    duration = req.duration or int(channel_config.get("default_duration_sec") or 3700)
+    privacy = req.privacy or "unlisted"
+
+    # 実行する工程プラン（dry/実走 共通で記録）。auto_upload は常に false。
+    plan = {
+        "channel_folder": str(channel_dir),
+        "publish_date": publish_date,
+        "dry_run": req.dry_run,
+        "auto_upload": False,
+        "steps": [
+            {"step": "create_folder", "detail": "vol フォルダ作成＋テンプレ(prproj/psd)自動コピー"},
+            {"step": "generate_mix_drafts", "detail": f"cozy_mix 混成ドラフト生成（provider={req.provider or 'codex(既定)'}）"},
+            {"step": "suno_start", "detail": f"songs_draft_json 投入（--songs-file, interval={interval}s）", "browser": True},
+            {"step": "suno_download", "detail": "Workspace DL → 動画フォルダ", "browser": True},
+            {"step": "process_tracks", "detail": "整備（apply_tags=true, keep_names=true）"},
+            {"step": "pipeline", "detail": "後半工程委譲", "pipeline_steps": list(_ORCHESTRATE_PIPELINE_STEPS), "premiere": True},
+        ],
+        "pipeline_steps": list(_ORCHESTRATE_PIPELINE_STEPS),
+        "upload_step_included": "upload" in _ORCHESTRATE_PIPELINE_STEPS,  # 常に False を期待
+        "duration_sec": duration,
+        "privacy": privacy,
+    }
+
+    # ── Step 1: フォルダ作成＋テンプレコピー（dry でも作成する＝後段の検証に使うため安全な操作）──
+    vf = api_create_video_folder(VideoFolderCreate(publish_date=publish_date, open_in_finder=False))
+    video_name = vf["folder"]
+    plan["video_name"] = video_name
+    plan["vol"] = vf["num"]
+    plan["create_warnings"] = vf.get("warnings", [])
+    plan["create_copied"] = vf.get("created", [])
+
+    if req.dry_run:
+        # dry_run: 実走系（SUNO投入/DL/整備/Premiere/export）は一切呼ばない。
+        # フォルダだけ作って、どの工程がどの順序・どのパラメータで呼ばれるかを返す。
+        plan["status"] = "dry_run"
+        plan["note"] = (
+            "dry_run=true のためフォルダ作成のみ実行。SUNO ブラウザ投入・DL・整備・"
+            "Premiere・export・upload は呼んでいません。実走は dry_run=false ＋ "
+            "ユーザー合意（SUNO 起動 / Premiere 実走）後に行ってください。"
+        )
+        return plan
+
+    # ── 実走（dry_run=false）。⚠ SUNO ブラウザ・Premiere が動く。要ユーザー合意。──
+    await _ensure_not_running("pipeline", "パイプラインが既に実行中です")
+    await _ensure_not_running("suno", "SUNO が既に実行中です")
+
+    # workspace 解決
+    channel_name = (config.get("channel_name") or "orzz").strip()
+    channel_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", channel_name).strip("_") or "orzz"
+    workspace = f"{channel_slug}_vol{vf['num']}"
+
+    # Step 2: 混成ドラフト生成
+    sc = get_suno_config()
+
+    def _gen():
+        sys.path.insert(0, str(SUNO_SCRIPT.parent))
+        import suno_auto_create as _suno
+        return _suno.generate_mixed_drafts(
+            channel_config, provider=req.provider,
+            claude_cli=sc.get("claude_cli"), codex_cli=sc.get("codex_cli"),
+            workspace=workspace,
+        )
+
+    try:
+        songs = await asyncio.to_thread(_gen)
+    except Exception as e:
+        raise HTTPException(500, f"混成ドラフト生成に失敗しました: {e}")
+    if not songs:
+        raise HTTPException(500, "混成ドラフトが 0 曲でした。cozy_mix 設定を確認してください。")
+    plan["draft_count"] = len(songs)
+
+    # Step 3: SUNO 投入（songs_draft_json 経路）。共通の合意済みドラフト投入と同じ start。
+    suno_mode = ((channel_config.get("suno") or {}).get("generation_mode") or "lyrics_styles")
+    start_prompt = f"[mix] {workspace} cozy_mix {len(songs)} songs（混成ドラフト投入）"
+    await api_suno_start(SunoRunRequest(
+        prompt=start_prompt,
+        songs_draft_json=songs,
+        generation_mode=suno_mode,
+        interval=interval,
+        workspace=workspace,
+        video_name=video_name,
+    ))
+
+    plan["status"] = "started"
+    plan["note"] = (
+        "SUNO 投入を開始しました。DL・整備・後半 pipeline は SUNO 完了後に "
+        "各 step の status を見て順次起動してください（無人連鎖はこのエンドポイント"
+        "では行いません）。upload は含めていません。"
+    )
+    plan["next_steps"] = {
+        "download": {"endpoint": "/api/suno/download", "body": {"video_name": video_name}},
+        "process_tracks": {"endpoint": f"/api/videos/{video_name}/process-tracks",
+                            "query": {"apply_tags": "true", "keep_names": "true"}},
+        "pipeline": {"endpoint": f"/api/videos/{video_name}/run-pipeline",
+                     "body": {"steps": list(_ORCHESTRATE_PIPELINE_STEPS),
+                              "duration": duration, "privacy": privacy}},
+    }
+    return plan
 
 
 @app.get("/api/pipeline/status")
@@ -9570,6 +9971,9 @@ def api_photoshop_render_dual_thumbnail(req: PhotoshopRenderDualRequest):
         base_layer = req.base_layer or config.get("psd_base_layer") or "base"
         scene_text_layer = req.scene_text_layer or config.get("psd_text_layer") or "都市名_テキスト"
         playlist_layer = req.playlist_layer or config.get("psd_toggle_layer") or "PLAY LIST "
+        # competitor 踏襲: headline（toggle 層）を両出力で常時表示するか。
+        # 未設定/False なら従来の toggle 切替（背景 ON / サムネ OFF）と同一。pipeline と挙動を揃える。
+        toggle_always_visible = bool(config.get("psd_toggle_always_visible"))
 
         return ps.render_dual_thumbnail(
             psd_path=str(psd),
@@ -9579,6 +9983,7 @@ def api_photoshop_render_dual_thumbnail(req: PhotoshopRenderDualRequest):
             base_layer=base_layer,
             scene_text_layer=scene_text_layer,
             playlist_layer=playlist_layer,
+            toggle_always_visible=toggle_always_visible,
             quality=req.quality,
             target_width=int(tw),
             target_height=int(th),

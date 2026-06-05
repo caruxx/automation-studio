@@ -15,6 +15,7 @@
   Style/Camera/Constraints` のラベル付きプロンプトを生成。市場（ベンチ）の時間帯・雰囲気・配色・構図を継承する。
   - 背景固有差分: `include_text_overlay=False`（テキスト無し）、被写体は控えめ（subjects を載せない）、
     ループ背景ディレクティブを連結、背景禁止語を `avoid` 先頭に二重注入。
+  - ⚠ **偽テキスト焼き込み対策**（OPENAI_API_KEY 無し＝codex CLI フォールバック経路で顕著）: 参照画像（competitor サムネ）の日本語コピーを codex が「分析→再構成」時に**文字ごと再現**してしまう問題への防御。`_BGIMAGE_AVOID` 先頭にテキスト系禁止語（`on-screen text, text overlay, captions, subtitles, japanese text, hangul, korean text, chinese text, lettering, typography, readable text, words, watermark, signage, logos`）を強化注入＋`_BGIMAGE_DIRECTIVE`/`_legacy_bgimage_prompt` に「参照画像の文字/ロゴ/テロップは**全無視**・流用は配色/光/ムード/構図のみ・生成画像は文字ゼロ（文字は後工程で別途載せる）」を明示。`codex_imagegen.py` の `_build_codex_command` 再構成ルールにも item0（最重要・文字全無視）と生成指示本文の文字ゼロ指示を追加。`build_gpt_image2_prompt(include_text_overlay=False)` の Constraints も「no captions/subtitles/readable text/Japanese-Korean-Chinese characters/lettering/typography」へ強化。
   - `APP_BGIMAGE_DYNAMIC_PROMPT=0` で旧固定テンプレ（persona embed のみ）に即ロールバック可能（移行安全弁）。
     動的構築に失敗した場合も自動で旧テンプレにフォールバック。
 - **ベンチマーク画像を参照画像として併用**: 競合サムネが集まる `~/.config/{app_id}/benchmark/thumbs/`
@@ -60,7 +61,7 @@
 5. **どれも無し** → 参照無しでプロンプトのみで生成（warn のみ。non-fatal）
 
 > **プロンプトの作り方**（commit ad0c82d 以降＝動的構築）: `_build_bgimage_prompt(folder)` が **ベンチマーク分析から動的にプロンプトを構築**する。収集5段（concept.txt → benchmark concept aggregate → benchmark thumbnail aggregate → competitor `visual_direction`〔time_of_day/atmosphere/composition/color_palette〕→ persona fallback）→ `normalize_visual_direction()` + `build_gpt_image2_prompt(concept=body, visual_direction=visual, include_text_overlay=False)`。
-> - 背景固有差分: **被写体を載せない**（visual_direction の `subjects` は無視。背景は被写体控えめ）／ループ背景ディレクティブ（`Style: atmospheric, calm, suitable for looping … Composition: spacious, ample negative space, subject understated`）を body 末尾連結／**背景禁止語**（`on-screen text, logos, readable signage, human faces, pottery, vases, urns, planters, still life objects, decorative ornaments`）を `avoid` の**先頭**に二重注入（`_clean_text` の 220 字切りで消えないよう先頭固定）／「参照画像は色/光/ムードのみ流用・要素コピー禁止（do not copy any element verbatim）」を維持。
+> - 背景固有差分: **被写体を載せない**（visual_direction の `subjects` は無視。背景は被写体控えめ）／ループ背景ディレクティブ（`Style: atmospheric, calm, suitable for looping … Composition: spacious, ample negative space, subject understated`）を body 末尾連結／**背景禁止語**（テキスト系を先頭に強化: `on-screen text, text overlay, captions, subtitles, japanese text, hangul, korean text, chinese text, lettering, typography, readable text, words, watermark, signage, logos, readable signage, human faces, …`）を `avoid` の**先頭**に二重注入（`_clean_text` の 220 字切りで消えないよう先頭固定）／「参照画像の**文字/ロゴ/テロップは全無視**・流用は配色/光/ムード/構図のみ・生成画像は**文字ゼロ**（文字は後工程で別途載せる）・要素コピー禁止（do not copy any element verbatim, do not reproduce any text）」を明示。
 > - **ベンチマーク画像は `--reference-image` で別途渡され**、生成側（gpt-image-2 edits）が色/光/ムードを寄せる。プロンプト本文に参照画像パスは含まれない。
 > - 旧挙動: `APP_BGIMAGE_DYNAMIC_PROMPT=0` で `_legacy_bgimage_prompt`（persona+channel名 embed の固定テンプレ）に戻せる。動的構築が例外時も自動フォールバック。
 

@@ -402,11 +402,233 @@ def process_mp3(src: Path, dst: Path):
     print(f"    📊 loudnorm: input_i={in_i} LUFS → target {TARGET_LUFS} LUFS (offset={target_offset})")
 
 
+# ─── 公開前整備: AI透かし除去 + ID3タグ付与 + ファイル名正規化 ──────────
+
+def _filesafe(title: str) -> str:
+    """タイトルをファイル名に使える形へ（コロン等を _ に）。NFC でなく元文字保持。"""
+    return re.sub(r'[\\/:*?"<>|]', "_", title).strip()
+
+
+def _vol_from_folder(folder: Path):
+    """フォルダ名先頭の連番(例 '2_sk_260604' → 2)を vol 番号として返す。取れなければ None。"""
+    m = re.match(r"^(\d+)_", folder.name)
+    return int(m.group(1)) if m else None
+
+
+def _load_tag_draft(folder: Path, draft_path: Path | None):
+    """整備で参照する draft（title/genre 対応の元）を読む。
+
+    優先: 明示の draft_path → folder 内の *_draft.json / draft.json。
+    無ければ {} を返す（フォールバック genre のみで進む）。
+    戻り値: filesafe(title).lower() → kind('bossa'/'rnb' 等) の dict と、
+            filesafe(title).lower() → 正式 title の dict。
+    """
+    candidates = []
+    if draft_path:
+        candidates.append(Path(draft_path))
+    # フォルダ直下の draft 候補（_draft.json で終わるもの優先）
+    candidates += sorted(folder.glob("*_draft.json")) + sorted(folder.glob("draft.json"))
+    data = None
+    used = None
+    for c in candidates:
+        try:
+            if c and c.exists():
+                data = json.loads(c.read_text(encoding="utf-8"))
+                used = c
+                break
+        except Exception:
+            continue
+    kind_map, title_map = {}, {}
+    if isinstance(data, list):
+        for s in data:
+            if not isinstance(s, dict):
+                continue
+            t = str(s.get("title") or "").strip()
+            if not t:
+                continue
+            key = _filesafe(t).lower()
+            title_map[key] = t
+            g = str(s.get("genre") or "").strip().lower()
+            if g:
+                kind_map[key] = g
+    return kind_map, title_map, used
+
+
+def _probe_format_tags(path: Path) -> dict:
+    """ffprobe で format_tags を小文字キー dict で返す。失敗時 {}。"""
+    try:
+        pr = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format_tags",
+             "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        tags = (json.loads(pr.stdout).get("format", {}) or {}).get("tags", {}) or {}
+        return {k.lower(): v for k, v in tags.items()}
+    except Exception:
+        return {}
+
+
+def _normalize_original_names(folder: Path, music_set: set, dry_run: bool = False):
+    """original_music/ のファイル名を music/ の正式名に揃える（末尾 _数字 のみ除去）。
+
+    /tmp/sukima_rename_orig.py 相当。music_set を正解集合とし、衝突サフィックス(_2/_3)を
+    1回だけ除去して一致するものだけ rename。'The X_15' のような _数字付き正式名を
+    music_set に含むものは music_set 側一致で skip されるため誤除去されない。
+    """
+    orig = folder / "original_music"
+    if not orig.is_dir():
+        return {"renamed": 0, "skipped": 0, "unknown": []}
+    renamed, skipped, unknown = 0, 0, []
+    for f in sorted(orig.glob("*.mp3")):
+        if f.name in music_set:
+            skipped += 1
+            continue
+        cand = re.sub(r"_\d+(\.mp3)$", r"\1", f.name)
+        dst = orig / cand
+        if cand in music_set and not dst.exists():
+            if dry_run:
+                print(f"    (dry-run) rename: {f.name} → {cand}")
+            else:
+                f.rename(dst)
+                print(f"    ✓ rename: {f.name} → {cand}")
+            renamed += 1
+        elif dst.exists():
+            print(f"    ⚠ 衝突skip: {f.name}（{cand} 既存）")
+            unknown.append(f.name)
+        else:
+            print(f"    ? music/ に無い: {f.name}")
+            unknown.append(f.name)
+    return {"renamed": renamed, "skipped": skipped, "unknown": unknown}
+
+
+def _apply_metadata_tags(folder: Path, *, album: str | None = None,
+                         artist: str = "SUKIMA",
+                         genre_default: str = "Bossa Nova",
+                         genre_by_kind: dict | None = None,
+                         draft_path: Path | None = None,
+                         dry_run: bool = False) -> bool:
+    """公開前整備: AI透かし(suno comment)除去 + ID3タグ付与 + ファイル名正規化。
+
+    /tmp/sukima_tag.py + sukima_fix_genre.py + sukima_rename_orig.py を統合移植。
+
+    フロー:
+      1. music/*.mp3 ごとに ffmpeg -map_metadata -1（suno透かし comment 除去）
+         + title=正式名 / artist / album / genre(曲別) + -c copy（再エンコード無し）で
+         music_tagged/ に出力。
+      2. ffprobe で全曲「suno 透かし消失 & title 付与」を検証。
+      3. 全曲 OK のときだけ music → music_raw_pre_tag に退避し music_tagged → music へ
+         原子入替（rename）。1曲でも失敗したら music は無傷のまま music_tagged を残す。
+      4. 入替後、original_music/ のファイル名も music/ の正式名へ正規化。
+
+    既存 music を破壊しない設計（検証前に元 music を一切上書きしない）。
+    戻り値: 入替まで成功したら True、検証失敗 or 対象無しは False。
+    """
+    genre_by_kind = genre_by_kind or {}
+    music = folder / "music"
+    if not music.is_dir():
+        print(f"  ⚠ music/ が無いため整備スキップ: {folder.name}")
+        return False
+    mp3s = sorted([p for p in music.glob("*.mp3") if not p.name.startswith(".")])
+    if not mp3s:
+        print(f"  ⚠ music/ に MP3 が無いため整備スキップ: {folder.name}")
+        return False
+
+    if not album:
+        vol = _vol_from_folder(folder)
+        album = f"SUKIMA vol.{vol}" if vol is not None else "SUKIMA"
+
+    kind_map, title_map, draft_used = _load_tag_draft(folder, draft_path)
+    print(f"  🏷 整備(タグ付与+透かし除去): {folder.name}")
+    print(f"     album='{album}' artist='{artist}' genre_default='{genre_default}'")
+    if draft_used:
+        print(f"     draft={draft_used.name}（title/genre {len(title_map)}件マッチ用）")
+    else:
+        print(f"     draft 無し → title=既存ファイル名 / genre={genre_default} 固定")
+
+    out = folder / "music_tagged"
+    if out.exists():
+        if dry_run:
+            print(f"    (dry-run) 既存 music_tagged/ を再利用せず削除予定")
+        else:
+            shutil.rmtree(out)
+    if not dry_run:
+        out.mkdir()
+
+    results = []
+    for f in mp3s:
+        base = re.sub(r"_\d+$", "", f.stem)          # 末尾 _2/_3 除去
+        key = base.strip().lower()
+        title = title_map.get(key) or base           # draft マッチ無しは base をタイトルに
+        matched = key in title_map
+        kind = kind_map.get(key, "")
+        genre = genre_by_kind.get(kind, genre_default)
+        new_fname = _filesafe(title) + ".mp3"
+        out_path = out / new_fname
+        if dry_run:
+            print(f"    (dry-run) {f.name} → {new_fname}  title='{title}' genre='{genre}' match={matched}")
+            results.append({"src": f.name, "verified": True, "title": title})
+            continue
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+               "-i", str(f), "-map_metadata", "-1",
+               "-metadata", f"title={title}",
+               "-metadata", f"artist={artist}",
+               "-metadata", f"album={album}",
+               "-metadata", f"genre={genre}",
+               "-c", "copy", str(out_path)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
+        verified = False
+        title_set = comment_left = None
+        if out_path.exists():
+            tags_lc = _probe_format_tags(out_path)
+            comment_left = tags_lc.get("comment")
+            title_set = tags_lc.get("title")
+            has_suno = any("suno" in str(v).lower() for v in tags_lc.values())
+            verified = (not has_suno) and (title_set == title)
+        results.append({
+            "src": f.name, "matched_draft": matched, "title": title, "genre": genre,
+            "out": new_fname, "ffmpeg_ok": r.returncode == 0,
+            "comment_left": comment_left, "title_set": title_set, "verified": verified,
+            "stderr": r.stderr[:200] if r.returncode != 0 else "",
+        })
+        print(f"    {'✓' if verified else '✗'} {f.name} → {new_fname}  genre='{genre}' verified={verified}")
+
+    verified_n = sum(1 for x in results if x.get("verified"))
+    print(f"\n  結果: {verified_n}/{len(results)} verified")
+
+    if dry_run:
+        print("  (dry-run) 入替しません。")
+        return True
+
+    all_ok = len(results) > 0 and all(x.get("verified") for x in results)
+    if not all_ok:
+        print("  ❌ 検証失敗の曲あり → music は無傷のまま。music_tagged/ に出力済み。")
+        return False
+
+    raw = folder / "music_raw_pre_tag"
+    if raw.exists():
+        print(f"  ⚠ {raw.name} が既存 → 入替中止（手動確認を）。music_tagged/ に出力済み。")
+        return False
+    music.rename(raw)
+    out.rename(music)
+    print(f"  ✅ 入替完了: 旧music→music_raw_pre_tag, music_tagged→music")
+
+    # original_music/ のファイル名も新 music/ の正式名へ正規化
+    music_set = set(p.name for p in music.glob("*.mp3"))
+    rn = _normalize_original_names(folder, music_set, dry_run=False)
+    if rn["renamed"] or rn["unknown"]:
+        print(f"  📁 original_music 正規化: renamed={rn['renamed']} unknown={rn['unknown']}")
+    return True
+
+
 # ─── メイン処理 ──────────────────────────────────────────
 
 def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
                    dry_run: bool = False, rename_only: bool = False,
-                   no_dedup: bool = False, keep_names: bool = False):
+                   no_dedup: bool = False, keep_names: bool = False,
+                   skip_tagging: bool = True, album: str | None = None,
+                   artist: str = "SUKIMA", genre: str | None = None,
+                   genre_by_kind: dict | None = None,
+                   draft_path: Path | None = None):
     folder = folder.resolve()
     if not folder.is_dir():
         print(f"❌ フォルダが存在しません: {folder}")
@@ -575,6 +797,26 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
     print("\n" + "=" * 60)
     print(f"  完了: {success}/{len(plans)}")
     print("=" * 60)
+
+    # ── 公開前整備（透かし除去 + ID3タグ + ファイル名正規化）──
+    # skip_tagging=True（既定）の間は完全に従来挙動。明示有効化（apply-tags）時のみ作動。
+    # rename_only は music/ を作らないので整備対象外。
+    if not skip_tagging and not rename_only:
+        try:
+            _apply_metadata_tags(
+                folder,
+                album=album,
+                artist=artist,
+                genre_default=(genre or "Bossa Nova"),
+                genre_by_kind=genre_by_kind,
+                draft_path=draft_path,
+                dry_run=dry_run,
+            )
+        except Exception as e:
+            import traceback
+            print(f"  ⚠ 整備（タグ付与）でエラー（後処理本体は完了済み）: {e}")
+            print(traceback.format_exc())
+
     return 0
 
 
@@ -589,7 +831,30 @@ if __name__ == "__main__":
                         help="同タイトル重複（SUNO の2テイク）の長い方削除をスキップ")
     parser.add_argument("--keep-names", action="store_true",
                         help="既存ファイル名を維持（サムネ/ペルソナからのタイトル再生成をスキップ）")
+    parser.add_argument("--apply-tags", action="store_true",
+                        help="後処理後に公開前整備（透かし除去+ID3タグ+ファイル名正規化）を実行。"
+                             "未指定（既定）は従来挙動で整備しない。")
+    parser.add_argument("--album", default=None,
+                        help="ID3 album（未指定はフォルダ連番から 'SUKIMA vol.{N}' を自動生成）")
+    parser.add_argument("--artist", default="SUKIMA", help="ID3 artist（既定 SUKIMA）")
+    parser.add_argument("--genre", default=None,
+                        help="ID3 genre のフォールバック（draft マッチ無し曲に使用。既定 Bossa Nova）")
+    parser.add_argument("--genre-map", default=None,
+                        help='draft の kind→genre 対応の JSON（例 \'{"bossa":"Bossa Nova","rnb":"R&B/Soul"}\'）')
+    parser.add_argument("--draft", default=None,
+                        help="title/genre 対応用 draft JSON（未指定はフォルダ内 *_draft.json を探索）")
     args = parser.parse_args()
+    genre_by_kind = None
+    if args.genre_map:
+        try:
+            gm = json.loads(args.genre_map)
+            genre_by_kind = {str(k).lower(): str(v) for k, v in gm.items()} if isinstance(gm, dict) else None
+        except Exception as e:
+            print(f"⚠ --genre-map の JSON parse 失敗（無視）: {e}")
     sys.exit(process_folder(Path(args.folder), cli_cmd=args.cli,
                              dry_run=args.dry_run, rename_only=args.rename_only,
-                             no_dedup=args.no_dedup, keep_names=args.keep_names) or 0)
+                             no_dedup=args.no_dedup, keep_names=args.keep_names,
+                             skip_tagging=(not args.apply_tags),
+                             album=args.album, artist=args.artist, genre=args.genre,
+                             genre_by_kind=genre_by_kind,
+                             draft_path=(Path(args.draft) if args.draft else None)) or 0)

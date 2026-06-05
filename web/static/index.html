@@ -6214,9 +6214,43 @@ async function showVideoDetail(name){
               <div class="btns">
                 <button class="btn btn-success btn-sm" onclick="runSunoFullFlow('${esc(name)}')" title="生成 → DL → リネーム + フェード + ゲイン正規化 → music/ へ格納 まで無停止で実行">▶ 全自動（生成→DL→後処理）</button>
                 <button class="btn btn-secondary btn-sm" id="miniStartBtn" onclick="startSunoForVideo('${esc(name)}')" title="生成のみ（DL・後処理は手動）">生成のみ</button>
+                <button class="btn btn-primary btn-sm" id="miniDraftBtn" onclick="generateSunoDrafts('${esc(name)}')" title="SUNOを起動せずLLMだけで歌詞・Styleのドラフトを生成 → 確認・編集してから投入（Claude/Codex のみ）">📝 ドラフト生成（確認してから投入）</button>
                 <button class="btn btn-destructive btn-sm hidden" id="miniStopBtn" onclick="stopSuno()">停止</button>
               </div>
               <div class="fh" style="margin-top:var(--space-2)">▶ 全自動: SUNO 生成完了を待機 → Workspace DL → Claude でタイトル提案 + リネーム → 8秒フェードアウト + -16 LUFS ゲイン正規化 → music/ 格納 まで無停止で実行します</div>
+              <!-- ドラフト確認・編集パネル（generate-drafts の結果をここに描画。vol(動画名)ごとに一意 id） -->
+              <div id="sunoDraftPanel-${sunoSafeId(name)}" data-suno-draft-panel="${esc(name)}" class="hidden" style="margin-top:var(--space-3);border-top:1px solid var(--border-default);padding-top:var(--space-3)">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2)">
+                  <div class="sec-title" style="margin:0">ドラフト確認 <span id="sunoDraftCount-${sunoSafeId(name)}" class="badge badge-info"></span></div>
+                  <button class="btn btn-ghost btn-sm" onclick="clearSunoDrafts('${esc(name)}')">クリア</button>
+                </div>
+                <div class="fh" style="margin-bottom:var(--space-2)">各曲の Title / Style / Lyrics を確認・編集できます。問題なければ「このドラフトで投入」で確認済み内容をそのまま SUNO に投入します（LLM 再生成なし）。</div>
+                <div id="sunoDraftList-${sunoSafeId(name)}"></div>
+                <!-- 公開前整備タグ（process-tracks へ渡す ID3。既定はチャンネル config の suno.tag_defaults 由来） -->
+                <div class="card" style="margin-top:var(--space-3);padding:var(--space-2);background:var(--bg-elevated)">
+                  <div class="sec-title" style="margin:0 0 var(--space-2) 0;font-size:var(--text-sm)">整備タグ（投入後の後処理で付与）</div>
+                  <div class="fr">
+                    <div class="ff"><label class="fl">Artist</label><input type="text" class="fi" id="sunoTagArtist-${sunoSafeId(name)}" placeholder="SUKIMA"></div>
+                    <div class="ff"><label class="fl">Album</label><input type="text" class="fi" id="sunoTagAlbum-${sunoSafeId(name)}" placeholder="SUKIMA vol.{N}"></div>
+                  </div>
+                  <div class="ff">
+                    <label class="fl">Genre 方式</label>
+                    <select class="fs" id="sunoTagGenreMode-${sunoSafeId(name)}" onchange="onSunoGenreModeChange('${esc(name)}')">
+                      <option value="by_kind" selected>曲別（ドラフトの bossa / rnb から自動判定）</option>
+                      <option value="fixed">固定値（下に手入力）</option>
+                    </select>
+                  </div>
+                  <div class="ff" id="sunoTagGenreFixedWrap-${sunoSafeId(name)}" style="display:none">
+                    <label class="fl">Genre（固定値）</label>
+                    <input type="text" class="fi" id="sunoTagGenreFixed-${sunoSafeId(name)}" placeholder="Bossa Nova">
+                  </div>
+                  <div class="fh" id="sunoTagGenreHint-${sunoSafeId(name)}" style="margin-top:4px"></div>
+                </div>
+                <div class="btns" style="margin-top:var(--space-2)">
+                  <button class="btn btn-success btn-sm" onclick="submitSunoDrafts('${esc(name)}')" title="編集済みドラフトを --songs-file 経由でそのまま投入">✅ このドラフトで投入</button>
+                  <button class="btn btn-secondary btn-sm" onclick="generateSunoDrafts('${esc(name)}')" title="もう一度 LLM でドラフトを作り直す">↻ 作り直す</button>
+                </div>
+              </div>
             </div>
             <div class="tab-next">
               <button class="btn btn-primary btn-sm" onclick="setTab('images')">次へ（画像）→</button>
@@ -11430,6 +11464,192 @@ async function startSunoForVideo(name){
     else{const e=await r.json();toast(e.detail||'失敗','e')}
   }catch(e){toast('接続エラー','e')}
 }
+/* ==== ドラフト生成 → 確認/編集 → 投入 ==== */
+/* vol(動画名)ごとにドラフト状態を保持（複数 vol を並行で開いても競合しない）。
+   key = 動画名(name), value = [{title,styles,lyrics,mode}, ...] */
+const _sunoDraftsByVideo={};
+/* チャンネル config の suno.tag_defaults キャッシュ（整備タグの既定値表示に使う） */
+let _sunoTagDefaults={};
+/* 動画名 → DOM id 安全文字列（[A-Za-z0-9_-] のみ。それ以外は _ に）。
+   element id / querySelector でそのまま使える形にする。 */
+function sunoSafeId(name){
+  return String(name||'').replace(/[^A-Za-z0-9_-]+/g,'_').replace(/^_+|_+$/g,'')||'_';
+}
+/* 対象 vol のドラフトパネル配下の要素を id で引く（el(name,'sunoDraftList') 等） */
+function _sunoEl(name,prefix){return document.getElementById(`${prefix}-${sunoSafeId(name)}`);}
+/* Genre 方式トグル: 固定値選択時のみ手入力欄を出す */
+function onSunoGenreModeChange(name){
+  const mode=_sunoEl(name,'sunoTagGenreMode')?.value||'by_kind';
+  const wrap=_sunoEl(name,'sunoTagGenreFixedWrap');
+  if(wrap)wrap.style.display=(mode==='fixed')?'':'none';
+}
+/* 整備タグ入力の既定値を tag_defaults とドラフトから流し込む（XSS: value 代入のみ） */
+function _applySunoTagDefaults(name){
+  const td=_sunoTagDefaults||{};
+  const aIn=_sunoEl(name,'sunoTagArtist');
+  if(aIn&&!aIn.value)aIn.value=td.artist||'SUKIMA';
+  const alIn=_sunoEl(name,'sunoTagAlbum');
+  if(alIn&&!alIn.value){
+    // album_template の {N} は vol 番号で置換（サーバー側と同じ規則）。
+    const m=String(name||'').match(/^(\d+)_/);
+    const tpl=td.album_template||'';
+    alIn.value=(tpl&&m)?tpl.replace('{N}',m[1]):tpl;
+  }
+  const gfIn=_sunoEl(name,'sunoTagGenreFixed');
+  if(gfIn&&!gfIn.value)gfIn.value=td.genre_default||'';
+  // 曲別 genre の見取り図をヒント表示（bossa→Bossa Nova 等）
+  const hint=_sunoEl(name,'sunoTagGenreHint');
+  if(hint){
+    const gbk=td.genre_by_kind||{};
+    const pairs=Object.keys(gbk).map(k=>`${k}→${gbk[k]}`);
+    hint.textContent=pairs.length
+      ?`曲別の対応: ${pairs.join(' / ')}（曲の kind は draft の Style から判定）`
+      :'曲別 genre のマップ未設定。固定値方式を推奨します。';
+  }
+}
+/* ドラフト生成: SUNOは起動せず LLM だけで N曲分のドラフトを取得して一覧表示 */
+async function generateSunoDrafts(name){
+  const p=_collectMiniSunoParams();
+  if(!p.prompt){toast('プロンプトを入力してください','e');return}
+  if(p.provider!=='claude'&&p.provider!=='codex'){
+    toast('ドラフト生成は Claude / Codex のみ対応です','e');return;
+  }
+  const body={
+    prompt:p.prompt, count:p.count, generation_mode:p.generation_mode,
+    provider:p.provider, video_name:name,
+    diversity_threshold:p.diversity_threshold, diversity_retry:p.diversity_retry,
+    history_limit:p.history_limit,
+  };
+  const btn=document.getElementById('miniDraftBtn');
+  const orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='生成中…';}
+  _plAppend(`📝 SUNO ドラフト生成: ${p.count}曲・${p.provider}（SUNOは起動しません）`);
+  try{
+    const r=await fetch('/api/suno/generate-drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!r.ok){toast(d.detail||'ドラフト生成失敗','e');_plAppend(`✗ ドラフト生成失敗: ${d.detail||''}`);return;}
+    _sunoDraftsByVideo[name]=(d.songs||[]).map(s=>({title:s.title||'',styles:s.styles||'',lyrics:s.lyrics||'',mode:s.mode||d.generation_mode||''}));
+    renderSunoDrafts(name);
+    const n=_sunoDraftsByVideo[name].length;
+    toast(`ドラフト ${n}曲 を生成`,'s');
+    _plAppend(`✓ ドラフト ${n}曲 生成完了 → 確認してください`);
+  }catch(e){toast('接続エラー','e');_plAppend('✗ ドラフト生成 接続エラー')}
+  finally{if(btn){btn.disabled=false;btn.textContent=orig;}}
+}
+/* ドラフト一覧を編集可能フォームで描画（XSS: 値は value/textContent で安全に流し込む） */
+function renderSunoDrafts(name){
+  const drafts=_sunoDraftsByVideo[name]||[];
+  const panel=_sunoEl(name,'sunoDraftPanel');
+  const list=_sunoEl(name,'sunoDraftList');
+  const cnt=_sunoEl(name,'sunoDraftCount');
+  if(!panel||!list)return;
+  if(cnt)cnt.textContent=`${drafts.length}曲`;
+  list.innerHTML='';
+  drafts.forEach((s,i)=>{
+    const card=document.createElement('div');
+    card.className='card';
+    card.style.cssText='margin-bottom:var(--space-2);padding:var(--space-2)';
+    card.dataset.draftIdx=String(i);
+    // ヘッダ（曲番号）
+    const hd=document.createElement('div');
+    hd.style.cssText='font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:4px';
+    hd.textContent=`曲 ${i+1}`;
+    card.appendChild(hd);
+    // Title
+    const tWrap=document.createElement('div');tWrap.className='ff';
+    const tLab=document.createElement('label');tLab.className='fl';tLab.textContent='Title';
+    const tIn=document.createElement('input');tIn.className='fi draft-title';tIn.type='text';tIn.value=s.title;
+    tWrap.appendChild(tLab);tWrap.appendChild(tIn);card.appendChild(tWrap);
+    // Styles
+    const sWrap=document.createElement('div');sWrap.className='ff';
+    const sLab=document.createElement('label');sLab.className='fl';sLab.textContent='Style';
+    const sIn=document.createElement('input');sIn.className='fi draft-styles';sIn.type='text';sIn.value=s.styles;
+    sWrap.appendChild(sLab);sWrap.appendChild(sIn);card.appendChild(sWrap);
+    // Lyrics
+    const lWrap=document.createElement('div');lWrap.className='ff';
+    const lLab=document.createElement('label');lLab.className='fl';lLab.textContent='Lyrics';
+    const lTa=document.createElement('textarea');lTa.className='ft draft-lyrics';lTa.rows=s.lyrics?6:2;lTa.value=s.lyrics;
+    lTa.placeholder='（インスト系は空でも可）';
+    lWrap.appendChild(lLab);lWrap.appendChild(lTa);card.appendChild(lWrap);
+    list.appendChild(card);
+  });
+  // 整備タグの既定値を反映（既に入力済みなら尊重）
+  _applySunoTagDefaults(name);
+  panel.classList.remove('hidden');
+}
+/* DOM から編集後の最新ドラフトを吸い上げる（対象 vol のリストのみ走査） */
+function _collectSunoDraftsFromDom(name){
+  const list=_sunoEl(name,'sunoDraftList');
+  if(!list)return [];
+  const drafts=_sunoDraftsByVideo[name]||[];
+  return Array.from(list.querySelectorAll('[data-draft-idx]')).map(card=>{
+    const i=parseInt(card.dataset.draftIdx,10);
+    const mode=(drafts[i]&&drafts[i].mode)||'';
+    return {
+      title:(card.querySelector('.draft-title')?.value||'').trim(),
+      styles:(card.querySelector('.draft-styles')?.value||'').trim(),
+      lyrics:(card.querySelector('.draft-lyrics')?.value||'').trim(),
+      mode:mode,
+    };
+  });
+}
+/* 対象 vol の整備タグ入力を収集（process-tracks に渡す形）。
+   genre 方式が by_kind の場合は genre は送らず（サーバーが tag_defaults.genre_by_kind を使う）。 */
+function _collectSunoTagsFromDom(name){
+  const artist=(_sunoEl(name,'sunoTagArtist')?.value||'').trim();
+  const album=(_sunoEl(name,'sunoTagAlbum')?.value||'').trim();
+  const genreMode=_sunoEl(name,'sunoTagGenreMode')?.value||'by_kind';
+  const genreFixed=(_sunoEl(name,'sunoTagGenreFixed')?.value||'').trim();
+  return {
+    artist:artist||undefined,
+    album:album||undefined,
+    genre:(genreMode==='fixed'&&genreFixed)?genreFixed:undefined,
+    genre_mode:genreMode,
+    // ドラフト投入時はファイル名（draft 正式名）を維持し、曲別 genre を効かせる
+    keep_names:true,
+  };
+}
+function clearSunoDrafts(name){
+  _sunoDraftsByVideo[name]=[];
+  const panel=_sunoEl(name,'sunoDraftPanel');
+  const list=_sunoEl(name,'sunoDraftList');
+  if(list)list.innerHTML='';
+  if(panel)panel.classList.add('hidden');
+}
+/* 確認済みドラフトを --songs-file 経由でそのまま投入（LLM再生成なし） */
+async function submitSunoDrafts(name){
+  const songs=_collectSunoDraftsFromDom(name);
+  if(!songs.length){toast('投入するドラフトがありません','e');return}
+  const bad=songs.findIndex(s=>!s.title&&!s.styles);
+  if(bad>=0){toast(`曲 ${bad+1}: Title か Style を入力してください`,'e');return}
+  const p=_collectMiniSunoParams();
+  const tags=_collectSunoTagsFromDom(name);
+  // 整備タグは投入後の後処理（process-tracks/S6 一気通貫）で使うため data 属性に保持しておく。
+  const panel=_sunoEl(name,'sunoDraftPanel');
+  if(panel)panel.dataset.sunoTags=JSON.stringify(tags);
+  if(!confirm(`✅ 確認済みドラフト ${songs.length}曲 をそのまま SUNO に投入します\n（LLM 再生成なし）\n\n実行しますか？`))return;
+  // start 側の prompt≥10字検証は songs_draft_json があれば緩める想定だが、現状サーバーは
+  // prompt 必須のため、空/短い時は曲名・Style からプレースホルダ prompt を合成して通す。
+  let prompt=p.prompt;
+  if(!prompt||prompt.length<10){
+    const seed=songs.map(s=>s.styles||s.title).filter(Boolean).join('; ').slice(0,200);
+    prompt=`[draft submit] ${seed}`.slice(0,300);
+    if(prompt.length<10)prompt=`[draft submit] ${name}`;
+  }
+  const body={
+    prompt:prompt, provider:p.provider, generation_mode:p.generation_mode,
+    interval:p.interval, headless:p.headless, video_name:name,
+    songs_draft_json:songs,
+  };
+  try{
+    const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.detail||'投入失敗','e');return}
+    toast(`ドラフト ${songs.length}曲 を投入`,'s');
+    _plAppend(`✅ 確認済みドラフト ${songs.length}曲 を投入（LLM再生成なし）`);
+    pollStatus();_startSunoLogRelay();
+    clearSunoDrafts(name);
+  }catch(e){toast('接続エラー','e')}
+}
 /* 生成 → 待機 → DL → 後処理（リネーム + フェード + ゲイン + music/ 格納） の一気通貫 */
 async function runSunoFullFlow(name){
   const p=_collectMiniSunoParams();
@@ -11515,6 +11735,8 @@ async function setupMiniSunoPanel(name){
   try{
     const r=await fetch('/api/config'),d=await r.json();
     const s=d.suno||{};
+    // 整備タグの既定（process-tracks の ID3）をキャッシュ。ドラフトパネルの初期値に使う。
+    _sunoTagDefaults=s.tag_defaults||{};
     const pr=document.getElementById('miniPrompt');if(pr&&!pr.value)pr.value=s.prompt||'';
     _renderMiniPromptPicker();
     const pv=document.getElementById('miniProvider');if(pv)pv.value=s.provider||'claude';

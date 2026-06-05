@@ -148,7 +148,11 @@ def build_gpt_image2_prompt(
         "no copied brand assets",
     ]
     if not include_text_overlay:
-        constraints.append("no text overlay")
+        constraints.append(
+            "no text overlay, no captions, no subtitles, no readable text, "
+            "no Japanese/Korean/Chinese characters, no lettering, no typography "
+            "(zero readable text anywhere in the image)"
+        )
     if for_flow:
         constraints.extend(["shallow depth of field", "thumbnail-grade clarity"])
     else:
@@ -172,6 +176,15 @@ def build_gpt_image2_prompt(
     if avoid:
         parts.append(f"Avoid: {avoid}")
     parts.append("Constraints: " + "; ".join(constraints) + ".")
+    if not include_text_overlay:
+        # 偽テキスト焼き込み対策: 参照画像内の文字を絶対に再現させない最終ダメ押し。
+        # Subject/Background は _first_nonempty で 320 字切りされ directive 末尾が消えるため、
+        # ここ（末尾・非トランケート）に置いて codex の参照分析経路へ確実に効かせる。
+        parts.append(
+            "Reference handling: IGNORE all text, captions, subtitles, letters, words and logos "
+            "visible in any reference image; reuse ONLY their color palette, lighting, mood and "
+            "composition. Render zero readable text in the output."
+        )
     return "\n".join(parts)
 
 

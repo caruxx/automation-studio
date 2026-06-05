@@ -1,11 +1,13 @@
 # app-thumbnail: サムネイル自動生成（パイプライン STEP）
 
-> 実装: `Python/app_pipeline.py` `step_thumbnail`（描画）/ `_build_thumbnail_prompt`（プロンプト構築）/ `Python/app_image_prompt.py`（visual brief 正規化）/ `Python/flow_automation.py`（Flow）/ `Python/codex_imagegen.py`（Codex/gpt-image）
+> 実装: `Python/app_pipeline.py` `step_thumbnail`（描画）/ `_build_thumbnail_prompt`（プロンプト構築）/ `Python/app_image_prompt.py`（visual brief 正規化）/ `Python/codex_imagegen.py`（Codex/gpt-image）
 > STEP キー: `thumbnail`（`STEPS` 内）。出力: `<vol_folder>/thumbnail.png`
+
+> ⚠ **自動サムネ生成は codex 一本化済み（Flow 経路は削除）**。Flow は手動 UI（`app.py` の `/api/flow/*`）でのみ利用。このパイプライン step から Flow は呼ばれない。
 
 ## 目的
 
-YouTube サムネイルを AI で自動生成する。**ベンチマーク分析（concept / visual_direction）からプロンプト文を動的構築**し、Flow（Nano Banana 2）または Codex（gpt-image-2）で生成、候補から 1 枚を `thumbnail.png` に昇格する。
+YouTube サムネイルを AI で自動生成する。**ベンチマーク分析（concept / visual_direction）からプロンプト文を動的構築**し、Codex（gpt-image-2）で生成、候補から 1 枚を `thumbnail.png` に昇格する。
 
 > ⚠ 背景画像（`step_bgimage` → [app-bgimage.md](./app-bgimage.md)）とは**別 step・別ロジック**。背景画像は「参照画像を渡して色/光を寄せる」が固定テンプレ寄り、サムネは「ベンチ分析からプロンプト文を組み立てる」動的構築。混同しない。
 > ⚠ PSD 合成（`step_psd_composite` → [app-psd-composite.md](./app-psd-composite.md)）が先に `サムネイル.jpg` を出していれば、この AI サムネ生成は**スキップ**される（フォールバックとして共存）。
@@ -27,20 +29,15 @@ YouTube サムネイルを AI で自動生成する。**ベンチマーク分析
 
 ## 参照画像（picked、limit=1）
 
-Flow / Codex の**両方**に、`app_benchmark_thumbnail.get_picked_paths(limit=1)` の先頭 1 枚を `--reference-image` として渡す（`benchmark/thumbnail.json` の `picked[]` に対応するローカル画像）。
+Codex に `app_benchmark_thumbnail.get_picked_paths(limit=1)` の先頭 1 枚を `--reference-image` として渡す（`benchmark/thumbnail.json` の `picked[]` に対応するローカル画像）。
 
 > ⚠ 背景画像は `get_picked_paths(limit=ref_count)`（複数）かつ reference_image_dir / rival_channels フォールバックを持つが、**サムネは picked のみ・limit=1 固定**。reference_image_dir / rival プールのフォールバックは無い。
 
-## 生成プロバイダ（Flow / Codex を subprocess 並列起動）
+## 生成プロバイダ（Codex を subprocess 起動）
 
-プロバイダは env `APP_THUMBNAIL_PROVIDERS`（**既定 `flow` のみ**。`flow,codex` を明示指定したときだけ両方並列）。
+プロバイダは env `APP_THUMBNAIL_PROVIDERS`（**既定 `codex`**。自動サムネ生成は codex 一本化済み）。`flow` を指定すると「⚠ Flow は削除済み → codex で生成します」と警告のうえ codex にフォールバックする。値が完全に空・無効なときだけ step をスキップ。
 
-### Flow（`flow_automation.py`）
-```
---prompt <prompt> --aspect 16:9 --count x4 --model "Nano Banana 2" --resolution 2K
---project-name thumb_vol{N} --output-dir <vol_folder>/thumbnail_candidates --no-wait
-（APP_NO_INTERACTIVE=1 のとき --headless 追加）
-```
+> ⚠ Flow（`flow_automation.py`）はこの step から呼ばれない。Flow は `app.py` の手動 UI（`/api/flow/login` `/api/flow/generate` `/api/flow/login-status`）専用に温存。
 
 ### Codex（`codex_imagegen.py`）
 ```
@@ -51,12 +48,12 @@ Flow / Codex の**両方**に、`app_benchmark_thumbnail.get_picked_paths(limit=
 --prompt "<prompt>::vol{N}_thumb"   # ::vol{N}_thumb は codex_imagegen の出力ファイル名コンベンション
 ```
 
-両 `Popen` を `communicate(timeout=600)` で順次待機。
+`Popen` を `communicate(timeout=600)` で待機。
 
 ## 出力・候補昇格
 
 - 候補は `<vol_folder>/thumbnail_candidates/` に `*.png/*.jpg/*.jpeg/*.webp`。
-- `_rank`（**codex=0 → flow=1 → その他=2**、同ランクは mtime 昇順）でソートし、**先頭 1 枚を `<vol_folder>/thumbnail.png` に昇格**（`shutil.copy2`）。Codex 優先。
+- **mtime 昇順**でソートし、**先頭 1 枚を `<vol_folder>/thumbnail.png` に昇格**（`shutil.copy2`）。codex 一本化のため `_rank` のようなプロバイダ優先順位は廃止。
 - 候補ゼロでも警告のみで `return True`（**upload を止めない**）。
 
 ## スキップ条件
@@ -68,7 +65,7 @@ Flow / Codex の**両方**に、`app_benchmark_thumbnail.get_picked_paths(limit=
 
 | 変数 | 既定 | 役割 |
 |------|------|------|
-| `APP_THUMBNAIL_PROVIDERS` | `flow` | `flow` / `codex` / `flow,codex`。codex を使うには明示指定が要る |
+| `APP_THUMBNAIL_PROVIDERS` | `codex` | 実質 `codex` のみ。`flow` 指定は警告のうえ codex にフォールバック（Flow 経路は削除済み） |
 | `APP_THUMBNAIL_DISABLE` | (未設定) | `1` で step 全体スキップ |
 | `APP_THUMBNAIL_CODEX_MAX_PARALLEL` | `1` | codex の並列数 |
 | `APP_THUMBNAIL_IMAGE_MODEL` | `gpt-image-2` | codex のモデル |

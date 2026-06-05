@@ -786,6 +786,124 @@ def generate_content_batch(settings, count):
     return accepted
 
 
+# ─── 混成（複数 Style）ドラフト生成 ──────────────────────────────────────────
+# SUNO は 1 prompt = 1 Style なので、ボサ/R&B × 女/男 のような「混成 N 曲」を作るには
+# Style グループごとに generate_content_batch を呼んで統合する必要がある。
+# 従来は /tmp/sukima_mix20_draft_gen.py にハードコードしていたが、S6 で
+# `.app_channel_config.json` の `suno.cozy_mix` ブロックを読む config 駆動に正規化した。
+
+# cozy_mix.mix の "<kind>_<vocal>" キー → (style キー, vocal, draft genre タグ) の対応。
+# draft genre は整備 step(_tag_args_from_channel/genre_by_kind)で ID3 ジャンルに使うため
+# config.tag_defaults.genre_by_kind のキー（bossa / rnb）に揃える。
+_MIX_GROUP_MAP = {
+    "bossa_female": ("bossa_female_style", "female", "bossa"),
+    "bossa_male":   ("bossa_male_style",   "male",   "bossa"),
+    "rnb_female":   ("rnb_female_style",   "female", "rnb"),
+    "rnb_male":     ("rnb_male_style",     "male",   "rnb"),
+}
+
+
+def generate_mixed_drafts(channel_config, provider=None, claude_cli=None,
+                          codex_cli=None, channel_id=None, workspace=None,
+                          diversity_threshold=None, diversity_retry=None,
+                          history_limit=None):
+    """`suno.cozy_mix` を読み、Style グループごとに混成ドラフトを生成して統合する。
+
+    /tmp/sukima_mix20_draft_gen.py（vol.2 で確立）を config 駆動に正規化したもの。
+    各 Style に lyric_guide（cozy 注入・Intro 多様化・da-da-da 禁止・脱 lo-fi）を付け、
+    mix の比率（bossa_female:7 等）の数だけ generate_content_batch を呼ぶ。
+
+    Args:
+        channel_config: per-channel `.app_channel_config.json` を読んだ dict。
+                        `suno.cozy_mix.{*_style, lyric_guide, mix}` を参照する。
+        provider:       LLM provider 上書き。未指定なら DRAFT_PROVIDER env →
+                        suno.provider → "codex"（300s timeout 回避のため codex 推奨）。
+        その他:          generate_content_batch に渡す settings の上書き（履歴/多様性）。
+
+    Returns:
+        統合済み songs リスト。各要素は {title, styles, lyrics, mode, vocal, genre}。
+        vocal/genre は後段（整備/タグ付与）が曲別 ID3 ジャンルを決めるために付与する。
+
+    Raises:
+        ValueError: cozy_mix ブロックが無い / mix が空 / style キー欠落の場合。
+    """
+    suno_cfg = (channel_config or {}).get("suno") or {}
+    cozy = suno_cfg.get("cozy_mix") or {}
+    if not cozy:
+        raise ValueError(
+            "channel_config.suno.cozy_mix がありません。"
+            "混成ドラフト生成には cozy_mix（*_style / lyric_guide / mix）が必要です。"
+        )
+    mix = cozy.get("mix") or {}
+    # `_total` / `_summary` 等のメタキー（_ 始まり）を除外して有効な比率だけ拾う
+    mix_items = {k: v for k, v in mix.items()
+                 if not str(k).startswith("_") and isinstance(v, int) and v > 0}
+    if not mix_items:
+        raise ValueError("channel_config.suno.cozy_mix.mix に有効な曲数指定がありません。")
+
+    lyric_guide = cozy.get("lyric_guide") or ""
+
+    # provider 解決: 明示 > DRAFT_PROVIDER env > suno.provider > codex
+    eff_provider = (
+        (provider or "").strip()
+        or (os.environ.get("DRAFT_PROVIDER") or "").strip()
+        or (suno_cfg.get("provider") or "").strip()
+        or "codex"
+    )
+    if eff_provider not in ("claude", "codex"):
+        # Style 混成は CLI 一括生成（generate_content_batch）前提。
+        # gemini/chatgpt は未対応なので codex にフォールバック。
+        print(f"  ⚠ provider={eff_provider} は混成ドラフト非対応 → codex にフォールバック")
+        eff_provider = "codex"
+
+    base = {
+        "provider": eff_provider,
+        "model": suno_cfg.get("model") or "cli-default",
+        "claude_cli": claude_cli or suno_cfg.get("claude_cli") or "claude",
+        "codex_cli": codex_cli or suno_cfg.get("codex_cli") or "codex",
+        "generation_mode": suno_cfg.get("generation_mode") or "lyrics_styles",
+        "channel_id": channel_id or "sukima_cozy",
+    }
+    if workspace:
+        base["workspace"] = workspace
+    if diversity_threshold is not None:
+        base["diversity_threshold"] = diversity_threshold
+    if diversity_retry is not None:
+        base["diversity_retry"] = diversity_retry
+    if history_limit is not None:
+        base["history_limit"] = history_limit
+
+    # mix のキー順を _MIX_GROUP_MAP の宣言順（bossa→rnb, female→male）に正規化して安定化
+    ordered_keys = [k for k in _MIX_GROUP_MAP if k in mix_items]
+    ordered_keys += [k for k in mix_items if k not in _MIX_GROUP_MAP]
+
+    all_songs = []
+    for group_key in ordered_keys:
+        count = mix_items[group_key]
+        if group_key not in _MIX_GROUP_MAP:
+            print(f"  ⚠ 未知の mix グループ '{group_key}' をスキップ（_MIX_GROUP_MAP に未定義）")
+            continue
+        style_key, vocal, genre = _MIX_GROUP_MAP[group_key]
+        style_text = cozy.get(style_key)
+        if not style_text:
+            raise ValueError(
+                f"channel_config.suno.cozy_mix.{style_key} がありません"
+                f"（mix.{group_key}={count} の Style 文が必要）。"
+            )
+        st = dict(base)
+        st["prompt"] = style_text + lyric_guide
+        print(f"[mix-draft] {genre}/{vocal} x{count}（provider={eff_provider}）", flush=True)
+        songs = generate_content_batch(st, count)
+        for x in songs:
+            x["vocal"] = vocal
+            x["genre"] = genre
+        all_songs.extend(songs)
+
+    total = sum(mix_items.get(k, 0) for k in ordered_keys if k in _MIX_GROUP_MAP)
+    print(f"\n[mix-draft] OK {len(all_songs)} songs（指定 {total} 曲）", flush=True)
+    return all_songs
+
+
 def _generate_content_once(settings, avoid_songs=None, strong=False, recent_titles=None, overused=None):
     """1曲分を生成して {title, styles, lyrics, mode} を返す（履歴記録なし・SUNO投入なし）。
 

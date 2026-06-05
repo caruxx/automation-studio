@@ -563,30 +563,55 @@ def render_dual_thumbnail(
     target_height: Optional[int] = None,
     save_psd: bool = False,
     scene_text_font: Optional[str] = None,
+    scene_text_ja: Optional[str] = None,
+    scene_text_ja_layer: Optional[str] = None,
+    scene_text_ja_font: Optional[str] = None,
+    toggle_always_visible: bool = False,
 ) -> dict:
     """Harbor Notes 仕様: 2層対立式の2枚出力（背景画像 + サムネ）。
 
     工程:
       1. PSD を開く
       2. base_image を base_layer（スマートオブジェクト）に差し替え
-      3. scene_text_layer に scene_text を設定 + 水平センター配置
-      4. 出力1: vol{N}.jpg     — 都市名OFF / PLAY LIST ON   （Premiere 背景画像用）
-      5. 出力2: サムネイル.jpg — 都市名ON  / PLAY LIST OFF  （YouTube サムネ用）
+      3. scene_text_layer に scene_text（英語シーン名）を設定 + 水平センター配置
+      3b. （任意）scene_text_ja_layer に scene_text_ja（日本語コピー）を設定
+      4. 出力1: vol{N}.jpg     — シーン文字OFF / PLAY LIST ON   （Premiere 背景画像用）
+      5. 出力2: サムネイル.jpg — シーン文字ON  / PLAY LIST OFF  （YouTube サムネ用）
+
+    toggle_always_visible=True（competitor 風 headline 常時表示）:
+      - playlist_layer（= headline 層。例 SUKIMA "Playlist"）を **両出力で常時 ON** にする。
+      - 背景/サムネの差は scene_text / scene_text_ja のオン/オフだけになる。
+      - 出力1: vol{N}.jpg     — シーン文字OFF / headline ON   （Premiere 背景画像用）
+        出力2: サムネイル.jpg — シーン文字ON  / headline ON   （YouTube サムネ用）
+      - False（既定）なら従来の「toggle 層を背景=ON / サムネ=OFF で切替」挙動と完全に同一
+        （orzz / Harbor Notes の英語専用 toggle を壊さない）。
 
     Args:
         psd_path: テンプレ PSD のパス
         base_image: スマートオブジェクト差し替え画像（AI生成 vol{N}.png 等）
-        scene_text: 都市名_テキスト 層に流し込むシーン名（例: "午後の余韻"）
+        scene_text: 英語シーン層に流し込むシーン名（例: "午後の余韻" / "MORNING LIGHT"）
         out_dir: 出力先（既定: PSD と同じフォルダ）
         vol_name: 出力ファイル名のプレフィックス（既定: PSD ファイル名から `vol\\d+` を抽出）
         base_layer: スマートオブジェクト層名
-        scene_text_layer: シーン名を入れるテキスト層名
+        scene_text_layer: シーン名（英語）を入れるテキスト層名
         playlist_layer: 表示/非表示で切り替えるテキスト層名
         quality: JPG 品質（1-100）
+        scene_text_ja: 日本語キャッチコピー（competitor 風）。None/空なら日本語層は触らない。
+        scene_text_ja_layer: 日本語コピーを入れるテキスト層名。None なら日本語層は触らない。
+        scene_text_ja_font: 日本語フォント名（例: "ヒラギノ角ゴシック W6"）。
+
+    競合・分離の方針:
+        scene_text_ja / scene_text_ja_layer が両方与えられたときだけ日本語層を操作する。
+        与えられなければ従来の英語専用 2 枚出しと完全に同一の挙動になる。
+        英語層（scene_text_layer）と日本語層（scene_text_ja_layer）が **同一名** の場合は
+        日本語で英語を上書きしてしまうため、日本語側を優先しつつ警告を出す。
 
     Returns:
         {"bg": ".../vol{N}.jpg", "thumbnail": ".../サムネイル.jpg"}
     """
+    use_ja = bool(scene_text_ja and scene_text_ja_layer)
+    if use_ja and scene_text_ja_layer == scene_text_layer:
+        print(f"⚠ 日本語層 '{scene_text_ja_layer}' が英語層と同名です。日本語コピーで上書きします（英語層は別名にしてください）")
     psd = Path(psd_path).expanduser().resolve()
     if not psd.exists():
         raise FileNotFoundError(f"PSD が存在しません: {psd}")
@@ -610,19 +635,54 @@ def render_dual_thumbnail(
     print(f"✍️  text: {scene_text_layer} = {scene_text!r} (centered{', font=' + scene_text_font if scene_text_font else ''})")
     set_text(scene_text_layer, scene_text, centered=True, font=scene_text_font)
 
+    # 日本語コピー（competitor 風）— enabled かつ層が与えられたときだけ操作。
+    # 失敗（層が見つからない/テキスト層でない等）は non-fatal で続行する
+    # （英語サムネ出力は成功させ、日本語が乗らなかったことだけ警告）。
+    if use_ja:
+        print(f"✍️  text(ja): {scene_text_ja_layer} = {scene_text_ja!r} (centered{', font=' + scene_text_ja_font if scene_text_ja_font else ''})")
+        try:
+            set_text(scene_text_ja_layer, scene_text_ja, centered=True, font=scene_text_ja_font)
+        except Exception as e:
+            print(f"⚠ 日本語層 '{scene_text_ja_layer}' へのテキスト設定に失敗（英語のみで続行）: {e}")
+            use_ja = False
+
     out_bg = out_dir_p / f"{vol_name}.jpg"
     out_thumb = out_dir_p / "サムネイル.jpg"
 
-    # 出力1: vol{N}.jpg — 都市名OFF / PLAY LIST ON
-    print(f"👁  hide '{scene_text_layer}' / show '{playlist_layer}' → {out_bg.name}")
+    ja_off_note = f" / hide '{scene_text_ja_layer}'" if use_ja else ""
+    ja_on_note = f" / show '{scene_text_ja_layer}'" if use_ja else ""
+
+    # toggle_always_visible: competitor 風に headline（playlist_layer）を両出力で常時表示。
+    #   両出力の差は scene_text / scene_text_ja のオン/オフだけになる。
+    # 既定（False）: 従来どおり背景=playlist ON / サムネ=playlist OFF で切り替える。
+    if toggle_always_visible:
+        print(f"📌 headline 常時表示モード: '{playlist_layer}' は両出力で ON")
+        bg_toggle_note = on_toggle_note = f" / show '{playlist_layer}' (always)"
+    else:
+        bg_toggle_note = f" / show '{playlist_layer}'"
+        on_toggle_note = f" / hide '{playlist_layer}'"
+
+    # 出力1: vol{N}.jpg — シーン文字OFF / headline（toggle）ON
+    print(f"👁  hide '{scene_text_layer}'{ja_off_note}{bg_toggle_note} → {out_bg.name}")
     set_layer_visible(scene_text_layer, False)
+    if use_ja:
+        try:
+            set_layer_visible(scene_text_ja_layer, False)
+        except Exception as e:
+            print(f"⚠ 日本語層 '{scene_text_ja_layer}' の非表示化に失敗（続行）: {e}")
     set_layer_visible(playlist_layer, True)
     export_image(str(out_bg), "jpg", quality, target_width=target_width, target_height=target_height)
 
-    # 出力2: サムネイル.jpg — 都市名ON / PLAY LIST OFF
-    print(f"👁  show '{scene_text_layer}' / hide '{playlist_layer}' → {out_thumb.name}")
+    # 出力2: サムネイル.jpg — シーン文字ON / headline は常時表示なら ON、従来は OFF
+    print(f"👁  show '{scene_text_layer}'{ja_on_note}{on_toggle_note} → {out_thumb.name}")
     set_layer_visible(scene_text_layer, True)
-    set_layer_visible(playlist_layer, False)
+    if use_ja:
+        try:
+            set_layer_visible(scene_text_ja_layer, True)
+        except Exception as e:
+            print(f"⚠ 日本語層 '{scene_text_ja_layer}' の表示化に失敗（続行）: {e}")
+    # 常時表示モードなら headline は ON のまま、従来モードなら OFF にする。
+    set_layer_visible(playlist_layer, True if toggle_always_visible else False)
     export_image(str(out_thumb), "jpg", quality, target_width=target_width, target_height=target_height)
 
     if save_psd:
