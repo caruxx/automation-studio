@@ -992,5 +992,441 @@ def _enqueue_youtube_upload(cmd: list[str], meta: dict, source: str = "manual") 
     return {"status": "queued", "job": _public_youtube_job(job), "position": position}
 
 
+
+# ─── D9: youtube/queue/schedule ドメインが共有するヘルパ群を app.py から昇格 ───
+# (channel registry / mp4 export 検出 / youtube upload command / upload defaults 等)
+
+def _safe_user_path(p):
+    """HOME 配下 or /Volumes 配下のみ許可。シンボリックリンク・dotfile は拒否。
+    返り値: 解決済み絶対 Path。違反時は HTTPException(403)。"""
+    try:
+        resolved = Path(p).expanduser().resolve(strict=False)
+    except Exception:
+        raise HTTPException(400, "不正なパスです")
+    if resolved.is_symlink():
+        raise HTTPException(403, "シンボリックリンクは許可されていません")
+    allowed_roots = [HOME.resolve(), Path("/Volumes").resolve()]
+    if not any(str(resolved).startswith(str(root)) for root in allowed_roots):
+        raise HTTPException(403, f"許可されていないパスです: {resolved}")
+    # ~/Library 以下は CloudStorage だけ許可（.ssh, .config など秘密情報の保護）
+    lib = (HOME / "Library").resolve()
+    if str(resolved).startswith(str(lib)):
+        cloud = (HOME / "Library/CloudStorage").resolve()
+        app_sup = (HOME / "Library/Application Support").resolve()
+        if not (str(resolved).startswith(str(cloud)) or str(resolved).startswith(str(app_sup))):
+            raise HTTPException(403, "Library 配下の機密領域へのアクセスは禁止されています")
+    return resolved
+
+
+def get_channels():
+    chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+    # 各チャンネルに icon_url 等の派生フィールドを補う（保存はしない＝読み取りのみ）
+    for ch in chs:
+        cache = ch.get("icon_cache") or {}
+        ch["icon_url"] = cache.get("url", "") or ""
+        ch.setdefault("youtube_url", "")
+        ch.setdefault("youtube_channel_id", "")
+        ch.setdefault("handle", "")
+        # 表示・FS アクセス用に現マシンのパスへ解決（保存はしない＝原文は channels.json に維持）
+        if ch.get("folder"):
+            ch["folder"] = _resolve_to_current_host(ch["folder"])
+        if not ch.get("prefix"):
+            ch["prefix"] = infer_file_prefix_from_folder(Path(ch.get("folder") or "")) or ""
+    return chs
+
+def _read_matching_timecodes_until_loop(folder: Path, vol: str = "") -> tuple[str, Optional[Path]]:
+    """対応する music_time_code_info_*.txt を読み、LOOP 行の直前まで返す。"""
+    folder = Path(folder)
+    candidates: list[Path] = []
+    vol = (vol or "").strip()
+    if vol:
+        candidates.append(folder / f"music_time_code_info_{vol}.txt")
+        try:
+            candidates.append(folder / f"music_time_code_info_{int(vol)}.txt")
+        except Exception:
+            pass
+        if vol.isdigit():
+            candidates.append(folder / f"music_time_code_info_{int(vol):02d}.txt")
+    candidates.extend(sorted(folder.glob("music_time_code_info_*.txt")))
+
+    seen: set[Path] = set()
+    for p in candidates:
+        if p in seen or not p.exists():
+            continue
+        seen.add(p)
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        out = []
+        for line in lines:
+            if "LOOP" in line.upper():
+                break
+            out.append(line.rstrip())
+        return "\n".join(out).strip(), p
+    return "", None
+
+
+YT_UPLOAD_DEFAULTS_FILE = CONFIG_DIR / "youtube_upload_defaults.json"
+
+# app_youtube.py と同じ既定値（API/UI 用にミラー）
+YT_UPLOAD_BUILTIN_DEFAULTS = {
+    "category_id": "10",
+    "default_language": "en",
+    "default_audio_language": "en",
+    "made_for_kids": False,
+    "synthetic_media": True,
+    "license": "youtube",
+    "embeddable": True,
+    "public_stats_viewable": True,
+    "notify_subscribers": True,
+    "localization_languages": ["ja", "zh-Hans", "zh-Hant", "ko"],
+}
+
+
+def _read_json_dict(p: Path, default=None) -> dict:
+    if not p.exists():
+        return dict(default or {})
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else dict(default or {})
+    except Exception:
+        return dict(default or {})
+
+
+def get_yt_upload_defaults() -> dict:
+    """YouTube アップロードのテンプレート設定を返す。
+    優先順位: builtin → グローバル(legacy) → アクティブチャンネル別 (Google Drive 同期)
+    """
+    out = dict(YT_UPLOAD_BUILTIN_DEFAULTS)
+    # 旧グローバルファイル（後方互換、マイグレーション後はチャンネル側を優先）
+    out.update(_read_json_dict(YT_UPLOAD_DEFAULTS_FILE))
+    # アクティブチャンネル別（あれば最優先）
+    cc = load_channel_config()
+    yu = cc.get("youtube_upload_defaults") or {}
+    if isinstance(yu, dict):
+        out.update(yu)
+    return out
+
+
+# ── 設定タブ用テンプレート API ──
+class UploadRequest(BaseModel):
+    folder: Optional[str] = None
+    video_name: Optional[str] = None    # folder 未指定でも video_name から解決可
+    video_path: Optional[str] = None    # 手動登録 / 外部書き出し済み MP4 を直接指定
+    title: Optional[str] = None
+    schedule: Optional[str] = None
+    privacy: Optional[str] = "private"
+    tags: Optional[List[str]] = None    # 指定時は youtube_tags.txt より優先
+    # 詳細設定（None なら defaults → override の順で解決）
+    category_id: Optional[str] = None
+    default_language: Optional[str] = None
+    default_audio_language: Optional[str] = None
+    made_for_kids: Optional[bool] = None
+    synthetic_media: Optional[bool] = None
+    license: Optional[str] = None
+    embeddable: Optional[bool] = None
+    public_stats_viewable: Optional[bool] = None
+    notify_subscribers: Optional[bool] = None
+    use_localizations: Optional[bool] = True   # False なら多言語ファイルがあっても無視
+
+
+def _build_youtube_upload_command(req: UploadRequest) -> tuple[list[str], dict]:
+    # folder を解決
+    folder = req.folder
+    if not folder and req.video_name:
+        config = get_dashboard_config()
+        folder = str(Path(config["channel_folder"]) / req.video_name)
+    if not folder:
+        raise HTTPException(400, "folder または video_name が必要です")
+
+    # 外部 SSD や手動登録済み MP4 は channel folder 内に無いので、
+    # 見つかった実体を --video-path で渡す。
+    video_path_arg: Optional[str] = None
+    try:
+        folder_path = Path(folder)
+        video_name = req.video_name or folder_path.name
+        if req.video_path:
+            explicit = _safe_user_path(req.video_path)
+            if not _is_exported_mp4_candidate(explicit):
+                raise HTTPException(400, "指定された動画ファイルが見つかりません")
+            video_path_arg = str(explicit)
+        else:
+            found = _find_exported_mp4(folder_path, video_name)
+            if found is not None:
+                video_path_arg = str(found)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # 外部ボリューム未マウント等
+        raise HTTPException(503, f"外部書き出し先が利用不可: {e}")
+    except Exception as e:
+        print(f"[upload] external path resolve failed: {e}")
+
+    cmd = [sys.executable, "-u", str(YOUTUBE_SCRIPT), folder]  # -u: unbuffered
+    if video_path_arg: cmd += ["--video-path", video_path_arg]
+    # チャンネル別トークンを明示指定（ブランドアカウント運用で複数チャンネル対応）
+    token_path = folder_path.parent / ".youtube_token.json"
+    active_ch = _channel_registry_entry_for_folder(folder_path.parent) or _active_channel_registry_entry()
+    expected_channel_id = (active_ch.get("youtube_channel_id") or "").strip()
+    expected_channel_name = active_ch.get("name") or get_dashboard_config().get("channel_name", "")
+    if token_path:
+        if token_path.exists():
+            _validate_youtube_channel_for_entry(
+                token_path, active_ch, fallback_name=expected_channel_name, raise_on_mismatch=True
+            )
+        cmd += ["--token-file", str(token_path)]
+    if expected_channel_id:
+        cmd += ["--expected-channel-id", expected_channel_id]
+    if expected_channel_name:
+        cmd += ["--expected-channel-name", expected_channel_name]
+    if req.title: cmd += ["--title", req.title]
+    if req.schedule: cmd += ["--schedule", req.schedule]
+    if req.privacy: cmd += ["--privacy", req.privacy]
+    if req.tags: cmd += ["--tags", ",".join(req.tags)]
+    if req.category_id: cmd += ["--category-id", str(req.category_id)]
+    if req.default_language: cmd += ["--default-language", req.default_language]
+    if req.default_audio_language: cmd += ["--default-audio-language", req.default_audio_language]
+    if req.made_for_kids is not None: cmd += ["--made-for-kids", str(bool(req.made_for_kids)).lower()]
+    if req.synthetic_media is not None: cmd += ["--synthetic-media", str(bool(req.synthetic_media)).lower()]
+    if req.license: cmd += ["--license", req.license]
+    if req.embeddable is not None: cmd += ["--embeddable", str(bool(req.embeddable)).lower()]
+    if req.public_stats_viewable is not None: cmd += ["--public-stats-viewable", str(bool(req.public_stats_viewable)).lower()]
+    if req.notify_subscribers is not None: cmd += ["--notify-subscribers", str(bool(req.notify_subscribers)).lower()]
+    if req.use_localizations is False: cmd += ["--no-localizations"]
+    return cmd, {
+        "folder": str(folder_path),
+        "video_name": video_name,
+        "video_path": video_path_arg or "",
+        "privacy": req.privacy or "",
+        "title": req.title or "",
+        "schedule": req.schedule or "",
+    }
+
+
+def _active_channel_registry_entry() -> dict:
+    """dashboard_config のアクティブチャンネルに対応する registry 行を返す。"""
+    cfg = get_dashboard_config()
+    active_folder = (cfg.get("channel_folder") or "").strip()
+    active_name = (cfg.get("channel_name") or "").strip()
+    for ch in get_channels():
+        if active_folder and _norm_folder(ch.get("folder") or "") == _norm_folder(active_folder):
+            return ch
+    for ch in get_channels():
+        if active_name and (ch.get("name") or "") == active_name:
+            return ch
+    return {}
+
+
+def _channel_registry_entry_for_folder(channel_folder: Path) -> dict:
+    target = _norm_folder(str(channel_folder))
+    for ch in get_channels():
+        if _norm_folder(ch.get("folder") or "") == target:
+            return ch
+    return {}
+
+
+def _read_authenticated_youtube_channel(token_path: Path) -> dict:
+    """OAuth トークンが実際に指している YouTube チャンネルを取得する。"""
+    out = {"ok": False, "channel_id": "", "channel_title": "", "custom_url": "", "channels": [], "error": ""}
+    if not token_path or not token_path.exists():
+        out["error"] = "token file not found"
+        return out
+    try:
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        import app_youtube as _yt_upload
+
+        creds = Credentials.from_authorized_user_file(str(token_path), _yt_upload.SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(GoogleAuthRequest())
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+        youtube = build("youtube", "v3", credentials=creds)
+        info = _yt_upload.get_authenticated_channel_info(youtube)
+        out.update(info)
+        out["ok"] = bool(info.get("channel_id"))
+    except Exception as e:
+        out["error"] = str(e)[:240]
+    return out
+
+
+def _validate_youtube_channel_for_entry(
+    token_path: Optional[Path],
+    channel_entry: dict,
+    *,
+    fallback_name: str = "",
+    raise_on_mismatch: bool = False,
+) -> dict:
+    """指定 token と registry 行の YouTube チャンネルを照合する。"""
+    expected_id = ((channel_entry or {}).get("youtube_channel_id") or "").strip()
+    expected_name = (channel_entry or {}).get("name") or fallback_name or ""
+    actual = _read_authenticated_youtube_channel(token_path) if token_path else {
+        "ok": False, "channel_id": "", "channel_title": "", "custom_url": "", "channels": [], "error": "token path not resolved"
+    }
+    actual_ids = {c.get("id") for c in actual.get("channels", []) if c.get("id")}
+    if expected_id:
+        matched = expected_id in actual_ids
+        verified = bool(actual.get("ok"))
+    elif expected_name and actual.get("channel_title"):
+        def _norm_name(s: str) -> str:
+            return re.sub(r"\s+", "", (s or "").strip().lower())
+        matched = _norm_name(expected_name) == _norm_name(actual.get("channel_title", ""))
+        verified = bool(actual.get("ok"))
+    else:
+        matched = None
+        verified = False
+    result = {
+        "expected_channel_id": expected_id,
+        "expected_channel_name": expected_name,
+        "actual_channel_id": actual.get("channel_id", ""),
+        "actual_channel_title": actual.get("channel_title", ""),
+        "actual_channels": actual.get("channels", []),
+        "verified": verified,
+        "matched": matched,
+        "error": actual.get("error", ""),
+    }
+    if raise_on_mismatch and expected_id and verified and not matched:
+        raise HTTPException(
+            409,
+            "YouTube 認証チャンネルが違います。"
+            f"期待: {expected_name} ({expected_id}) / "
+            f"実際: {actual.get('channel_title') or '?'} ({actual.get('channel_id') or '?'})。"
+            "このチャンネルで YouTube 再認証し、ブランドチャンネル選択画面で正しいチャンネルを選んでください。",
+        )
+    if raise_on_mismatch and not expected_id and verified and matched is False:
+        raise HTTPException(
+            409,
+            "YouTube 認証チャンネルが違います。"
+            f"期待: {expected_name} / "
+            f"実際: {actual.get('channel_title') or '?'} ({actual.get('channel_id') or '?'})。"
+            "このチャンネルに YouTube URL を登録するか、YouTube 再認証で正しいブランドチャンネルを選んでください。",
+        )
+    if raise_on_mismatch and expected_id and not verified:
+        raise HTTPException(
+            409,
+            f"YouTube 認証チャンネルを確認できません: {actual.get('error') or 'unknown'}。"
+            "誤アップロード防止のため停止しました。YouTube 再認証してください。",
+        )
+    return result
+
+
+def _channel_slug() -> str:
+    """dashboard_config.json の channel_name をスラッグ化。多チャンネル展開時の path 用。"""
+    cfg = get_dashboard_config()
+    raw = (cfg.get("channel_name") or "").strip()
+    if not raw:
+        # フォールバック: channel_folder の basename から推定
+        cf = (cfg.get("channel_folder") or "").strip()
+        if cf:
+            raw = Path(cf).name
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_")
+    return slug or "channel"
+
+
+def _resolve_external_export_dir() -> Optional[Path]:
+    """設定 export_path を {channel} などのテンプレートで解決する。
+    返り値:
+      - 設定が無ければ None（= 旧来のチャンネルフォルダ内書き出し）
+      - 設定はあるがマウント未確認なら ValueError 発生（fail-fast）
+    """
+    cfg = get_dashboard_config()
+    raw = (cfg.get("export_path") or "").strip()
+    if not raw:
+        return None
+    resolved = raw.replace("{channel}", _channel_slug())
+    p = Path(resolved).expanduser()
+    # mount チェック: /Volumes/<X>/... の場合、X までの path が存在することを必須にする。
+    # 親が /Volumes 配下のときは外部マウントとみなす。
+    parents = list(p.parents)
+    is_external_volume = any(str(par) == "/Volumes" for par in parents) or str(p).startswith("/Volumes/")
+    if is_external_volume:
+        # /Volumes/<NAME> が存在しなければ未マウント
+        try:
+            volname_parent = next((par for par in parents if str(par.parent) == "/Volumes"), None)
+            if volname_parent is None and str(p.parent) == "/Volumes":
+                volname_parent = p
+            if volname_parent is not None and not volname_parent.exists():
+                raise ValueError(f"外部ボリュームが未マウント: {volname_parent}")
+        except StopIteration:
+            pass
+    return p
+
+
+MANUAL_EXPORTED_VIDEO_FILE = "manual_exported_video.json"
+
+
+def _is_exported_mp4_candidate(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == ".mp4" and path.name != "audio-spectrum01.mp4"
+
+
+def _read_manual_exported_mp4(folder: Path) -> Optional[Path]:
+    marker = folder / MANUAL_EXPORTED_VIDEO_FILE
+    if not marker.exists():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        raw = (data.get("path") or "").strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    try:
+        safe = _safe_user_path(str(p))
+    except HTTPException:
+        return None
+    if _is_exported_mp4_candidate(safe):
+        return safe
+    return None
+
+
+def _find_exported_mp4(folder: Path, video_name: str) -> Optional[Path]:
+    """書き出し済み MP4 を複数の配置から探索。
+    1) 手動登録済み MP4: <folder>/manual_exported_video.json
+    2) チャンネルフォルダ内: <folder>/*.mp4
+    3) export_path のサブフォルダ: <export_path>/<video_name>/*.mp4
+    4) export_path 直下の flat 配置: <export_path>/<prefix>_vol<num>{suffix}.mp4
+       （旧運用との互換。vol10 が vol1 にマッチしないよう数字境界をチェック）
+    """
+    manual = _read_manual_exported_mp4(folder)
+    if manual is not None:
+        return manual
+    for f in folder.glob("*vol*.mp4"):
+        if _is_exported_mp4_candidate(f):
+            return f
+    for f in folder.glob("*.mp4"):
+        if _is_exported_mp4_candidate(f):
+            return f
+    try:
+        ext_dir = _resolve_external_export_dir()
+    except Exception:
+        ext_dir = None
+    if ext_dir is None or not ext_dir.exists():
+        return None
+    per_video = ext_dir / video_name
+    if per_video.exists():
+        for f in per_video.glob("*vol*.mp4"):
+            if _is_exported_mp4_candidate(f):
+                return f
+        for f in per_video.glob("*.mp4"):
+            if _is_exported_mp4_candidate(f):
+                return f
+    m = re.match(r"^(\d+)_", video_name)
+    if not m:
+        return None
+    num = m.group(1)
+    prefix = get_file_prefix()
+    base = f"{prefix}_vol{num}"
+    exact = ext_dir / f"{base}.mp4"
+    if _is_exported_mp4_candidate(exact):
+        return exact
+    for f in ext_dir.glob(f"{base}*.mp4"):
+        tail = f.stem[len(base):]
+        if (tail == "" or not tail[0].isdigit()) and _is_exported_mp4_candidate(f):
+            return f
+    return None
+
+
 # ─── 公開シンボル: 土台の全名（単一 _ 含む / dunder 除く）を自動 export ───
 __all__ = [n for n in dir() if not n.startswith('__')]
