@@ -1385,7 +1385,6 @@ MASTER_PROMPT_KEYS = {
     "tags_generation":       "claude_proposer.py の _TAGS_PROMPT を上書き",
     "competitor_analysis":   "app_competitor.py analyze_with_claude のシステム指示を上書き",
     "suno_from_analysis":    "app_competitor.py propose_suno_prompt の指示を上書き",
-    "flow_from_analysis":    "app_competitor.py propose_flow_prompt の指示を上書き",
     "suno_from_persona":     "app.py /api/suno/suggest-prompt のプロンプトを上書き",
     "imitate_evolve":        "Sprint 5-A 「徹底パクリ進化」分析（imitate / avoid / evolve 3 軸）",
 }
@@ -5255,10 +5254,6 @@ def _video_context(video_name: str):
     return folder, current_title, songs, persona
 
 
-class SuggestFlowPromptRequest(BaseModel):
-    context_hint: str = ""
-
-
 @app.post("/api/videos/{video_name}/suggest-suno-prompt")
 def api_suggest_suno_prompt(video_name: str):
     """競合分析の music_direction から SUNO プロンプト案を生成"""
@@ -5283,32 +5278,9 @@ def api_suggest_suno_prompt(video_name: str):
         raise HTTPException(500, str(e))
 
 
-@app.post("/api/videos/{video_name}/suggest-flow-prompt")
-def api_suggest_flow_prompt(video_name: str, req: SuggestFlowPromptRequest):
-    """競合分析の visual_direction から Flow プロンプト案を生成"""
-    cache = _load_analysis_cache_or_409()
-    analysis = cache.get("analysis", {})
-    if not analysis.get("visual_direction"):
-        raise HTTPException(409, detail={"error": "analysis_outdated", "hint": "competitor analysis を再実行してください（visual_direction が未生成）"})
-
-    _, current_title, _, _ = _video_context(video_name)
-    suno_cfg = get_suno_config()
-    cli_cmd = suno_cfg.get("claude_cli") or "claude"
-
-    from app_competitor import propose_flow_prompt
-    try:
-        result = propose_flow_prompt(
-            analysis, current_title=current_title,
-            context_hint=req.context_hint or "", cli_cmd=cli_cmd,
-        )
-        return {"status": "ok", **result}
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-
-
 @app.post("/api/videos/{video_name}/suggest-all")
 def api_suggest_all(video_name: str):
-    """楽曲・サムネ・メタ の 3 提案を一気通貫で生成（同期・60-90秒想定）"""
+    """楽曲・メタ の 2 提案を一気通貫で生成（同期・60-90秒想定。Flow サムネは D8 撤去）"""
     cache = _load_analysis_cache_or_409()
     analysis = cache.get("analysis", {})
     competitor_data = cache.get("competitor_data", {})
@@ -5320,9 +5292,9 @@ def api_suggest_all(video_name: str):
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
     existing_prompt = suno_cfg.get("prompt", "") or ""
 
-    from app_competitor import propose_with_analysis, propose_suno_prompt, propose_flow_prompt
+    from app_competitor import propose_with_analysis, propose_suno_prompt
     errors = {}
-    result = {"meta": None, "suno": None, "flow": None}
+    result = {"meta": None, "suno": None}
 
     try:
         result["suno"] = propose_suno_prompt(
@@ -5331,14 +5303,6 @@ def api_suggest_all(video_name: str):
         )
     except RuntimeError as e:
         errors["suno"] = str(e)
-
-    try:
-        result["flow"] = propose_flow_prompt(
-            analysis, current_title=current_title,
-            context_hint="", cli_cmd=cli_cmd,
-        )
-    except RuntimeError as e:
-        errors["flow"] = str(e)
 
     try:
         result["meta"] = propose_with_analysis(
@@ -6901,275 +6865,7 @@ def api_clear_youtube_history():
         YT_UPLOAD_HISTORY_FILE.unlink()
     return {"status": "ok"}
 
-# ─── API: Google Flow (画像自動生成) ───
-
-FLOW_SCRIPT = SHARED_BASE / "Python" / "flow_automation.py"
-
-
-class FlowPromptSuggestRequest(BaseModel):
-    context: str                      # "vol.78 の BGM 動画サムネ、lounge jazz、雨の夜" など
-    cli: Optional[str] = "claude"
-
-
-class FlowGenerateRequest(BaseModel):
-    prompt: Optional[str] = None
-    suggest_context: Optional[str] = None   # prompt が空なら Claude CLI で生成
-    video_name: Optional[str] = None        # 指定時は {channel}/{video_name}/flow に保存
-    output_dir: Optional[str] = None        # 明示保存先（優先）
-    reference_image: Optional[str] = None   # 参照画像パス（任意）
-    project_name: Optional[str] = None
-    aspect: Optional[str] = "16:9"
-    count: Optional[str] = "x4"
-    model: Optional[str] = "Nano Banana 2"
-    resolution: Optional[str] = "2K"
-    headless: Optional[bool] = False
-
-
-@app.post("/api/flow/login")
-async def api_flow_login():
-    """Flow の Google ログインを行うブラウザを起動。ユーザが手動ログインするまで待機。"""
-    await _ensure_not_running("flow", "Flow が既に実行中です")
-    cmd = [sys.executable, "-u", str(FLOW_SCRIPT), "--login-only"]
-    task_logs["flow"] = []
-    import datetime as _dt
-    task_meta["flow"] = {"started_at": _dt.datetime.now().isoformat(), "mode": "login"}
-    # PYTHONUNBUFFERED は flow_automation.py の subprocess 検知に使用
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1, env=env, stdin=subprocess.DEVNULL)
-    active_tasks["flow"] = proc
-    _stream_subprocess(proc, "flow")
-    return {"status": "started"}
-
-
-@app.get("/api/flow/login-status")
-def api_flow_login_status():
-    """Flow の永続化セッションの存在とログイン有効性の推定値を返す。
-    - has_profile: USER_DATA_DIR が存在
-    - has_session_cookies: Google アカウント関連の Cookie がある（SID 系）
-    - last_modified: プロファイルディレクトリの最終更新時刻 ISO
-    - status: "ok" / "stale"（30 日以上未更新）/ "missing"（プロファイル無し）
-    """
-    profile_dir = HOME / ".flow-playwright-profile"
-    if not profile_dir.exists():
-        return {
-            "status": "missing",
-            "has_profile": False,
-            "has_session_cookies": False,
-            "last_modified": None,
-            "message": "Flow に未ログイン。「🔑 ログイン」ボタンで初回セットアップしてください。",
-        }
-    # Cookie DB から SID / SAPISID 等の存在を確認（厳密ではないが有効性の目安）
-    # Chromium プロファイルのバージョンによって場所が異なる（Default/Cookies / Default/Network/Cookies）
-    has_cookies = False
-    cookie_db_candidates = [
-        profile_dir / "Default" / "Cookies",
-        profile_dir / "Default" / "Network" / "Cookies",
-    ]
-    cookie_db = next((c for c in cookie_db_candidates if c.exists()), None)
-    if cookie_db is not None:
-        try:
-            import sqlite3
-            con = sqlite3.connect(f"file:{cookie_db}?mode=ro", uri=True, timeout=2)
-            try:
-                cur = con.execute(
-                    "SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%.google.com' AND name IN ('SID','SAPISID','HSID','SSID','APISID','__Secure-1PSID')"
-                )
-                row = cur.fetchone()
-                has_cookies = bool(row and row[0] > 0)
-            finally:
-                con.close()
-        except Exception:
-            # DB ロック中（ブラウザ実行中）など → ログイン中の可能性が高いので true 扱い
-            has_cookies = True
-    import datetime as _dt
-    try:
-        mtime = profile_dir.stat().st_mtime
-        last_mod = _dt.datetime.fromtimestamp(mtime).isoformat()
-        age_days = (_dt.datetime.now().timestamp() - mtime) / 86400
-    except Exception:
-        last_mod = None
-        age_days = None
-    if not has_cookies:
-        status = "missing"
-        msg = "セッション Cookie が見つかりません。「🔑 ログイン」で再ログインしてください。"
-    elif age_days is not None and age_days > 30:
-        status = "stale"
-        msg = f"セッションが {int(age_days)} 日前のもの。失効している可能性があります。"
-    else:
-        status = "ok"
-        msg = "Flow にログイン済み。"
-    return {
-        "status": status,
-        "has_profile": True,
-        "has_session_cookies": has_cookies,
-        "last_modified": last_mod,
-        "age_days": age_days,
-        "message": msg,
-    }
-
-
-@app.post("/api/flow/suggest-prompt")
-def api_flow_suggest_prompt(req: FlowPromptSuggestRequest):
-    """Claude CLI で Flow 用の画像プロンプトを生成して返す（同期 · 即時）。"""
-    try:
-        sys.path.insert(0, str(SHARED_BASE / "Python"))
-        from flow_automation import suggest_prompt_via_claude
-        prompt = suggest_prompt_via_claude(req.context, cli_cmd=req.cli or "claude")
-        return {"ok": True, "prompt": prompt}
-    except Exception as e:
-        raise HTTPException(500, f"Claude プロンプト生成失敗: {e}")
-
-
-@app.post("/api/flow/generate")
-async def api_flow_generate(req: FlowGenerateRequest):
-    await _ensure_not_running("flow", "Flow が既に実行中です")
-
-    # 保存先の解決（test_flow.py の 3バッチモードと統一して Image/ 配下に保存）
-    out_dir = req.output_dir
-    if not out_dir and req.video_name:
-        cfg = get_dashboard_config()
-        out_dir = str(Path(cfg["channel_folder"]) / req.video_name / "Image")
-
-    # プロジェクト名: 指定 > video_name > 日時
-    project_name = req.project_name or req.video_name or "orzz_auto"
-
-    cmd = [sys.executable, "-u", str(FLOW_SCRIPT),
-           "--aspect", req.aspect or "16:9",
-           "--count", req.count or "x4",
-           "--model", req.model or "Nano Banana 2",
-           "--resolution", req.resolution or "2K",
-           "--project-name", project_name,
-           "--no-wait"]
-    if req.headless:
-        cmd.append("--headless")
-    if req.prompt:
-        cmd += ["--prompt", req.prompt]
-    elif req.suggest_context:
-        cmd += ["--suggest-prompt", req.suggest_context]
-    else:
-        raise HTTPException(400, "prompt または suggest_context が必要です")
-    if out_dir:
-        cmd += ["--output-dir", out_dir]
-    if req.reference_image:
-        ref_p = Path(req.reference_image).expanduser()
-        if not ref_p.exists():
-            raise HTTPException(404, f"参照画像が見つかりません: {ref_p}")
-        cmd += ["--reference-image", str(ref_p)]
-
-    task_logs["flow"] = []
-    import datetime as _dt
-    task_meta["flow"] = {
-        "started_at": _dt.datetime.now().isoformat(),
-        "mode": "generate",
-        "video_name": req.video_name or "",
-        "output_dir": out_dir or "",
-        "project_name": project_name,
-    }
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    active_tasks["flow"] = proc
-    _stream_subprocess(proc, "flow")
-    return {"status": "started", "output_dir": out_dir, "project_name": project_name}
-
-
-@app.post("/api/flow/stop")
-def api_flow_stop():
-    proc = active_tasks.get("flow")
-    if proc and proc.returncode is None:
-        proc.terminate()
-        return {"status": "stopped"}
-    return {"status": "not_running"}
-
-
-@app.get("/api/flow/status")
-def api_flow_status():
-    proc = active_tasks.get("flow")
-    running = proc is not None and proc.returncode is None
-    logs = task_logs.get("flow", [])
-    meta = task_meta.get("flow", {})
-    return {"running": running, "logs": logs[-80:], "meta": meta}
-
-
-# ─── API: Flow テスト (test_flow.py, 3バッチ+WEBアップロード) ───
-
-TEST_FLOW_SCRIPT = SHARED_BASE / "Python" / "test_flow.py"
-
-
-class FlowTestRunRequest(BaseModel):
-    video_name: str
-    image_base64: str                       # data:image/png;base64,... または素の base64
-    image_filename: Optional[str] = "flow.png"
-    prompt1: Optional[str] = None           # 1バッチ目（参照画像ありで生成）
-    prompt2: Optional[str] = None           # 2バッチ目（＋パネルから既存アセット採用）
-    project_name: Optional[str] = None
-    headless: Optional[bool] = False
-
-
-@app.post("/api/flow/test-run")
-async def api_flow_test_run(req: FlowTestRunRequest):
-    """test_flow.py を WEB アップロード画像と共に起動。
-    保存先は channel_folder/{video_name}/Image/ に自動解決される。"""
-    await _ensure_not_running("flow", "Flow が既に実行中です")
-
-    cfg = get_dashboard_config()
-    channel = cfg.get("channel_folder") or ""
-    if not channel:
-        raise HTTPException(400, "channel_folder が未設定です（設定タブで指定してください）")
-    video_folder = Path(channel) / req.video_name
-    if not video_folder.exists():
-        raise HTTPException(404, f"動画フォルダが存在しません: {video_folder}")
-
-    # base64 → 一時ファイル
-    import base64, datetime as _dt, tempfile
-    payload = req.image_base64
-    if "," in payload and payload.strip().startswith("data:"):
-        payload = payload.split(",", 1)[1]
-    try:
-        raw = base64.b64decode(payload)
-    except Exception as e:
-        raise HTTPException(400, f"image_base64 のデコードに失敗: {e}")
-    if not raw:
-        raise HTTPException(400, "image_base64 が空です")
-
-    ext = Path(req.image_filename or "flow.png").suffix or ".png"
-    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    tmp_dir = Path(tempfile.gettempdir())
-    upload_path = tmp_dir / f"flow_upload_{req.video_name}_{ts}{ext}"
-    upload_path.write_bytes(raw)
-
-    # プロジェクト名未指定時は video_name をそのまま使う
-    project_name = (req.project_name or req.video_name).strip()
-    cmd = [
-        sys.executable, "-u", str(TEST_FLOW_SCRIPT),
-        "--video-name", req.video_name,
-        "--flow-png", str(upload_path),
-        "--project-name", project_name,
-    ]
-    if req.prompt1:
-        cmd += ["--prompt1", req.prompt1]
-    if req.prompt2:
-        cmd += ["--prompt2", req.prompt2]
-    if req.headless:
-        cmd.append("--headless")
-
-    task_logs["flow"] = []
-    task_meta["flow"] = {
-        "started_at": _dt.datetime.now().isoformat(),
-        "mode": "test-run",
-        "video_name": req.video_name,
-        "output_dir": str(video_folder / "Image"),
-        "upload_path": str(upload_path),
-        "image_bytes": len(raw),
-    }
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    active_tasks["flow"] = proc
-    _stream_subprocess(proc, "flow")
-    return {
-        "status": "started",
-        "output_dir": str(video_folder / "Image"),
-        "upload_path": str(upload_path),
-    }
-
+# ─── 画像生成: Flow/Midjourney は D8 で撤去（codex 一本化 = codex_imagegen.py）───
 
 # ─── API: ChatGPT / Codex 画像生成（並列） ───
 
@@ -8198,24 +7894,15 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
 
     if not req.video_names:
         raise HTTPException(400, "video_names が空です")
-    provider = (req.provider or "codex").strip().lower()
-    if provider not in ("codex", "flow", "midjourney"):
-        raise HTTPException(400, f"未対応 provider: {provider}")
-
-    # provider=midjourney は token 必須
-    if provider == "midjourney":
-        if not _get_midjourney_token():
-            raise HTTPException(400, "Midjourney プロバイダーには AceDataCloud API token が必要です。設定で保存してください。")
+    provider = "codex"  # D8: Flow/MJ 撤去により codex 一本化
 
     # 多重起動防止
     busy_self = active_tasks.get("channel_thumbnail")
     if busy_self and not getattr(busy_self, "_ct_done", False):
         raise HTTPException(409, "channel_thumbnail バッチが既に実行中です")
-    if provider in ("codex", "flow"):
-        sub_busy_key = "flow" if provider == "flow" else "codex_imagegen"
-        sub_proc = active_tasks.get(sub_busy_key)
-        if sub_proc and sub_proc.returncode is None:
-            raise HTTPException(409, f"{sub_busy_key} が既に実行中です。先に停止してください。")
+    sub_proc = active_tasks.get("codex_imagegen")
+    if sub_proc and sub_proc.returncode is None:
+        raise HTTPException(409, "codex_imagegen が既に実行中です。先に停止してください。")
 
     cfg = get_dashboard_config()
     ch_folder = Path(cfg.get("channel_folder", "")).expanduser()
@@ -8385,34 +8072,8 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                     start_index=start_idx,
                 )
 
-                # 7) サブプロセスキック (Codex / Flow / Midjourney REST)
-                if provider == "midjourney":
-                    # Midjourney は AceDataCloud REST API を直接叩く (subprocess なし)
-                    import app_midjourney as _mj
-                    mj_token = _get_midjourney_token()
-                    mj_aspect = (req.aspect or "16:9").strip()
-                    # 5要素プロンプトを (prompt, filename) ペアに変換
-                    mj_prompts = [
-                        (it["prompt"], it["filename"] + ".png")
-                        for it in items
-                    ]
-                    logs.append(f"🎨 Midjourney 経由で {len(mj_prompts)} 件を生成 (mode=fast, aspect={mj_aspect})")
-                    # log_fn でリアルタイムに task_logs へ書き込み
-                    mj_results = _mj.imagine_batch(
-                        mj_prompts, image_dir,
-                        api_token=mj_token,
-                        aspect_ratio=mj_aspect,
-                        mode="fast",
-                        timeout_sec=max(60, int(req.timeout_sec or 900)),
-                        log_fn=lambda m: logs.append(f"  {m}"),
-                    )
-                    mj_ok = sum(1 for r in mj_results if r.get("ok"))
-                    logs.append(f"  ✓ Midjourney 完了: 成功 {mj_ok}/{len(mj_results)}")
-                    # quota/auth エラーは即座にバッチ全体を中断
-                    if any(r.get("error_kind") in ("quota", "auth") for r in mj_results):
-                        meta["stop_requested"] = True
-                        logs.append("⏹ Midjourney 認証/クォータエラーのため後続をスキップ")
-                elif provider == "codex":
+                # 7) サブプロセスキック (Codex 一本化・D8 で Flow/MJ 撤去)
+                if provider == "codex":
                     prompts_text = "\n\n".join(f"{it['prompt']}::{it['filename']}" for it in items)
                     aspect = (req.aspect or "16:9").strip()
                     quality = (req.quality or "medium").strip()
@@ -8465,43 +8126,6 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                             break
                         await asyncio.sleep(2)
                     logs.append(f"  ✓ Codex rc={sub.returncode}, {len(items)} prompts (v{start_idx}〜v{start_idx+n_per_video-1})")
-                else:
-                    # Flow: 提案ベースで複数 prompt を直列で投げるのは現実的でないため、
-                    # 5要素プロンプト全件を 1 つに連結して 1 Flow セッションで N 枚 (--count) 生成
-                    combined_prompt = items[0]["prompt"]   # Flow は 1 prompt のみ受付
-                    aspect = (req.aspect or "16:9").strip()
-                    cmd = [
-                        sys.executable, "-u", str(FLOW_SCRIPT),
-                        "--aspect", aspect,
-                        "--count", f"x{n_per_video}",
-                        "--model", "Nano Banana 2",
-                        "--resolution", "2K",
-                        "--project-name", f"channelthumb_{vn}",
-                        "--prompt", combined_prompt,
-                        "--output-dir", str(image_dir),
-                        "--no-wait",
-                    ]
-                    for rp in ref_paths[:1]:   # Flow は参照画像 1 枚まで
-                        cmd += ["--reference-image", str(rp)]
-                    sub = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                            text=True, bufsize=1)
-                    active_tasks["flow"] = sub
-                    task_meta["flow"] = {
-                        "started_at": _dt.datetime.now().isoformat(),
-                        "mode": "channel_thumbnail",
-                        "video_name": vn,
-                        "output_dir": str(image_dir),
-                        "project_name": f"channelthumb_{vn}",
-                    }
-                    task_logs["flow"] = []
-                    _stream_subprocess(sub, "flow")
-                    while sub.returncode is None:
-                        if meta.get("stop_requested"):
-                            try: sub.terminate()
-                            except Exception: pass
-                            break
-                        await asyncio.sleep(2)
-                    logs.append(f"  ✓ Flow rc={sub.returncode}")
 
                 # 8) 生成完了直後の Vision スコアリング + state.json 保存
                 import app_thumbnail_state as _tstate
@@ -8702,51 +8326,6 @@ def api_channel_thumbnail_status():
 
 
 # ─── API: Midjourney (AceDataCloud) token 管理 ─────
-
-class MidjourneyTokenRequest(BaseModel):
-    token: str
-
-
-def _get_midjourney_token() -> str:
-    """dashboard_config.acedata_api_token を取得。"""
-    cfg = get_dashboard_config()
-    return (cfg.get("acedata_api_token") or "").strip()
-
-
-@app.get("/api/midjourney/token-status")
-def api_midjourney_token_status():
-    """トークンが保存されているか + 末尾のみマスク表示。"""
-    tok = _get_midjourney_token()
-    if not tok:
-        return {"configured": False, "preview": ""}
-    return {
-        "configured": True,
-        "preview": (tok[:4] + "***" + tok[-4:]) if len(tok) >= 12 else "***",
-    }
-
-
-@app.put("/api/midjourney/token")
-def api_midjourney_token_save(req: MidjourneyTokenRequest):
-    """token を dashboard_config に保存。空文字なら削除。"""
-    cfg = get_dashboard_config()
-    tok = (req.token or "").strip()
-    if tok:
-        cfg["acedata_api_token"] = tok
-    else:
-        cfg.pop("acedata_api_token", None)
-    save_dashboard_config_smart(cfg)
-    return {"ok": True, "configured": bool(tok)}
-
-
-@app.post("/api/midjourney/test")
-def api_midjourney_test():
-    """token の疎通テスト。"""
-    import app_midjourney as _mj
-    tok = _get_midjourney_token()
-    if not tok:
-        return {"ok": False, "error": "token が未設定"}
-    return _mj.test_token(tok)
-
 
 @app.get("/api/channel-thumbnail/readiness")
 def api_channel_thumbnail_readiness():
@@ -9137,19 +8716,16 @@ def api_series_proposal_delete(proposal_id: str):
 
 @app.post("/api/series/generate")
 async def api_series_generate(req: SeriesGenerateRequest):
-    """選択された提案を Flow または Codex で順次生成。
+    """選択された提案を codex で順次生成（D8: Flow 撤去により codex 一本化）。
 
     保存先: <channel_folder>/_series_drafts/{slug}/Image/
-    Flow は同時実行不可なので 1 件ずつ起動 → 完了待ち → 次へ、と直列で回す。
     Codex は内部で並列なので 1 提案ずつ叩けば十分。
     """
     import app_series as _ser
 
     if not req.ids:
         raise HTTPException(400, "ids が空です")
-    provider = (req.provider or "flow").strip().lower()
-    if provider not in ("flow", "codex"):
-        raise HTTPException(400, f"未対応 provider: {provider}")
+    provider = "codex"  # D8: Flow 撤去により codex 一本化
 
     cache = _ser.load_proposals_cache()
     proposals_by_id = {p.get("id"): p for p in cache.get("proposals", [])}
@@ -9162,11 +8738,10 @@ async def api_series_generate(req: SeriesGenerateRequest):
     if not ch_folder.is_dir():
         raise HTTPException(500, f"channel_folder が無効です: {ch_folder}")
 
-    # Flow / Codex で既に動いていたら拒否
-    busy_key = "flow" if provider == "flow" else "codex_imagegen"
-    proc = active_tasks.get(busy_key)
+    # Codex が既に動いていたら拒否
+    proc = active_tasks.get("codex_imagegen")
     if proc and proc.returncode is None:
-        raise HTTPException(409, f"{busy_key} が既に実行中です")
+        raise HTTPException(409, "codex_imagegen が既に実行中です")
 
     # バックグラウンドで直列実行
     task_logs["series_generate"] = []
@@ -9197,51 +8772,7 @@ async def api_series_generate(req: SeriesGenerateRequest):
                 continue
 
             try:
-                if provider == "flow":
-                    cmd = [sys.executable, "-u", str(FLOW_SCRIPT),
-                           "--aspect", req.aspect or "16:9",
-                           "--count", f"x{int(req.count_per_proposal or 4)}",
-                           "--model", "Nano Banana 2",
-                           "--resolution", "2K",
-                           "--project-name", f"series_{slug}",
-                           "--prompt", prompt_en,
-                           "--output-dir", str(out_dir),
-                           "--no-wait"]
-                    if req.headless:
-                        cmd.append("--headless")
-                    # Picked benchmark サムネを参照画像として注入（先頭 1 枚）
-                    if req.use_benchmark_picked:
-                        try:
-                            import app_benchmark_thumbnail as _bt
-                            picked_paths = _bt.get_picked_paths(limit=1)
-                            if picked_paths:
-                                cmd += ["--reference-image", picked_paths[0]]
-                                task_logs["series_generate"].append(
-                                    f"  📎 reference: {Path(picked_paths[0]).name}"
-                                )
-                            else:
-                                task_logs["series_generate"].append(
-                                    "  ⚠ picked サムネ無し → 参照画像なしで生成"
-                                )
-                        except Exception as e:
-                            task_logs["series_generate"].append(f"  ⚠ picked 参照失敗: {e}")
-                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                            text=True, bufsize=1)
-                    active_tasks["flow"] = proc
-                    task_meta["flow"] = {
-                        "started_at": _dt.datetime.now().isoformat(),
-                        "mode": "series",
-                        "video_name": "",
-                        "output_dir": str(out_dir),
-                        "project_name": f"series_{slug}",
-                    }
-                    # Flow ログを task_logs["flow"] に流しつつ、終了まで待つ（直列）
-                    task_logs["flow"] = []
-                    _stream_subprocess(proc, "flow")
-                    while proc.returncode is None:
-                        await asyncio.sleep(2)
-                    task_logs["series_generate"].append(f"  ✓ Flow rc={proc.returncode}")
-                else:
+                if True:  # D8: Flow 撤去により codex 一本化
                     # Codex: 1 行 1 件、ファイル名サジェスト付き
                     fname_seed = slug
                     prompt_line = f"{prompt_en}::{fname_seed}"

@@ -1,13 +1,13 @@
 # Automation Studio
 
-クリエイター向け制作パイプライン自動化ダッシュボード。SUNO・Adobe Premiere Pro・Adobe Media Encoder・YouTube・Google Flow を 1 つの Web UI から連動実行できます。
+クリエイター向け制作パイプライン自動化ダッシュボード。SUNO・Adobe Premiere Pro・Adobe Media Encoder・YouTube・OpenAI 画像生成 を 1 つの Web UI から連動実行できます。
 
 | 自動化対象 | 主な機能 |
 |---|---|
 | 🎵 SUNO | プロンプト生成（Claude/Gemini/ChatGPT）→ ループ生成 → ワンクリック DL → フェード/ゲイン正規化 |
 | 🖼 サムネ制作 | ベンチマーク参照 → AI 背景画像生成 → **Photoshop で文字入れ**（`vol{N}.jpg`＋`サムネイル.jpg` を2枚出し）。一気通貫の正規フロー |
 | ✍️ 文字入れ設定 | サムネの英大文字フレーズ（シーンテキスト）を**チャンネル別**にトーン/例/禁止語で設定、ベンチマークから提案も可 |
-| 🎨 AI 画像生成 | Google Flow（Nano Banana 2・参照画像・x4・2K DL）/ OpenAI gpt-image-2 を背景・AI サムネ生成に利用 |
+| 🎨 AI 画像生成 | OpenAI gpt-image-2（API・並列生成・2K）を背景・AI サムネ生成に利用（codex 一本化。Flow / Midjourney は D8 で撤去） |
 | 🎬 Premiere Pro | JSX 経由での音源・画像自動配置 + シーケンス組み立て |
 | 📤 Adobe Media Encoder | キュー監視、書き出し進捗のリアルタイム表示、外部 SSD への自動移動 |
 | 📝 メタ生成 | タイトル候補・説明文・タグの AI 生成 |
@@ -31,7 +31,7 @@ Windows 対応は将来検討中です。
 ```bash
 git clone https://github.com/caruxx/automation-studio.git
 cd automation-studio
-pipx install ".[all]"   # SUNO/Flow/Premiere 全部入り
+pipx install ".[all]"   # SUNO/Premiere 全部入り
 # または最小:
 pipx install .          # Web ダッシュボードのみ
 ```
@@ -68,7 +68,7 @@ automation-studio       # サーバー起動 → http://localhost:8888
 | ベンチマーク分析 | 競合チャンネルのプロファイル取得・統合プロンプト生成 |
 | 自動化 | パイプライン全自動実行、AME 書き出しキュー監視、スケジューラ |
 | 基本設定 | API キー・チャンネル・SUNO 設定・ベンチマーク条件 |
-| 詳細設定 | プロンプト本文・SUNO/Flow 詳細パラメータ・スケジュール・リモートアクセス |
+| 詳細設定 | プロンプト本文・SUNO 詳細パラメータ・スケジュール・リモートアクセス |
 
 ## サムネ制作（背景 → 文字入れ）
 
