@@ -42,10 +42,12 @@ AI が生成した BGM を編集・投稿する YouTube チャンネル運営を
 │  └──────────────┘  └──────────────────────────────────────┘  │
 └────────────────────┬─────────────────────────────────────────┘
                      │ HTTP / WebSocket
-          ┌──────────▼─────────┐
-          │  FastAPI (app.py)  │
-          │  /api/videos etc.  │
-          └────┬───────┬───────┘
+          ┌──────────▼──────────────────────┐
+          │  FastAPI: app.py (組み立て+runtime core)│
+          │  + app_core.py (共通土台)             │
+          │  + routers/ (benchmark/images/        │
+          │     premiere_photoshop/youtube)        │
+          └────┬───────┬───────────────────────┘
                │       │
        ┌───────▼──┐  ┌─▼──────────────────┐
        │ 子プロセス │  │ファイル IO           │
@@ -79,7 +81,13 @@ _claude/                         # プロジェクトルート
 ├── SPEC.md                      # 本文書
 ├── CLAUDE.md                    # Claude Code 向け共通指示
 ├── Python/                      # サーバー・CLI スクリプト
-│   ├── app.py                   # FastAPI エントリポイント
+│   ├── app.py                   # FastAPI 組み立て役 + runtime core（middleware / startup hooks / worker 基盤[export・render queue / APScheduler / 公開ゲート]）※D9 で 12,649→7,783行
+│   ├── app_core.py              # 共通土台（パス/設定/config ローダ/共有可変グローバル/タスク・subprocess・youtube queue ヘルパ/共有定数）※D9 抽出
+│   ├── routers/                 # ドメイン別 APIRouter（D9 段階分割）
+│   │   ├── benchmark.py         #   ベンチ分析軸（thumbnail/concept/title/description）
+│   │   ├── images.py            #   codex 画像/背景/channel-thumbnail/サムネ承認/series
+│   │   ├── premiere_photoshop.py #  Premiere JSX / Photoshop(UXP) / scene-text
+│   │   └── youtube.py           #   YouTube API/upload/履歴/説明文/通知
 │   ├── start.sh                 # 起動スクリプト
 │   ├── setup.sh                 # 依存パッケージ導入
 │   ├── suno_auto_create.py      # SUNO 自動生成 + workspace + DL（fetch インターセプタ）
