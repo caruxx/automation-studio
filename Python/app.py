@@ -3990,7 +3990,7 @@ async def api_create_from_benchmark(req: CreateFromBenchmarkRequest):
             cache = _ac.load_cache() or {}
             analysis = cache.get("analysis", {})
             if analysis.get("music_direction"):
-                from app_competitor import propose_suno_prompt
+                from app_benchmark_analyze import propose_suno_prompt
                 suno_cfg_local = get_suno_config()
                 cli_cmd = suno_cfg_local.get("claude_cli") or "claude"
                 proposal = propose_suno_prompt(analysis, cli_cmd=cli_cmd)
@@ -5267,7 +5267,7 @@ def api_suggest_suno_prompt(video_name: str):
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
     existing_prompt = suno_cfg.get("prompt", "") or ""
 
-    from app_competitor import propose_suno_prompt
+    from app_benchmark_analyze import propose_suno_prompt
     try:
         result = propose_suno_prompt(
             analysis, current_title=current_title,
@@ -5292,7 +5292,7 @@ def api_suggest_all(video_name: str):
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
     existing_prompt = suno_cfg.get("prompt", "") or ""
 
-    from app_competitor import propose_with_analysis, propose_suno_prompt
+    from app_benchmark_analyze import propose_with_analysis, propose_suno_prompt
     errors = {}
     result = {"meta": None, "suno": None}
 
@@ -5426,7 +5426,7 @@ async def api_thumbnails_upload(files: List[UploadFile] = File(...)):
 @app.post("/api/analysis/thumbnails")
 def api_analyze_thumbnails(req: ThumbnailAnalysisRequest):
     """競合サムネ画像を Claude Vision で要素抽出。**コピー生成ではなく要素抽出→自チャンネルへの落とし込み**が目的。"""
-    from app_competitor import analyze_thumbnail_elements
+    from app_benchmark_analyze import analyze_thumbnail_elements
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
     try:

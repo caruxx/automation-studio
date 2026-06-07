@@ -494,7 +494,7 @@ def step_plan(vol: int, folder: Path, via_api: bool, **kw):
             print("  ⚠️ analysis.music_direction が空。スキップ")
             return True
         sys.path.insert(0, str(BASE))
-        from app_competitor import propose_suno_prompt
+        from app_benchmark_analyze import propose_suno_prompt
 
         best_plan = None
         best_score = -1.0
