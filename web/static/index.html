@@ -272,6 +272,20 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .ap-ch-name{font-weight:var(--font-semibold);min-width:120px}
 .ap-toggle{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
 .ap-prio-input{width:70px}
+/* チャンネル一元管理モーダル（右上セレクタ → 全チャンネルを管理） */
+.chmg-list{display:flex;flex-direction:column;gap:var(--space-2)}
+.chmg-row{display:flex;flex-direction:column;gap:var(--space-2);padding:var(--space-3);background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-md)}
+.chmg-row.active{border-color:var(--accent-primary)}
+.chmg-main{display:flex;align-items:center;gap:var(--space-3);min-width:0}
+.chmg-icon{width:36px;height:36px;border-radius:var(--radius-full);object-fit:cover;flex-shrink:0}
+.chmg-icon.ph{background:var(--bg-overlay);display:flex;align-items:center;justify-content:center;color:var(--text-secondary)}
+.chmg-info{min-width:0;flex:1}
+.chmg-name{font-weight:var(--font-semibold);color:var(--text-primary);display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.chmg-persona{font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chmg-controls{display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap}
+.chmg-ctl{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-sm);color:var(--text-secondary);cursor:pointer}
+.chmg-prio{width:64px}
+.chmg-actions{display:flex;gap:var(--space-2);flex-wrap:wrap}
 /* U5: サイドバー ツール区切りラベル */
 .nav-section-label{font-size:10px;color:var(--text-tertiary);padding:10px 12px 3px;margin-top:6px;font-weight:600;letter-spacing:.04em;border-top:1px solid var(--border-default,rgba(127,127,127,.15))}
 /* 詳細設定: プロンプト個別折りたたみ */
@@ -4181,15 +4195,67 @@ function openAddChannelFlow(){
   },300);
 }
 
-/* ドロップダウンから「全チャンネルを管理」へ */
-function openChannelMgmt(){
-  go('settings');
-  setTimeout(()=>{
-    const card=document.querySelector('[data-cfg-card="channel-management"]');
-    const grp=card?.closest('details.settings-group');
-    if(grp)grp.open=true;
-    card?.scrollIntoView({behavior:'smooth',block:'start'});
-  },300);
+/* ドロップダウンから「全チャンネルを管理」→ 一元管理モーダル（横断ビュー） */
+async function openChannelMgmt(){
+  let data;
+  try{
+    const r=await fetch('/api/channels/overview');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    data=await r.json();
+  }catch(e){toast('チャンネル情報の取得に失敗: '+((e&&e.message)||e),'e');return;}
+  const chans=data.channels||[];
+  const activeFolder=data.active_folder||'';
+  const rows=chans.map(c=>{
+    const isA=c.folder===activeFolder;
+    const init=esc((c.name||'?')[0].toUpperCase());
+    const icon=c.icon_url
+      ? `<img class="chmg-icon" src="${esc(c.icon_url)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'chmg-icon ph',textContent:'${init}'}))">`
+      : `<div class="chmg-icon ph">${init}</div>`;
+    const personaTxt=(c.persona||'').trim();
+    const persona=personaTxt
+      ? esc(personaTxt.slice(0,56))+(personaTxt.length>56?'…':'')
+      : '<span style="color:var(--accent-warning)">未設定</span>';
+    return `<div class="chmg-row${isA?' active':''}">
+      <div class="chmg-main">
+        ${icon}
+        <div class="chmg-info">
+          <div class="chmg-name">${esc(c.name)}${isA?' <span class="badge badge-success" style="font-size:var(--text-xs)">アクティブ</span>':''}${c.prefix?` <span class="badge badge-neutral" style="font-size:var(--text-xs)">${esc(c.prefix)}</span>`:''}</div>
+          <div class="chmg-persona" title="${esc(personaTxt)}">ペルソナ: ${persona}　/　ベンチマーク先: ${c.rivals_count}件</div>
+        </div>
+      </div>
+      <div class="chmg-controls">
+        <label class="ap-toggle chmg-ctl" title="自走運用 (autopilot)。ON で次の tick から無人実行されます">
+          <input type="checkbox" ${c.autopilot_enabled?'checked':''} onchange="toggleAutopilot('${esc(c.channel_id)}',this.checked)"> 自走運用
+        </label>
+        <label class="chmg-ctl" title="優先度（大きいほど優先・quota残×優先度で配分）">優先度
+          <input type="number" class="fi chmg-prio" value="${c.priority}" min="0" onchange="saveChannelPriority('${esc(c.channel_id)}',this.value)">
+        </label>
+      </div>
+      <div class="chmg-actions">
+        <button class="btn btn-secondary btn-sm" onclick="editChannelPersona('${esc(c.channel_id)}')" title="このチャンネルに切り替えてペルソナ／ベンチマーク先を編集">ペルソナ／ベンチ編集</button>
+        ${!isA?`<button class="btn btn-ghost btn-sm" onclick="switchCh('${esc(c.channel_id)}');closeModal()">切替</button>`:''}
+        <button class="btn btn-ghost btn-sm" onclick="editChannelUrl('${esc(c.channel_id)}')" title="YouTube URL を編集">URL</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="deleteChannel('${esc(c.channel_id)}','${esc(c.name)}')">削除</button>
+      </div>
+    </div>`;
+  }).join('');
+  const h=`<div class="mo-head"><div class="mo-title">チャンネル一元管理 <span style="font-size:var(--text-sm);color:var(--text-tertiary);font-weight:normal">（${chans.length}件・自走／優先度は即保存）</span></div><button class="mo-x" onclick="closeModal()">×</button></div>
+  <div class="mo-body">
+    <div class="chmg-list">${rows||'<div class="fh">チャンネル未登録。下のボタンから追加できます。</div>'}</div>
+    <div class="btns" style="margin-top:var(--space-4);justify-content:space-between;flex-wrap:wrap;gap:var(--space-2)">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();openAddChannelFlow()">＋ チャンネルを追加</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal();go('autopilot')">自走運用パネルを開く →</button>
+    </div>
+  </div>`;
+  modal(h);
+}
+
+/* 一元管理 → 対象 ch に切り替えてベンチマークページのペルソナ／ライバル編集へ */
+async function editChannelPersona(id){
+  closeModal();
+  await switchCh(id);
+  go('benchmark');
+  setTimeout(()=>document.getElementById('cfgPersona')?.scrollIntoView({behavior:'smooth',block:'center'}),350);
 }
 
 /* ==== Config ==== */
@@ -4888,7 +4954,7 @@ async function toggleAutopilot(channelId, enabled){
     const r=await fetch('/api/workers/autopilot',{method:'PUT',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({channel_id:channelId,enabled:enabled})});
     if(!r.ok){toast('保存失敗 (HTTP '+r.status+')','e');return;}
-    toast('自走運用設定を保存しました（'+(enabled?'ON':'OFF')+'・実起動はしません）','s');
+    toast(enabled?'自走運用を ON にしました（次の tick から無人実行されます）':'自走運用を OFF にしました','s');
   }catch(e){toast('保存失敗: '+((e&&e.message)||e),'e');}
 }
 

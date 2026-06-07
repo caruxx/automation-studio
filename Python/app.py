@@ -1206,6 +1206,38 @@ def api_list_channels():
             ch["prefix"] = infer_file_prefix_from_folder(Path(ch.get("folder") or "")) or ""
     return {"channels": chs}
 
+@app.get("/api/channels/overview")
+def api_channels_overview():
+    """全チャンネル一元管理ビュー用データ。各 ch の icon/url/prefix に加え、per-ch 設定
+    （persona 要約 / rival_channels 件数 / priority / autopilot_enabled）をまとめて返す。
+    ⚠ 読み取りのみ・アクティブ ch は切り替えない（横断管理用）。"""
+    chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+    out = []
+    for ch in chs:
+        folder = _resolve_to_current_host(ch.get("folder") or "")
+        cc = {}
+        if folder and Path(folder).exists():
+            cc = load_json(Path(folder) / _CHANNEL_CONFIG_FILENAME, {})
+        cache = ch.get("icon_cache") or {}
+        persona = (cc.get("persona") or "").strip()
+        rivals = cc.get("rival_channels") or []
+        out.append({
+            "channel_id": ch.get("id", ""),
+            "name": ch.get("name", ""),
+            "folder": folder,
+            "prefix": ch.get("prefix") or infer_file_prefix_from_folder(Path(folder or "")) or "",
+            "icon_url": cache.get("url", ""),
+            "youtube_url": ch.get("youtube_url", ""),
+            "handle": ch.get("handle", ""),
+            "persona": persona,
+            "persona_set": bool(persona),
+            "rivals_count": len(rivals),
+            "priority": int(cc.get("priority", 100)) if str(cc.get("priority", "")).strip() else 100,
+            "autopilot_enabled": bool(cc.get("autopilot_enabled", False)),
+        })
+    active_folder = _resolve_to_current_host(get_dashboard_config().get("channel_folder") or "")
+    return {"channels": out, "active_folder": active_folder}
+
 class ChannelResolveRequest(BaseModel):
     url: str
 
@@ -7675,12 +7707,21 @@ def _build_orchestrator_channels():
             if not info:
                 continue
             vols.append({"vol": info["num"], "name": d.name, "folder": str(d)})
+        # ⚠ autopilot_enabled / priority は per-ch `.app_channel_config.json` が真実源
+        # （_save_channel_scalar の保存先。channels.json には無い）。ここを channels.json
+        # から読むと autopilot トグルが tick に伝わらず永久 dormant になる（D1 整合性）。
+        cc = load_json(ch_dir / _CHANNEL_CONFIG_FILENAME, {})
+        _prio_raw = cc.get("priority", ch.get("priority", 100))
+        try:
+            priority = int(_prio_raw) if str(_prio_raw).strip() != "" else 100
+        except (TypeError, ValueError):
+            priority = 100
         chans.append({
             "channel_id": ch.get("id", ""),
             "channel_name": ch.get("name", ""),
             "folder": folder,
-            "priority": int(ch.get("priority", 100)) if str(ch.get("priority", "")).strip() else 100,
-            "autopilot_enabled": bool(ch.get("autopilot_enabled", False)),
+            "priority": priority,
+            "autopilot_enabled": bool(cc.get("autopilot_enabled", ch.get("autopilot_enabled", False))),
             "vols": vols,
         })
     return chans
