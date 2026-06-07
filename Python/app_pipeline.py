@@ -2038,12 +2038,13 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
     #    context(concept.txt + benchmark visual_direction + persona)を主題に使う。
     #    （旧コードは全chで cozy-cafe を主題にしていたため orzz が「カフェの朝」になっていた）
     cozy_tune = bool(cfg.get("bgimage_cozy_tune", False))
+    custom_style = (cfg.get("bgimage_style") or "").strip()  # 非cozy時の独自画風(油彩/イラスト調 等)
     if cozy_tune:
         body = f"{_BGIMAGE_SCENE} Channel mood context, do not depict literally: {context}. {_BGIMAGE_DIRECTIVE}"
         avoid_const = _BGIMAGE_AVOID
     else:
         # per-ch `bgimage_style` で画風を上書き可能（未設定は写実）。例: 油彩/グワッシュ調のおしゃれイラスト。
-        style = (cfg.get("bgimage_style") or "").strip() or "photorealistic, cinematic"
+        style = custom_style or "photorealistic, cinematic"
         body = (
             f"Primary scene: {context}. "
             f"{style} looping background for a multi-hour BGM video. "
@@ -2054,6 +2055,10 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
     try:
         from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
         visual = normalize_visual_direction(analysis, thumbnail_axis)
+        # 独自画風(bgimage_style)を Style/rendering 行へ＝build_gpt_image2_prompt の
+        # photorealistic 強制も解除される（Subject だけに置くと写実制約に負けるため）。
+        if custom_style and not cozy_tune:
+            visual["style"] = custom_style
         # ⚠ 旧コードは background_context を「cozy bright cafe morning...」でハードコード固定し、
         #    海/川/浜辺まで禁止していた（vol がカフェ朝ばかりになった元凶）。撤去し、
         #    今回選んだ参照3枚の Vision 共通要素に置換する＝ベンチ先サムネ3枚に寄せる本来仕様(TTPS)。

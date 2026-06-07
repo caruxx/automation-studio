@@ -142,11 +142,14 @@ def build_gpt_image2_prompt(
 
     constraints = [
         "16:9 landscape YouTube thumbnail",
-        "photorealistic",
         "no watermark",
         "no channel logo",
         "no copied brand assets",
     ]
+    # 既定は写実を強制するが、visual_direction['style'] に独自画風(油彩/イラスト調 等)が
+    # 指定された時は photorealistic を入れない（Style/rendering 行の独自画風を優先）。
+    if not (visual_direction.get("style") or "").strip():
+        constraints.insert(1, "photorealistic")
     if not include_text_overlay:
         constraints.append(
             "no text overlay, no captions, no subtitles, no readable text, "
