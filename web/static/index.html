@@ -196,6 +196,10 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 /* ===== Buttons ===== */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-5);border:none;border-radius:var(--radius-full);font-size:var(--text-sm);font-weight:var(--font-semibold);font-family:var(--font-sans);cursor:pointer;transition:.15s;white-space:nowrap}
 .btn:disabled{opacity:.4;cursor:not-allowed}
+/* キーボード操作者向けフォーカスインジケーター（Design.md: 3:1 以上・必須）。最頻出 .btn に欠落していた穴埋め */
+.btn:focus-visible{outline:2px solid var(--border-focus);outline-offset:2px}
+.fi:focus-visible,.fs:focus-visible,.ft:focus-visible{outline:2px solid var(--border-focus);outline-offset:1px}
+.mo-x:focus-visible,a:focus-visible{outline:2px solid var(--border-focus);outline-offset:2px;border-radius:var(--radius-sm)}
 .btn-primary{background:var(--accent-primary);color:var(--text-inverse)}
 .btn-primary:hover:not(:disabled){background:var(--accent-primary-hover)}
 .btn-destructive{background:var(--accent-danger);color:#fff}
@@ -1353,7 +1357,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
       <button class="product-shortcut" onclick="go('premiere')" title="Adobe Premiere Pro（内部ログ・実行画面）" aria-label="Adobe Premiere Pro"><span class="product-icon adobe-pr">Pr</span></button>
       <button class="product-shortcut" onclick="go('export')" title="Adobe Media Encoder（内部書き出しキュー）" aria-label="Adobe Media Encoder"><span class="product-icon adobe-me">Me</span></button>
       <button class="product-shortcut" onclick="go('suno')" title="SUNO（内部設定・実行画面）" aria-label="SUNO"><span class="product-icon service suno"><img src="https://www.google.com/s2/favicons?sz=64&domain=suno.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Su</span></span></button>
-      <button class="product-shortcut" onclick="window.open('https://labs.google/fx/tools/flow','_blank','noopener')" title="Google Flow（公式サイトを新タブで開く）" aria-label="Google Flow"><span class="product-icon service flow"><img src="https://www.google.com/s2/favicons?sz=64&domain=labs.google" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Fl</span></span></button>
       <button class="product-shortcut" onclick="window.open('https://chatgpt.com/','_blank','noopener')" title="ChatGPT Image2（公式サイトを新タブで開く）" aria-label="ChatGPT Image2"><span class="product-icon service gpt-image"><img src="https://www.google.com/s2/favicons?sz=64&domain=chatgpt.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">I2</span></span></button>
     </div>
   </div>
@@ -1503,11 +1506,14 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div id="vBulkBar" class="ct-bulkbar" style="display:none">
           <span class="ct-bulkbar-count"><strong id="vBulkCount">0</strong> 件を選択中</span>
           <div style="flex:1;min-width:8px"></div>
-          <button class="btn btn-secondary btn-sm" onclick="bulkSuggestMeta()" title="選択フォルダのタイトル・説明・タグを順次 AI 提案＋保存">メタ一括提案</button>
+          <!-- 工程順: 提案 → 制作 → 公開 -->
           <button class="btn btn-secondary btn-sm" onclick="bulkSuggestAll()" title="競合分析から楽曲/サムネ/メタを一括提案">一気通貫提案</button>
-          <button class="btn btn-secondary btn-sm" onclick="bulkBatchUpload()" title="選択フォルダを限定公開で順次アップロード (YouTube quota 制限あり、1日6件まで)">📤 一括アップロード</button>
-          <button class="btn btn-secondary btn-sm" onclick="bulkMakeThumbnails()" title="選択フォルダのサムネを順次制作（背景生成→Photoshop文字入れ）。Photoshop 起動が必要">🎯 サムネ一括制作</button>
+          <button class="btn btn-secondary btn-sm" onclick="bulkSuggestMeta()" title="選択フォルダのタイトル・説明・タグを順次 AI 提案＋保存">メタ一括提案</button>
+          <span style="width:1px;height:20px;background:var(--border-default)"></span>
           <button class="btn btn-primary btn-sm" onclick="bulkRunPipeline()" title="選択フォルダを順次パイプライン実行">全工程を一括実行</button>
+          <button class="btn btn-secondary btn-sm" onclick="bulkMakeThumbnails()" title="選択フォルダのサムネを順次制作（背景生成→Photoshop文字入れ）。Photoshop 起動が必要">🎯 サムネ一括制作</button>
+          <span style="width:1px;height:20px;background:var(--border-default)"></span>
+          <button class="btn btn-secondary btn-sm" onclick="bulkBatchUpload()" title="選択フォルダを限定公開で順次アップロード (YouTube quota 制限あり、1日6件まで)">📤 一括アップロード</button>
           <span style="width:1px;height:20px;background:var(--border-default)"></span>
           <button class="btn btn-secondary btn-sm" onclick="bulkToggleHidden(false)" id="vBulkHideBtn">選択を非表示</button>
           <button class="btn btn-secondary btn-sm" onclick="bulkToggleHidden(true)" id="vBulkShowBtn">選択を表示</button>
