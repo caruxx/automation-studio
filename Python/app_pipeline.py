@@ -1895,6 +1895,15 @@ _BGIMAGE_AVOID = (
     "dark moody interiors, neon, nightclub lighting, lofi anime illustration style, "
     "dusty grain, heavy vignette, oversaturated pop colors, busy crowds"
 )
+# 非cozy-tune チャンネル(orzz/WW/HN 等)用の汎用禁止語。テキスト/ロゴ/顔/群衆/lofiアニメ調のみ禁止し、
+# dark/night/neon やカフェ固有要素は禁止しない（orzz の NYC 夜ラウンジ・リゾート夕暮れ等を許す）。
+_BGIMAGE_AVOID_GENERIC = (
+    "on-screen text, text overlay, captions, subtitles, japanese text, hangul, "
+    "korean text, chinese text, lettering, typography, readable text, words, "
+    "watermark, signage, logos, readable signage, brand names, "
+    "prominent human faces, busy crowds, lofi anime illustration style, "
+    "dusty grain, heavy vignette, oversaturated pop colors"
+)
 _BGIMAGE_SCENE = (
     "A bright, airy cozy cafe-morning scene: a clean, modern Japanese/Korean style cafe interior "
     "(or a sunlit window-side nook) with natural wood furniture, lush green houseplants and a touch of "
@@ -2014,8 +2023,21 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
     if not parts and persona:
         parts.append(persona[:200])
     context = ". ".join(parts) if parts else "cinematic atmospheric scene for a BGM YouTube channel"
-    # 背景固有ディレクティブを body 末尾に連結（ループ背景・テキスト無し・コピー禁止）
-    body = f"{_BGIMAGE_SCENE} Channel mood context, do not depict literally: {context}. {_BGIMAGE_DIRECTIVE}"
+    # ⚠ cozy-tune チャンネル(SUKIMA)のみ cozy-cafe シーンを主題に固定。それ以外(orzz/WW/HN)は
+    #    context(concept.txt + benchmark visual_direction + persona)を主題に使う。
+    #    （旧コードは全chで cozy-cafe を主題にしていたため orzz が「カフェの朝」になっていた）
+    cozy_tune = bool(cfg.get("bgimage_cozy_tune", False))
+    if cozy_tune:
+        body = f"{_BGIMAGE_SCENE} Channel mood context, do not depict literally: {context}. {_BGIMAGE_DIRECTIVE}"
+        avoid_const = _BGIMAGE_AVOID
+    else:
+        body = (
+            f"Primary scene: {context}. "
+            "Cinematic, atmospheric, photorealistic looping background for a multi-hour BGM video. "
+            "Spacious composition with ample negative space and soft cinematic lighting. "
+            "No readable text, no captions, no logos, no watermark."
+        )
+        avoid_const = _BGIMAGE_AVOID_GENERIC
     try:
         from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
         visual = normalize_visual_direction(analysis, thumbnail_axis)
@@ -2044,7 +2066,7 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
         )
         # 背景禁止語を avoid の先頭に二重注入（_clean_text の 220 字切りで消えないよう先頭固定）
         existing_avoid = (visual.get("avoid") or "").strip()
-        visual["avoid"] = (_BGIMAGE_AVOID + ("; " + existing_avoid if existing_avoid else ""))
+        visual["avoid"] = (avoid_const + ("; " + existing_avoid if existing_avoid else ""))
         return build_gpt_image2_prompt(
             concept=body,
             visual_direction=visual,
@@ -2055,7 +2077,7 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
         # ビルダー import 失敗時は body + 背景禁止語 + 16:9/no text の固定文を返す
         return (
             f"{body}. Cinematic photorealistic 16:9 background, looping-friendly, "
-            f"no text overlay, no logo, no watermark. Avoid: {_BGIMAGE_AVOID}."
+            f"no text overlay, no logo, no watermark. Avoid: {avoid_const}."
         )
 
 
