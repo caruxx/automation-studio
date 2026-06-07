@@ -587,15 +587,25 @@ def render_thumbnail_set(
     out_with = out_dir_p / f"{vol_name}.jpg"
     out_without = out_dir_p / "サムネイル.jpg"
 
-    print(f"👁  show '{toggle_layer}' → {out_with.name}")
-    set_layer_visible(toggle_layer, True)
+    # toggle_layer が PSD に無い（テンプレ未整備）でも vol{N}.jpg は出す（graceful）。
+    toggle_ok = True
+    try:
+        print(f"👁  show '{toggle_layer}' → {out_with.name}")
+        set_layer_visible(toggle_layer, True)
+    except RuntimeError as e:
+        if "layer not found" in str(e):
+            print(f"  ⚠ toggle_layer '{toggle_layer}' が PSD に無い → 切替なしで {out_with.name} のみ出力（サムネイル.jpg はスキップ）")
+            toggle_ok = False
+        else:
+            raise
     export_image(str(out_with), "jpg", quality)
 
-    print(f"🚫 hide '{toggle_layer}' → {out_without.name}")
-    set_layer_visible(toggle_layer, False)
-    export_image(str(out_without), "jpg", quality)
-
-    return {"with_toggle": str(out_with), "thumbnail": str(out_without)}
+    if toggle_ok:
+        print(f"🚫 hide '{toggle_layer}' → {out_without.name}")
+        set_layer_visible(toggle_layer, False)
+        export_image(str(out_without), "jpg", quality)
+        return {"with_toggle": str(out_with), "thumbnail": str(out_without)}
+    return {"with_toggle": str(out_with), "thumbnail": ""}
 
 
 def _rename_active_layer(new_name: str) -> bool:
@@ -754,7 +764,13 @@ def render_dual_thumbnail(
                 set_layer_visible(scene_text_ja_layer, False)
             except Exception as e:
                 print(f"⚠ 日本語層 '{scene_text_ja_layer}' の非表示化に失敗（続行）: {e}")
-        set_layer_visible(playlist_layer, True)
+        try:
+            set_layer_visible(playlist_layer, True)
+        except RuntimeError as e:
+            if "layer not found" in str(e):
+                print(f"  ⚠ playlist_layer '{playlist_layer}' が PSD に無い → スキップ（{out_bg.name} は playlist 無しで出力）")
+            else:
+                raise
         export_image(str(out_bg), "jpg", quality, target_width=target_width, target_height=target_height)
 
     # 出力2: サムネイル.jpg — シーン文字ON / headline は常時表示なら ON、従来は OFF
@@ -766,7 +782,11 @@ def render_dual_thumbnail(
         except Exception as e:
             print(f"⚠ 日本語層 '{scene_text_ja_layer}' の表示化に失敗（続行）: {e}")
     # 常時表示モードなら headline は ON のまま、従来モードなら OFF にする。
-    set_layer_visible(playlist_layer, True if toggle_always_visible else False)
+    try:
+        set_layer_visible(playlist_layer, True if toggle_always_visible else False)
+    except RuntimeError as e:
+        if "layer not found" not in str(e):
+            raise
     export_image(str(out_thumb), "jpg", quality, target_width=target_width, target_height=target_height)
 
     if save_psd:
