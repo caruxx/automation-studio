@@ -71,6 +71,8 @@ def find_shared_drive():
 SHARED_BASE = find_shared_drive()
 WEB_DIR = SHARED_BASE / "web"
 PYTHON_DIR = SHARED_BASE / "Python"
+# パイプライン本体スクリプト（複数ドメイン=pipeline/images が参照する共有定数。D9）
+PIPELINE_SCRIPT = PYTHON_DIR / "app_pipeline.py"
 
 # 設定ファイル（ローカル: PC固有の設定）
 DASHBOARD_CONFIG = CONFIG_DIR / "dashboard_config.json"
