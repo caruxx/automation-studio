@@ -27,6 +27,7 @@ DEPS=(
     "google-auth-httplib2|google_auth_httplib2"
     "google-api-python-client|googleapiclient"
     "playwright|playwright"
+    "apscheduler|apscheduler"
 )
 
 MISSING=""

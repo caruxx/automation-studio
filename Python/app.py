@@ -6965,6 +6965,48 @@ def _scheduler_reload():
             continue
         _scheduler_register_job(job)
 
+# ─── D1: orchestrator 無人稼働 tick（autopilot ON の channel のみ・既定 dormant）───
+# ⚠ 安全境界:
+#   - autopilot_enabled は per-channel 既定 OFF。全 ch OFF なら tick は空リストで即 return
+#     ＝dispatch ゼロ（無人稼働しない）。実際に動くのは channel の autopilot を ON にした時だけ。
+#   - WORKERS は upload/plan を含まない＝自動投稿・勝手な企画起案はしない（最終 upload は手動ゲート）。
+#   - 連続 BREAKER_THRESHOLD(=3) 失敗の channel は is_channel_tripped で自動停止。
+#   - AsyncIOScheduler は同期関数をスレッドプールで実行＝ブロッキング dispatch がループを止めない。
+#   - env: APP_ORCH_TICK_ENABLED(既定1) / APP_ORCH_TICK_MINUTES(既定5) / APP_ORCH_AUTOPILOT_STAGES(既定=AUTOPILOT_DEFAULT_STAGES)
+def _orchestrator_tick():
+    """APScheduler 定期ジョブ本体。autopilot ON の channel を orchestrator.tick に投入。"""
+    if (os.environ.get("APP_ORCH_TICK_ENABLED") or "1").strip() not in ("1", "true", "yes"):
+        return
+    try:
+        sys.path.insert(0, str(SHARED_BASE / "Python"))
+        import app_orchestrator as _orch
+    except Exception as e:
+        print(f"[orchestrator] tick import 失敗: {e}")
+        return
+    try:
+        all_chans = _build_orchestrator_channels()
+    except Exception as e:
+        print(f"[orchestrator] channels 構築失敗: {e}")
+        return
+    enabled = [c for c in all_chans if c.get("autopilot_enabled")]
+    if not enabled:
+        return  # dormant: autopilot ON の channel が無い（既定）→ 何もしない
+    stages_env = (os.environ.get("APP_ORCH_AUTOPILOT_STAGES") or "").strip()
+    stage_list = ([s.strip() for s in stages_env.split(",") if s.strip()]
+                  or list(getattr(_orch, "AUTOPILOT_DEFAULT_STAGES", [])))
+    workers = {k: v for k, v in _orch.WORKERS.items() if k in stage_list} or None
+    try:
+        res = _orch.tick(enabled, workers=workers, via_api=False, notify=_send_line_notify)
+        _record_history("orchestrator_tick", "ok",
+                        f"enabled={len(enabled)} eval={res.get('evaluated')} "
+                        f"dispatched={res.get('dispatched')} skipped_quota={res.get('skipped_quota')}")
+        if res.get("dispatched"):
+            print(f"[orchestrator] tick: {res}")
+    except Exception as e:
+        _record_history("orchestrator_tick", "error", str(e)[:200])
+        print(f"[orchestrator] tick 失敗: {e}")
+
+
 @app.on_event("startup")
 async def _start_scheduler():
     global _scheduler
@@ -6975,6 +7017,17 @@ async def _start_scheduler():
         _scheduler = AsyncIOScheduler(timezone="Asia/Tokyo")
         _scheduler.start()
         _scheduler_reload()
+        # D1: orchestrator tick を interval ジョブで登録（既定 dormant＝autopilot 全 OFF）
+        if (os.environ.get("APP_ORCH_TICK_ENABLED") or "1").strip() in ("1", "true", "yes"):
+            try:
+                from apscheduler.triggers.interval import IntervalTrigger
+                _tick_min = max(1, int(os.environ.get("APP_ORCH_TICK_MINUTES") or 5))
+                _scheduler.add_job(_orchestrator_tick, trigger=IntervalTrigger(minutes=_tick_min),
+                                   id="orchestrator_tick", replace_existing=True,
+                                   max_instances=1, coalesce=True)
+                print(f"[orchestrator] tick 登録（{_tick_min}分間隔・autopilot ON channel のみ実投入＝既定 dormant）")
+            except Exception as e:
+                print(f"[orchestrator] tick 登録失敗: {e}")
         print(f"[scheduler] started ({len(_scheduler.get_jobs())} jobs registered)")
     except ImportError:
         print("[scheduler] apscheduler 未インストール。pip install apscheduler が必要")
@@ -7671,7 +7724,10 @@ def api_workers_status():
         "channels": ch_health,
         "breaker_threshold": getattr(_orch, "BREAKER_THRESHOLD", 3),
         "autopilot_default_stages": getattr(_orch, "AUTOPILOT_DEFAULT_STAGES", []),
-        "scheduler_registered": False,  # ⚠ orchestrator tick は未登録（無人稼働しない）
+        # D1: tick 登録済みか（登録されていても autopilot ON channel が無ければ dormant）
+        "scheduler_registered": bool(_scheduler is not None and any(
+            getattr(j, "id", "") == "orchestrator_tick" for j in _scheduler.get_jobs())),
+        "autopilot_enabled_channels": sum(1 for ch in channels if ch.get("autopilot_enabled")),
     }
 
 
@@ -7746,7 +7802,9 @@ def api_get_autopilot():
             "priority": int(cc.get("priority", 100)) if str(cc.get("priority", "")).strip() else 100,
         })
     return {"status": "ok", "channels": out,
-            "scheduler_registered": False}  # ⚠ 保存しても実起動はしない
+            # D1 配線済: tick 登録後は autopilot ON にした channel が実際に無人稼働する
+            "scheduler_registered": bool(_scheduler is not None and any(
+                getattr(j, "id", "") == "orchestrator_tick" for j in _scheduler.get_jobs()))}
 
 
 @app.put("/api/workers/autopilot")
