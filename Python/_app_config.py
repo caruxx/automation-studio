@@ -26,6 +26,26 @@ LEGACY_CONFIG_DIR = HOME / ".config" / LEGACY_APP_ID
 DASHBOARD_FILE = "dashboard_config.json"
 MIGRATION_LOG = "migration.log"
 MIGRATION_FLAG = ".migration_completed"
+# チャンネル切替が書く「アクティブ app_id ポインタ」。次回 resolve_app_id がこれを最優先で採用する。
+# （channels.json の per-ch app_id をチャンネル切替時に書き込み、再起動で profile を遷移させるための単一情報源）
+ACTIVE_APP_ID_POINTER = HOME / ".config" / "active_app_id"
+
+
+def _read_active_app_id_pointer() -> Optional[str]:
+    try:
+        v = ACTIVE_APP_ID_POINTER.read_text(encoding="utf-8").strip()
+        return v or None
+    except Exception:
+        return None
+
+
+def set_active_app_id(app_id: str) -> None:
+    """チャンネル切替時に呼ぶ。次回起動の resolve_app_id がこの app_id を最優先採用する。"""
+    try:
+        ACTIVE_APP_ID_POINTER.parent.mkdir(parents=True, exist_ok=True)
+        ACTIVE_APP_ID_POINTER.write_text((app_id or "").strip() + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _read_app_id_from(legacy_dir: Path) -> Optional[str]:
@@ -74,6 +94,11 @@ def resolve_app_id() -> str:
     env = os.environ.get("APP_ID")
     if env and env.strip():
         return env.strip()
+    # チャンネル切替が書くアクティブ app_id ポインタ（最優先・指す先が実在する場合のみ）。
+    # これにより「チャンネル切替 → app_id 遷移」が決定論的に効く（profile/benchmark/suno が ch に追従）。
+    ptr = _read_active_app_id_pointer()
+    if ptr and (HOME / ".config" / ptr).is_dir():
+        return ptr
     # レガシー orzz/dashboard_config.json の app_id（後方互換）。
     # ただし指す先 ~/.config/{app_id}/ が実在する場合のみ信用する（隠れ依存の検証）。
     from_file = _read_app_id_from(LEGACY_CONFIG_DIR)

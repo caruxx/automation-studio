@@ -1395,6 +1395,21 @@ def api_update_channel(channel_id: str, req: ChannelUpdate):
     save_json(CHANNELS_CONFIG, channels)
     return {"status": "ok", "channel": ch}
 
+def _schedule_self_restart(delay_sec: float = 1.5):
+    """app_id 切替反映のため、delay 後に start.sh を起動して自身を置き換える。
+    start.sh が :8888 を kill → python3 app.py を exec（新 app_id を resolve）。
+    デタッチ起動なので現リクエストのレスポンスは先に返る。"""
+    import shlex
+    script = SHARED_BASE / "Python" / "start.sh"
+    try:
+        subprocess.Popen(
+            ["bash", "-c", f"sleep {delay_sec}; bash {shlex.quote(str(script))}"],
+            start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[switch] app_id 切替のため {delay_sec}s 後に自己再起動を予約")
+    except Exception as e:
+        print(f"[switch] 自己再起動の予約失敗: {e}")
+
+
 @app.put("/api/channels/active/{channel_id}")
 def api_set_active_channel(channel_id: str):
     channels = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
@@ -1416,7 +1431,31 @@ def api_set_active_channel(channel_id: str):
     for k in PER_CHANNEL_KEYS:
         raw.pop(k, None)
     save_json(DASHBOARD_CONFIG, raw)
-    return {"status": "ok", "channel": ch}
+    # ── D4+: チャンネル → app_id 遷移 ──
+    # channels.json の per-ch app_id をアクティブポインタに書き、現プロセスの app_id と
+    # 異なれば profile(suno_config/benchmark 等)を切り替えるためサーバーを自己再起動する。
+    import _app_config as _ac
+    target_app = (ch.get("app_id") or "").strip() or ("sk" if channel_id == "sukima" else "orzz")
+    current_app = _ac.resolve_app_id()
+    app_id_changed = bool(target_app and target_app != current_app)
+    _ac.set_active_app_id(target_app)
+    if app_id_changed:
+        # 再起動後にターゲット app_id がこの ch で起動するよう、その dashboard にも反映
+        try:
+            tdash = Path.home() / ".config" / target_app / "dashboard_config.json"
+            traw = load_json(tdash, {})
+            traw["channel_name"] = ch["name"]
+            traw["channel_folder"] = str(folder)
+            traw["file_prefix"] = prefix
+            for k in PER_CHANNEL_KEYS:
+                traw.pop(k, None)
+            tdash.parent.mkdir(parents=True, exist_ok=True)
+            save_json(tdash, traw)
+        except Exception as e:
+            print(f"[switch] target dashboard 反映失敗: {e}")
+        _schedule_self_restart()
+    return {"status": "ok", "channel": ch, "app_id": target_app,
+            "app_id_changed": app_id_changed, "restart_required": app_id_changed}
 
 # ─── API: 動画フォルダ ───
 

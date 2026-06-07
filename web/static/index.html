@@ -4175,6 +4175,13 @@ function closeChDD(){document.getElementById('chDropdown').classList.remove('ope
 async function switchCh(id){
   const r=await fetch(`/api/channels/active/${id}`,{method:'PUT'});
   if(!r.ok){toast('チャンネル切替に失敗','e');return}
+  let d={}; try{d=await r.json()}catch(e){}
+  if(d.restart_required){
+    // app_id(プロファイル)が変わる切替 → サーバーが自己再起動。数秒後に自動再読込。
+    toast('プロファイル（'+(d.app_id||'')+'）に切替のためサーバー再起動中… 数秒後に自動で再読込します','i');
+    setTimeout(()=>location.reload(), 5500);
+    return;
+  }
   await loadConfig();
   await loadChannelSwitcher();
   await loadYtUploadDefaults();
