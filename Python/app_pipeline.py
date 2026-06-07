@@ -954,7 +954,18 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
     # 1. reference_image_dir（per-channel UI 設定）
     ref_dir_str = (cfg.get("reference_image_dir") or "").strip()
     if not ref_images and ref_dir_str:
+        # ⚠ 移植性(2台Mac・ホーム名 abe_kota/asobimori): 相対パスは channel folder 基準、
+        #   別マシンの絶対パスは「共有ドライブ」marker から現マシンのルートへ付け替え。
+        channel_dir = folder.parent  # vol folder の親 = チャンネルフォルダ(現マシン解決済み)
         ref_dir = Path(ref_dir_str).expanduser()
+        if not ref_dir.is_dir():
+            _marker = "共有ドライブ"
+            _s, _cur = str(ref_dir), str(channel_dir)
+            if _marker in _s and _marker in _cur:
+                _root = _cur[:_cur.index(_marker) + len(_marker)]
+                ref_dir = Path(_root) / _s[_s.index(_marker) + len(_marker):].lstrip("/\\")
+            elif not Path(ref_dir_str).is_absolute():
+                ref_dir = channel_dir / ref_dir_str  # 相対 → チャンネルフォルダ配下
         if ref_dir.is_dir():
             dir_pool = (
                 list(ref_dir.glob("*.jpg"))
