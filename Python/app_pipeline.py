@@ -2031,10 +2031,12 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
         body = f"{_BGIMAGE_SCENE} Channel mood context, do not depict literally: {context}. {_BGIMAGE_DIRECTIVE}"
         avoid_const = _BGIMAGE_AVOID
     else:
+        # per-ch `bgimage_style` で画風を上書き可能（未設定は写実）。例: 油彩/グワッシュ調のおしゃれイラスト。
+        style = (cfg.get("bgimage_style") or "").strip() or "photorealistic, cinematic"
         body = (
             f"Primary scene: {context}. "
-            "Cinematic, atmospheric, photorealistic looping background for a multi-hour BGM video. "
-            "Spacious composition with ample negative space and soft cinematic lighting. "
+            f"{style} looping background for a multi-hour BGM video. "
+            "Spacious composition with ample negative space and soft lighting. "
             "No readable text, no captions, no logos, no watermark."
         )
         avoid_const = _BGIMAGE_AVOID_GENERIC
