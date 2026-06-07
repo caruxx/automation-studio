@@ -3223,7 +3223,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         </div>
         <div class="fr">
           <div class="ff">
-            <label class="fl">タイトル/説明の言語 (defaultLanguage)</label>
+            <label class="fl">メイン言語（メタ生成のソース＆YouTube表示言語 / defaultLanguage）</label>
             <select class="fs" id="ytdDefaultLanguage">
               <option value="en">英語 (en)</option>
               <option value="ja">日本語 (ja)</option>
@@ -3235,6 +3235,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
               <option value="fr">フランス語 (fr)</option>
               <option value="de">ドイツ語 (de)</option>
             </select>
+            <div class="fh">このチャンネルのメイン言語。メタ生成（タイトル/説明/タグ）の<strong>ソース言語</strong>になり、下の翻訳ターゲット言語へはここから翻訳されます（例: orzz=英語 / SUKIMA=日本語）。</div>
           </div>
           <div class="ff">
             <label class="fl">音声の言語 (defaultAudioLanguage)</label>
@@ -3280,7 +3281,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div class="ff">
           <label class="fl">翻訳生成のターゲット言語</label>
           <div id="ytdLocLanguagesGrid"></div>
-          <div class="fh">英語で作成したタイトル/説明を Claude で各言語へ翻訳し、アップロード時に <code>localizations</code> として一括反映します。</div>
+          <div class="fh">メイン言語で作成したタイトル/説明を Claude で各言語へ翻訳し、アップロード時に <code>localizations</code> として一括反映します（メイン言語自体は自動で除外）。</div>
         </div>
         <div class="btns" style="margin-top:var(--space-2)">
           <button class="btn btn-primary btn-sm" onclick="saveYtUploadDefaults()">テンプレートを保存</button>
@@ -3382,7 +3383,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           <span class="lock-notice-icon">→</span>
           <div class="lock-notice-body">
             <strong>プロンプト本文・生成回数・間隔は「基本設定」と連動します</strong>
-            編集は「基本設定」→「SUNO 設定」でまとめて行えます。ここでは、基本設定には置かない詳細パラメータ（作業フォルダ名・待機秒・リトライ）を調整できます。
+            編集は「基本設定」→「SUNO 設定」でまとめて行えます。
           </div>
           <button class="btn btn-secondary btn-sm" onclick="go('settings');setTimeout(()=>document.getElementById('cfgSunoPrompt')?.scrollIntoView({behavior:'smooth',block:'center'}),200)">基本設定で編集</button>
         </div>
@@ -3390,11 +3391,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div class="fr">
           <div class="ff"><label class="fl">生成回数（基本設定と同期）</label><input type="number" class="fi" id="msSunoCount" min="1" max="50"></div>
           <div class="ff"><label class="fl">生成間隔 秒（基本設定と同期）</label><input type="number" class="fi" id="msSunoInterval" min="30"></div>
-          <div class="ff"><label class="fl">自動リトライ回数</label><input type="number" class="fi" id="msSunoRetry" min="0" max="5"><div class="fh">失敗時の再試行上限。</div></div>
-        </div>
-        <div class="fr">
-          <div class="ff"><label class="fl">SUNO の作業フォルダ名</label><input type="text" class="fi" id="msSunoWsPattern" placeholder="{channel}_vol{vol}"><div class="fh">SUNO 側で自動作成されるフォルダ名の書式。<code>{channel}</code>=チャンネル名、<code>{vol}</code>=vol番号。通常は既定のままでOK。</div></div>
-          <div class="ff"><label class="fl">ダウンロード前の待機（秒）</label><input type="number" class="fi" id="msSunoDlWait" min="0"><div class="fh">生成完了を待つ時間。長めにすると取りこぼしが減ります。</div></div>
           <div class="ff">
             <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer;margin-top:24px">
               <input type="checkbox" id="msSunoBatch"> 一括生成モード
@@ -3405,35 +3401,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
         <div class="btns" style="margin:0"><button class="btn btn-primary btn-sm" onclick="saveMasterSection('suno')">SUNO 詳細を保存</button></div>
       </div>
 
-      <!-- Section 3: Flow 生成 -->
-      <div class="card" data-master-group="generation" data-master-card="flow-detail">
-        <div class="section-heading"><span class="product-icon service sm flow"><img src="https://www.google.com/s2/favicons?sz=64&domain=labs.google" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Fl</span></span><div class="sec-title">サムネ画像の自動生成設定（Flow）</div></div>
-        <div class="fh" style="margin-bottom:var(--space-3)">Google Flow（画像生成）でサムネを作るときの初期設定です。</div>
-        <div class="fr">
-          <div class="ff"><label class="fl">1回あたりの生成枚数</label>
-            <select class="fs" id="msFlowCount">
-              <option value="1">x1</option><option value="2">x2</option><option value="3">x3</option><option value="4">x4（推奨）</option><option value="5">x5</option><option value="6">x6</option><option value="7">x7</option><option value="8">x8</option>
-            </select>
-            <div class="fh">1回の生成で出す枚数。多いほど選択肢が増えますが生成時間も伸びます。</div>
-          </div>
-          <div class="ff"><label class="fl">繰り返し回数</label><input type="number" class="fi" id="msFlowBatch" min="1" max="8"><div class="fh">この設定を何回繰り返すか。</div></div>
-          <div class="ff"><label class="fl">参照画像（任意）</label><input type="text" class="fi" id="msFlowRefImage" placeholder="画像のパス（例: /Users/.../ref.jpg）"><div class="fh">絵のタッチを揃えたいときだけ指定。</div></div>
-        </div>
-        <div class="btns" style="margin:0"><button class="btn btn-primary btn-sm" onclick="saveMasterSection('flow')">サムネ設定を保存</button></div>
-      </div>
-
-      <!-- Section 4: メタ生成 -->
-      <div class="card" data-master-group="generation" data-master-card="meta-detail">
-        <div class="section-heading"><span class="product-icon service sm gpt-image"><img src="https://www.google.com/s2/favicons?sz=64&domain=chatgpt.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">AI</span></span><div class="sec-title">タイトル・説明文・タグの自動生成</div></div>
-        <div class="fh" style="margin-bottom:var(--space-3)">動画に付けるテキスト情報の生成量を調整します。</div>
-        <div class="fr">
-          <div class="ff"><label class="fl">タイトル候補の数</label><input type="number" class="fi" id="msMetaTitleN" min="1" max="10"><div class="fh">AI が提案するタイトル案の数。</div></div>
-          <div class="ff"><label class="fl">説明文の目標文字数</label><input type="number" class="fi" id="msMetaDescChars" min="100" max="5000"><div class="fh">YouTube 説明文の目安（500〜2000文字程度が一般的）。</div></div>
-          <div class="ff"><label class="fl">タグの数</label><input type="number" class="fi" id="msMetaTagsN" min="1" max="50"><div class="fh">生成するタグ総数（YouTube は 500 文字制限）。</div></div>
-        </div>
-        <div class="ff"><label class="fl">必ず入れる固定タグ（カンマ区切り）</label><input type="text" class="fi" id="msMetaFixedTags" placeholder="例: BGM, Lounge, Chill"><div class="fh">どの動画でも必ず含めたいタグ。</div></div>
-        <div class="btns" style="margin:0"><button class="btn btn-primary btn-sm" onclick="saveMasterSection('meta')">メタ設定を保存</button></div>
-      </div>
+      <!-- Section 3/4: Flow 生成・メタ生成カードは D12 で撤去（master_settings 死蔵設定の廃止）。
+           Flow は D8 で機能撤去予定。メタ生成量(title_count 等)は実処理に未配線だったため削除。 -->
 
       <!-- Section 5: ベンチマーク（共通ショートカット）カードは削除。
            bm-cache カード（競合分析キャッシュ）と機能重複かつデッドリンクだったため。
@@ -3706,11 +3675,11 @@ const DETAIL_TABS=[
   {key:'export',  label:'書き出し',   stepKey:'export',  requires:'premiere',next:'meta',     auto:'MP4 書き出し'},
 ];
 
-// ===== ワークフロー 7 工程定義（STEP 3「背景画像」を追加） =====
-// 内部の工程数（UI ステッパー） 6 → 7。
-// バックエンド app_pipeline.py の STEPS は 9 工程（plan を除く）だが、
-// 詳細タブと過密にしないため UI は「楽曲 / 背景画像 / 画像選択 / 配置 / 書出 / メタ / 公開」の 7 工程に集約。
-// `has_bg_image`: vol{N}.png または vol{N}.jpg がフォルダ直下にある（パイプライン STEP 3 完了マーカー）。
+// ===== ワークフロー 8 工程定義（PSD合成を追加） =====
+// 内部の工程数（UI ステッパー） 6 → 8。
+// バックエンド app_pipeline.py の STEPS は 11 工程（plan を除く）だが、
+// 詳細タブと過密にしないため UI は「楽曲 / 背景画像 / PSD合成 / 画像選択 / 配置 / 書出 / メタ / 公開」の 8 工程に集約。
+// `has_bg_image`: vol{N}.png または vol{N}.jpg がフォルダ直下にある（パイプライン bgimage 完了マーカー）。
 const WORKFLOW_STEPS=[
   {key:'suno',short:'楽曲',label:'SUNO生成',test:v=>v.has_music},
   {key:'bgimage',short:'背景',label:'背景画像',test:v=>v.has_bg_image || v.has_images_selected || v.has_thumb},
@@ -14193,35 +14162,17 @@ async function loadMaster(){
         </details>`;
       }).join('');
     }
-    // SUNO 詳細
-    const s=d.suno||{};const ms=d.settings?.suno||{};
+    // SUNO 詳細（prompt/count/interval/batch は基本設定 = get_suno_config と同期）
+    const s=d.suno||{};
     const $=id=>document.getElementById(id);
     if($('msSunoPrompt')){
       $('msSunoPrompt').value=s.prompt||'';
       $('msSunoCount').value=s.loop_count||5;
       $('msSunoInterval').value=s.loop_interval_sec||180;
       $('msSunoBatch').checked=!!s.loop_batch;
-      $('msSunoWsPattern').value=ms.workspace_pattern||'{channel}_vol{vol}';
-      $('msSunoDlWait').value=ms.dl_wait_sec||30;
-      $('msSunoRetry').value=ms.retry_count||2;
     }
-    // Flow
-    const mf=d.settings?.flow||{};
-    if($('msFlowCount')){
-      $('msFlowCount').value=String(mf.default_count||4);
-      $('msFlowBatch').value=mf.batch_size||2;
-      $('msFlowRefImage').value=mf.reference_image||'';
-    }
-    // メタ
-    const mm=d.settings?.meta||{};
-    if($('msMetaTitleN')){
-      $('msMetaTitleN').value=mm.title_count||5;
-      $('msMetaDescChars').value=mm.description_target_chars||800;
-      $('msMetaTagsN').value=mm.tags_target_count||18;
-      $('msMetaFixedTags').value=(mm.fixed_tags||[]).join(', ');
-    }
-    // リモート
-    const mr=d.settings?.remote||{};
+    // リモート: tunnel_url は dashboard_config に移送（D12: master_settings 廃止）
+    const mr=d.dashboard||{};
     if($('msRemoteTunnelUrl')){
       $('msRemoteTunnelUrl').value=mr.tunnel_url||'';
       const qrBtn=$('msRemoteQrBtn');if(qrBtn)qrBtn.disabled=!mr.tunnel_url;
@@ -14301,27 +14252,8 @@ async function saveMasterSection(sec){
       loop_interval_sec:parseInt($('msSunoInterval').value)||180,
       loop_batch:$('msSunoBatch').checked,
     }};
-    // Master settings 側の項目は別 PUT
-    await fetch('/api/master',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({section:'settings.suno',patch:{
-      workspace_pattern:$('msSunoWsPattern').value,
-      dl_wait_sec:parseInt($('msSunoDlWait').value)||30,
-      retry_count:parseInt($('msSunoRetry').value)||2,
-    }})});
-  }else if(sec==='flow'){
-    body={section:'settings.flow',patch:{
-      default_count:parseInt($('msFlowCount').value)||4,
-      batch_size:parseInt($('msFlowBatch').value)||2,
-      reference_image:$('msFlowRefImage').value,
-    }};
-  }else if(sec==='meta'){
-    body={section:'settings.meta',patch:{
-      title_count:parseInt($('msMetaTitleN').value)||5,
-      description_target_chars:parseInt($('msMetaDescChars').value)||800,
-      tags_target_count:parseInt($('msMetaTagsN').value)||18,
-      fixed_tags:($('msMetaFixedTags').value||'').split(',').map(s=>s.trim()).filter(Boolean),
-    }};
   }else if(sec==='remote'){
-    body={section:'settings.remote',patch:{tunnel_url:$('msRemoteTunnelUrl').value.trim()}};
+    body={section:'remote',patch:{tunnel_url:$('msRemoteTunnelUrl').value.trim()}};
   }
   if(!body){return}
   try{

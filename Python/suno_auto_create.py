@@ -376,31 +376,8 @@ def call_codex_cli(cli_cmd, prompt, timeout=300):
             pass
 
 
-def _extract_json_object(text):
-    """文字列からJSONオブジェクトを抽出（コードフェンス/前後文を無視）"""
-    if not text:
-        return None
-
-    # ```json ... ``` フェンスを剥がす
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
-    candidate = fence.group(1) if fence else text
-
-    # 最初の '{' から最後の '}' までを抽出（素直な貪欲マッチ）
-    start = candidate.find("{")
-    end = candidate.rfind("}")
-    if start < 0 or end < 0 or end <= start:
-        return None
-
-    blob = candidate[start:end + 1]
-    try:
-        return json.loads(blob)
-    except json.JSONDecodeError:
-        # 一般的な壊れパターン: 末尾カンマ
-        cleaned = re.sub(r",\s*([}\]])", r"\1", blob)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return None
+# JSON 抽出は app_benchmark_common に集約（D10）
+from app_benchmark_common import extract_json_object as _extract_json_object
 
 
 # ─── Instrumental filler ─────────────────────────────────────────────
@@ -1255,20 +1232,37 @@ def download_workspace_tracks(page, workspace_name, target_dir):
         print("  ⚠️ clip-row が見つかりません。DOM 構造が変わっている可能性")
         return 0
 
-    # 4) キャッシュが埋まるまで少し待機（非同期 JSON パース完了待ち）
-    time.sleep(2)
-    cache = page.evaluate("() => window.__sunoAudioUrlCache || {}")
-    cache_keys = list(cache.keys()) if cache else []
-    print(f"  🗂 audio_url キャッシュ件数: {len(cache_keys)}")
-
-    # キャッシュが不足している場合は再スクロールで再試行
-    if len(cache_keys) < len(uuids) * 0.5:
-        print(f"  ↻ キャッシュ不足 ({len(cache_keys)}/{len(uuids)})。再スクロールで補充...")
+    # 4) audio_url キャッシュが UUID をほぼ充足するまでポーリング（レンダリング/JSON パース待ち）
+    #    ⚠ 生成リクエスト送信≠レンダリング完了。未完成 clip は /api/feed が audio_url を返さないため
+    #       固定 sleep では取りこぼす（vol5 で 12曲に激減した実害）。充足するまで再スクロールしながら待つ。
+    def _ready_count():
+        c = page.evaluate("() => window.__sunoAudioUrlCache || {}") or {}
+        ready = sum(1 for u in uuids if c.get(u) and c[u].get("audioUrl"))
+        return c, ready
+    cache, ready = _ready_count()
+    try:
+        _wait_budget = int(os.environ.get("APP_SUNO_RENDER_WAIT_SEC", "600"))
+    except Exception:
+        _wait_budget = 600
+    _deadline = time.time() + _wait_budget
+    _stagn = 0
+    _last = ready
+    print(f"  🗂 audio_url 充足: {ready}/{len(uuids)}")
+    while ready < len(uuids) and time.time() < _deadline:
         _collect_all_song_uuids(page, from_top=True)
         time.sleep(3)
-        cache = page.evaluate("() => window.__sunoAudioUrlCache || {}")
-        cache_keys = list(cache.keys()) if cache else []
-        print(f"  🗂 再収集後のキャッシュ: {len(cache_keys)}")
+        cache, ready = _ready_count()
+        print(f"  ⏳ audio_url 充足待ち: {ready}/{len(uuids)}")
+        if ready == _last:
+            _stagn += 1
+            if _stagn >= 3:  # 3回連続で増えない=残りは未レンダリング/取得不能 → 打ち切り
+                print(f"  ⚠️ 充足が頭打ち（{ready}/{len(uuids)}）。残りは未レンダリングの可能性")
+                break
+        else:
+            _stagn = 0
+        _last = ready
+    cache_keys = list(cache.keys()) if cache else []
+    print(f"  🗂 audio_url キャッシュ件数: {len(cache_keys)} (ready={ready}/{len(uuids)})")
 
     # 5) 各 UUID について audio_url を引いて MP3 をダウンロード
     success = 0
@@ -1286,9 +1280,8 @@ def download_workspace_tracks(page, workspace_name, target_dir):
                 audio_url = meta.get("audioUrl")
                 title = meta.get("title")
 
-            # キャッシュに無い場合は個別に /song/UUID ページを軽く踏むことで誘発する
-            # （重いので最大 5 回まで）
-            if not audio_url and failed < 5:
+            # キャッシュに無い場合は個別 fetch で誘発（未ヒットは全曲試す＝取得率優先、read-only で副作用なし）
+            if not audio_url:
                 try:
                     # ページ内で SPA の状態を叩きたいが、安全のため直接 fetch を試す
                     meta2 = page.evaluate("""async (uuid) => {
@@ -1730,17 +1723,21 @@ def run_browser_automation(settings):
             if i < loop_count:
                 # Cloudflare Bot 判定回避の最低保証（vol.6 で 15s 連投が弾かれた実績あり）
                 # 環境変数 APP_SUNO_MIN_WAIT_SEC で上書き可能
+                # Bot 回避の絶対下限(hard_floor)だけ守り、--interval 指定値(loop_interval)は尊重する。
+                # （以前は min=60 で握り潰し、--interval 45 等が効かなかった。明示指定は尊重し、短い時は警告）
                 try:
-                    min_wait = max(30, int(os.environ.get("APP_SUNO_MIN_WAIT_SEC", "60")))
+                    hard_floor = max(15, int(os.environ.get("APP_SUNO_MIN_WAIT_SEC", "30")))
                 except Exception:
-                    min_wait = 60
-                # バッチモードは LLM 待ちが無いので素のままだと短いが、Bot 判定回避のため下限を挟む
+                    hard_floor = 30
                 if batch_songs:
-                    base_wait = max(min_wait, min(loop_interval, max(15, loop_interval // 3)))
+                    base_wait = max(hard_floor, min(loop_interval, max(hard_floor, loop_interval // 3)))
                 else:
-                    base_wait = max(min_wait, loop_interval)
+                    base_wait = max(hard_floor, loop_interval)
                 jitter = random.uniform(-0.3, 0.3)
-                wait_sec = max(min_wait, int(base_wait * (1.0 + jitter)))
+                wait_sec = max(hard_floor, int(base_wait * (1.0 + jitter)))
+                if loop_interval and loop_interval < 30:
+                    print(f"  ⚠️ interval={loop_interval}s は短め(Bot判定リスク)。指定値で続行します")
+                min_wait = hard_floor  # 後続 print 用
                 print(f"\n  ⏳ 次の生成まで {wait_sec} 秒待機中... (base={base_wait}s, jitter={jitter:+.0%}, min={min_wait}s)")
                 for remaining in range(wait_sec, 0, -30):
                     print(f"    残り {remaining} 秒...")

@@ -43,15 +43,46 @@ def _read_app_id_from(legacy_dir: Path) -> Optional[str]:
     return None
 
 
+def _scan_active_app_id() -> Optional[str]:
+    """~/.config/ 配下で dashboard_config.json を持つディレクトリを探す。
+    複数あれば dashboard_config.json の mtime が最新のものを採用。
+    レガシー orzz dir を消しても app_id を解決できるようにするための保険。"""
+    base = HOME / ".config"
+    if not base.is_dir():
+        return None
+    candidates = []
+    for d in base.iterdir():
+        try:
+            if not d.is_dir():
+                continue
+            f = d / DASHBOARD_FILE
+            if f.exists():
+                candidates.append((f.stat().st_mtime, d.name))
+        except Exception:
+            continue
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)  # mtime 最新を優先
+    return candidates[0][1]
+
+
 def resolve_app_id() -> str:
-    """app_id を解決（環境変数 > 旧 dashboard_config.json > "orzz"）"""
+    """app_id を解決。
+    優先順位: APP_ID 環境変数 > レガシー orzz/dashboard の app_id(指す先が実在する場合) >
+    ~/.config 配下のアクティブな設定dir(mtime最新) > "orzz"。
+    D4: レガシー orzz dashboard への隠れ依存を断ち、orzz dir 削除でも壊れないようにした。"""
     env = os.environ.get("APP_ID")
     if env and env.strip():
         return env.strip()
+    # レガシー orzz/dashboard_config.json の app_id（後方互換）。
+    # ただし指す先 ~/.config/{app_id}/ が実在する場合のみ信用する（隠れ依存の検証）。
     from_file = _read_app_id_from(LEGACY_CONFIG_DIR)
-    if from_file:
+    if from_file and (HOME / ".config" / from_file).is_dir():
         return from_file
-    # 新ディレクトリが既にあるならそこからも読む
+    # アクティブな設定dirをスキャン（orzz dir を消しても解決できる保険）。
+    active = _scan_active_app_id()
+    if active:
+        return active
     return LEGACY_APP_ID
 
 

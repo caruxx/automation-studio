@@ -138,24 +138,8 @@ def _find_thumbnail(folder: Path):
     return None
 
 
-def _extract_json_object(text: str):
-    """Claude CLI 出力から JSON オブジェクトを抽出（フェンス除去 + 末尾カンマ補正）"""
-    if not text:
-        return None
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
-    candidate = fence.group(1) if fence else text
-    start, end = candidate.find("{"), candidate.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    blob = candidate[start:end + 1]
-    try:
-        return json.loads(blob)
-    except json.JSONDecodeError:
-        cleaned = re.sub(r",\s*([}\]])", r"\1", blob)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return None
+# JSON 抽出は app_benchmark_common に集約（D10）
+from app_benchmark_common import extract_json_object as _extract_json_object
 
 
 # ─── Claude CLI で楽曲タイトル提案 ───────────────────────

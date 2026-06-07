@@ -64,20 +64,21 @@ EXIT_QUOTA_EXHAUSTED = 77
 # pipeline 開始前に判明するので、各 step を一切実行せず早期終了する。
 EXIT_PREFLIGHT_FAIL = 78
 
-STEPS = ["suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "thumbnail", "upload"]
-STEPS_WITH_PLAN = ["plan", "suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "thumbnail", "upload"]
+STEPS = ["suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
+STEPS_WITH_PLAN = ["plan", "suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
 STEP_LABELS = {
-    "plan":          "0/10 ベンチマーク分析 → 次動画プラン生成",
-    "suno":          "1/10 SUNO 楽曲生成",
-    "rename":        "2/10 楽曲リネーム + 音声処理",
-    "bgimage":       "3/10 背景画像生成（ベンチマーク参照 + チャンネルコンセプト）",
-    "psd_composite": "4/10 PSD 合成（vol{N}.jpg + サムネイル.jpg を 2 枚出し）",
-    "premiere":      "5/10 Premiere 自動配置",
-    "export":        "6/10 書き出し",
-    "qa":            "7/10 QA チェック（解像度 / アスペクト / 尺 / コーデック）",
-    "meta":          "8/10 動画メタ（タイトル・説明・タグ）",
-    "thumbnail":     "9/10 AI サムネイル（PSD 合成失敗時のフォールバック）",
-    "upload":        "10/10 YouTube アップロード",
+    "plan":          "0/11 ベンチマーク分析 → 次動画プラン生成",
+    "suno":          "1/11 SUNO 楽曲生成",
+    "rename":        "2/11 楽曲リネーム + 音声処理",
+    "bgimage":       "3/11 背景画像生成（ベンチマーク参照 + チャンネルコンセプト）",
+    "psd_composite": "4/11 PSD 合成（vol{N}.jpg + サムネイル.jpg を 2 枚出し）",
+    "premiere":      "5/11 Premiere 自動配置",
+    "export":        "6/11 書き出し",
+    "qa":            "7/11 QA チェック（解像度 / アスペクト / 尺 / コーデック）",
+    "meta":          "8/11 動画メタ（タイトル・説明・タグ）",
+    "localization":  "9/11 多言語メタデータ（メイン言語 → 各国翻訳）",
+    "thumbnail":     "10/11 AI サムネイル（PSD 合成失敗時のフォールバック）",
+    "upload":        "11/11 YouTube アップロード",
 }
 
 
@@ -308,8 +309,10 @@ def _notify_line(message: str) -> None:
     _notify_discord(message)
 
 
-def _api_post(path, body=None, label=""):
-    """Web API を叩く（localhost:8888 が起動している前提）"""
+def _api_post(path, body=None, label="", timeout=10):
+    """Web API を叩く（localhost:8888 が起動している前提）。
+    timeout: 非同期キック系は既定10秒で十分。LLM/翻訳など POST レスポンスで結果を返す
+             同期エンドポイントは呼び出し側で長め(例 300)を渡すこと。"""
     import urllib.request
     url = f"{API_BASE}{path}"
     data = json.dumps(body or {}).encode() if body else None
@@ -319,7 +322,7 @@ def _api_post(path, body=None, label=""):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             print(f"  ✓ API {path}: {result.get('status', 'ok')}")
             return result
@@ -330,11 +333,14 @@ def _api_post(path, body=None, label=""):
 
 def _api_poll(status_path, label, timeout=7200, interval=3):
     """API のステータスをポーリングして完了を待つ。
-    完了判定: running=False かつ 末尾ログ N 行に [完了] 終了コード: 0 を含む
+    完了判定: 一度 running=True を観測した後に running=False かつ末尾ログに [完了] 終了コード: 0。
+    ⚠ running=True を一度も観測しない間は、前ジョブの残存完了マーカーを新ジョブ完了と
+       誤認しないよう採用しない（premiere→export で /api/premiere/status を共有するため）。
     """
     import urllib.request
     start = time.time()
     last_running_seen = False
+    start_grace = 60  # running=True を観測するまでの猶予(秒)。超えたら起動失敗とみなす
     while time.time() - start < timeout:
         try:
             with urllib.request.urlopen(f"{API_BASE}{status_path}", timeout=5) as resp:
@@ -342,20 +348,24 @@ def _api_poll(status_path, label, timeout=7200, interval=3):
                 if d.get("running"):
                     last_running_seen = True
                 else:
-                    # 末尾 5 行のうちに完了マーカーがあれば成功
                     logs = d.get("logs", []) or []
                     tail = "\n".join(logs[-5:])
-                    if "[完了] 終了コード: 0" in tail:
-                        print(f"\n✅ {label} 完了")
-                        return True
-                    if "[完了] 終了コード:" in tail:
-                        # 0 以外
-                        print(f"\n❌ {label} 失敗: {tail.splitlines()[-1] if tail else '?'}")
-                        return False
-                    # まだログが届いていないだけの可能性 → 1 周だけ猶予
                     if last_running_seen:
+                        # 自ジョブが走った後の完了マーカーのみ信用する
+                        if "[完了] 終了コード: 0" in tail:
+                            print(f"\n✅ {label} 完了")
+                            return True
+                        if "[完了] 終了コード:" in tail:
+                            print(f"\n❌ {label} 失敗: {tail.splitlines()[-1] if tail else '?'}")
+                            return False
+                        # running=False だがマーカー未達 → ログ遅延の猶予
                         time.sleep(interval)
                         continue
+                    else:
+                        # まだ起動前。前ジョブの残存マーカーは無視。猶予超過なら起動失敗で打ち切る
+                        if time.time() - start > start_grace:
+                            print(f"\n❌ {label} 起動確認失敗: {start_grace}s 以内に running=True 未観測")
+                            return False
         except Exception:
             pass
         time.sleep(interval)
@@ -1003,8 +1013,8 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
     use_dynamic = os.environ.get("APP_BGIMAGE_DYNAMIC_PROMPT", "1").strip().lower() not in ("0", "false", "no")
     if use_dynamic:
         try:
-            base_prompt = _build_bgimage_prompt(folder)
-            print("  📝 背景プロンプト: ベンチマーク分析から動的構築")
+            base_prompt = _build_bgimage_prompt(folder, ref_images=ref_images)
+            print("  📝 背景プロンプト: 参照3枚のVision共通要素＋ベンチマーク分析から動的構築")
         except Exception as e:
             print(f"  ⚠ 動的プロンプト構築失敗 → 固定テンプレにフォールバック: {e}")
             base_prompt = _legacy_bgimage_prompt(persona, channel_name)
@@ -1079,7 +1089,8 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
 
     env:
       APP_PSD_COMPOSITE_DISABLE=1   step 全体をスキップ
-      APP_PSD_COMPOSITE_FORCE=1     既存があっても強制再生成
+      APP_PSD_COMPOSITE_FORCE=1     既存サムネ/背景があっても強制再合成（scene_*.txt は尊重）
+      APP_SCENE_TEXT_REGEN=1        scene_en.txt / scene_ja.txt も作り直す（既定: 既存を再利用）
     """
     print(f"\n{'='*60}")
     print(f"  {STEP_LABELS.get('psd_composite', '4/10 PSD 合成')}")
@@ -1090,6 +1101,11 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
         return True
 
     force = os.environ.get("APP_PSD_COMPOSITE_FORCE", "").strip() in ("1", "true", "yes")
+    # FORCE は「画像合成のやり直し」専用フラグ。scene_en/scene_ja のテキストキャッシュ
+    # 再生成は別フラグ（APP_SCENE_TEXT_REGEN）で制御する。FORCE だけで日本語/英語コピーが
+    # 作り直されると、YouTube タイトル（scene_ja.txt 由来）とサムネ文字が不一致になる事故が
+    # 起きるため（vol5 で実際に発生）。既定では既存の scene_*.txt を尊重する。
+    scene_regen = os.environ.get("APP_SCENE_TEXT_REGEN", "").strip() in ("1", "true", "yes")
     out_bg = folder / f"vol{vol}.jpg"
     out_thumb = folder / "サムネイル.jpg"
     if not force and out_bg.exists() and out_thumb.exists():
@@ -1182,7 +1198,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
     if not scene_enabled:
         print("  ⊘ scene_text_enabled=false → シーン文字を入れない（単一トグル方式で続行）")
     else:
-        if scene_file.exists() and not force:
+        if scene_file.exists() and not scene_regen:
             try:
                 scene_text = scene_file.read_text(encoding="utf-8").strip()
             except Exception:
@@ -1219,7 +1235,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             print("  ⚠ scene_text_ja_enabled=true だが scene_text_ja_layer 未設定 → 日本語コピーをスキップ（英語のみで続行）")
         else:
             scene_ja_file = folder / "scene_ja.txt"
-            if scene_ja_file.exists() and not force:
+            if scene_ja_file.exists() and not scene_regen:
                 try:
                     scene_ja_text = scene_ja_file.read_text(encoding="utf-8").strip()
                 except Exception:
@@ -1269,6 +1285,12 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             extra["scene_text_ja_layer"] = scene_ja_layer
             if scene_ja_font:
                 extra["scene_text_ja_font"] = scene_ja_font
+        # 背景(vol{N}.jpg)を base レイヤーのみで出力 / テキストを元レイヤー位置で維持
+        # （per-channel 設定。キー無し＝従来挙動を完全維持＝他チャンネル不変）
+        if cfg.get("psd_bg_base_only"):
+            extra["bg_base_only"] = True
+        if cfg.get("psd_center_text") is False:
+            extra["center_text"] = False
         result = render_dual_thumbnail(
             psd_path=str(psd_path),
             base_image=str(base_image),
@@ -1472,6 +1494,32 @@ def _resolve_external_output_path(vol: int, folder: Path):
     return ext_dir / f"{file_prefix}_vol{num}.mp4"
 
 
+def _backup_existing_meta(folder: Path) -> None:
+    """既存の youtube_*.txt を *_backup.txt に退避（言語切替時の誤上書き防止）。"""
+    import shutil as _sh
+    for base in ("youtube_title", "youtube_description", "youtube_tags"):
+        src = folder / f"{base}.txt"
+        if src.exists():
+            try:
+                _sh.copy2(src, folder / f"{base}_backup.txt")
+            except Exception:
+                pass
+
+
+def _channel_meta_lang_handle(cfg: dict) -> tuple:
+    """per-channel 設定から (source_lang, handle) を解決。
+    source_lang = youtube_upload_defaults.default_language（既定 "en"）。
+    handle = channels.json レジストリの handle（説明文 CTA 用）。"""
+    yd = cfg.get("youtube_upload_defaults") or {}
+    source_lang = (yd.get("default_language") or "en").strip() or "en"
+    handle = ""
+    try:
+        handle = _resolve_channel(channel_folder=cfg.get("channel_folder", "")).get("handle", "") or ""
+    except Exception:
+        handle = ""
+    return source_lang, handle
+
+
 def step_export(vol: int, folder: Path, via_api: bool, **kw):
     if _use_render_queue():
         result = _enqueue_and_wait("export", vol, folder)
@@ -1505,57 +1553,40 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
     print(f"  {STEP_LABELS['meta']}")
     print(f"{'='*60}")
 
-    if via_api:
-        # タイトル提案 → 先頭を採用
-        r = _api_post(f"/api/videos/{name}/suggest", {"mode": "titles", "count": 5}, "タイトル提案")
-        if r and r.get("titles"):
-            title = r["titles"][0]
-            _api_post(f"/api/videos/{name}/title",
-                      {"video_name": name, "new_title": title}, f"タイトル保存: {title}")
-        # 説明文提案 → 保存
-        r = _api_post(f"/api/videos/{name}/suggest", {"mode": "description"}, "説明文提案")
-        if r and r.get("description"):
-            _api_post("/api/youtube-desc/save",
-                      {"video_name": name, "text": r["description"]}, "説明文保存")
-        # タグ提案 → 保存
-        r = _api_post(f"/api/videos/{name}/suggest", {"mode": "tags"}, "タグ提案")
-        if r and r.get("tags"):
-            import urllib.request
-            data = json.dumps({"tags": r["tags"]}).encode()
-            req = urllib.request.Request(
-                f"{API_BASE}/api/videos/{name}/tags", data=data,
-                headers={"Content-Type": "application/json"}, method="PUT",
-            )
-            try:
-                urllib.request.urlopen(req, timeout=10)
-                print(f"  ✓ タグ保存: {len(r['tags'])} 件")
-            except Exception as e:
-                print(f"  ❌ タグ保存失敗: {e}")
-        print(f"\n✅ {STEP_LABELS['meta']} 完了")
-        return True
-    else:
+    # ⚠ via_api の /suggest は同期LLM呼出で _api_post の10秒timeout に必ず引っかかり、
+    #   タイトル/説明/タグが保存されないまま「メタ空のまま upload」する事故になる。
+    #   そのため via_api 指定でも常に CLI 経路(claude_proposer 直呼)に一本化する。
+    #   (CLI 経路は run_llm 経由で Claude→Codex フォールバックも効く。CLAUDE.md 堅牢性ルール)
+    if True:
         # 直接 claude_proposer を使用
         sys.path.insert(0, str(BASE))
         from claude_proposer import propose_titles, propose_description, propose_tags, gather_context
         cfg = _load_dashboard_config()
         persona = cfg.get("persona", "")
+        channel_name = cfg.get("channel_name", "orzz.")
+        source_lang, handle = _channel_meta_lang_handle(cfg)
+        print(f"  🌐 source_lang={source_lang} / channel={channel_name} / handle={handle or '-'}")
         ctx = gather_context(folder)
+        _backup_existing_meta(folder)
         try:
-            titles = propose_titles(cli_cmd=cli, persona=persona, count=5, **ctx)
+            titles = propose_titles(cli_cmd=cli, persona=persona, channel_name=channel_name,
+                                    source_lang=source_lang, count=5, **ctx)
             if titles:
                 (folder / "youtube_title.txt").write_text(titles[0], encoding="utf-8")
                 print(f"  ✓ タイトル: {titles[0]}")
         except Exception as e:
             print(f"  ⚠️ タイトル: {e}")
         try:
-            desc = propose_description(cli_cmd=cli, persona=persona, **ctx)
+            desc = propose_description(cli_cmd=cli, persona=persona, channel_name=channel_name,
+                                       source_lang=source_lang, handle=handle, **ctx)
             if desc:
                 (folder / "youtube_description.txt").write_text(desc, encoding="utf-8")
                 print(f"  ✓ 説明文: {len(desc)} 文字")
         except Exception as e:
             print(f"  ⚠️ 説明文: {e}")
         try:
-            tags = propose_tags(cli_cmd=cli, persona=persona, **ctx)
+            tags = propose_tags(cli_cmd=cli, persona=persona, channel_name=channel_name,
+                                source_lang=source_lang, **ctx)
             if tags:
                 (folder / "youtube_tags.txt").write_text("\n".join(tags), encoding="utf-8")
                 print(f"  ✓ タグ: {len(tags)} 件")
@@ -1563,6 +1594,56 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
             print(f"  ⚠️ タグ: {e}")
         print(f"\n✅ {STEP_LABELS['meta']} 完了")
         return True
+
+
+def step_localization(vol: int, folder: Path, via_api: bool, **kw):
+    """多言語メタデータ生成。youtube_title/description.txt を localization_languages へ翻訳し
+    `youtube_localizations.json` を生成。メイン言語（default_language）は除外。
+
+    - per-channel `youtube_upload_defaults.default_language` をソース言語に。
+    - `localization_languages` 未設定チャンネルは no-op（後方互換）。
+    - 失敗しても upload は止めない（localizations が無くても本体メタで upload 可能）。
+    """
+    print(f"\n{'='*60}")
+    print(f"  {STEP_LABELS.get('localization', '多言語メタデータ')}")
+    print(f"{'='*60}")
+    cfg = _load_dashboard_config()
+    yd = cfg.get("youtube_upload_defaults") or {}
+    source_lang = (yd.get("default_language") or "en").strip() or "en"
+    langs = yd.get("localization_languages") or []
+    targets = [l for l in langs if l and l != source_lang]
+    if not targets:
+        print("  ⏭ localization_languages 未設定 → スキップ")
+        return True
+
+    title_path = folder / "youtube_title.txt"
+    desc_path = folder / "youtube_description.txt"
+    if not title_path.exists() or not desc_path.exists():
+        print("  ⚠ youtube_title.txt / youtube_description.txt が無い（meta 未実行？）→ スキップ")
+        return True  # upload を止めない
+
+    # ⚠ via_api の generate-localizations も同期翻訳で10秒timeout に切れるため、常に CLI 経路に一本化
+    title = title_path.read_text(encoding="utf-8").strip()
+    description = desc_path.read_text(encoding="utf-8").strip()
+    cli = _load_suno_config().get("claude_cli", "claude")
+    sys.path.insert(0, str(BASE))
+    from claude_proposer import translate_metadata
+    print(f"  🌐 {source_lang} → {', '.join(targets)}")
+    try:
+        result = translate_metadata(
+            title=title, description=description,
+            source_lang=source_lang, target_langs=targets, cli_cmd=cli,
+        )
+    except Exception as e:
+        print(f"  ❌ 翻訳失敗: {e}")
+        return False
+    if not result:
+        print("  ⚠ 翻訳結果が空 → スキップ（upload は続行可能）")
+        return True
+    out_path = folder / "youtube_localizations.json"
+    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"  ✅ {len(result)} 言語生成: {', '.join(result.keys())} → {out_path.name}")
+    return True
 
 
 def step_qa(vol: int, folder: Path, via_api: bool, **kw):
@@ -1858,7 +1939,7 @@ def _legacy_bgimage_prompt(persona: str, channel_name: str) -> str:
     )
 
 
-def _build_bgimage_prompt(folder: Path) -> str:
+def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
     """背景画像 vol{N}.png 用の動的プロンプトを構築（ベンチマーク concept/visual_direction 由来）。
 
     収集ロジック（concept.txt → benchmark concept aggregate → benchmark thumbnail aggregate →
@@ -1938,15 +2019,28 @@ def _build_bgimage_prompt(folder: Path) -> str:
     try:
         from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
         visual = normalize_visual_direction(analysis, thumbnail_axis)
-        visual["background_context"] = (
-            "cozy bright cafe morning interior or sunlit window-side nook, natural wood furniture, "
-            "green houseplants and fresh citrus greenery, a coffee cup with soft steam, "
-            "clean daylight through large windows, warm natural lifestyle atmosphere, large negative space; "
-            "no waterfront, no riverside, no beach, no dark lofi room"
-        )
+        # ⚠ 旧コードは background_context を「cozy bright cafe morning...」でハードコード固定し、
+        #    海/川/浜辺まで禁止していた（vol がカフェ朝ばかりになった元凶）。撤去し、
+        #    今回選んだ参照3枚の Vision 共通要素に置換する＝ベンチ先サムネ3枚に寄せる本来仕様(TTPS)。
+        if ref_images:
+            try:
+                from app_llm_runner import run_llm_vision
+                _common = run_llm_vision(
+                    "これら複数のベンチマーク用サムネ画像に共通する視覚要素"
+                    "（被写体・構図・時間帯・光・色調・雰囲気）を分析し、それらを踏襲した"
+                    "新しい16:9背景画像のための英語ビジュアル記述を1〜2文で作れ。"
+                    "文字/ロゴ/固有名詞は含めない。被写体は控えめ・余白多め。",
+                    [str(p) for p in ref_images],
+                    label="bgimage:参照3枚の共通要素抽出",
+                )
+                if _common and _common.strip():
+                    visual["background_context"] = _common.strip()
+                    print("  🔍 参照3枚のVision共通要素を背景コンテキストに採用(TTPS)")
+            except Exception as e:
+                print(f"  ⚠ 参照3枚のVision共通要素抽出失敗（ベンチ分析にフォールバック）: {e}")
         visual["camera_composition"] = (
-            "16:9 wide landscape shot, eye-level or slightly elevated, soft natural side/front light, "
-            "shallow depth of field on foreground cafe details, spacious airy composition with ample negative space"
+            "16:9 wide landscape shot, soft natural light, "
+            "spacious airy composition with ample negative space"
         )
         # 背景禁止語を avoid の先頭に二重注入（_clean_text の 220 字切りで消えないよう先頭固定）
         existing_avoid = (visual.get("avoid") or "").strip()
@@ -2158,6 +2252,7 @@ STEP_FUNCS = {
     "export": step_export,
     "qa": step_qa,
     "meta": step_meta,
+    "localization": step_localization,
     "thumbnail": step_thumbnail,
     "upload": step_upload,
 }
@@ -2175,6 +2270,7 @@ RETRY_POLICY: dict = {
     # plan / meta は API 呼び出し中心で transient 失敗が多い → 軽く 2 回まで
     "plan": {"attempts": 2, "backoff": [15], "retry_on": {False}},
     "meta": {"attempts": 2, "backoff": [10], "retry_on": {False}},
+    "localization": {"attempts": 2, "backoff": [15], "retry_on": {False}},
     # upload は明示的に EXIT_RETRYABLE で投げ返ってきた時のみリトライ。
     # 一般 False（ログイン切れ・mp4 不在等）はリトライしても直らないので fast-fail。
     "upload": {"attempts": 3, "backoff": [30, 120], "retry_on": {"retryable"}},

@@ -233,8 +233,11 @@ def load_localizations(folder) -> dict:
         for lang, entry in data.items():
             if not isinstance(entry, dict):
                 continue
-            t = (entry.get("title") or "").strip()
-            d = (entry.get("description") or "").strip()
+            # YouTube制約: localizations各言語も title<=100 / description<=5000(コードポイント数)。
+            # 欧州言語翻訳でタイトルが伸びると invalidVideoMetadata で upload 全体が400失敗するため
+            # 読込時に必ず収める（vol4 で実害。CLAUDE.md 堅牢性ルール参照）。
+            t = (entry.get("title") or "").strip()[:100]
+            d = (entry.get("description") or "").strip()[:5000]
             if t or d:
                 out[lang] = {"title": t, "description": d}
         return out
@@ -533,6 +536,9 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         print(f"アップロード先チャンネル: {ch_info.get('channel_title') or '?'} ({ch_info.get('channel_id')})")
     sys.stdout.flush()
 
+    # YouTube制約に合わせて本文 snippet も title<=100 / description<=5000 に収める（invalidVideoMetadata 防止）
+    title = (title or "")[:100]
+    description = (description or "")[:5000]
     snippet = {
         "title": title,
         "description": description,

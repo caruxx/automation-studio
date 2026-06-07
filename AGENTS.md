@@ -170,7 +170,7 @@ lsof -ti:8888 | xargs kill -9
 | 「全部やって」 | `python3 app_pipeline.py <vol>` |
 | 「Premiere からやり直して」 | `python3 app_pipeline.py <vol> --from premiere` |
 | 「競合を分析して」 | `python3 app_competitor.py --analyze` |
-| 「競合分析から提案して」 | `curl POST /api/videos/.../suggest-with-analysis` |
+| 「競合分析から提案して」 | Web UI「AI 提案（ベンチマーク連動）」パネル、または `curl POST /api/videos/.../suggest-all`（競合分析を内部で反映。旧 suggest-with-analysis は廃止） |
 | 「今伸びてるチャンネルは？」 | `curl GET /api/analysis/hot-channels?top_n=10` |
 | 「WEB を起動して」 | `bash start.sh` |
 | 「WEB を再起動して」 | `lsof -ti:8888 | xargs kill -9; bash start.sh` |
@@ -238,8 +238,8 @@ for v in vs:
 ## 仕様書・スキル参照
 
 - [SPEC.md](SPEC.md) — 全体仕様（API 一覧・データ契約・アーキテクチャ）
-- [skills/app-workflow.md](skills/app-workflow.md) — 9 工程の全体フロー（背景画像生成を STEP 3 として挿入）
+- [skills/app-workflow.md](skills/app-workflow.md) — 11 工程の全体フロー（plan→suno→rename→bgimage→psd_composite→premiere→export→qa→meta→localization→thumbnail→upload）
 - [skills/app-bgimage.md](skills/app-bgimage.md) — 背景画像生成（参照画像で寄せる固定テンプレ寄り）
-- [skills/app-thumbnail.md](skills/app-thumbnail.md) — AI サムネ生成（ベンチ分析から動的プロンプト構築 → Flow/Codex 並列）
+- [skills/app-thumbnail.md](skills/app-thumbnail.md) — AI サムネ生成（ベンチ分析から動的プロンプト構築 → codex で生成。Flow 経路は廃止）
 - [skills/app-web-dashboard.md](skills/app-web-dashboard.md) — Web UI / API / History API
 - 個別スキルは [skills/](skills/) ディレクトリ内の各 `.md` を参照

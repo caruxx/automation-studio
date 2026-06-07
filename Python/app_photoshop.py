@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-DEFAULT_TIMEOUT = 60   # JSX 実行のデフォルトタイムアウト（秒）
+DEFAULT_TIMEOUT = 240  # JSX 実行のデフォルトタイムアウト（秒）。重い PSD 合成（スマートオブジェクト流し込み＋2枚書き出し）に対応
 
 _cached_app_name: Optional[str] = None
 
@@ -116,11 +116,15 @@ def run_jsx(code: str, timeout: float = DEFAULT_TIMEOUT) -> Any:
         jsx_path = tf.name
 
     try:
+        # AppleScript の Apple event タイムアウト（既定 ~120s）も延ばす。
+        # これが無いと重い PSD 合成で subprocess より先に AppleScript 側が切れる。
         applescript = (
             f'set jsxFile to (POSIX file "{jsx_path}")\n'
+            f'with timeout of {int(timeout) + 60} seconds\n'
             f'tell application "{app_name}"\n'
             f'    do javascript file jsxFile\n'
-            f'end tell'
+            f'end tell\n'
+            f'end timeout'
         )
         proc = subprocess.run(
             ["osascript", "-e", applescript],
@@ -180,7 +184,7 @@ def open_psd(path: str) -> str:
         if (!f.exists) {{ "ERROR: file not found"; }}
         else {{ app.open(f); app.activeDocument.name; }}
     """
-    result = run_jsx(code, timeout=60)
+    result = run_jsx(code, timeout=240)
     if isinstance(result, str) and result.startswith("ERROR:"):
         raise RuntimeError(result)
     return result
@@ -357,7 +361,7 @@ def export_image(out_path: str, fmt: str = "jpg", quality: int = 90,
             {body_jsx}
         }})();
     """
-    result = run_jsx(code, timeout=90)
+    result = run_jsx(code, timeout=240)
     if isinstance(result, str) and result.startswith("ERROR:"):
         raise RuntimeError(result)
     return result
@@ -432,7 +436,7 @@ def replace_smart_object(layer_name: str, image_path: str, fit: bool = True) -> 
         .replace("__IMG_JS__", json.dumps(str(img)))
         .replace("__FIT_JS__", "true" if fit else "false")
     )
-    result = run_jsx(code, timeout=60)
+    result = run_jsx(code, timeout=240)
     if isinstance(result, str) and result.startswith("ERROR:"):
         raise RuntimeError(result)
     return result == "ok"
@@ -464,6 +468,69 @@ def set_layer_visible(layer_name: str, visible: bool) -> bool:
         }})();
     """
     result = run_jsx(code, timeout=15)
+    if isinstance(result, str) and result.startswith("ERROR:"):
+        raise RuntimeError(result)
+    return result == "ok"
+
+
+def _hide_top_level_except(keep_layer: str) -> list:
+    """トップレベルレイヤーのうち keep_layer 以外の可視レイヤーを非表示にし、
+    非表示にしたレイヤーの **インデックス** のリストを返す（背景=base のみ出力 → 後で復元）。
+
+    名前ではなく index を返すのは、復元（_show_top_level_by_index）で名前マッチングを
+    避けるため。SUKIMA のタグライン層 'cozy tune / morning cafe / bossa ＆ soul '
+    （末尾スペース・全角＆を含む）のように set_layer_visible の完全一致が壊れる層でも、
+    トップレベル index なら確実に復元できる。hide → export → restore の間に
+    レイヤーの増減・並べ替えは起きない前提（このコンテキストでは成立する）。
+    """
+    keep_js = json.dumps(keep_layer)
+    code = f"""
+        if (!app.documents.length) {{ "ERROR: no active doc"; }}
+        else (function() {{
+            var keep = {keep_js};
+            var hidden = [];
+            var ls = app.activeDocument.layers;
+            for (var i = 0; i < ls.length; i++) {{
+                if (ls[i].name !== keep && ls[i].visible) {{
+                    ls[i].visible = false;
+                    hidden.push(i);
+                }}
+            }}
+            return hidden.join(",");
+        }})();
+    """
+    result = run_jsx(code, timeout=20)
+    if isinstance(result, str) and result.startswith("ERROR:"):
+        raise RuntimeError(result)
+    if not result:
+        return []
+    return [int(n) for n in str(result).split(",") if n.strip() != ""]
+
+
+def _show_top_level_by_index(indices: list) -> bool:
+    """トップレベルレイヤーをインデックスで再表示する（名前マッチング不使用）。
+
+    _hide_top_level_except が返した「非表示にした index 配列」をそのまま渡す。
+    名前で探さないため、末尾スペース・全角記号を含む層名でも確実に復元できる
+    （SUKIMA タグライン層がサムネから消えるバグの恒久対策）。
+    """
+    idxs = [int(i) for i in indices if i is not None]
+    if not idxs:
+        return True
+    idx_js = json.dumps(idxs)
+    code = f"""
+        if (!app.documents.length) {{ "ERROR: no active doc"; }}
+        else (function() {{
+            var idxs = {idx_js};
+            var ls = app.activeDocument.layers;
+            for (var i = 0; i < idxs.length; i++) {{
+                var k = idxs[i];
+                if (k >= 0 && k < ls.length) ls[k].visible = true;
+            }}
+            return "ok";
+        }})();
+    """
+    result = run_jsx(code, timeout=20)
     if isinstance(result, str) and result.startswith("ERROR:"):
         raise RuntimeError(result)
     return result == "ok"
@@ -567,6 +634,8 @@ def render_dual_thumbnail(
     scene_text_ja_layer: Optional[str] = None,
     scene_text_ja_font: Optional[str] = None,
     toggle_always_visible: bool = False,
+    bg_base_only: bool = False,
+    center_text: bool = True,
 ) -> dict:
     """Harbor Notes 仕様: 2層対立式の2枚出力（背景画像 + サムネ）。
 
@@ -632,16 +701,16 @@ def render_dual_thumbnail(
     except Exception as e:
         print(f"⚠ レイヤー名 '{base_layer}' 復元失敗（次回実行に影響なし）: {e}")
 
-    print(f"✍️  text: {scene_text_layer} = {scene_text!r} (centered{', font=' + scene_text_font if scene_text_font else ''})")
-    set_text(scene_text_layer, scene_text, centered=True, font=scene_text_font)
+    print(f"✍️  text: {scene_text_layer} = {scene_text!r} (centered={center_text}{', font=' + scene_text_font if scene_text_font else ''})")
+    set_text(scene_text_layer, scene_text, centered=center_text, font=scene_text_font)
 
     # 日本語コピー（competitor 風）— enabled かつ層が与えられたときだけ操作。
     # 失敗（層が見つからない/テキスト層でない等）は non-fatal で続行する
     # （英語サムネ出力は成功させ、日本語が乗らなかったことだけ警告）。
     if use_ja:
-        print(f"✍️  text(ja): {scene_text_ja_layer} = {scene_text_ja!r} (centered{', font=' + scene_text_ja_font if scene_text_ja_font else ''})")
+        print(f"✍️  text(ja): {scene_text_ja_layer} = {scene_text_ja!r} (centered={center_text}{', font=' + scene_text_ja_font if scene_text_ja_font else ''})")
         try:
-            set_text(scene_text_ja_layer, scene_text_ja, centered=True, font=scene_text_ja_font)
+            set_text(scene_text_ja_layer, scene_text_ja, centered=center_text, font=scene_text_ja_font)
         except Exception as e:
             print(f"⚠ 日本語層 '{scene_text_ja_layer}' へのテキスト設定に失敗（英語のみで続行）: {e}")
             use_ja = False
@@ -662,16 +731,31 @@ def render_dual_thumbnail(
         bg_toggle_note = f" / show '{playlist_layer}'"
         on_toggle_note = f" / hide '{playlist_layer}'"
 
-    # 出力1: vol{N}.jpg — シーン文字OFF / headline（toggle）ON
-    print(f"👁  hide '{scene_text_layer}'{ja_off_note}{bg_toggle_note} → {out_bg.name}")
-    set_layer_visible(scene_text_layer, False)
-    if use_ja:
+    # 出力1: vol{N}.jpg（Premiere 背景用）
+    if bg_base_only:
+        # 背景は base レイヤーのみ（テキスト/ロゴ層を全部 OFF）。SUKIMA 等
+        # 「背景に文字を焼き込まない」運用向け。出力後に元の可視状態へ復元する。
+        print(f"👁  背景モード: '{base_layer}' 以外の全トップ層を非表示 → {out_bg.name}")
+        hidden_idx = _hide_top_level_except(base_layer)
+        export_image(str(out_bg), "jpg", quality, target_width=target_width, target_height=target_height)
+        # 復元は index で行う（名前マッチングだと SUKIMA のタグライン層
+        # 'cozy tune / morning cafe / bossa ＆ soul '（末尾スペース・全角＆）が
+        # 復元されず、サムネからタグラインが消える事故が起きるため）。
         try:
-            set_layer_visible(scene_text_ja_layer, False)
+            _show_top_level_by_index(hidden_idx)
         except Exception as e:
-            print(f"⚠ 日本語層 '{scene_text_ja_layer}' の非表示化に失敗（続行）: {e}")
-    set_layer_visible(playlist_layer, True)
-    export_image(str(out_bg), "jpg", quality, target_width=target_width, target_height=target_height)
+            print(f"⚠ 背景モードのトップ層復元に失敗（続行）: {e}")
+    else:
+        # 従来: シーン文字OFF / headline（toggle）ON
+        print(f"👁  hide '{scene_text_layer}'{ja_off_note}{bg_toggle_note} → {out_bg.name}")
+        set_layer_visible(scene_text_layer, False)
+        if use_ja:
+            try:
+                set_layer_visible(scene_text_ja_layer, False)
+            except Exception as e:
+                print(f"⚠ 日本語層 '{scene_text_ja_layer}' の非表示化に失敗（続行）: {e}")
+        set_layer_visible(playlist_layer, True)
+        export_image(str(out_bg), "jpg", quality, target_width=target_width, target_height=target_height)
 
     # 出力2: サムネイル.jpg — シーン文字ON / headline は常時表示なら ON、従来は OFF
     print(f"👁  show '{scene_text_layer}'{ja_on_note}{on_toggle_note} → {out_thumb.name}")
@@ -694,7 +778,7 @@ def render_dual_thumbnail(
                 "ok";
             })();
         """
-        result = run_jsx(save_code, timeout=60)
+        result = run_jsx(save_code, timeout=240)
         if isinstance(result, str) and result.startswith("ERROR:"):
             print(f"⚠ PSD save 失敗（書き出しは成功・編集状態は未保存）: {result}")
         else:

@@ -111,25 +111,8 @@ def _build_scoring_prompt(
 - ジャンル名（jazz / lofi 等）は persona に明記が無い限り使わない。"""
 
 
-def _extract_json(text: str) -> Optional[dict]:
-    """Vision レスポンスから JSON 抽出 (```json fence or 単独 JSON)。"""
-    import json
-    if not text:
-        return None
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
-    cand = fence.group(1) if fence else text
-    s, e = cand.find("{"), cand.rfind("}")
-    if s < 0 or e <= s:
-        return None
-    blob = cand[s:e + 1]
-    try:
-        return json.loads(blob)
-    except json.JSONDecodeError:
-        cleaned = re.sub(r",\s*([}\]])", r"\1", blob)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return None
+# JSON 抽出は app_benchmark_common に集約（D10）
+from app_benchmark_common import extract_json_object as _extract_json
 
 
 def _run_claude_vision(cli_cmd: str, prompt: str, image_paths: list[Path],

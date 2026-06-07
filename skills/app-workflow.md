@@ -1,7 +1,7 @@
 # Channel 自動化ワークフロー
 
-動画制作 9 工程を、**Web ダッシュボード 1 画面**で完結させるマスターワークフロー。
-（旧 6 工程版から、qa / bgimage / thumbnail を独立 step に分離した結果 9 工程に拡張。
+動画制作 11 工程を、**Web ダッシュボード 1 画面**で完結させるマスターワークフロー。
+（旧 6 工程版から、qa / bgimage / psd_composite / localization / thumbnail を独立 step に分離した結果 11 工程に拡張。
 詳細パイプラインは `python3 app_pipeline.py --help` 参照。）
 
 ## チャンネル情報
@@ -32,12 +32,12 @@ bash Python/start.sh       # http://localhost:8888/
 
 「+ 新規動画」から公開日を指定 → `{num}_{prefix}_{YYMMDD}` フォルダと .prproj/.psd を自動生成
 （[app-create-folder.md](./app-create-folder.md)）。
-**この時点でコンテンツ一覧に追加され、以降 6 工程の進捗がステッパーで可視化される。**
+**この時点でコンテンツ一覧に追加され、以降 11 工程の進捗がステッパーで可視化される。**
 
-## ワークフロー 9 工程
+## ワークフロー 11 工程
 
 各工程は「コンテンツ → vol.XX → 詳細画面」のタブで完結する。
-（パイプライン CLI 上の step キー: `suno / rename / bgimage / premiere / export / qa / meta / thumbnail / upload`）
+（パイプライン CLI 上の step キー: `suno / rename / bgimage / psd_composite / premiere / export / qa / meta / localization / thumbnail / upload`。`--from-benchmark` 時は先頭に `plan` が付き 12 工程）
 
 ### STEP 1: SUNO 生成（🎵 SUNOタブ / 動画詳細「楽曲」タブ）
 - **Web**: `SUNO 生成` で プロバイダー (Gemini / ChatGPT / **Claude CLI**) / プロンプト / 回数 を指定 → 自動生成ループ
@@ -54,14 +54,14 @@ bash Python/start.sh       # http://localhost:8888/
 - **スプレッドシート競合分析**: 195ch の詳細データ + 54ch の日次成長データからホットチャンネルを特定 → Claude で分析 → 提案。YouTube API quota ゼロ（[app-competitor-spreadsheet.md](./app-competitor-spreadsheet.md) 参照）
 - **Claude CLI 経由**: API未使用、`claude -p "..."` が JSON 単一オブジェクトを逐次返す（[app-ai-propose.md](./app-ai-propose.md)）
 - **Tampermonkey**: 従来の「Ghost Writer by LLM」も併用可
-- 完了条件: `music/*.mp3` が 1 本以上存在 → ステッパー 1/9 ✓
+- 完了条件: `music/*.mp3` が 1 本以上存在 → ステッパー 1/11 ✓
 
 ### STEP 2: 楽曲リネーム + 音声処理（動画詳細「楽曲」タブ）
 - Claude CLI が**サムネ / ペルソナ**から「らしい」タイトルを提案 → リネーム
 - ffmpeg で無音トリム + 8 秒フェードアウト + -16 LUFS 正規化 → `music/` に出力
 - オリジナルは `original_music/` にバックアップ
 - 詳細: [app-rename-audio.md](./app-rename-audio.md)
-- 完了条件: `music/*.mp3` が処理済み（rename 完了マーカーまたは music 配下に処理後ファイル）→ 2/9 ✓
+- 完了条件: `music/*.mp3` が処理済み（rename 完了マーカーまたは music 配下に処理後ファイル）→ 2/11 ✓
 
 ### STEP 3: 背景画像生成（動画詳細「画像」タブ）
 - ベンチマーク（picked or rival_channels の thumbs プール）から N 枚ランダム選択 →
@@ -70,9 +70,16 @@ bash Python/start.sh       # http://localhost:8888/
 - 既存 `vol{N}.png/.jpg` あれば既定でスキップ（`APP_BGIMAGE_FORCE=1` で上書き）
 - 「上書き再生成」UI ボタン / `POST /api/bgimage/run` でも単発実行可能
 - 詳細: [app-bgimage.md](./app-bgimage.md)
-- 完了条件: `vol{N}.png` または `vol{N}.jpg` がフォルダ直下に存在 → 3/9 ✓
+- 完了条件: `vol{N}.png` または `vol{N}.jpg` がフォルダ直下に存在 → 3/11 ✓
 
-### STEP 4: Premiere 自動配置（動画詳細「配置」タブ）
+### STEP 4: PSD 合成（動画詳細「画像」タブ）
+- 背景画像（STEP 3）+ シーンテキストを Photoshop の PSD テンプレに流し込み、`vol{N}.jpg`（サムネ本体）+ `サムネイル.jpg` を 2 枚出し
+- 文字（シーンテキスト）のトーン / 例 / 禁止語は per-channel `scene_text_*` 設定で制御（空なら persona 中立）
+- 正規サムネフロー = `bgimage`(背景) → `psd_composite`(文字入れ)。AI 直接生成（STEP 10）は PSD 合成が使えない時のフォールバック
+- 詳細: [app-psd-composite.md](./app-psd-composite.md)
+- 完了条件: `vol{N}.jpg` または `サムネイル.jpg` が存在 → 4/11 ✓
+
+### STEP 5: Premiere 自動配置（動画詳細「配置」タブ）
 - 「▶ この動画で Premiere 自動配置を実行」→ `vol_vol{N}.prproj` を自動オープン → JSX 送信
 - JSX の処理:
   1. music/*.mp3 を A1 にループ配置（z_付き優先）
@@ -83,40 +90,46 @@ bash Python/start.sh       # http://localhost:8888/
 - 詳細: [app-premiere.md](./app-premiere.md)
 - 任意: その前に動画詳細「画像」タブから **メイン + サブ** を手動選択しておくと
   JSX がそれを優先（[app-image-select.md](./app-image-select.md)）
-- 完了条件: `subtitles_*.srt` が存在 → 4/9 ✓
+- 完了条件: `subtitles_*.srt` が存在 → 5/11 ✓
 
-### STEP 5: 書き出し（動画詳細「書き出し」タブ / 🎨 Premiere）
+### STEP 6: 書き出し（動画詳細「書き出し」タブ / 🎨 Premiere）
 - 「完了後に書き出し」チェック → Media Encoder に YouTube 1080p プリセットで自動キュー
 - 外部 SSD パスにも対応（`dashboard_config.json` の `export_path`）
 - 詳細: [app-export.md](./app-export.md)
-- 完了条件: `*vol{N}.mp4` が存在 → 5/9 ✓
+- 完了条件: `*vol{N}.mp4` が存在 → 6/11 ✓
 
-### STEP 6: QA チェック（書き出し直後・自動）
+### STEP 7: QA チェック（書き出し直後・自動）
 - 解像度（1920x1080） / アスペクト（16:9） / 尺（≧ 動画予定時間） / コーデック（H.264）を ffprobe で検証
 - 失敗時は Discord に通知して停止（手動で修正 → 「書き出し」から再開）
 - 詳細: 検査ロジックは [Python/app_pipeline.py](../Python/app_pipeline.py) `step_qa()`
-- 完了条件: QA 全 4 軸 pass → 6/9 ✓
+- 完了条件: QA 全 4 軸 pass → 7/11 ✓
 
-### STEP 7: 動画メタ（動画詳細「公開準備」タブ）
+### STEP 8: 動画メタ（動画詳細「公開準備」タブ）
 - **タイトル ×5 提案** / **説明文提案** / **タグ提案** すべて Claude CLI（JSON出力・API未使用）
 - ペルソナ・楽曲リスト・公開日を自動で投入 → クリック1つで採用＆保存
 - 保存ファイル: `youtube_title.txt` / `youtube_description.txt` / `youtube_tags.txt`
 - 詳細: [app-ai-propose.md](./app-ai-propose.md) / [app-youtube-desc.md](./app-youtube-desc.md)
-- 完了条件: title / description / tags 3 ファイルが揃う → 7/9 ✓
+- 完了条件: title / description / tags 3 ファイルが揃う → 8/11 ✓
 
-### STEP 8: サムネイル自動生成（動画詳細「画像」タブ）
-- Flow / Codex でサムネ候補を並列生成 → 候補 1 枚を `thumbnail.png` に昇格
+### STEP 9: 多言語メタデータ（自動）
+- メイン言語（per-channel `youtube_upload_defaults.default_language`、例: orzz=en・SUKIMA=ja）のメタを各国語へ翻訳
+- メイン言語自体は翻訳対象から除外。`localization` step が title / description を多言語化し、upload 時に YouTube `localizations` へ反映
+- 詳細: [Python/app_pipeline.py](../Python/app_pipeline.py) `step_localization()`
+- 完了条件: 多言語メタが生成される（非 fatal・失敗しても upload は継続）→ 9/11 ✓
+
+### STEP 10: サムネイル自動生成（フォールバック・動画詳細「画像」タブ）
+- codex でサムネ候補を生成 → 候補 1 枚を `thumbnail.png` に昇格（自動サムネは codex 一本化済み。Flow 経路は廃止）
 - 既存サムネ（手動配置 `vol*.jpg` / `サムネイル.jpg`）があればスキップ
-- env: `APP_THUMBNAIL_PROVIDERS=flow,codex` / `APP_THUMBNAIL_DISABLE=1`
+- env: `APP_THUMBNAIL_PROVIDERS=codex` / `APP_THUMBNAIL_DISABLE=1`
 - 失敗しても upload は止めない（手動でサムネを当てれば公開可能）
-- 完了条件: `thumbnail.png` または `vol*.jpg` または `サムネイル.jpg` のいずれか → 8/9 ✓
+- 完了条件: `thumbnail.png` または `vol*.jpg` または `サムネイル.jpg` のいずれか → 10/11 ✓
 
-### STEP 9: アップロード（動画詳細「アップロード」タブ）
+### STEP 11: アップロード（動画詳細「アップロード」タブ）
 - サムネ・タイトル・説明・タグを**保存ファイルから自動ロード**してプレビュー
 - 公開設定 + 予約日時 → YouTube Data API v3 で送信
 - 完了時に `youtube_upload.json` マーカー書出 → ステッパーに即反映
 - 詳細: [app-youtube-upload.md](./app-youtube-upload.md)
-- 完了条件: `youtube_upload.json` が存在 → 9/9 ✓
+- 完了条件: `youtube_upload.json` が存在 → 11/11 ✓
 
 ### 任意: Discord 通知
 - スケジュール通知、作業完了通知など
@@ -144,8 +157,8 @@ python3 app_pipeline.py 78 --from-benchmark --auto
 ### 全工程（--from-benchmark 時）
 
 ```
-plan → suno → rename → bgimage → premiere → export → qa → meta → thumbnail → upload
- 0/10   1/9    2/9      3/9       4/9        5/9     6/9   7/9    8/9         9/9
+plan → suno → rename → bgimage → psd_composite → premiere → export → qa → meta → localization → thumbnail → upload
+0/11   1/11   2/11    3/11      4/11           5/11      6/11    7/11  8/11  9/11          10/11      11/11
 ```
 
 詳細は `app_pipeline.py --help` と [Python/app_pipeline.py](../Python/app_pipeline.py) `STEPS` / `STEP_LABELS`。

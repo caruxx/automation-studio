@@ -311,23 +311,8 @@ def fetch_competitor_data(rival_urls: list[str], desc_limit: int = 500) -> dict:
 
 # ─── Claude CLI 分析 ─────────────────────────────────
 
-def _extract_json_object(text: str):
-    if not text:
-        return None
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
-    candidate = fence.group(1) if fence else text
-    start, end = candidate.find("{"), candidate.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    blob = candidate[start:end + 1]
-    try:
-        return json.loads(blob)
-    except json.JSONDecodeError:
-        cleaned = re.sub(r",\s*([}\]])", r"\1", blob)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return None
+# JSON 抽出は app_benchmark_common に集約（D10）
+from app_benchmark_common import extract_json_object as _extract_json_object
 
 
 def analyze_with_claude(competitor_data: dict, cli_cmd: str = DEFAULT_CLI, growth_summary: dict = None) -> dict:

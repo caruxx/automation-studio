@@ -63,3 +63,32 @@ def normalize_ids(channel_ids) -> set | None:
         return None
     s = {str(x).strip() for x in channel_ids if str(x).strip()}
     return s or None
+
+
+def extract_json_object(text):
+    """文字列から JSON オブジェクトを抽出（コードフェンス/前後文を無視）。
+
+    ```json ... ``` フェンスを剥がし、最初の '{' から最後の '}' までを
+    json.loads。失敗時は末尾カンマを除去して再試行。抽出不能なら None。
+
+    D10: 同型実装が 10 ファイルに重複していたものを 1 関数へ集約。
+    各モジュールは旧名のエイリアス（_extract_json / _extract_json_object）で import する。
+    """
+    import re
+    if not text:
+        return None
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
+    candidate = fence.group(1) if fence else text
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start < 0 or end < 0 or end <= start:
+        return None
+    blob = candidate[start:end + 1]
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        cleaned = re.sub(r",\s*([}\]])", r"\1", blob)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return None

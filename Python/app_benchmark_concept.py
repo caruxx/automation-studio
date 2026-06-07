@@ -129,23 +129,8 @@ def _safe_id(s: str) -> str:
 
 # ─── JSON 抽出 ─────────────────────────────────────
 
-def _extract_json(text: str) -> Optional[dict]:
-    if not text:
-        return None
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
-    candidate = fence.group(1) if fence else text
-    s, e = candidate.find("{"), candidate.rfind("}")
-    if s < 0 or e <= s:
-        return None
-    blob = candidate[s:e + 1]
-    try:
-        return json.loads(blob)
-    except json.JSONDecodeError:
-        cleaned = re.sub(r",\s*([}\]])", r"\1", blob)
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return None
+# JSON 抽出は app_benchmark_common に集約（D10）
+from app_benchmark_common import extract_json_object as _extract_json
 
 
 # ─── プロンプト構築 ────────────────────────────────

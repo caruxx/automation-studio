@@ -217,6 +217,10 @@ def get_dashboard_config():
     for k in PER_CHANNEL_KEYS:
         if k in cc:
             config[k] = cc[k]
+    # channel_folder（GLOBAL_ONLY）を現マシンへ解決。他マシンで保存された値でも自機で有効化し、
+    # 各所の `ch.get("folder")==config.get("channel_folder")` 比較を揃える。保存先はローカルのみ＝安全。
+    if config.get("channel_folder"):
+        config["channel_folder"] = _resolve_to_current_host(config["channel_folder"])
     return config
 
 
@@ -258,7 +262,7 @@ def _active_channel_folder() -> Optional[Path]:
     f = raw.get("channel_folder")
     if not f:
         return None
-    p = Path(f)
+    p = Path(_resolve_to_current_host(f))  # 他マシンで保存された channel_folder を現マシンに解決
     return p if p.exists() else None
 
 
@@ -439,14 +443,55 @@ def infer_file_prefix_from_folder(channel_dir: Path) -> str:
     return sorted(counts.items(), key=lambda x: (-x[1], x[0].lower()))[0][0]
 
 
+_SHARED_MARKER = "/共有ドライブ/"
+
+
+def _shared_drive_root() -> Path:
+    """現マシンの <共有ドライブ> ルート（SHARED_BASE = <共有ドライブ>/DEV/_claude の 2 つ上）。"""
+    return SHARED_BASE.parent.parent
+
+
+def _rel_under_shared(folder) -> Optional[str]:
+    """folder 文字列から '/共有ドライブ/' 以降の相対部分を NFC で返す（無ければ None）。
+    2 台の Mac（/Users/abe_kota… と /Users/asobimori…）でホーム名が違っても
+    共有ドライブ以降は共通なので、これをホーム非依存キー／移植の基点に使う。"""
+    if not folder:
+        return None
+    s = unicodedata.normalize("NFC", str(folder))
+    idx = s.find(_SHARED_MARKER)
+    if idx < 0:
+        return None
+    return s[idx + len(_SHARED_MARKER):]
+
+
+def _resolve_to_current_host(folder):
+    """folder を現マシンの共有ドライブパスへ解決（ホーム非依存）。
+    '/共有ドライブ/' 以降を現マシンの共有ドライブ root に付け替える。
+    マーカー無し（外部 SSD /Volumes/… 等）や解決不能時は原文を返す。
+    ⚠ 解決値は『表示・FS アクセス用』。共有 channels.json への保存は原文を使うこと
+      （解決値を書き戻すと他マシンのパスを壊す）。"""
+    if not folder:
+        return folder
+    rel = _rel_under_shared(folder)
+    if rel is None:
+        return folder
+    root = _shared_drive_root()
+    # R5 防御: root が共有ドライブ配下でなければ（find_shared_drive フォールバック等）解決を諦める
+    if _SHARED_MARKER.strip("/") not in unicodedata.normalize("NFC", str(root)):
+        return folder
+    return str(root / rel)
+
+
 def _norm_folder(f) -> str:
-    """フォルダパスを実体ベースに正規化する（比較キー用）。
-    - Google Drive は ~/Google Drive と ~/Library/CloudStorage/GoogleDrive-* の
-      2 系統パスで同じ実体を指すため、resolve() で実パスに畳む。
-    - macOS の FS から resolve() で得たパスは NFD（濁点が結合文字に分解）になる一方、
-      JSON 由来の文字列は NFC のことが多く、見た目同一でも != になる。NFC に統一して吸収。"""
+    """フォルダパスを比較キーに正規化する。
+    - 共有ドライブ配下なら『共有ドライブ/<相対>』(NFC) を返し、ホーム名差
+      (/Users/abe_kota vs /Users/asobimori) を吸収する（2 台 Mac の重複増殖を防ぐ）。
+    - 共有ドライブ外は従来どおり resolve() で実パスに畳み NFC 統一。"""
     if not f:
         return ""
+    rel = _rel_under_shared(f)
+    if rel is not None:
+        return unicodedata.normalize("NFC", "共有ドライブ/" + rel)
     try:
         s = str(Path(f).expanduser().resolve())
     except Exception:
@@ -608,7 +653,9 @@ def folder_name_pattern() -> "re.Pattern":
 
 def get_suno_config():
     """SUNO 設定を返す。
-    - api_key / claude_cli / codex_cli はグローバル（マシン別、~/.config/{app_id}/suno_config.json）
+    - api_key / claude_cli / codex_cli / headless はグローバル（マシン別、~/.config/{app_id}/suno_config.json）
+    - provider / model は per-channel を反映（D11: ch ごとに LLM を選べる。per-ch 未設定なら
+      グローバル suno_config の値がフォールバックとして残る）
     - prompt / mode / count / batch 等のチャンネル依存パラメータは per-channel
       （<channel_folder>/.app_channel_config.json["suno"]）でグローバルを上書き
     """
@@ -621,21 +668,22 @@ def get_suno_config():
     cc = load_channel_config()
     suno_cc = cc.get("suno") or {}
     for k, v in suno_cc.items():
-        # api_key と CLI コマンドはマシン別を維持（per-channel 値があっても無視）
-        if k in ("api_key", "claude_cli", "codex_cli", "provider", "model", "headless"):
+        # api_key / CLI コマンド / headless はマシン別（実行環境依存）なので per-channel を無視。
+        # provider / model はあえて除外しない＝per-channel 値で base を上書き（D11）。
+        if k in ("api_key", "claude_cli", "codex_cli", "headless"):
             continue
         base[k] = v
     return base
 
 
-# 機密キー（チャンネルファイルに書かない）
-_SUNO_GLOBAL_KEYS = {"api_key", "claude_cli", "codex_cli", "provider", "model", "headless"}
+# グローバル（マシン別）に保つキー。provider/model は per-channel 保存可（D11）。
+_SUNO_GLOBAL_KEYS = {"api_key", "claude_cli", "codex_cli", "headless"}
 
 
 def save_suno_config_smart(patch: dict):
     """SUNO 設定の部分更新を per-channel と global に振り分け保存。
-    - api_key / claude_cli / codex_cli / provider / model / headless → ~/.config/{app_id}/suno_config.json
-    - prompt / generation_mode / loop_count / loop_interval_sec / loop_batch / loop_instrumental_fill 等 → per-channel
+    - api_key / claude_cli / codex_cli / headless → ~/.config/{app_id}/suno_config.json（マシン別）
+    - provider / model / prompt / generation_mode / loop_count / loop_interval_sec / loop_batch / loop_instrumental_fill 等 → per-channel（D11: provider/model も ch 別）
     patch は変更したいキーだけを含む dict。
     """
     global_part = {}
@@ -1027,6 +1075,10 @@ def api_get_config():
     safe_dc = {**dc}
     if safe_dc.get("auth_token"):
         safe_dc["auth_token"] = _mask_secret(safe_dc["auth_token"])
+    # 他マシンで保存された channel_folder を現マシンへ解決（レスポンス用のみ・保存しない）。
+    # get_channels() 側も解決済みを返すので、フロントの c.folder===active.channel_folder が揃う。
+    if safe_dc.get("channel_folder"):
+        safe_dc["channel_folder"] = _resolve_to_current_host(safe_dc["channel_folder"])
     return {
         "dashboard": safe_dc,
         "suno": safe_sc,
@@ -1326,8 +1378,6 @@ def api_update_benchmark_config(update: BenchmarkConfigUpdate):
 # ─── API: マスター設定（プロンプト + 詳細パラメータの一元管理） ───
 
 MASTER_PROMPTS_FILE = CONFIG_DIR / "master_prompts.json"
-MASTER_SETTINGS_FILE = CONFIG_DIR / "master_settings.json"
-
 # プロンプトキー一覧と「上書き対象のスクリプト」のメモ
 MASTER_PROMPT_KEYS = {
     "title_generation":      "claude_proposer.py の _TITLES_PROMPT を上書き",
@@ -1340,28 +1390,6 @@ MASTER_PROMPT_KEYS = {
     "imitate_evolve":        "Sprint 5-A 「徹底パクリ進化」分析（imitate / avoid / evolve 3 軸）",
 }
 
-DEFAULT_MASTER_SETTINGS = {
-    "suno": {
-        "retry_count": 2,
-        "workspace_pattern": "{channel}_vol{vol}",
-        "dl_wait_sec": 30,
-    },
-    "flow": {
-        "default_count": 4,        # 1 バッチあたりの枚数（既存 DEFAULT_COUNT="x4" の上書き）
-        "batch_size": 2,           # バッチ数
-        "reference_image": "",     # 参照画像のパス
-    },
-    "meta": {
-        "title_count": 5,
-        "description_target_chars": 800,
-        "tags_target_count": 18,
-        "fixed_tags": ["BGM", "Lounge", "Chill", "Jazz", "Instrumental"],
-    },
-    "remote": {
-        "tunnel_url": "",  # Cloudflare Tunnel の URL（手動更新）
-    },
-}
-
 def get_master_prompts():
     """ユーザーが上書きしたプロンプト群。チャンネル別 → グローバル の順でフォールバック。
     空キーはハードコード（claude_proposer.py 内の既定）にフォールバック。"""
@@ -1369,16 +1397,6 @@ def get_master_prompts():
     cc = load_channel_config()
     cc_prompts = cc.get("master_prompts") or {}
     return {**glob, **cc_prompts}
-
-def get_master_settings():
-    cfg = json.loads(json.dumps(DEFAULT_MASTER_SETTINGS))  # deep copy
-    loaded = load_json(MASTER_SETTINGS_FILE, {})
-    if isinstance(loaded.get("suno"), dict):
-        loaded["suno"].pop("diversity_hint", None)
-    for section, defaults in DEFAULT_MASTER_SETTINGS.items():
-        if isinstance(defaults, dict):
-            cfg[section] = {**defaults, **(loaded.get(section) or {})}
-    return cfg
 
 def save_master_prompts(data):
     """master_prompts はアクティブチャンネル別に保存。
@@ -1390,9 +1408,6 @@ def save_master_prompts(data):
     else:
         save_json(MASTER_PROMPTS_FILE, data)
 
-def save_master_settings(data):
-    save_json(MASTER_SETTINGS_FILE, data)
-
 @app.get("/api/master")
 def api_get_master():
     """マスター設定 = 全部統合返却。既存の分離ファイルもそのまま含める。"""
@@ -1401,7 +1416,6 @@ def api_get_master():
             "values": get_master_prompts(),
             "keys": MASTER_PROMPT_KEYS,
         },
-        "settings": get_master_settings(),
         "suno": get_suno_config(),
         "benchmark": get_benchmark_config(),
         "export": get_export_rules(),
@@ -1411,7 +1425,7 @@ def api_get_master():
     }
 
 class MasterUpdate(BaseModel):
-    section: str  # "prompts" | "settings.suno" | "settings.flow" | "settings.meta" | "suno" | "benchmark" | "export" | "remote"
+    section: str  # "prompts" | "suno" | "benchmark" | "export"
     patch: dict
 
 @app.put("/api/master")
@@ -1424,25 +1438,6 @@ def api_put_master(update: MasterUpdate):
         # 空文字列は削除扱い → ハードコードフォールバック
         cur = {k: v for k, v in cur.items() if v}
         save_master_prompts(cur)
-        return {"status": "ok", "section": section, "config": cur}
-    if section.startswith("settings."):
-        sub = section.split(".", 1)[1]
-        cur = get_master_settings()
-        if sub not in cur:
-            raise HTTPException(400, f"未知の settings サブセクション: {sub}")
-        if sub == "suno":
-            patch.pop("diversity_hint", None)
-        cur[sub] = {**cur[sub], **patch}
-        save_master_settings(cur)
-        return {"status": "ok", "section": section, "config": cur}
-    if section == "settings":
-        cur = get_master_settings()
-        for k, v in patch.items():
-            if isinstance(v, dict) and k in cur:
-                cur[k] = {**cur[k], **v}
-            else:
-                cur[k] = v
-        save_master_settings(cur)
         return {"status": "ok", "section": section, "config": cur}
     if section == "suno":
         cfg = get_suno_config(); cfg.update(patch); save_json(SUNO_CONFIG, cfg)
@@ -1459,6 +1454,13 @@ def api_put_master(update: MasterUpdate):
             cfg["rules"] = {**cfg.get("rules", {}), **patch.pop("rules")}
         cfg.update(patch); save_export_rules(cfg)
         return {"status": "ok", "section": section, "config": cfg}
+    if section == "remote":
+        # D12: tunnel_url は dashboard_config.json に移送（master_settings 廃止）。
+        # 原文を直接 load/save（get_dashboard_config の channel_folder 解決値を保存しないため）。
+        cur = load_json(DASHBOARD_CONFIG, {})
+        cur["tunnel_url"] = (patch.get("tunnel_url") or "").strip()
+        save_json(DASHBOARD_CONFIG, cur)
+        return {"status": "ok", "section": section, "config": {"tunnel_url": cur["tunnel_url"]}}
     raise HTTPException(400, f"未知の section: {section}")
 
 @app.get("/api/master/export")
@@ -1472,7 +1474,6 @@ def api_master_export():
         "benchmark": get_benchmark_config(),
         "channels": get_channels(),
         "master_prompts": get_master_prompts(),
-        "master_settings": get_master_settings(),
         "export_rules": get_export_rules(),
     }
 
@@ -1497,8 +1498,6 @@ def api_master_import(req: MasterImportRequest):
         save_benchmark_config(cfg); sections_applied.append("benchmark")
     if "master_prompts" in d:
         save_master_prompts(d["master_prompts"]); sections_applied.append("master_prompts")
-    if "master_settings" in d:
-        save_master_settings(d["master_settings"]); sections_applied.append("master_settings")
     if "export_rules" in d:
         save_export_rules(d["export_rules"]); sections_applied.append("export_rules")
     return {"status": "ok", "applied": sections_applied}
@@ -2161,6 +2160,9 @@ def get_channels():
         ch.setdefault("youtube_url", "")
         ch.setdefault("youtube_channel_id", "")
         ch.setdefault("handle", "")
+        # 表示・FS アクセス用に現マシンのパスへ解決（保存はしない＝原文は channels.json に維持）
+        if ch.get("folder"):
+            ch["folder"] = _resolve_to_current_host(ch["folder"])
         if not ch.get("prefix"):
             ch["prefix"] = infer_file_prefix_from_folder(Path(ch.get("folder") or "")) or ""
     return chs
@@ -2185,6 +2187,9 @@ def api_list_channels():
         ch.setdefault("youtube_url", "")
         ch.setdefault("youtube_channel_id", "")
         ch.setdefault("handle", "")
+        # ⚠ save_json(2221) より後。返却用にのみ現マシン解決（原文は保存済み channels.json に維持）
+        if ch.get("folder"):
+            ch["folder"] = _resolve_to_current_host(ch["folder"])
         if not ch.get("prefix"):
             ch["prefix"] = infer_file_prefix_from_folder(Path(ch.get("folder") or "")) or ""
     return {"channels": chs}
@@ -2292,7 +2297,10 @@ def api_create_channel(req: ChannelCreate):
 
 @app.delete("/api/channels/{channel_id}")
 def api_delete_channel(channel_id: str):
-    channels = [c for c in get_channels() if c["id"] != channel_id]
+    # ⚠R1: get_channels() は folder を解決済みにするため、それを save すると他マシンのパスを壊す。
+    #       生 load した原文ベースで削除・保存する。
+    channels = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+    channels = [c for c in channels if c.get("id") != channel_id]
     save_json(CHANNELS_CONFIG, channels)
     return {"status": "ok"}
 
@@ -2349,15 +2357,16 @@ def api_set_active_channel(channel_id: str):
     ch = next((c for c in channels if c["id"] == channel_id), None)
     if not ch: raise HTTPException(404, "チャンネルが見つかりません")
     config = get_dashboard_config()
-    folder = Path(ch["folder"])
+    folder = Path(_resolve_to_current_host(ch["folder"]))  # FS アクセス用に現マシン解決
     prefix = sanitize_file_prefix(ch.get("prefix") or infer_file_prefix_from_folder(folder) or config.get("file_prefix"), fallback="vol")
     if ch.get("prefix") != prefix:
         ch["prefix"] = prefix
-        save_json(CHANNELS_CONFIG, channels)
+        save_json(CHANNELS_CONFIG, channels)  # folder は原文のまま（prefix のみ更新）
     # チャンネル切替: グローバル設定のみ更新（per-channel キーを書き戻さない）
     raw = load_json(DASHBOARD_CONFIG, {})
     raw["channel_name"] = ch["name"]
-    raw["channel_folder"] = ch["folder"]
+    # dashboard_config は ~/.config/{app_id} のローカル（GDrive 非同期）なので解決済み現マシンパスを保存
+    raw["channel_folder"] = str(folder)
     raw["file_prefix"] = prefix
     # per-channel キーが旧グローバルに残っていれば剥がす（マイグレーション後の片付け）
     for k in PER_CHANNEL_KEYS:
@@ -3012,12 +3021,18 @@ class GenerateLocalizationsRequest(BaseModel):
     force: bool = False                    # True なら既存 youtube_localizations.json を無視して再生成
 
 
-def _build_localizations_prompt(title: str, description: str, langs: List[str]) -> str:
+def _build_localizations_prompt(title: str, description: str, langs: List[str], source_lang: str = "en") -> str:
     lang_list = ", ".join(langs)
     keys_block = ",".join(f'"{l}":{{"title":"...","description":"..."}}' for l in langs)
+    _src_name = {
+        "en": "English", "ja": "Japanese",
+        "zh-Hans": "Simplified Chinese", "zh-Hant": "Traditional Chinese",
+        "ko": "Korean", "es": "Spanish", "es-419": "Latin American Spanish",
+        "pt-BR": "Brazilian Portuguese", "fr": "French", "de": "German", "it": "Italian",
+    }.get(source_lang, source_lang)
     return f"""Translate the following YouTube video metadata into these languages: {lang_list}. Return JSON only.
 
-ORIGINAL (English):
+ORIGINAL ({_src_name}):
 TITLE: {title}
 DESCRIPTION:
 {description}
@@ -3065,8 +3080,13 @@ def api_generate_localizations(video_name: str, req: GenerateLocalizationsReques
 
     title = title_path.read_text(encoding="utf-8").strip()
     description = desc_path.read_text(encoding="utf-8").strip()
+    # メイン言語（メタ生成のソース言語）は翻訳ターゲットから除外（重複ローカライズ防止）
+    source_lang = (get_yt_upload_defaults().get("default_language") or "en").strip() or "en"
     langs = req.languages or DEFAULT_LOCALIZATION_LANGS
-    prompt = _build_localizations_prompt(title, description, langs)
+    langs = [l for l in langs if l and l != source_lang]
+    if not langs:
+        raise HTTPException(400, f"翻訳対象言語がありません（メイン言語 {source_lang} を除くと空）")
+    prompt = _build_localizations_prompt(title, description, langs, source_lang=source_lang)
 
     # Claude CLI 呼び出し（pipeline の _generate_scene_copy_en と同じパターン）
     suno_cfg_path = CONFIG_DIR / "suno_config.json"
@@ -3796,6 +3816,17 @@ def api_video_suggest(video_name: str, req: SuggestRequest):
     persona = config.get("persona", "")
     channel_name = config.get("channel_name", "orzz.")
     ctx = gather_context(folder)
+    # メイン言語（メタ生成のソース言語）= per-channel youtube_upload_defaults.default_language
+    source_lang = (get_yt_upload_defaults().get("default_language") or "en").strip() or "en"
+    # 説明文 CTA 用のチャンネルハンドル（channels.json レジストリから解決）
+    handle = ""
+    try:
+        for _ch in get_channels():
+            if _ch.get("folder") == config.get("channel_folder"):
+                handle = _ch.get("handle", "") or ""
+                break
+    except Exception:
+        handle = ""
 
     # ベンチマーク分析キャッシュを optional 注入
     benchmark_analysis = None
@@ -3810,18 +3841,20 @@ def api_video_suggest(video_name: str, req: SuggestRequest):
         if req.mode == "titles":
             titles = propose_titles(
                 cli_cmd=cli_cmd, persona=persona, channel_name=channel_name,
+                source_lang=source_lang,
                 count=req.count or 5, benchmark_analysis=benchmark_analysis, **ctx,
             )
             return {"status": "ok", "titles": titles}
         elif req.mode == "description":
             description = propose_description(
                 cli_cmd=cli_cmd, persona=persona, channel_name=channel_name,
+                source_lang=source_lang, handle=handle,
                 reference=req.reference or "", benchmark_analysis=benchmark_analysis, **ctx,
             )
             return {"status": "ok", "description": description}
         elif req.mode == "tags":
             tags = propose_tags(cli_cmd=cli_cmd, persona=persona,
-                                channel_name=channel_name,
+                                channel_name=channel_name, source_lang=source_lang,
                                 benchmark_analysis=benchmark_analysis, **ctx)
             return {"status": "ok", "tags": tags}
         else:
@@ -5190,45 +5223,8 @@ JSON 以外は一切出力しないこと。すべての値は日本語で記述
     return obj
 
 
-@app.post("/api/videos/{video_name}/suggest-with-analysis")
-def api_suggest_with_analysis(video_name: str):
-    """競合分析を踏まえたタイトル・説明・タグ提案"""
-    try:
-        import app_competitor as _ac
-        cache = _ac.load_cache()
-    except Exception:
-        raise HTTPException(500, "キャッシュ読み込み失敗")
-    if not cache:
-        raise HTTPException(400, "先に競合分析を実行してください（📊 競合分析ボタン）")
-
-    config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
-    if not folder.exists():
-        raise HTTPException(404)
-
-    suno_cfg = get_suno_config()
-    cli_cmd = suno_cfg.get("claude_cli") or "claude"
-    persona = config.get("persona", "")
-
-    # コンテキスト
-    songs = []
-    music_dir = folder / "music"
-    if music_dir.is_dir():
-        songs = [p.stem for p in sorted(music_dir.glob("*.mp3")) if not _is_deleted_track_name(p.name)]
-    title_file = folder / "youtube_title.txt"
-    current_title = title_file.read_text(encoding="utf-8").strip() if title_file.exists() else ""
-
-    from app_competitor import propose_with_analysis
-    try:
-        result = propose_with_analysis(
-            cache.get("analysis", {}), cache.get("competitor_data", {}),
-            cli_cmd=cli_cmd, current_title=current_title,
-            songs=songs, persona=persona,
-            growth_summary=cache.get("growth_summary", {}),
-        )
-        return {"status": "ok", **result}
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
+# NOTE: 旧 POST /api/videos/{name}/suggest-with-analysis は D13 で廃止。
+# 競合分析を反映したメタ提案は suggest-all（propose_with_analysis を内部利用）へ集約。
 
 
 def _load_analysis_cache_or_409():
@@ -10029,7 +10025,7 @@ def _active_channel_registry_entry() -> dict:
     active_folder = (cfg.get("channel_folder") or "").strip()
     active_name = (cfg.get("channel_name") or "").strip()
     for ch in get_channels():
-        if active_folder and (ch.get("folder") or "") == active_folder:
+        if active_folder and _norm_folder(ch.get("folder") or "") == _norm_folder(active_folder):
             return ch
     for ch in get_channels():
         if active_name and (ch.get("name") or "") == active_name:
@@ -10038,9 +10034,9 @@ def _active_channel_registry_entry() -> dict:
 
 
 def _channel_registry_entry_for_folder(channel_folder: Path) -> dict:
-    target = str(channel_folder)
+    target = _norm_folder(str(channel_folder))
     for ch in get_channels():
-        if (ch.get("folder") or "") == target:
+        if _norm_folder(ch.get("folder") or "") == target:
             return ch
     return {}
 
@@ -12441,19 +12437,12 @@ async def _validate_channel_registry():
             print(f"[registry] dashboard_config に channel_folder 未設定（{len(chs)} 件登録あり）")
             return
         # registry のいずれかと一致するか
-        try:
-            target = str(Path(active_folder).expanduser().resolve())
-        except Exception:
-            target = active_folder
+        target = _norm_folder(active_folder)
         match = None
         for ch in chs:
-            try:
-                p = str(Path(ch.get("folder") or "").expanduser().resolve())
-                if p == target:
-                    match = ch
-                    break
-            except Exception:
-                continue
+            if _norm_folder(ch.get("folder") or "") == target:
+                match = ch
+                break
         if match:
             print(f"[registry] active channel: {match.get('name')!r} (id={match.get('id')!r}) ✓")
         else:
