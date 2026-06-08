@@ -1,6 +1,8 @@
 # Automation Studio
 
-クリエイター向け制作パイプライン自動化ダッシュボード。SUNO・Adobe Premiere Pro・Adobe Media Encoder・YouTube・OpenAI 画像生成 を 1 つの Web UI から連動実行できます。
+クリエイター向け制作パイプライン自動化ダッシュボード。SUNO・Adobe Premiere Pro / Media Encoder / Photoshop・YouTube・OpenAI 画像生成 を 1 つの Web UI から連動実行できます。
+
+> **重要：動画の配置・書き出し・サムネ合成には Adobe Creative Cloud（Premiere Pro / Media Encoder / Photoshop）が必須**で、いずれも**有料サブスク（月額契約）が別途必要**です。楽曲生成・メタ生成・YouTube 投稿は Adobe なしでも動きます。詳細は[必要なもの（動作要件）](#動作要件)を参照。
 
 > **はじめての方・全体像を知りたい方は [OVERVIEW.md](OVERVIEW.md) をご覧ください。**
 > 導入方法から仕様（しくみ・AI の役割・11 工程・各プログラム解説）まで、やさしい解説つきでまとめています。
@@ -30,12 +32,27 @@
 
 ## 動作要件
 
-- macOS 13 以降（Premiere Pro / Adobe Media Encoder 連携が前提）
+### 共通・必須
+- macOS 13 以降（Windows 対応は将来検討中）
 - Python 3.10 以降
-- Adobe Premiere Pro 2024 以降（インストール済み）
-- Adobe Media Encoder（同上、Premiere とセットでインストール）
+- Claude CLI（AI の第一候補・ローカル認証・API キー不要）
 
-Windows 対応は将来検討中です。
+### Adobe Creative Cloud（動画工程に必須・有料サブスク）
+
+> Premiere Pro / Media Encoder / Photoshop はいずれも **Adobe Creative Cloud の有料サブスク（月額契約）が別途必要**です。本ツールに Adobe ライセンスは含まれません（Adobe との契約・支払いは各自で行ってください）。
+
+- **Adobe Premiere Pro 2024 以降** … 音源・字幕・画像の自動配置／シーケンス組み立て
+- **Adobe Media Encoder** … MP4 書き出し（Premiere とセットで導入）
+- **Adobe Photoshop** … サムネ合成・2 枚出し（新版は UXP 連携／旧版は AppleScript）
+
+### API キー・認証（UI から登録）
+- OpenAI（背景・AI サムネ画像生成）
+- YouTube Data API v3 + OAuth（投稿）
+- 任意：Gemini（プロンプト生成の選択肢）、Codex CLI（AI の控え・要 `codex login`）
+
+### Adobe が無くても使える範囲
+- 楽曲生成・後処理（SUNO + ffmpeg）／メタ生成・多言語化／競合・ベンチマーク分析
+- **Adobe が必須なのは「配置・書き出し・サムネ合成」の 3 工程のみ**
 
 ## クイックスタート
 
