@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Automation Studio — 改善 確定プラン</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
+    --fg:#e6e9ef; --muted:#9aa3b2; --dim:#6b7280;
+    --accent:#6ea8fe; --ok:#2ea043; --warn:#d29922; --bad:#f85149; --info:#58a6ff; --purple:#bc8cff;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Segoe UI",sans-serif;
+    font-size:14px;line-height:1.7}
+  code{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:.85em;
+    background:#0b0d11;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#d6deeb}
+  a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+
+  .wrap{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;background:var(--panel);
+    border-right:1px solid var(--line);padding:18px 14px}
+  nav h1{font-size:15px;margin:0 0 2px;color:#fff}
+  nav .sub{font-size:11px;color:var(--dim);margin-bottom:14px}
+  .prog{height:8px;background:var(--panel2);border-radius:999px;overflow:hidden;margin:6px 0}
+  .prog>i{display:block;height:100%;background:linear-gradient(90deg,#1f6feb,#2ea043);transition:width .3s}
+  .progtxt{font-size:11.5px;color:var(--muted);margin-bottom:14px}
+  nav a{display:flex;gap:7px;align-items:center;color:var(--muted);padding:5px 9px;border-radius:7px;font-size:12.5px;margin:1px 0}
+  nav a:hover{background:var(--panel2);color:var(--fg);text-decoration:none}
+  nav a.active{background:#243047;color:#cfe0ff}
+  nav a .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--dim)}
+  nav a.ok .dot{background:var(--ok)}
+  nav a.pend .dot{background:var(--warn)}
+  nav .grp{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin:14px 9px 4px;font-weight:700}
+
+  main{padding:30px 40px 120px;max-width:1000px}
+  header.hero .eyebrow{color:var(--accent);font-weight:700;letter-spacing:.04em;font-size:12.5px}
+  header.hero h2{font-size:26px;margin:6px 0 8px;color:#fff}
+  header.hero p{color:var(--muted);max-width:760px;margin:0 0 6px}
+  .goals{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 6px}
+  .gchip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:12px}
+  .gchip b{color:#fff}
+
+  .theme{margin:34px 0 10px}
+  .theme>h3{font-size:18px;color:#fff;margin:0 0 2px;display:flex;gap:9px;align-items:center;
+    border-bottom:1px solid var(--line);padding-bottom:7px}
+  .theme>.tg{color:var(--dim);font-size:12px;margin:6px 0 0}
+
+  .dcard{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--dim);
+    border-radius:var(--radius);padding:16px 18px;margin:14px 0;scroll-margin-top:14px}
+  .dcard.ok{border-left-color:var(--ok)}
+  .dcard.pend{border-left-color:var(--warn)}
+  .dh{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .did{font-family:monospace;font-size:11px;color:var(--dim);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 7px}
+  .dh h4{font-size:15.5px;color:#fff;margin:0;flex:1;min-width:240px}
+  .dh .ref{font-size:11px;color:var(--dim)}
+  .st{font-size:11px;font-weight:700;padding:2px 10px;border-radius:999px;white-space:nowrap}
+  .st.ok{background:rgba(46,160,67,.18);color:#5dd879;border:1px solid rgba(46,160,67,.4)}
+  .st.pend{background:rgba(210,153,34,.18);color:#e3b341;border:1px solid rgba(210,153,34,.4)}
+  .ctx{color:var(--muted);font-size:12.5px;margin:8px 0 12px}
+
+  .chosen{background:#14241a;border:1px solid #2c4a32;border-radius:9px;padding:12px 14px;margin:10px 0}
+  .chosen .ck{font-size:11px;color:#5dd879;font-weight:700;letter-spacing:.04em}
+  .chosen .cv{font-size:15px;color:#fff;font-weight:700;margin:2px 0 8px}
+  .chosen .why{font-size:12.5px;color:#cfe9d6}
+  .pcgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+  @media(max-width:680px){.pcgrid{grid-template-columns:1fr}}
+  .pc{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .pc .h{font-size:11.5px;font-weight:700;margin-bottom:5px}
+  .pc.pro .h{color:#5dd879}.pc.con .h{color:#ff7b72}
+  .pc ul{margin:0;padding-left:16px}.pc li{font-size:12px;margin:2px 0;color:var(--muted)}
+  .impl{background:#0e1726;border:1px solid #233047;border-radius:8px;padding:11px 13px;margin:10px 0 4px}
+  .impl .h{font-size:11.5px;font-weight:700;color:#79c0ff;margin-bottom:4px}
+  .impl .b{font-size:12.5px;color:#c9d6e8}
+  .files{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  .files code{font-size:10.5px}
+
+  .pendbox{border:1px dashed #4a4327;border-radius:9px;padding:12px 14px;background:#1c1a12;margin:10px 0}
+  .pendbox .h{color:#e3b341;font-weight:700;font-size:12.5px;margin-bottom:8px}
+  .cand{font-size:12px;padding:8px 11px;border:1px solid var(--line);border-radius:7px;margin:6px 0;background:var(--panel2)}
+  .cand .cl{font-weight:700;color:#fff}
+  .cand.rec{border-color:#2d4a3a}
+  .cand .badge{font-size:10px;font-weight:700;color:#5dd879;margin-left:6px}
+  .cand .cd{color:var(--muted);margin-top:3px}
+  .cand .ci{color:#9db4d4;margin-top:3px;font-size:11.5px}
+  footer.end{color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:18px;margin-top:46px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav id="toc">
+  <h1>改善 確定プラン</h1>
+  <div class="sub">Automation Studio · 2026-06-07</div>
+  <div class="prog"><i id="pbar"></i></div>
+  <div class="progtxt" id="ptxt"></div>
+  <a href="automation_studio_spec.html" style="color:var(--accent)">← 仕様 &amp; 統合計画 HTML</a>
+  <div id="navlist"></div>
+</nav>
+<main>
+<header class="hero">
+  <div class="eyebrow">DECISION RECORD · 改善アクションプラン</div>
+  <h2>Automation Studio 改善 確定プラン</h2>
+  <p><a href="automation_studio_spec.html">仕様 &amp; 統合計画</a> の論点を、運営ゴール5軸に沿って1問ずつ決定し、<b>選定理由・メリット/デメリット・実装への反映</b>を記録する。確定済みは緑、未確定は黄。</p>
+  <div class="goals">
+    <span class="gchip">🤖 <b>自律自動化</b></span>
+    <span class="gchip">📺 <b>マルチch独立運営</b></span>
+    <span class="gchip">🎯 <b>ベンチ超え</b></span>
+    <span class="gchip">📈 <b>スコア改善ループ</b></span>
+    <span class="gchip">🧹 <b>コード整理</b></span>
+  </div>
+</header>
+<div id="cards"></div>
+<footer class="end">
+  Automation Studio 改善 確定プラン — 逐次更新。各決定は <a href="automation_studio_spec.html">仕様HTML</a> の該当セクションに対応。確定後は Phase 順（§14）で改修に着手する。
+</footer>
+</main>
+</div>
+
+<script>
+const D = [
+  { id:'D1', icon:'🤖', theme:'自律自動化', title:'orchestrator（無人稼働）の開始方法', ref:'仕様§9・§12',
+    ctx:'StageWorker/QAWorker/PlanWorker は実装済み。tick→APScheduler 配線を入れると自動運用が始まる。',
+    chosen:{id:'A', label:'段階GO（1ch・QAWorkerから）'},
+    why:'バックエンドは完成しているが「無人稼働の開始」は最もリスクの高い一歩。まず1チャンネル・QAWorkerだけを回し、export完了→自動QAという閉じた小さなループで挙動を確かめてから image/publish へ広げる。既存の auto_resume・台帳・sentinel exit とそのまま噛み合う。',
+    pros:['リスク最小で無人化を立ち上げられる','既存基盤(台帳/retry/render queue)と整合','1chで検証→段階展開できる'],
+    cons:['全自動が回るまで時間がかかる','初期は1chのみで効果が限定的'],
+    impl:'app.py に APScheduler 定期ジョブを1本追加し <code>app_orchestrator.evaluate()</code> を tick。最初は QAWorker のみ有効化（AUTOPILOT 対象 stage=qa）。export 完了を検知して <code>step_qa</code>(ffprobe) を自動実行、NG は video へ差し戻し。1ch（orzz）限定で開始。',
+    files:['app.py','app_orchestrator.py','app_pipeline.py(step_qa)'] },
+
+  { id:'D2', icon:'🤖', theme:'自律自動化', title:'自動と人間ゲートの線引き', ref:'仕様§9',
+    ctx:'確定方針＝自動は export〜thumbnail、SUNO生成の実行は人間合意、upload は手動。',
+    chosen:{id:'A', label:'確定方針どおり'},
+    why:'過去に「ジャンルを勝手に決めて」ジャンル違いの曲を量産した事故がある。SUNO生成とupload は影響が大きく不可逆性も高いので人間ゲートを残す。自動化の旨味（配置・書き出し・サムネ・メタ）は十分に取りつつ、事故が起きる2点だけ人手を挟む。',
+    pros:['誤生成・誤投稿という不可逆事故を防げる','自動化の効果は大部分取れる(export〜thumbnail)','過去事故の再発防止メモリと整合'],
+    cons:['完全無人ではない(SUNO実行とuploadに人手)','生成・投稿のタイミングは人の稼働に依存'],
+    impl:'orchestrator の自動投入対象を <code>export〜thumbnail</code> に限定。PlanWorker は「空vol＋企画案」までを自動作成し、SUNO生成は prompt 本文を提示して合意後に手動起動（既存フロー維持）。upload は手動 or 公開ゲート通過時のみ。',
+    files:['app_orchestrator.py(PlanWorker)','app.py(autopilot stages)'] },
+
+  { id:'D3', icon:'📺', theme:'マルチch独立運営', title:'per-channel autopilot ＋ 優先度配分', ref:'仕様§9・UI_PLAN U3',
+    ctx:'複数chを独立・並行で自動実行する配分の仕組み。',
+    chosen:{id:'A', label:'per-chトグル＋優先度配分'},
+    why:'マルチチャンネルを「それぞれ独立して自動実行」するのがゴール。チャンネルごとに自走ON/OFFを切替え、quota残×優先度でスロットを配分すれば、伸ばしたいchに資源を寄せつつN ch を並行で回せる。',
+    pros:['伸ばしたいchへ資源を集中できる','N ch を独立・並行運用','quota枯渇を優先度で回避'],
+    cons:['配分ロジックの調整・チューニングが要る','UI(優先度スライダー/トグル)の実装が必要'],
+    impl:'<code>channels.json</code> に <code>priority</code> を追加。<code>app_orchestrator</code> に policy-aware 配分（quota残×priority でスロット割当）。per-ch <code>autopilot_enabled</code> をトグル化。UI_PLAN U3 の自走パネル（優先度スライダー＋ON/OFF）と接続。',
+    files:['config/channels.json','app_orchestrator.py','app.py(/api/workers,/api/config/priority)','index.html(U3)'] },
+
+  { id:'D4', icon:'📺', theme:'マルチch独立運営', title:'app_id 解決の隠れ依存を断つ', ref:'仕様§8',
+    ctx:'<code>~/.config/orzz/dashboard</code> が app_id=sk を指し、orzz を消すと解決が壊れる隠れ依存。',
+    chosen:{id:'A', label:'明示化して依存を断つ'},
+    why:'マルチch基盤の地雷。各chが独立した設定ディレクトリ(app_id別)で回る前提なのに、解決がレガシーの orzz dashboard を経由している。ディレクトリ整理や新chの追加時に静かに壊れる前に、解決元を明示化しておく。',
+    pros:['各ch独立運営の前提が安定','ディレクトリ整理しても壊れない','新chの追加が安全に'],
+    cons:['移行時に一度パス解決の検証が要る'],
+    impl:'<code>_app_config.resolve_app_id</code> を <code>APP_ID</code> 環境変数 or アクティブな設定ディレクトリ側 dashboard を正にする。orzz レガシー dashboard への依存を除去。migration 済みの sk を主参照に。',
+    files:['_app_config.py'] },
+
+  { id:'D5', icon:'🎯', theme:'ベンチ超え・スコア改善', title:'反復画像生成ループ（生成→採点→再生成）の配線 ★重点', ref:'仕様§4・§12 / IMAGE_EVAL_LOOP_PLAN',
+    ctx:'<code>app_image_eval_loop.py</code>(315行) は核ロジック実装済みだが完全に孤立（未配線）。',
+    chosen:{id:'A', label:'パイプラインに配線（既定OFF・オプトイン）'},
+    why:'「ベンチを上回る動画を出す」「採点・生成結果を踏まえ次の行動へ」というゴールの中核そのもの。生成→ベンチ比較採点→合格まで再生成＋弱点を次プロンプトへ還流、という改善ループを実体化する。既定OFF＋安全弁付きなので本番への影響なく段階導入できる。',
+    pros:['スコア改善ループ＝ベンチ超えの中核を実装','既定OFFで本番影響ゼロ・段階導入可','弱点還流で生成品質が回を追って向上'],
+    cons:['Vision採点のコスト(回数×枚数)','スコア振動など収束リスク → 安全弁で対処'],
+    impl:'<code>step_thumbnail</code> に <code>APP_THUMB_EVAL_LOOP</code> 分岐（既定OFF）。<code>run_eval_loop</code> に generate_fn=codex生成 / score=<code>score_thumbnails</code> / judge=<code>judge_auto_approval</code> を注入。安全弁env（max_attempts/max_total_gen/max_vision_calls/cost）。計画書の S0→S3 順で実装。',
+    files:['app_image_eval_loop.py','app_pipeline.py(step_thumbnail)','app_image_prompt.py','app_thumbnail_scoring.py'] },
+
+  { id:'D6', icon:'🎯', theme:'ベンチ超え・スコア改善', title:'ベンチマーク分析の二系統を正規化', ref:'仕様§10 B-4',
+    ctx:'<code>app_competitor</code>(一枚岩・旧・2014行) と <code>app_benchmark_*</code>(軸別・新) が併存し下流が両参照。',
+    chosen:{id:'A', label:'軸別(benchmark_*)を正規・competitorは取得層へ'},
+    why:'ベンチ分析を強化していく＝軸（コンセプト/タイトル/説明/サムネ）ごとに深掘りする方向。軸別モジュールを正規にすれば、ベンチ超えのための分析追加が各軸で独立に進められる。competitor は「データ取得層」に役割を絞る。',
+    pros:['軸ごとのベンチ超え分析を独立に拡張できる','下流の二重参照を解消','competitorの肥大(2014行)を取得層に圧縮'],
+    cons:['段階移管の手間','移行中は両キャッシュの切替に注意'],
+    impl:'<code>app_competitor</code> を「YT API取得＋スプシ取込」に専念させ、<code>analyze_with_claude</code> 系の分析を <code>app_benchmark_*</code> へ移管。下流(bgimage/thumbnail/meta)の参照を <code>config/benchmark/channels/{key}/*.json</code> に統一。',
+    files:['app_competitor.py','app_benchmark_*.py','app_channel_cache.py','app_pipeline.py'] },
+
+  { id:'D7', icon:'🎯', theme:'ベンチ超え・スコア改善', title:'スコアリングの教師信号', ref:'IMAGE_EVAL_LOOP_PLAN',
+    ctx:'真の教師信号は実績(views_delta_7d)だが7日遅延・手動転記。生成時の代理判定をどうするか。',
+    chosen:{id:'A', label:'第1版はVision予測スコアのみ'},
+    why:'実績学習は理想だが7日遅延＋手動転記が必要で、ループが動く前に複雑化させると頓挫する。まずは Vision の予測スコア（score_total/ctr_predict/similarity）で回し、実績突合は「動くものを見てから」段階追加する。',
+    pros:['すぐ動く・Python3.9環境で完結','ループの収束挙動を先に確かめられる','後から実績学習を足せる設計'],
+    cons:['予測精度は実績学習に劣る(後で強化)'],
+    impl:'<code>run_eval_loop</code> の判定は <code>score_thumbnails</code> の score_total/ctr_predict/similarity のみ。実績(ab_log)突合は段階S6として分離。CLIP距離は将来候補(S5)。',
+    files:['app_image_eval_loop.py','app_thumbnail_scoring.py'] },
+
+  { id:'D8', icon:'🧹', theme:'コード整理', title:'死蔵コード（Flow/MJ 約2,400行）の撤去', ref:'仕様§13',
+    ctx:'flow_automation(1,303)+test_flow(800)+app_midjourney(294) は pipeline 不使用で手動UIのみ到達。',
+    chosen:{id:'B', label:'即撤去（確認省略）'},
+    why:'codex一本化が確定しており、Flow/Midjourney はもう使わない判断。確認を挟まず即撤去して ~2,400行＋関連オーファンAPIを一掃する。肥大化・無駄コードの解消を最短で進める。',
+    pros:['~2,400行＋オーファンAPIを即削減','保守対象が減り見通しが良くなる','codex一本化の実態にコードを揃える'],
+    cons:['万一の手動Flow利用は完全に消える(=使わない確定として選択)'],
+    impl:'<code>flow_automation.py</code>/<code>test_flow.py</code>/<code>app_midjourney.py</code> を削除。app.py の <code>/api/flow/*</code>・<code>/api/midjourney/*</code> ルート削除。index.html の関連UI（隠れナビ・ボタン）撤去。skills/AGENTS のFlow記述も更新（D13と連動）。',
+    files:['flow_automation.py(削除)','test_flow.py(削除)','app_midjourney.py(削除)','app.py','web/static/index.html'] },
+
+  { id:'D9', icon:'🧹', theme:'コード整理', title:'app.py（13,205行・263ルート）の分割', ref:'仕様§13',
+    ctx:'単一ファイルに263ルート同居。ドメイン別 APIRouter へ分割可能（sectionバナーが分割線）。',
+    chosen:{id:'A', label:'段階分割（ドメイン別Router）'},
+    why:'一括分割は reload無し環境では回帰検証が重すぎる。1ドメインずつ APIRouter に切り出し、各段で start.sh 再起動して実APIを叩いて確認する。開発サブエージェント(.claude/agents)のドメイン分割とも一致する。',
+    pros:['保守性が回復・ドメインエージェントと整合','各段で検証でき回帰を抑えられる','肥大化の根本に手を入れる'],
+    cons:['作業量が大きい','reload無しのため各段で再起動検証が必要'],
+    impl:'<b>【実装済 2026-06-07】</b> 共通土台を <code>app_core.py</code> へ抽出（依存DAG: _app_config→app_core→routers/*→app.py）。<b>domain router 4本</b>を切り出し: benchmark / images / premiere_photoshop / youtube。共有定数(PIPELINE/PREMIERE_SCRIPT)・共有ヘルパ19個も app_core へ昇格。<b>worker サブシステム（export/render queue・APScheduler・公開ゲート・auto_resume・slot配分）と startup hooks 6個は runtime core として app.py に残置</b>（薄いAPIラッパーの背後に重い stateful 基盤があり、queue_ledger/schedule_workers は route群でなくサブシステムのため。「worker基盤=runtime core / domain API=router」の責務分離）。app.py <b>12,649→7,783行(-38%)</b>。各段で start.sh 再起動＋OpenAPI 222パス維持＋実API検証。',
+    files:['app.py','app_core.py(新規)','routers/{benchmark,images,premiere_photoshop,youtube}.py(新規)'] },
+
+  { id:'D10', icon:'🧹', theme:'コード整理', title:'JSON抽出ヘルパの共通化（10→1）', ref:'仕様§10 C-2',
+    ctx:'同一アルゴリズムの _extract_json(_object) が10ファイルに重複（一部バイト単位で同一）。',
+    chosen:{id:'A', label:'即実施（1関数へ集約）'},
+    why:'振る舞いが変わらない純粋な共通化で、最も安全かつ即効。最初の一手として手を動かして勢いをつけるのに最適。',
+    pros:['振る舞い不変・最も安全','10重複を1関数に圧縮','今すぐ着手できる'],
+    cons:['ほぼなし(import差し替えのみ)'],
+    impl:'<code>app_benchmark_common.py</code> に <code>extract_json_object()</code> を1つ定義。10ファイル（claude_proposer/app_series/app_competitor/app_process_tracks/suno_auto_create + benchmark_concept/title/description/thumbnail/thumbnail_scoring）の同型関数を import に差し替え。',
+    files:['app_benchmark_common.py','+10モジュール'] },
+
+  { id:'D11', icon:'🔧', theme:'共通設定・重複統合', title:'LLM provider の死にデータ解消', ref:'仕様§11 B-2',
+    ctx:'per-ch <code>provider</code> は get_suno_config が無視＝死にデータ。「表示と実体の乖離」が事故源。',
+    chosen:{id:'A', label:'per-ch provider を実際に効かせる'},
+    why:'ゴールが各チャンネル独立運営なので、chごとに最適なLLMを選べる方が筋が通る。設定画面に出るのに効かない「表示と実体の乖離」も同時に解消し、誤設定事故を防ぐ。',
+    pros:['chごとにClaude/Codexを使い分け可＝マルチch独立運営と整合','設定の表示と実体の乖離を解消','app_llm_runnerの単一窓口は維持'],
+    cons:['ch別のprovider動作検証が要る'],
+    impl:'<code>get_suno_config</code> が per-ch <code>.app_channel_config.json</code> の provider/model を読んで反映するよう修正。<code>app_llm_runner</code> は唯一の窓口として据置。per-ch未設定時はグローバル <code>suno_config</code> にフォールバック。',
+    files:['app.py(get_suno_config)','app_llm_runner.py','.app_channel_config.json'] },
+
+  { id:'D12', icon:'🔧', theme:'共通設定・重複統合', title:'master_settings の二重管理', ref:'仕様§11 B-1',
+    ctx:'suno/flow/meta ノブが master_settings と suno_config/per-ch に分散（dl_wait_sec はどちらが勝つか非自明）。',
+    chosen:{id:'A', label:'per-ch/suno_configへ集約しmaster_settings廃止'},
+    why:'D11と同じく設定の主をper-channelに寄せる方針。chごとに変えたいノブ（メタ目標値・Flow枚数等）はper-chにある方がマルチch運営に合う。dl_wait_sec のような「どちらが勝つか不明」な二重を解消し、設定の真実源を1つにする。',
+    pros:['設定の二重管理を解消・真実源が1つに','スコープ判定ルール(§11)に沿う','chごとのノブ調整がper-chで完結'],
+    cons:['キー移送と参照張り替えの作業が要る'],
+    impl:'<code>master_settings.json</code> の各キーを移送（suno系→<code>suno_config</code>、meta/flow系→per-ch <code>.app_channel_config.json</code>）し、<code>get_master_settings</code> 参照箇所を張り替えてファイル廃止。重複キーは per-ch を優先。',
+    files:['app.py(get_master_settings)','suno_config.json','.app_channel_config.json','master_settings.json(廃止)'] },
+
+  { id:'D13', icon:'🔧', theme:'共通設定・重複統合', title:'ドキュメント同期 ＆ 廃止API整理', ref:'仕様§10③・§12',
+    ctx:'工程数(実態11)・Flow撤去・suggest-with-analysis廃止 が SPEC/AGENTS/skills に未反映。',
+    chosen:null,
+    candidates:[
+      {id:'A', rec:1, label:'即同期＋廃止API導線差し替え',
+       desc:'SPEC/AGENTS/skills 3系を実態へ更新し、suggest-with-analysis の導線を /suggest へ差し替えてから廃止。',
+       impl:'3ドキュメント更新、AGENTS表L173を/suggestへ、API削除。',
+       pro:'低リスク高効果・混乱解消', con:'ほぼなし'},
+      {id:'B', label:'ドキュメントのみ同期（API据置）',
+       desc:'記述だけ実態に直し、API撤去は後日。',
+       impl:'ドキュメント更新のみ。',
+       pro:'すぐ正確になる', con:'廃止API負債は残る'},
+      {id:'C', label:'後回し',
+       desc:'乖離が残る。', impl:'変更なし。',
+       pro:'作業ゼロ', con:'案内と実態の乖離が混乱を生む'},
+    ] },
+
+  { id:'D14', icon:'🔧', theme:'共通設定・重複統合', title:'サムネ生成経路の集約', ref:'仕様§10 B-1',
+    ctx:'本流 bgimage→psd_composite 以外に thumbnail/channel-thumbnail/flow/midjourney/eval_loop が併存。',
+    chosen:null,
+    candidates:[
+      {id:'A', rec:1, label:'保険を2経路に絞る',
+       desc:'本流維持。保険を thumbnail(codex)＋channel-thumbnail に絞り、Flow/MJ は撤去(D8連動)。eval_loopはD5で配線。',
+       impl:'Flow/MJ撤去後、保険経路を2本に整理。',
+       pro:'本流＋必要な保険だけに整理', con:'経路ごとの役割明文化が要る'},
+      {id:'B', label:'本流のみ（保険も撤去）',
+       desc:'PSD合成が使えない時の保険を無くす。',
+       impl:'thumbnail/channel-thumbnail も撤去。',
+       pro:'最もシンプル', con:'PSD不調時に詰む'},
+      {id:'C', label:'現状維持',
+       desc:'多経路のまま。', impl:'変更なし。',
+       pro:'作業ゼロ', con:'重複が残る'},
+    ] },
+];
+
+function navRender(){
+  const done=D.filter(d=>d.chosen).length;
+  document.getElementById('pbar').style.width=(done/D.length*100)+'%';
+  document.getElementById('ptxt').textContent=`${done} / ${D.length} 決定済み`;
+  let cur='';let html='';
+  D.forEach(d=>{
+    if(d.theme!==cur){cur=d.theme;html+=`<div class="grp">${d.icon} ${d.theme}</div>`;}
+    let t=d.title.replace(/（.*?）/g,'').replace(/ ★.*/,'');
+    html+=`<a href="#${d.id}" class="${d.chosen?'ok':'pend'}"><span class="dot"></span>${d.id} ${t.slice(0,15)}</a>`;
+  });
+  document.getElementById('navlist').innerHTML=html;
+}
+function cardsRender(){
+  document.getElementById('cards').innerHTML = D.map(d=>{
+    if(d.chosen){
+      return `<div class="dcard ok" id="${d.id}">
+        <div class="dh"><span class="did">${d.id}</span><h4>${d.title}</h4><span class="ref">${d.ref}</span><span class="st ok">✓ 確定</span></div>
+        <div class="ctx">${d.ctx}</div>
+        <div class="chosen"><div class="ck">決定</div><div class="cv">${d.chosen.label}</div><div class="why">${d.why}</div></div>
+        <div class="pcgrid">
+          <div class="pc pro"><div class="h">メリット</div><ul>${d.pros.map(p=>`<li>${p}</li>`).join('')}</ul></div>
+          <div class="pc con"><div class="h">デメリット / 注意</div><ul>${d.cons.map(c=>`<li>${c}</li>`).join('')}</ul></div>
+        </div>
+        <div class="impl"><div class="h">⚙ 実装への反映</div><div class="b">${d.impl}</div>
+          <div class="files">${d.files.map(f=>`<code>${f}</code>`).join('')}</div></div>
+      </div>`;
+    } else {
+      return `<div class="dcard pend" id="${d.id}">
+        <div class="dh"><span class="did">${d.id}</span><h4>${d.title}</h4><span class="ref">${d.ref}</span><span class="st pend">● 未確定</span></div>
+        <div class="ctx">${d.ctx}</div>
+        <div class="pendbox"><div class="h">検討中の案（チャットで決定 → ここに反映）</div>
+        ${d.candidates.map(c=>`<div class="cand ${c.rec?'rec':''}"><div class="cl">${c.label}${c.rec?'<span class="badge">★推奨</span>':''}</div><div class="cd">${c.desc}</div><div class="ci">⚙ ${c.impl}　｜ ◎ ${c.pro}　／ △ ${c.con}</div></div>`).join('')}
+        </div>
+      </div>`;
+    }
+  }).join('');
+}
+const obs=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting){
+  document.querySelectorAll('#navlist a').forEach(a=>a.classList.remove('active'));
+  const a=document.querySelector(`#navlist a[href="#${e.target.id}"]`);if(a)a.classList.add('active');
+}})},{rootMargin:'-8% 0px -85% 0px'});
+navRender();cardsRender();
+document.querySelectorAll('.dcard').forEach(c=>obs.observe(c));
+</script>
+</body>
+</html>

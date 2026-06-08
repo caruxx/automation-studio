@@ -33,6 +33,13 @@ node_modules/
 # Claude Code
 .claude/settings.local.json
 .claude/projects/
+.claude/scheduled_tasks.lock
+
+# 作業ツリー内に生成されるローカル設定/キャッシュ一式
+# （channels.json.bak / .suno_history / benchmark_profiles 等の機密・個人データを含むため丸ごと除外）
+/config/
+/competitor_analysis/
+*.bak.*
 
 # 機密・個人設定（誤コミット防止）
 *.env

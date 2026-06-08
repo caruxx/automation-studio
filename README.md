@@ -15,6 +15,26 @@
 | 📊 競合分析 | スプシ取り込み + Claude による戦略提案、自動プロンプト反映 |
 | ⏱ スケジュール | APScheduler でフルパイプラインを定期駆動、LINE 通知 |
 
+## ドキュメント
+
+リポジトリ同梱の HTML 仕様書をブラウザで開くと、全体像を視覚的に把握できます。GitHub 上ではソース表示になるため、クローンまたはダウンロードしてからローカルで開いてください。
+
+| ファイル | 内容 |
+|---|---|
+| [automation_studio_overview.html](automation_studio_overview.html) | 現状の仕様とできること。前半はどなたでも読めるやさしい解説、後半は技術仕様・プログラム解説・skills 解説・用語集。**まずはこれ** |
+| [automation_studio_spec.html](automation_studio_spec.html) | 仕様 & 統合計画 |
+| [automation_studio_decisions.html](automation_studio_decisions.html) | 設計上の決定事項（D1-D14） |
+
+開き方（macOS の例）:
+
+```bash
+git clone https://github.com/caruxx/automation-studio.git
+cd automation-studio
+open automation_studio_overview.html   # 既定ブラウザで表示
+```
+
+テキストで素早く把握したい場合は [SPEC.md](SPEC.md)（全体仕様）/ [AGENTS.md](AGENTS.md)（操作と自然言語マッピング）も参照してください。
+
 ## 動作要件
 
 - **macOS** 13 以降（Premiere Pro / Adobe Media Encoder 連携が前提）

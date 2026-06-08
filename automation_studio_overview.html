@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Automation Studio — 仕様とできること（やさしい解説つき）</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --panel3:#232834; --line:#2a2f3a;
+    --fg:#e6e9ef; --muted:#9aa3b2; --dim:#6b7280;
+    --accent:#6ea8fe; --accent2:#7ee787; --purple:#bc8cff; --cyan:#56d4dd;
+    --soft:#12161c;
+    --radius:11px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Segoe UI",sans-serif;
+    font-size:14px;line-height:1.85;}
+  code,.mono{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:.85em;
+    background:#0b0d11;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#d6deeb;}
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:9px;padding:14px 16px;overflow-x:auto;
+    font-family:"SFMono-Regular",Menlo,monospace;font-size:12.4px;line-height:1.6;color:#cdd6e4;margin:12px 0}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .wrap{display:grid;grid-template-columns:262px 1fr;min-height:100vh}
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    background:var(--panel);border-right:1px solid var(--line);padding:18px 14px}
+  nav h1{font-size:15px;margin:0 0 2px;color:#fff}
+  nav .sub{font-size:11px;color:var(--dim);margin-bottom:16px}
+  nav a{display:block;color:var(--muted);padding:5px 10px;border-radius:7px;font-size:13px;margin:1px 0}
+  nav a:hover{background:var(--panel2);color:var(--fg);text-decoration:none}
+  nav a.active{background:#243047;color:#cfe0ff}
+  nav .grp{font-size:10.5px;letter-spacing:.06em;color:var(--dim);margin:15px 10px 4px;font-weight:700}
+  nav .grp.t1{color:#8fd6a0}
+  nav .grp.t2{color:#9ec5ff}
+  main{padding:30px 44px 140px;max-width:1180px}
+
+  header.hero{margin-bottom:26px}
+  header.hero .eyebrow{color:var(--accent);font-weight:700;letter-spacing:.04em;font-size:12.5px}
+  header.hero h2{font-size:30px;margin:6px 0 10px;color:#fff;line-height:1.25}
+  header.hero p.lead{color:var(--muted);font-size:15px;max-width:840px;margin:0}
+  .meta-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
+    padding:4px 13px;font-size:12px;color:var(--muted)}
+  .chip b{color:var(--fg)}
+
+  .readme{background:#101a14;border:1px solid #25503a;border-radius:var(--radius);padding:14px 18px;margin:22px 0;font-size:13px;color:#bfe6cf}
+  .readme b{color:#fff}
+
+  section{margin:44px 0;scroll-margin-top:18px}
+  section>h3{font-size:22px;color:#fff;border-bottom:1px solid var(--line);padding-bottom:9px;margin:0 0 8px}
+  section>h3 .num{color:var(--dim);font-weight:600;margin-right:10px;font-size:16px}
+  section .intro{color:var(--muted);margin:0 0 20px;max-width:900px}
+  h4{font-size:16px;color:#dbe3f0;margin:26px 0 10px;display:flex;align-items:center;gap:9px}
+  h4 .bar{width:4px;height:17px;border-radius:2px;background:var(--accent);display:inline-block}
+
+  /* やさしいパートの帯 */
+  .band{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;
+    padding:2px 11px;border-radius:999px;margin-bottom:14px}
+  .band.easy{background:#13251a;color:#8fe0a6;border:1px solid #2d5e40}
+  .band.tech{background:#13202e;color:#8fc3f0;border:1px solid #2c4a6e}
+
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:12.9px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--panel2);color:#cdd6e4;font-weight:600;font-size:12px}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#1b2030}
+  td.mono,th.mono{font-family:"SFMono-Regular",Menlo,monospace;font-size:11.5px}
+  td .tag{font-size:11px;padding:1px 7px;border-radius:5px;white-space:nowrap}
+  .t-claude{background:#2a2440;color:#cdb4ff;border:1px solid #4a3b6e}
+  .t-both{background:#163a2e;color:#7ee787;border:1px solid #2c5e48}
+
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:1fr 1fr 1fr}
+  @media(max-width:1000px){.g2,.g3{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 18px}
+  .card h5{margin:0 0 8px;font-size:14.5px;color:#fff;padding-left:11px;position:relative}
+  .card h5::before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:3px;border-radius:2px;background:var(--accent)}
+  .card.green h5::before{background:var(--accent2)}
+  .card.purple h5::before{background:var(--purple)}
+  .card.cyan h5::before{background:var(--cyan)}
+  .card h5 .mono{font-size:12px;font-weight:500}
+  .card p{margin:6px 0;color:var(--muted);font-size:13px}
+  .card .role{font-size:11.5px;color:var(--dim);margin-top:8px}
+
+  .callout{border-radius:var(--radius);padding:12px 16px;margin:14px 0;font-size:13px;border:1px solid}
+  .callout .lbl{font-weight:700;margin-right:6px}
+  .callout.warn{background:#241c0e;border-color:#5e4a1c;color:#f0d9a8}
+  .callout.warn .lbl{color:#ffcf6e}
+  .callout.info{background:#0e1f2b;border-color:#1c4a5e;color:#a8dcf0}
+  .callout.info .lbl{color:#74d0f0}
+  .callout.ok{background:#0e2417;border-color:#1c5e3a;color:#a8f0c4}
+  .callout.ok .lbl{color:#7ee79b}
+  .callout b{color:#fff}
+
+  .flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:16px 0}
+  .flow .node{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 11px;font-size:12px;color:var(--fg);text-align:center;line-height:1.35}
+  .flow .node small{display:block;color:var(--dim);font-size:10px}
+  .flow .node.lit{border-color:var(--accent);color:#cfe0ff}
+  .flow .arr{color:var(--dim)}
+
+  .pill{display:inline-block;font-size:10.5px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);margin-left:6px}
+  .pill.v2{background:#1a2436;color:#9ec5ff;border-color:#2c4a6e}
+
+  ul.clean{margin:8px 0;padding-left:20px}
+  ul.clean li{margin:6px 0;color:var(--muted)}
+  ul.clean li b{color:var(--fg)}
+  ul.big{list-style:none;padding:0;margin:0}
+  ul.big li{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent2);
+    border-radius:9px;padding:11px 15px;margin:9px 0}
+  ul.big li b{color:#fff;font-size:14px}
+  ul.big li span{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+
+  .asci{background:#0b0d11;border:1px solid var(--line);border-radius:9px;padding:16px 18px;
+    font-family:"SFMono-Regular",Menlo,monospace;font-size:12px;line-height:1.55;color:#9ec5ff;overflow-x:auto;white-space:pre}
+
+  .glossary dt{color:#fff;font-weight:700;font-size:13.5px;margin-top:12px}
+  .glossary dd{margin:2px 0 0;color:var(--muted);font-size:13px}
+
+  footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <h1>Automation Studio</h1>
+  <div class="sub">仕様とできること</div>
+  <a href="#read">このページの読み方</a>
+  <div class="grp t1">はじめての方へ（やさしい解説）</div>
+  <a href="#what">ひとことで言うと</a>
+  <a href="#can">できること</a>
+  <a href="#how">3つの使い方</a>
+  <a href="#ai">AI（ClaudeとCodex）の役割</a>
+  <a href="#steps">動画ができるまでの流れ</a>
+  <div class="grp t2">くわしい仕様（開発者向け）</div>
+  <a href="#arch">全体のしくみ</a>
+  <a href="#llm">Claude / Codex 切替回路</a>
+  <a href="#llm-where">AIが動く場所の一覧</a>
+  <a href="#prog-core">プログラム：中枢</a>
+  <a href="#prog-pipe">プログラム：流れの統括・自走</a>
+  <a href="#prog-stage">プログラム：各工程の担当</a>
+  <a href="#prog-bench">プログラム：分析・調査</a>
+  <a href="#skills">skills とは何か</a>
+  <a href="#data">ファイルで状態を管理</a>
+  <a href="#config">設定 / つながる外部サービス</a>
+  <a href="#pitfalls">注意点・つまずきやすい所</a>
+  <a href="#glossary">用語集</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">orzz. DASHBOARD</div>
+  <h2>Automation Studio — 仕様とできること</h2>
+  <p class="lead">YouTube の BGM チャンネル向けに、動画づくりのほぼ全工程を自動化する道具です。
+  「音楽をつくる → 表紙画像をつくる → 動画編集ソフトに並べる → 書き出す → 説明文を書く → YouTube に投稿する」までを、1 つの管理画面からまとめて動かせます。</p>
+  <div class="meta-row">
+    <span class="chip">管理画面 <b>パソコン上で動くアプリ</b></span>
+    <span class="chip">作業工程 <b>11 段階</b></span>
+    <span class="chip">考える仕事 <b>AI が担当</b></span>
+    <span class="chip">更新 <b>2026-06-08 時点</b></span>
+  </div>
+</header>
+
+<div class="readme" id="read">
+  <b>このページの読み方。</b> 前半「はじめての方へ」は、専門知識がなくても読めるよう、できるだけやさしい言葉で書いています。
+  後半「くわしい仕様」は、プログラムの中身を知りたい開発者向けの技術解説です。
+  むずかしい言葉が出てきたら、いちばん下の<a href="#glossary">用語集</a>を見てください。
+</div>
+
+<!-- ===================== やさしいパート ===================== -->
+
+<section id="what">
+  <span class="band easy">はじめての方へ</span>
+  <h3><span class="num">1</span>ひとことで言うと</h3>
+  <p class="intro">これは「YouTube に上げる音楽動画を、なるべく自分の手を動かさずに作るための工場」のような道具です。
+  ふだん人が時間をかけてやっていた作業を、ボタン 1 つ、あるいは話しかけるだけで、機械と AI が代わりにやってくれます。</p>
+  <div class="grid g3">
+    <div class="card green">
+      <h5>たとえると「自動の動画工場」</h5>
+      <p>材料（音楽・画像・文章）を流し込むと、ベルトコンベアのように各工程を通って、最後に YouTube 投稿まで完成品が出てきます。</p>
+    </div>
+    <div class="card green">
+      <h5>「考える仕事」は AI 担当</h5>
+      <p>曲のタイトル、動画の説明文、サムネイルに入れる言葉など、頭を使う部分は AI（Claude／Codex）が考えます。</p>
+    </div>
+    <div class="card green">
+      <h5>「手を動かす仕事」は機械担当</h5>
+      <p>音楽生成サイトの操作、動画編集ソフトへの配置、YouTube への投稿は、プログラムが自動で操作します。</p>
+    </div>
+  </div>
+</section>
+
+<section id="can">
+  <span class="band easy">はじめての方へ</span>
+  <h3><span class="num">2</span>できること</h3>
+  <p class="intro">この道具でできることを、ふだんの言葉で並べます。すべて自動、または半自動です。</p>
+  <ul class="big">
+    <li><b>音楽を自動で作る</b><span>音楽生成 AI「SUNO」に、1 本の動画ぶん（例：20 曲）をまとめて作らせます。曲名や雰囲気の指定も AI が考えます。</span></li>
+    <li><b>音楽をきれいに整える</b><span>曲に英語のタイトルを付け直し、終わりをやさしくフェードアウト、音量をそろえる、といった仕上げを自動で行います。</span></li>
+    <li><b>サムネイル（動画の表紙画像）を作る</b><span>ライバルの人気動画を参考に背景画像を生成し、その上に文字をのせて、表紙を 2 種類つくります。</span></li>
+    <li><b>動画編集ソフトに素材を自動で並べる</b><span>Adobe Premiere Pro を自動で操作し、音楽・字幕・画像を時間どおりに並べて、3 時間などの長い動画を組み立てます。</span></li>
+    <li><b>動画ファイル（MP4）を書き出す</b><span>編集が終わったら、投稿用の動画ファイルを自動で書き出します。出来上がりも自動でチェックします。</span></li>
+    <li><b>タイトル・説明文・タグを AI に考えてもらう</b><span>動画のタイトル候補を 5 つ、説明文、タグを AI が提案。さらに他の言語へ自動で翻訳もできます。</span></li>
+    <li><b>YouTube へ自動で投稿する</b><span>限定公開・一般公開・予約投稿に対応。投稿が終わると「投稿済み」の印が自動で付きます。</span></li>
+    <li><b>ライバルを分析して作戦を立てる</b><span>伸びている競合チャンネルを調べ、「まねする点・避ける点・自分流に進化させる点」の 3 つに分けて提案します。</span></li>
+    <li><b>外出先のスマホからも操作できる</b><span>専用の通り道（Cloudflare Tunnel）を使って、外からでも同じ管理画面を開けます。</span></li>
+    <li><b>時間がきたら自動でおまかせ運転（準備中）</b><span>「毎週この時間に新しい動画を作る」といった無人運転のしくみも用意されています（最終の起動スイッチは安全のため保留中）。</span></li>
+  </ul>
+</section>
+
+<section id="how">
+  <span class="band easy">はじめての方へ</span>
+  <h3><span class="num">3</span>3 つの使い方（操作の入口）</h3>
+  <p class="intro">この道具には「動かし方」が 3 通りあります。どの方法を使っても、最終的には同じ 1 つの中枢プログラムが動きます。やさしい順に紹介します。</p>
+  <div class="grid g3">
+    <div class="card">
+      <h5>① 画面のボタンを押す</h5>
+      <p>パソコンでアプリを開き、動画ごとに並んだボタン（音楽を作る・サムネを作る・投稿する など）を押すだけ。いちばん分かりやすい方法です。</p>
+      <p class="role">外出先のスマホからも同じ画面を開けます</p>
+    </div>
+    <div class="card purple">
+      <h5>② AI に日本語で頼む</h5>
+      <p>「vol.78 を作って」「競合を分析して」のように、AI アシスタント（Claude Code）へ日本語で頼むと、必要な操作に翻訳して実行してくれます。</p>
+      <p class="role">ボタンを探さなくても、話しかけるだけで動きます</p>
+    </div>
+    <div class="card cyan">
+      <h5>③ 時間がきたら自動で（準備中）</h5>
+      <p>「毎週この曜日に新しい動画を作る」など、あらかじめ予定を組んでおくと、人がいなくても勝手に作業を進めます。</p>
+      <p class="role">安全のため、最後の投稿だけは人の確認が必要な設計</p>
+    </div>
+  </div>
+  <div class="callout info">
+    <span class="lbl">ポイント</span>「②の AI に頼む」で出てくる <b>Claude Code</b> と、「サムネの文字や曲名を考える AI」は、同じ Claude でも役割が違います。
+    前者は<b>あなたの代わりに操作する秘書</b>、後者は<b>中身を考える職人</b>です。くわしくは次の章で説明します。
+  </div>
+</section>
+
+<section id="ai">
+  <span class="band easy">はじめての方へ</span>
+  <h3><span class="num">4</span>AI（Claude と Codex）の役割</h3>
+  <p class="intro">この道具の「考える部分」はすべて AI に任せています。使う AI は 2 つあり、片方が使えない時にもう片方へ自動でバトンタッチするので、途中で止まりにくいのが特長です。</p>
+  <div class="grid g2">
+    <div class="card purple">
+      <h5>ふだんの担当：Claude</h5>
+      <p>曲のタイトル、説明文、サムネの文字、ライバル分析など、頭を使う仕事はまず <b>Claude</b> という AI が担当します。</p>
+      <p class="role">パソコンに入った Claude を呼び出して使うので、特別な契約キーは不要です</p>
+    </div>
+    <div class="card green">
+      <h5>控えの担当：Codex</h5>
+      <p>Claude が混雑や上限・エラーで使えない時は、自動で <b>Codex</b> という別の AI に切り替わります。だから作業が止まりにくいのです。</p>
+      <p class="role">Codex を使うには、事前にログインしておく必要があります</p>
+    </div>
+  </div>
+  <div class="callout ok">
+    <span class="lbl">かんたんに言うと</span>「Claude が手いっぱいなら Codex が代わりに考える」。
+    この自動の切り替えがあるおかげで、夜間の無人運転でも作業が途切れにくくなっています。
+  </div>
+</section>
+
+<section id="steps">
+  <span class="band easy">はじめての方へ</span>
+  <h3><span class="num">5</span>動画ができるまでの流れ（11 段階）</h3>
+  <p class="intro">1 本の動画は、次の順番で組み立てられます。それぞれの段階で「できたかどうか」は、フォルダの中にファイルが出来ているかで判断します。</p>
+  <div class="flow">
+    <span class="node lit">音楽生成<small>SUNO</small></span><span class="arr">→</span>
+    <span class="node">仕上げ<small>名前・音量</small></span><span class="arr">→</span>
+    <span class="node lit">背景画像<small>AIが生成</small></span><span class="arr">→</span>
+    <span class="node">サムネ合成<small>文字のせ</small></span><span class="arr">→</span>
+    <span class="node lit">編集ソフト配置<small>Premiere</small></span><span class="arr">→</span>
+    <span class="node">書き出し<small>MP4</small></span><span class="arr">→</span>
+    <span class="node">自動チェック<small>QA</small></span><span class="arr">→</span>
+    <span class="node lit">説明文作成<small>AI</small></span><span class="arr">→</span>
+    <span class="node">多言語化<small>翻訳</small></span><span class="arr">→</span>
+    <span class="node">サムネ最終<small>予備経路</small></span><span class="arr">→</span>
+    <span class="node lit">投稿<small>YouTube</small></span>
+  </div>
+  <p style="color:var(--muted);font-size:13px;max-width:880px">
+    自動おまかせ運転（使い方③）のときだけ、いちばん前に「作戦立て」が 1 段階増えて 12 段階になります。
+    また、サムネイルは通常「背景画像 → 文字のせ」の順で作り、うまくいかない時だけ「サムネ最終（予備経路）」で AI が直接つくり直します。
+  </p>
+</section>
+
+<!-- ===================== 技術パート ===================== -->
+
+<section id="arch">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">6</span>全体のしくみ（アーキテクチャ）</h3>
+  <p class="intro">3 つの操作入口は、すべて <code>app.py</code>（ポート 8888 で動く FastAPI サーバー）という<b>単一の中枢</b>に集まります。中枢は工程ごとの独立プログラムを子プロセス（別プログラムとして起動）で呼び出し、外部サービス（SUNO・Adobe・YouTube・AI）を操作します。状態はデータベースではなく「フォルダ内のファイル」で管理します。</p>
+  <div class="asci">  ┌─ 操作の入口（3つ）────────────────────────────────────────────┐
+  │ ① Web 管理画面        ② 日本語で AI に依頼         ③ 自動おまかせ運転 │
+  │   (ブラウザ / スマホ)     (Claude Code が翻訳)         (スケジューラ)   │
+  └─────────┬───────────────────┬──────────────────────┬─────────────┘
+            │ HTTP / WebSocket   │ HTTP / コマンド直実行   │ 定時の合図
+            ▼                    ▼                       ▼
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║   app.py (ポート8888)  ＝ 中枢（FastAPI）   どの入口も最後はここへ   ║
+  ║   app_core.py(共通部品) + routers/(機能別の窓口) + 自動運転の土台   ║
+  ╚══════════╤════════════════════════════════════════════╤══════════╝
+             │ 子プロセスで各工程の独立プログラムを起動       │ ファイル読み書き
+             ▼                                              ▼
+  ┌──────────────────────────────────────────┐   ~/.config/orzz/ (設定)
+  │ 音楽生成 / 仕上げ / 背景・サムネ / Premiere /│   動画フォルダ (状態＝真実)
+  │ 書き出し / 投稿 / 流れ統括 / 自動運転        │   SQLite (順番待ち・履歴台帳)
+  └────┬───────────┬──────────────┬────────────┘
+       ▼           ▼              ▼
+   Playwright   Adobe Premiere   YouTube Data API v3
+   →suno.com    + Media Encoder  （google のライブラリ経由）
+       │
+   ┌───▼───────────────────────────┐
+   │ app_llm_runner：まず Claude →   │ ← AI への依頼は必ずここを通る
+   │ ダメなら Codex に自動で切り替え   │
+   └───────────────────────────────┘</div>
+  <h4><span class="bar"></span>技術スタック</h4>
+  <table>
+    <thead><tr><th>役割</th><th>使っている技術</th></tr></thead>
+    <tbody>
+      <tr><td>サーバー本体</td><td>FastAPI（Python 3）+ Uvicorn。※自動リロード無し（変更後は手動で再起動）</td></tr>
+      <tr><td>画面（フロント）</td><td>静的 HTML + 素の JavaScript（ビルド作業は不要・<code>web/static/index.html</code> に同梱）</td></tr>
+      <tr><td>サイト自動操作</td><td>Playwright（SUNO・Flow をブラウザごと自動操作）</td></tr>
+      <tr><td>動画編集</td><td>Adobe Premiere Pro + Pymiere + ExtendScript(JSX)</td></tr>
+      <tr><td>動画書き出し</td><td>Adobe Media Encoder（JSX 経由でキュー投入）</td></tr>
+      <tr><td>サムネ合成</td><td>Photoshop（新版は UXP のファイル連携、旧版は AppleScript）</td></tr>
+      <tr><td>投稿</td><td>YouTube Data API v3 + OAuth 認証</td></tr>
+      <tr><td>AI（文章・画像・画像理解）</td><td>Claude CLI（第一候補・API キー不要）→ Codex CLI（控え）。任意で Gemini・ChatGPT・OpenAI Image・Google Flow</td></tr>
+      <tr><td>状態の保存</td><td>フォルダ内ファイル（進捗）+ SQLite（順番待ち・履歴）+ JSON（設定）</td></tr>
+      <tr><td>通知</td><td>Discord Webhook</td></tr>
+      <tr><td>自動運転</td><td>APScheduler（時刻・曜日の予約実行）</td></tr>
+      <tr><td>外部アクセス</td><td>Cloudflare Tunnel + 認証 + PWA（スマホアプリ風）</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <span class="lbl">注意</span>サーバーは自動リロード無しで起動します。Python のコードを変更したら <code>bash Python/start.sh</code> で<b>再起動しないと反映されません</b>。
+  </div>
+</section>
+
+<section id="llm">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">7</span>Claude / Codex 切替回路（フォールバック）</h3>
+  <p class="intro">システム内の「AI に考えさせる処理」は、<b>必ず <code>app_llm_runner.py</code> の <code>run_llm()</code> / <code>run_llm_vision()</code> を通ります</b>。文章生成も画像理解（Vision）もここに集約され、全モジュール（約 26 箇所）の AI 呼び出しが共通化されています。新しく作る処理も <code>run_llm</code> 必須で、直接 <code>claude -p</code> を叩くのは禁止です。</p>
+  <div class="asci">  呼び出し元（音楽 / 説明文 / 背景 / 分析 / サムネ文字 / 画像採点 …）
+        │  run_llm(プロンプト) / run_llm_vision(プロンプト, 画像)
+        ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │ ① まず Claude CLI を試す                                   │
+  │    claude -p <プロンプト> [--allowedTools Read] [--add-dir …]│
+  │    成功（終了コード0かつ出力あり）→ そのまま返す             │
+  └───────────────┬──────────────────────────────────────────┘
+                  │ 失敗（エラー / 空 / タイムアウト / コマンド無し ＝上限など）
+                  ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │ ② Codex CLI に自動で切り替え                              │
+  │    codex exec --skip-git-repo-check                        │
+  │      --dangerously-bypass-approvals-and-sandbox            │
+  │      [-i <画像> …] -o <最終メッセージ保存先> <プロンプト>    │
+  │    成功 → 「Codex で成功」をログに残して返す                │
+  └───────────────┬──────────────────────────────────────────┘
+                  │ 両方とも失敗
+                  ▼
+        LLMError を送出（401系なら「codex login を」と案内付き）</div>
+  <div class="grid g2">
+    <div class="card purple">
+      <h5><span class="t-claude tag">第一候補</span> Claude CLI</h5>
+      <p><code>claude -p "&lt;プロンプト&gt;"</code> を子プロセスで起動。API キー不要でローカル認証完結。画像理解のときは画像の親フォルダを <code>--add-dir</code> で許可し <code>--allowedTools Read</code> を付けます。</p>
+      <p class="role">コマンドのパスは <code>suno_config.json</code> の <code>claude_cli</code> で解決</p>
+    </div>
+    <div class="card green">
+      <h5><span class="t-both tag">控え</span> Codex CLI</h5>
+      <p>Claude が<b>上限・エラー・タイムアウト・未検出</b>になると自動で <code>codex exec</code> に引き継ぎます。<code>-o</code> の最終メッセージファイルを最優先で読み（無ければ標準出力）、画像は <code>-i</code> で渡します。</p>
+      <p class="role">事前に <code>codex login</code> が必要（未認証だと 401 で両方失敗・認証は失効しやすい）</p>
+    </div>
+  </div>
+  <div class="callout info">
+    <span class="lbl">補足</span>この切り替えは既定で有効。環境変数 <code>APP_LLM_FALLBACK=0</code> で無効化できます（その場合 Claude 失敗で即エラー）。切り替えは<b>一方向（Claude → Codex のみ）</b>です。
+  </div>
+</section>
+
+<section id="llm-where">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">8</span>AI が動く場所の一覧（介入ポイント）</h3>
+  <p class="intro">「考える処理」はすべて Claude → Codex 経由。出力は基本的に<b>単一の JSON オブジェクト</b>で受け取り、コードフェンス除去 → <code>{…}</code> 抽出 → <code>json.loads()</code>（失敗時は末尾カンマ除去で再試行）でパースします。</p>
+  <table>
+    <thead><tr><th>場面</th><th>何を生成するか</th><th>出力の形（例）</th><th>担当プログラム</th></tr></thead>
+    <tbody>
+      <tr><td>音楽生成</td><td>曲名 / 雰囲気 / 歌詞（一括 N 曲も可）</td><td class="mono">{"songs":[{title,styles,lyrics?}]}</td><td class="mono">suno_auto_create</td></tr>
+      <tr><td>曲のリネーム</td><td>サムネやペルソナを元にした英語タイトル群</td><td class="mono">{"titles":[…]}</td><td class="mono">app_process_tracks</td></tr>
+      <tr><td>動画メタ</td><td>タイトル×N / 説明文 / タグ</td><td class="mono">{"titles":[]} / {"description":} / {"tags":[]}</td><td class="mono">claude_proposer</td></tr>
+      <tr><td>多言語化</td><td>メイン言語のメタを他言語へ翻訳</td><td class="mono">各言語の title / description</td><td class="mono">step_localization</td></tr>
+      <tr><td>背景画像</td><td>ベンチ分析から動的プロンプト → 画像生成</td><td>画像（PNG / JPG）</td><td class="mono">app_image_prompt / codex_imagegen</td></tr>
+      <tr><td>サムネ文字</td><td>AI 画像を見て焼き込む英字フレーズ</td><td class="mono">英大文字フレーズ</td><td class="mono">scene_text_generator</td></tr>
+      <tr><td>サムネ採点</td><td>生成サムネを 100 点満点で採点＋自動承認</td><td class="mono">スコア / 判定</td><td class="mono">app_thumbnail_scoring</td></tr>
+      <tr><td>ベンチ分析</td><td>コンセプト / タイトル / サムネ / 説明文の 4 軸</td><td class="mono">各軸の構造化分析</td><td class="mono">app_benchmark_*</td></tr>
+      <tr><td>競合提案</td><td>採用する点 / 避ける点 / 進化させる点 の 3 軸</td><td class="mono">提案 JSON</td><td class="mono">app_competitor</td></tr>
+      <tr><td>作戦立て（無人時）</td><td>今回の制作方針</td><td class="mono">plan.json</td><td class="mono">app_orchestrator</td></tr>
+    </tbody>
+  </table>
+  <div class="callout info">
+    <span class="lbl">補足</span>出力メタ（タイトル/説明/タグ）の<b>ソース言語はチャンネル別</b>。per-channel の <code>default_language</code>（＝メイン言語）でメタを生成し、<code>localization</code> 工程が他言語へ翻訳します（メイン言語自体は除外）。例：orzz=英語・SUKIMA=日本語。分析の解説文は日本語です。
+  </div>
+</section>
+
+<section id="prog-core">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">9</span>プログラム解説 — 中枢</h3>
+  <p class="intro">操作の入口を受け、各工程プログラムを呼び出す司令塔。巨大化した <code>app.py</code>（旧 12,649 行）を D9 リファクタで core + routers に段階分割しました。</p>
+  <div class="grid g2">
+    <div class="card">
+      <h5><span class="mono">app.py</span> <span class="pill">7,921 行</span></h5>
+      <p>FastAPI 組み立て役 + 実行基盤。ミドルウェア / 起動フック / 各種ワーカー基盤（書き出し監視・順番待ち・スケジューラ・公開ゲート）。<b>3 つの入口がすべてここに集約</b>する単一頭脳。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_core.py</span> <span class="pill">1,432 行</span></h5>
+      <p>共通部品（D9 抽出）。パス・設定の定数、設定ローダ、チャンネル別設定、認証ヘルパ、タスク／子プロセス／YouTube キューのヘルパなど。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">routers/</span></h5>
+      <p>機能別の窓口（APIRouter）。<code>benchmark.py</code>（ベンチ4軸）/ <code>images.py</code>（背景・サムネ・承認・series）/ <code>premiere_photoshop.py</code>（JSX・UXP・文字）/ <code>youtube.py</code>（投稿・履歴・説明文・通知）。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">web/static/index.html</span></h5>
+      <p>管理画面 UI（JavaScript も同梱・ビルド不要）。画面側の工程判定は <code>WORKFLOW_STEPS</code> 定数が真実源。</p>
+    </div>
+  </div>
+</section>
+
+<section id="prog-pipe">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">10</span>プログラム解説 — 流れの統括・自動運転</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h5><span class="mono">app_pipeline.py</span> <span class="pill">2,940 行</span></h5>
+      <p>一括パイプラインの統括。<code>STEPS</code> が工程の真実源。<code>--only</code> / <code>--from</code> / <code>--dry-run</code> / <code>--from-benchmark</code> / <code>--via-api</code> に対応。QA・翻訳・作戦立てなどの工程関数も内包。</p>
+      <p class="role">「全部やって」「Premiere からやり直して」の実体</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_orchestrator.py</span> <span class="pill">650 行</span></h5>
+      <p>自動運転の司令塔（Phase 4）。StageWorker / QAWorker / PlanWorker。ベンチ起点で作戦を立て工程を順送り。書き出し〜サムネを自動投入し、投稿は手動ゲート。連続 3 失敗でブレーカー作動。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_render_queue.py</span> <span class="pill">395 行</span></h5>
+      <p>Premiere / Media Encoder は同時に 1 つしか動かせない、という物理制約を吸収する SQLite ベースの順番待ち。複数チャンネル並列運用の中核。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_run_ledger.py</span> <span class="pill">492 行</span></h5>
+      <p>中央の実行台帳（SQLite）。これまでメモリ最大 50 件だった履歴を一元・永続記録。台帳 UI のデータ源。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_token_health.py</span> <span class="pill">294 行</span></h5>
+      <p>認証の有効期限チェッカ。チャンネル別に点検し、期限が近いものを Discord で「次回ログインが必要」と事前通知。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_image_eval_loop.py</span> <span class="pill">315 行</span></h5>
+      <p>自己評価つき画像生成ループの核。生成 → ベンチ比較で採点 → 合格まで弱点を還流して再生成（外側ループは計画段階）。</p>
+    </div>
+  </div>
+  <div class="callout warn">
+    <span class="lbl">現状</span>自動運転のバックエンド（Phase 0-5）と管制 UI（U1-U6）は全実装済みですが、
+    <b>app.py への最終統合（定時の合図でスケジューラを回し無人稼働を開始する配線）は「要 GO」で保留中</b>です。
+    自走 ON/OFF トグルは現状<b>保存のみ</b>で、実際の無人稼働はまだ始まっていません。
+  </div>
+</section>
+
+<section id="prog-stage">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">11</span>プログラム解説 — 各工程の担当</h3>
+  <p class="intro">パイプラインや API から子プロセスとして呼ばれる「実際に手を動かす」層。単体のコマンドとしても実行できます。</p>
+  <div class="grid g2">
+    <div class="card">
+      <h5><span class="mono">suno_auto_create.py</span></h5>
+      <p>Playwright で suno.com を操作して楽曲生成。Workspace 管理（vol 別）/ 生成モード 3 種 / 一括生成（<code>--batch</code> で N 曲を 1 往復）/ 一括ダウンロード（fetch インターセプタ方式）。</p>
+      <p class="role">注意：Bot 判定対策で <code>APP_KEEP_BROWSER=1</code> + interval 90 を既定推奨</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_process_tracks.py</span> <span class="pill">850 行</span></h5>
+      <p>楽曲後処理。サムネ → ペルソナの順で英語タイトルを提案しリネーム、ffmpeg で無音トリム + フェードアウト + 音量正規化（LUFS）。<code>--rename-only</code> あり。公開前に SUNO の透かし除去 + ID3 タグ付与。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_premiere.py</span> <span class="pill">906 行</span></h5>
+      <p>Pymiere で .prproj を開き JSX 自動配置（音声/字幕/画像）、実測タイムから正確な SRT を Python 生成。<code>--export</code> で書き出しキュー投入、<code>--images-only</code> で画像のみ再配置。</p>
+      <p class="role">注意：JSX は JSX Launcher 拡張経由のみ（AppleScript 不可）</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_photoshop.py</span> <span class="pill">1,017 行</span></h5>
+      <p>Photoshop 連携ラッパ。新版（PS 2026）は UXP のファイル連携、旧版は AppleScript。背景 + シーンテキストで <code>vol{N}.jpg</code> + <code>サムネイル.jpg</code> を 2 枚出し。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_youtube.py</span> <span class="pill">919 行</span></h5>
+      <p>YouTube 投稿。OAuth → MP4 / サムネ / 説明 / タグ / タイトルを保存ファイルから自動読込 → <code>videos().insert()</code>。成功後 <code>youtube_upload.json</code> を書出。<code>--auth-only</code> で再認証。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_image_prompt.py</span> / <span class="mono">codex_imagegen.py</span></h5>
+      <p>背景画像。<code>app_image_prompt</code> がベンチ分析から動的プロンプトを構築し、<code>codex_imagegen</code> が OpenAI Image API / Codex CLI で（参照画像対応・並列）生成。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_channel_thumbnail.py</span> <span class="pill">278 行</span></h5>
+      <p>チャンネル横断・AI サムネ一括生成（ピュアロジック層）。PSD 合成が使えない時の予備経路。<code>{vol}/Image/</code> に一括生成 + 採点。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">claude_proposer.py</span> / <span class="mono">scene_text_generator.py</span></h5>
+      <p>前者は動画メタ提案（titles / description / tags、<code>gather_context()</code> でフォルダから文脈を自動収集）。後者は AI 画像を見て焼き込む英大文字フレーズを生成（per-channel <code>scene_text_*</code> 設定準拠）。</p>
+    </div>
+  </div>
+</section>
+
+<section id="prog-bench">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">12</span>プログラム解説 — 分析・調査</h3>
+  <p class="intro">競合チャンネルを Google スプレッドシート経由で取り込み（YouTube API の消費ゼロ）、Claude で分析して自チャンネルへの提案に変換する系統。「丸ごとコピーではなく、要素を抽出して自分流に落とし込む」のが趣旨です。</p>
+  <div class="grid g2">
+    <div class="card">
+      <h5><span class="mono">app_competitor.py</span> <span class="pill">1,324 行</span></h5>
+      <p>競合分析の総合エントリ。<code>--analyze</code>（分析）/ <code>--propose &lt;vol&gt;</code>（提案）。ホットチャンネル抽出・成長データ反映。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_sheets.py</span> <span class="pill">1,040 行</span></h5>
+      <p>Google スプレッドシートを CSV 取得 + パース + マッチング。横断シートと個別タブ（1 日 4 回の時系列・48 時間の急伸シグナル）を扱う。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_benchmark_analyze.py</span> <span class="pill">513 行</span></h5>
+      <p>ベンチ分析・提案層（D6 で取得層から物理分離）。競合分析を起点とする分析・提案関数の本体。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_benchmark_*.py</span>（4 軸）</h5>
+      <p><code>concept</code> / <code>title</code> / <code>thumbnail</code> / <code>description</code> の各軸モジュール。<code>app_benchmark_common.py</code> が増分・スキップ（fingerprint）で無駄な AI 消費を削減。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_channel_cache.py</span> <span class="pill">167 行</span></h5>
+      <p>チャンネル単位のキャッシュヘルパ。従来グローバル 1 ディレクトリだったベンチ出力をチャンネルスコープに分離。</p>
+    </div>
+    <div class="card">
+      <h5><span class="mono">app_series.py</span> / <span class="mono">app_thumbnail_scoring.py</span> / <span class="mono">app_thumbnail_state.py</span></h5>
+      <p>シリーズ画像案の生成・キャッシュ / サムネを Vision で 100 点採点＋自動承認 / 各動画 <code>Image/thumbnail_state.json</code> の CRUD。</p>
+    </div>
+  </div>
+</section>
+
+<section id="skills">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">13</span>skills とは何か</h3>
+  <p class="intro"><code>skills/</code> フォルダは、プログラム本体ではなく <b>AI アシスタント（Claude Code＝使い方②の秘書役）のための手順書集</b>です。中身は人間も読める Markdown 文書で、各機能を「どんなコマンドで・どんな順番で・どんな注意点に気をつけて」実行するかが書かれています。</p>
+  <div class="grid g2" style="margin-bottom:14px">
+    <div class="card green">
+      <h5>役割：AI の取扱説明書</h5>
+      <p>あなたが「サムネを作って」と頼むと、AI アシスタントはまず該当する手順書（<code>app-thumbnail.md</code>）を読み、正しいやり方・落とし穴を理解してから作業します。だから指示がざっくりでも、正しい手順で実行されます。</p>
+    </div>
+    <div class="card cyan">
+      <h5>位置づけ：実行はしない・案内する</h5>
+      <p>skills 自体は動くプログラムではありません。実際に動くのは <code>app_*.py</code> などのプログラムです。skills は「どのプログラムをどう呼ぶか」を AI に教えるナレッジ層で、§3 の「使い方②」を支えています。</p>
+    </div>
+  </div>
+  <p style="color:var(--muted);font-size:13px">現在 24 本。主なものを挙げます（全文は <code>skills/</code> 内の各 <code>.md</code>）。</p>
+  <table>
+    <thead><tr><th>手順書</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">app-workflow.md</td><td>11 工程の全体フロー（これが入口の地図）</td></tr>
+      <tr><td class="mono">app-web-dashboard.md</td><td>Web 管理画面の構造と API 全体像</td></tr>
+      <tr><td class="mono">app-create-folder.md</td><td>動画フォルダの新規作成</td></tr>
+      <tr><td class="mono">app-suno-download.md</td><td>SUNO Workspace の楽曲を一括ダウンロード</td></tr>
+      <tr><td class="mono">app-rename-audio.md</td><td>楽曲リネーム + 音声処理</td></tr>
+      <tr><td class="mono">app-track-player.md</td><td>楽曲プレイヤー + いいね + 削除</td></tr>
+      <tr><td class="mono">app-bgimage.md / app-thumbnail.md / app-psd-composite.md</td><td>背景画像 / AI サムネ / PSD 合成</td></tr>
+      <tr><td class="mono">app-image-select.md / app-series-proposals.md</td><td>画像選択 + JSX 連動 / シリーズ画像案</td></tr>
+      <tr><td class="mono">app-premiere.md / app-export.md</td><td>Premiere 自動配置 / 書き出し</td></tr>
+      <tr><td class="mono">app-ai-propose.md / app-youtube-desc.md / app-multilingual-meta.md</td><td>AI 提案パターン / 説明文 / 多言語メタ</td></tr>
+      <tr><td class="mono">app-youtube-upload.md</td><td>YouTube アップロード</td></tr>
+      <tr><td class="mono">app-competitor-spreadsheet.md / app-imitate-evolve.md</td><td>スプレッドシート競合分析 / 徹底パクリ進化</td></tr>
+      <tr><td class="mono">app-master-config.md / app-schedule.md / app-remote-access.md / app-notify.md</td><td>マスター設定 / スケジュール / 外出先操作 / Discord 通知</td></tr>
+      <tr><td class="mono">Design.md</td><td>UI のデザインシステム（配色・コンポーネント規約）</td></tr>
+    </tbody>
+  </table>
+  <div class="callout info">
+    <span class="lbl">補足</span>これはリポジトリ内の <code>skills/</code> 文書のことです。Claude Code が個人設定として持つ <code>.claude/skills</code>（壊れた空リンク）とは別物で、今回の GitHub アップロードには含めていません。
+  </div>
+</section>
+
+<section id="data">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">14</span>ファイルで状態を管理（データ契約）</h3>
+  <p class="intro">データベースを持たず、動画フォルダ <code>{連番}_{prefix}_{YYMMDD}</code> の中の「決まった名前のファイルがあるか」で進捗を表します。フォルダを見れば状態が分かり、Google ドライブ同期でそのまま複数端末共有できます。</p>
+  <table>
+    <thead><tr><th>ファイル</th><th>意味</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">music/*.mp3</td><td>後処理済み楽曲（あれば 音楽＋仕上げ 完了）</td></tr>
+      <tr><td class="mono">original_music/*.mp3</td><td>SUNO ダウンロード直後のオリジナル</td></tr>
+      <tr><td class="mono">vol{N}.png / .jpg</td><td>背景画像（背景生成 完了）</td></tr>
+      <tr><td class="mono">vol{N}.jpg + サムネイル.jpg</td><td>合成済サムネ 2 枚（サムネ合成 完了）</td></tr>
+      <tr><td class="mono">selected_images.json</td><td>画像選択結果（main=0-5秒 / sub[]=以降を等分配置、JSX 連動）</td></tr>
+      <tr><td class="mono">subtitles_{N}.srt</td><td>実測 SRT 字幕（Premiere 配置 完了）</td></tr>
+      <tr><td class="mono">vol_vol{N}.mp4</td><td>書き出し済 MP4（書き出し 完了）</td></tr>
+      <tr><td class="mono">youtube_title / description / tags.txt</td><td>メタ（手動 or AI 提案）。tags 未保存時は既定タグにフォールバック</td></tr>
+      <tr><td class="mono">youtube_upload.json</td><td>投稿完了マーカー（video_id / url / privacy / schedule / uploaded_at）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="config">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">15</span>設定 / つながる外部サービス</h3>
+  <h4><span class="bar"></span>設定ファイル（<code>~/.config/{app_id}/</code>・リポジトリ外に保存）</h4>
+  <div class="grid g2">
+    <div class="card">
+      <h5>チャンネル / 制作</h5>
+      <ul class="clean">
+        <li><code>dashboard_config.json</code> — チャンネル名 / フォルダ / ペルソナ / ライバル URL</li>
+        <li><code>suno_config.json</code> — AI プロバイダ・モデル・プロンプト・<b>claude_cli / codex_cli</b> パス</li>
+        <li><code>channels.json</code> — 複数チャンネル切替（絶対パス、2 台 Mac はホスト解決）</li>
+        <li><code>benchmark_config.json</code> / <code>prompts.json</code> / <code>master_prompts.json</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h5>自動運転 / 認証 / 履歴</h5>
+      <ul class="clean">
+        <li><code>schedule_jobs.json</code> — スケジューラのジョブ（cron / date）</li>
+        <li><code>export_rules.json</code> / <code>export_queue.json</code> — 書き出しルール / キュー状態</li>
+        <li><code>youtube_client_secret.json</code> / <code>youtube_token.json</code> — OAuth（自動更新）</li>
+        <li><code>auth_token.txt</code> / <code>discord_config.json</code> / <code>task_history.json</code></li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout warn">
+    <span class="lbl">注意</span>認証情報や秘密ファイルはリポジトリに含めません（実体は <code>~/.config/orzz</code> ＝ repo 外）。
+    作業ツリー内に生成される <code>config/</code>・<code>competitor_analysis/</code> は <code>.gitignore</code> で丸ごと除外済みです。
+  </div>
+  <h4><span class="bar"></span>外部サービスと失敗時のふるまい</h4>
+  <table>
+    <thead><tr><th>対象</th><th>つなぎ方</th><th>失敗時</th></tr></thead>
+    <tbody>
+      <tr><td>SUNO（suno.com）</td><td>Playwright で DOM 操作（role / placeholder 優先）</td><td>DOM 変更は警告ログ・手動フォールバック可</td></tr>
+      <tr><td>Claude CLI</td><td>子プロセス + JSON</td><td>失敗 → Codex CLI へ自動切替</td></tr>
+      <tr><td>Codex CLI</td><td><code>codex exec</code></td><td>未認証(401)時は <code>codex login</code> 案内付きでエラー</td></tr>
+      <tr><td>Premiere / Media Encoder</td><td>Pymiere + JSX</td><td>未起動を検知・プリセット不在はスキップ</td></tr>
+      <tr><td>YouTube Data API v3</td><td>google-api-python-client + OAuth</td><td>token 失効は自動更新</td></tr>
+      <tr><td>Discord Webhook</td><td>HTTP POST</td><td>未設定時はボタン無効</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="pitfalls">
+  <span class="band tech">くわしい仕様</span>
+  <h3><span class="num">16</span>注意点・つまずきやすい所（実戦知見）</h3>
+  <div class="grid g2">
+    <div class="card">
+      <h5>サーバー / 実行</h5>
+      <ul class="clean">
+        <li>uvicorn は自動リロード無し → 変更後は <code>bash start.sh</code> で再起動</li>
+        <li>AI 工程（meta / localization）を <code>--via-api</code> 実行すると 10 秒タイムアウトで必ず失敗 → CLI 直で実行</li>
+        <li>premiere / export の「完了」ログは早期誤判定あり → MP4 サイズ安定 + ffprobe で裏取り</li>
+        <li>JSX は JSX Launcher 拡張経由のみ（AppleScript 不可）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h5>SUNO（音楽生成）</h5>
+      <ul class="clean">
+        <li>Bot 判定対策で <code>APP_KEEP_BROWSER=1</code> + interval 90 を既定に</li>
+        <li>生成前に prompt 本文をユーザーに見せて合意を取る（ジャンル違い事故の防止）</li>
+        <li>複数 vol は workspace を vol 別にして混在ダウンロードを防ぐ</li>
+        <li>生成リクエスト送信 ≠ レンダリング完了（DL 前に待機 / cache miss は再試行）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h5>Premiere / Media Encoder</h5>
+      <ul class="clean">
+        <li>batch.xml の古いジョブで別 vol を誤書き出し（最重要）</li>
+        <li>AME 強制終了で Premiere のモデルが壊れるリスク</li>
+        <li>Premiere 再起動後は AME も再起動しないと描画が始まらない</li>
+        <li>PS 2026 は字幕トラックを削除できず積み上がる</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h5>AI / Codex / 共有ドライブ</h5>
+      <ul class="clean">
+        <li>Codex は <code>codex login</code> 必須・認証が失効しやすい。切替は Claude → Codex の一方向</li>
+        <li>YouTube quota はローカル追跡が保守的。実 API は深夜 0 時 PT にリセット済みのことあり</li>
+        <li>Google ドライブ上は Bash 出力が壊れることがある → 検証は /tmp 経由、git はパス限定</li>
+        <li>認証の有効期限切れを検出したら再ログインが必要</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="glossary">
+  <span class="band tech">参考</span>
+  <h3><span class="num">17</span>用語集</h3>
+  <dl class="glossary">
+    <dt>API（エーピーアイ）</dt><dd>プログラム同士が情報をやり取りするための窓口・約束ごと。「YouTube に投稿する窓口」など。</dd>
+    <dt>CLI（シーエルアイ）</dt><dd>コマンド入力でプログラムを動かす方式。ここでは <code>claude -p …</code> のように Claude を文字コマンドで呼び出すこと。</dd>
+    <dt>子プロセス / subprocess</dt><dd>あるプログラムが、別の小さなプログラムを「呼び出して実行」すること。中枢が各工程の道具を呼ぶ仕組み。</dd>
+    <dt>フォールバック</dt><dd>本命がダメな時に控えへ自動で切り替えること。ここでは Claude → Codex の切替。</dd>
+    <dt>パイプライン</dt><dd>作業を決まった順番でつなげて一気に流す仕組み。ここでは 11 工程の流れ作業。</dd>
+    <dt>ベンチマーク</dt><dd>比較・目標にする基準。ここでは参考にするライバルチャンネルやその分析。</dd>
+    <dt>サムネイル</dt><dd>動画の表紙画像。クリックされるかどうかを大きく左右する。</dd>
+    <dt>メタ（メタデータ）</dt><dd>動画のタイトル・説明文・タグなど、動画に付ける情報。</dd>
+    <dt>OAuth（オーオース）</dt><dd>パスワードを直接渡さずにサービス連携する認証方式。YouTube 投稿で利用。</dd>
+    <dt>SQLite（エスキューライト）</dt><dd>1 ファイルで動く軽量データベース。ここでは順番待ちと履歴台帳に使用。</dd>
+    <dt>スケジューラ</dt><dd>決めた時刻・曜日に自動で処理を起動するしくみ（APScheduler）。</dd>
+    <dt>JSX</dt><dd>Adobe 製品を自動操作するためのスクリプト。Premiere の自動配置で使用。</dd>
+  </dl>
+</section>
+
+<footer>
+  Automation Studio（orzz. Dashboard）現状仕様まとめ — 2026-06-08 時点。<br>
+  一次情報：<code>SPEC.md</code> / <code>AGENTS.md</code> / <code>app_pipeline.py STEPS</code> / <code>app_llm_runner.py</code> / 各 <code>app_*.py</code> の docstring。
+  関連：<code>automation_studio_spec.html</code>（仕様＆統合計画）/ <code>automation_studio_decisions.html</code>（D1-D14 決定）。
+</footer>
+
+</main>
+</div>
+
+<script>
+const links=[...document.querySelectorAll('nav a')];
+const map=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
+const obs=new IntersectionObserver((es)=>{
+  es.forEach(e=>{
+    if(e.isIntersecting){
+      links.forEach(l=>l.classList.remove('active'));
+      const a=map.get(e.target.id); if(a)a.classList.add('active');
+    }
+  });
+},{rootMargin:'-8% 0px -82% 0px'});
+document.querySelectorAll('section[id]').forEach(s=>obs.observe(s));
+</script>
+</body>
+</html>

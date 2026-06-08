@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Automation Studio — 仕様 &amp; 統合計画</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
+    --fg:#e6e9ef; --muted:#9aa3b2; --dim:#6b7280;
+    --accent:#6ea8fe; --accent2:#7ee787;
+    --ok:#2ea043; --warn:#d29922; --bad:#f85149; --info:#58a6ff; --gray:#6b7280; --purple:#bc8cff;
+    --p1:#f85149; --p2:#d29922; --p3:#3fb950;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Segoe UI",sans-serif;
+    font-size:14px;line-height:1.7;}
+  code,.mono{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:.86em;
+    background:#0b0d11;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#d6deeb;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* layout */
+  .wrap{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    background:var(--panel);border-right:1px solid var(--line);padding:18px 14px}
+  nav h1{font-size:15px;margin:0 0 2px;color:#fff}
+  nav .sub{font-size:11px;color:var(--dim);margin-bottom:16px}
+  nav a{display:block;color:var(--muted);padding:5px 9px;border-radius:7px;font-size:13px;margin:1px 0}
+  nav a:hover{background:var(--panel2);color:var(--fg);text-decoration:none}
+  nav a.active{background:#243047;color:#cfe0ff}
+  nav .grp{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);
+    margin:14px 9px 4px;font-weight:700}
+  main{padding:34px 40px 120px;max-width:1180px}
+
+  header.hero{margin-bottom:30px}
+  header.hero .eyebrow{color:var(--accent);font-weight:700;letter-spacing:.04em;font-size:12.5px}
+  header.hero h2{font-size:30px;margin:6px 0 8px;color:#fff;line-height:1.25}
+  header.hero p.lead{color:var(--muted);font-size:15px;max-width:760px;margin:0}
+  .meta-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
+    padding:4px 12px;font-size:12px;color:var(--muted)}
+  .chip b{color:var(--fg)}
+
+  section{margin:40px 0;scroll-margin-top:20px}
+  section>h3{font-size:21px;color:#fff;border-bottom:1px solid var(--line);padding-bottom:8px;margin:0 0 6px}
+  section>h3 .num{color:var(--dim);font-weight:600;margin-right:10px;font-size:17px}
+  section .intro{color:var(--muted);margin:0 0 18px}
+  h4{font-size:16px;color:#dbe3f0;margin:24px 0 8px}
+
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:12.8px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--panel2);color:#cdd6e4;font-weight:600;font-size:12px;position:sticky}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#1b2030}
+  td.mono,th.mono{font-family:"SFMono-Regular",Menlo,monospace;font-size:11.6px}
+
+  /* badges */
+  .b{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;
+    white-space:nowrap;border:1px solid transparent}
+  .b.ok{background:rgba(46,160,67,.16);color:#5dd879;border-color:rgba(46,160,67,.35)}
+  .b.warn{background:rgba(210,153,34,.16);color:#e3b341;border-color:rgba(210,153,34,.35)}
+  .b.bad{background:rgba(248,81,73,.16);color:#ff7b72;border-color:rgba(248,81,73,.35)}
+  .b.info{background:rgba(88,166,255,.16);color:#79c0ff;border-color:rgba(88,166,255,.35)}
+  .b.gray{background:rgba(110,118,129,.16);color:#a8b1be;border-color:rgba(110,118,129,.35)}
+  .b.purple{background:rgba(188,140,255,.16);color:#d2a8ff;border-color:rgba(188,140,255,.35)}
+  .b.p1{background:rgba(248,81,73,.16);color:#ff7b72;border-color:rgba(248,81,73,.4)}
+  .b.p2{background:rgba(210,153,34,.16);color:#e3b341;border-color:rgba(210,153,34,.4)}
+  .b.p3{background:rgba(63,185,80,.16);color:#56d364;border-color:rgba(63,185,80,.4)}
+
+  /* cards */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:16px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .card .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:700}
+  .card .v{font-size:28px;font-weight:800;color:#fff;margin:4px 0 2px}
+  .card .d{font-size:12px;color:var(--muted)}
+  .card.accent{border-color:#2d4a78}
+  .card.bad{border-color:#5a2a2a}
+  .card.warn{border-color:#5a4a22}
+
+  .callout{border-radius:var(--radius);padding:14px 16px;margin:16px 0;border:1px solid var(--line);
+    background:var(--panel2)}
+  .callout.bad{border-left:4px solid var(--bad)}
+  .callout.warn{border-left:4px solid var(--warn)}
+  .callout.ok{border-left:4px solid var(--ok)}
+  .callout.info{border-left:4px solid var(--info)}
+  .callout b{color:#fff}
+  .callout .t{font-weight:700;margin-bottom:4px;color:#fff}
+
+  ul.tight{margin:8px 0;padding-left:20px}
+  ul.tight li{margin:3px 0}
+  .muted{color:var(--muted)}
+  .tag-legend{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 4px}
+  .arrow{color:var(--dim)}
+
+  details{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:0 14px;margin:10px 0}
+  details>summary{cursor:pointer;padding:12px 0;font-weight:600;color:#dbe3f0;list-style:none}
+  details>summary::-webkit-details-marker{display:none}
+  details>summary::before{content:"▸ ";color:var(--accent)}
+  details[open]>summary::before{content:"▾ "}
+  details .body{padding-bottom:14px}
+
+  .flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:14px 0;font-size:12px}
+  .flow .st{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 10px;white-space:nowrap}
+  .flow .st b{color:#fff;display:block;font-size:12.5px}
+  .flow .st span{color:var(--dim);font-size:10.5px}
+  .flow .sep{color:var(--dim)}
+
+  hr.soft{border:none;border-top:1px dashed var(--line);margin:26px 0}
+  .pill-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px}
+  footer.end{color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:18px;margin-top:50px}
+  @media(max-width:880px){.wrap{grid-template-columns:1fr}nav{display:none}main{padding:24px 18px 80px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav id="toc">
+  <h1>Automation Studio</h1>
+  <div class="sub">仕様 &amp; 統合計画 · 2026-06-07</div>
+  <a href="#summary">エグゼクティブサマリ</a>
+  <div class="grp">現状仕様</div>
+  <a href="#overview">1. システム概要</a>
+  <a href="#arch">2. アーキテクチャ</a>
+  <a href="#pipeline">3. パイプライン工程（確定）</a>
+  <a href="#features">4. 機能カタログ</a>
+  <a href="#api">5. API リファレンス</a>
+  <a href="#modules">6. モジュール責務</a>
+  <a href="#ui">7. UI 構成</a>
+  <a href="#config">8. 設定体系</a>
+  <a href="#agents">9. エージェント体系</a>
+  <div class="grp">統合・確定の検討</div>
+  <a href="#dup">10. 重複機能と統合案</a>
+  <a href="#common">11. 共通設定の導入</a>
+  <a href="#open">12. 仕様確定・未決事項</a>
+  <a href="#debt">13. 技術的負債・死蔵</a>
+  <a href="#action">14. アクションプラン</a>
+</nav>
+<main>
+<header class="hero" id="top">
+  <div class="eyebrow">SPECIFICATION &amp; CONSOLIDATION PLAN</div>
+  <h2>Automation Studio 仕様 &amp; 統合計画</h2>
+  <p class="lead">YouTube BGM チャンネル制作（SUNO 楽曲生成 → Premiere 配置 → 書き出し → YouTube 投稿）を単一 Web ダッシュボードで全自動化するツールの<b>現状仕様の確定版</b>と、<b>重複機能の削減・共通設定の導入</b>に向けた検討材料をまとめる。</p>
+  <div class="meta-row">
+    <span class="chip">対象: <b>app.py 13,205行 / 263 API</b>（→ D9 で 7,783行・4 router+app_core）</span>
+    <span class="chip">工程: <b>11（+plan=12）</b></span>
+    <span class="chip">Python モジュール: <b>35本</b></span>
+    <span class="chip">チャンネル: <b>orzz / SUKIMA ほか4</b></span>
+    <span class="chip">調査: <b>3エージェント並列コード監査</b></span>
+  </div>
+  <div class="callout info" style="margin-top:18px">
+    <div class="t">このドキュメントの位置づけ</div>
+    既存の <code>SPEC.md</code> は変更履歴が 6/3 で止まり、工程数（6）も実態（11）と乖離している。本書は <b>実コードを正</b>として現状を確定し直し、<a href="#dup">重複削減</a>・<a href="#common">共通設定</a>・<a href="#open">仕様確定</a>の意思決定に使うことを目的とする。「要確認」は静的解析のみで運用実態が未確認の項目。
+  </div>
+  <div class="callout" style="margin-top:14px;border-left:4px solid #5dd879;background:#14241a">
+    <div class="t" style="color:#5dd879">実装状況（2026-06-07 更新）</div>
+    本書の分析を起点とした改善（<a href="automation_studio_decisions.html">確定プラン D1-D14</a>）は大半が実装済み。本文中の <b>app.py 13,205行 / 263ルート</b> 等は<b>分析時点の基準値</b>であり、以下は実装で解消済み:
+    <b>D8</b>(Flow/MJ 死蔵 ~2,400行撤去)・<b>D6</b>(competitor を取得層へ分離、分析は app_benchmark_analyze へ)・<b>D9</b>(app.py を <b>4 domain router + app_core に分割、12,649→7,783行</b>。worker 基盤は runtime core として app.py 残置)・<b>D10/D11/D12/D13/D5</b> 他。未実施は <b>D1/D3</b>（無人稼働の開始＝要 GO）のみ。
+  </div>
+</header>
+
+<section id="summary">
+  <h3><span class="num">★</span>エグゼクティブサマリ</h3>
+  <p class="intro">コードベースは完成度が高く、LLM呼び出しの集約・パイプラインの工程定義・マルチチャンネル基盤はいずれも健全。一方で<b>「同じ目的の複数経路」「ドキュメントと実コードの乖離」「設定の3スコープ分散」</b>が技術的負債として残る。下表が意思決定すべき論点の全体像。</p>
+
+  <div class="cards">
+    <div class="card accent"><div class="k">パイプライン工程</div><div class="v">11</div><div class="d">+plan で12。資料の6/9/10は全て古い</div></div>
+    <div class="card"><div class="k">API ルート</div><div class="v">263</div><div class="d">うち UI 未参照のオーファン ~30件</div></div>
+    <div class="card bad"><div class="k">app.py</div><div class="v">13,205<span style="font-size:14px"> 行</span></div><div class="d">単一ファイルに263ルート同居 <span style="color:#5dd879">→ ✅D9: 7,783行・4 router+app_core に分割</span></div></div>
+    <div class="card warn"><div class="k">死蔵・孤立コード</div><div class="v">~2,400<span style="font-size:14px"> 行</span></div><div class="d">Flow関連2,100 + eval_loop 315</div></div>
+  </div>
+
+  <h4>今、判断すべきこと（3つの柱）</h4>
+  <table>
+    <thead><tr><th style="width:130px">柱</th><th>論点</th><th style="width:90px">優先度</th><th style="width:120px">性質</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="3"><b>仕様確定</b></td>
+        <td>工程数を <b>11（+plan）で確定</b>。SPEC.md(6工程)・AGENTS.md(9工程)・AGENTS_DESIGN(10工程)を実態に同期</td>
+        <td><span class="b p1">高</span></td><td>ドキュメント更新</td></tr>
+      <tr><td>skills 3ファイルが「Flow並列」「<code>suggest-with-analysis</code>」を案内（コードは codex 一本化・本流移行済）</td>
+        <td><span class="b p1">高</span></td><td>ドキュメント更新</td></tr>
+      <tr><td><b>orchestrator（無人稼働）の GO/NO-GO</b> — tick→APScheduler配線が宙ぶらりん</td>
+        <td><span class="b p2">中</span></td><td>意思決定（要GO）</td></tr>
+      <tr><td rowspan="3"><b>重複削減</b></td>
+        <td>サムネ/画像生成が <b>6経路</b>（正規2 + フォールバック/レガシー/孤立4）。Flow/MJ の現用実態を確認し2経路へ</td>
+        <td><span class="b p2">中</span></td><td>コード削減</td></tr>
+      <tr><td>JSON抽出ヘルパが <b>10ファイルに重複定義</b>（一部バイト単位で同一）→ 1関数へ</td>
+        <td><span class="b p1">高</span></td><td>低リスク共通化</td></tr>
+      <tr><td>死蔵コード <code>flow_automation.py</code>+<code>test_flow.py</code>（~2,100行）の撤去判断</td>
+        <td><span class="b p2">中</span></td><td>コード削減</td></tr>
+      <tr><td rowspan="3"><b>共通設定</b></td>
+        <td><code>master_settings.json</code> と <code>suno_config.json</code> の <b>二重管理</b>（suno/flow/meta ノブ）を一本化</td>
+        <td><span class="b p2">中</span></td><td>設定統合</td></tr>
+      <tr><td>LLM provider 選択が <b>4箇所分散</b>。per-ch <code>provider</code> は無視される<b>死にデータ</b>（表示と実体の乖離＝事故源）</td>
+        <td><span class="b p1">高</span></td><td>設定統合</td></tr>
+      <tr><td>app_id 解決が <b>レガシー orzz ディレクトリに隠れ依存</b>（消すと解決が壊れる）</td>
+        <td><span class="b p1">高</span></td><td>構造修正</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout ok">
+    <div class="t">健全と確認できた点（裏取り済み・触らなくてよい）</div>
+    <ul class="tight" style="margin-bottom:0">
+      <li><b>LLM呼び出しの集約は達成済み</b> — <code>run_llm</code>/<code>run_llm_vision</code> 定義は <code>app_llm_runner.py</code> の1箇所のみ。直接 <code>claude -p</code> の残党なし（16ファイルが import 経由で利用）</li>
+      <li><b>ベンチマーク4軸は二重取得なし</b> — <code>app_benchmark_*</code> は YouTube を再取得せず competitor のキャッシュを読むだけの健全な分業</li>
+      <li><b>パイプライン工程定義の4箇所</b>（STEPS/STEP_LABELS/STEP_FUNCS/RETRY_POLICY）はキー整合が取れている</li>
+      <li><b>マルチチャンネル基盤</b> — app_id 別ディレクトリで別 Google アカウント運用が成立、2台 Mac のホスト解決も実装済み</li>
+    </ul>
+  </div>
+</section>
+
+<section id="overview">
+  <h3><span class="num">1</span>システム概要</h3>
+  <p class="intro">AI 生成 BGM を編集・投稿する YouTube チャンネル運営を、3つの設計原則で最大限自動化する。</p>
+
+  <div class="cards">
+    <div class="card"><div class="k">原則 1</div><div class="v" style="font-size:18px">API を使わない</div><div class="d">Claude CLI を subprocess 起動、単一 JSON で往復。APIキー管理不要・認証ローカル完結</div></div>
+    <div class="card"><div class="k">原則 2</div><div class="v" style="font-size:18px">ファイル＝真実</div><div class="d">DB を持たず、動画フォルダ内の決まったファイル名の存在でステート管理</div></div>
+    <div class="card"><div class="k">原則 3</div><div class="v" style="font-size:18px">1動画＝1フォルダ</div><div class="d"><code>{num}_{prefix}_{YYMMDD}</code>。フォルダを見れば進捗が分かる</div></div>
+  </div>
+
+  <h4>技術スタック</h4>
+  <table>
+    <thead><tr><th style="width:160px">層</th><th>技術</th><th>備考</th></tr></thead>
+    <tbody>
+      <tr><td>バックエンド</td><td>FastAPI (Python 3.9.6) + Uvicorn</td><td class="muted">⚠ reload 無し。変更後は <code>bash Python/start.sh</code> 再起動が必須</td></tr>
+      <tr><td>フロントエンド</td><td>静的 HTML + Vanilla JS</td><td class="muted">ビルド不要。<code>index.html</code> 単一13,786行に全JS同梱</td></tr>
+      <tr><td>ブラウザ自動操作</td><td>Playwright (sync, persistent profile)</td><td class="muted">SUNO 楽曲生成・DL。Cloudflare Bot 対策で <code>APP_KEEP_BROWSER=1</code></td></tr>
+      <tr><td>動画編集</td><td>Adobe Premiere Pro + Pymiere (CDP) + JSX</td><td class="muted">JSX は JSX Launcher 拡張経由のみ（AppleScript 不可）</td></tr>
+      <tr><td>書き出し</td><td>Adobe Media Encoder（JSX キュー）</td><td class="muted">render queue で物理シリアライズ</td></tr>
+      <tr><td>画像生成</td><td>OpenAI gpt-image-2（codex CLI 経由）</td><td class="muted">Flow は撤去済み → codex 一本化</td></tr>
+      <tr><td>YouTube</td><td>YouTube Data API v3 + OAuth</td><td class="muted">quota: insert=1600 / update=50 unit</td></tr>
+      <tr><td>AI</td><td>Claude CLI（第一）→ Codex（フォールバック）</td><td class="muted"><code>app_llm_runner</code> に集約。Gemini/ChatGPT は補助</td></tr>
+      <tr><td>通知</td><td>Discord Webhook</td><td class="muted"><code>/api/notify/line</code> は旧互換 alias</td></tr>
+      <tr><td>常駐スケジューラ</td><td>APScheduler</td><td class="muted">cron/date トリガー。schedule_jobs.json で永続化</td></tr>
+      <tr><td>台帳・キュー</td><td>SQLite（runs.db / render queue）</td><td class="muted">実行履歴・レンダリング待ち行列</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="arch">
+  <h3><span class="num">2</span>アーキテクチャ</h3>
+  <p class="intro">全ての操作経路が <code>app.py</code>（localhost:8888）という<b>単一の頭脳</b>に集約する構造。WEB UI・Claude/CLI・スケジューラの3経路が同じ FastAPI を叩く。</p>
+
+  <div class="callout info">
+    <div class="t">単一頭脳構造（3経路集約）</div>
+    <div class="flow">
+      <span class="st"><b>WEB UI</b><span>index.html SPA</span></span>
+      <span class="sep">─┐</span>
+      <span class="st"><b>Claude / CLI</b><span>curl・python3 app_pipeline.py</span></span>
+      <span class="sep">─┼→</span>
+      <span class="st" style="border-color:#2d4a78"><b>app.py (:8888)</b><span>FastAPI · 263 route</span></span>
+      <span class="sep">←─</span>
+      <span class="st"><b>APScheduler</b><span>schedule_jobs.json</span></span>
+    </div>
+    <span class="muted">3経路とも同じ <code>app.py</code> に集約 → ここが単一障害点であり、分割の最重要候補。<span style="color:#5dd879">✅D9実装済: domain API は <code>routers/</code>（benchmark/images/premiere_photoshop/youtube）へ、共通土台は <code>app_core.py</code> へ分離。worker 基盤（export/render queue・APScheduler）は runtime core として app.py 残置。</span></span>
+  </div>
+
+  <h4>実行レイヤ</h4>
+  <table>
+    <thead><tr><th style="width:170px">レイヤ</th><th>担当</th><th>連携方法</th></tr></thead>
+    <tbody>
+      <tr><td><b>Web Dashboard</b></td><td>サイドバー7 + 隠れ4 + デッド1 = 12ページ</td><td>HTTP / WebSocket（ライブログ）</td></tr>
+      <tr><td><b>FastAPI (app.py)</b></td><td>API・タスク履歴・認証・APScheduler・全モジュール統括</td><td>—</td></tr>
+      <tr><td><b>子プロセス (Popen)</b></td><td>SUNO生成 / pipeline / codex画像 / YouTube</td><td>subprocess + sentinel exit code</td></tr>
+      <tr><td><b>外部アプリ IPC</b></td><td>Premiere(Pymiere/CDP) / Photoshop(AppleScript) / AME(JSX)</td><td>JSX Launcher 拡張・CEP パネル</td></tr>
+      <tr><td><b>ファイル IO</b></td><td><code>~/.config/{app_id}/</code> ・ 共有ドライブ ・ 動画フォルダ</td><td>JSON / SQLite / メディアファイル</td></tr>
+    </tbody>
+  </table>
+
+  <h4>sentinel exit code（全工程一貫の失敗種別）</h4>
+  <div class="pill-row">
+    <span class="b ok">0 成功</span>
+    <span class="b bad">1 失敗</span>
+    <span class="b warn">75 unattended_login</span>
+    <span class="b info">76 retryable</span>
+    <span class="b purple">77 quota_exhausted</span>
+    <span class="b gray">78 preflight_fail</span>
+  </div>
+  <p class="muted" style="margin-top:8px">retry/auto_resume/通知の分岐がこのコードで機械判定される。76=自動再試行、77=quota枯渇で停止、78=実行前ガード（Premiere未起動等）。</p>
+</section>
+
+<section id="pipeline">
+  <h3><span class="num">3</span>パイプライン工程（確定版）</h3>
+  <p class="intro"><b>実コード <code>app_pipeline.py</code> を正とした確定版。</b>従来資料の食い違い（SPEC=6・AGENTS=9・AGENTS_DESIGN=10）はいずれもドキュメントが古いだけ。正は次の11工程（先頭に <code>plan</code> を足すと12）。</p>
+
+  <div class="callout warn">
+    <div class="t">⚠ 工程追加時は4箇所を一貫更新</div>
+    <code>STEPS</code> / <code>STEP_LABELS</code> / <code>STEP_FUNCS</code> / <code>RETRY_POLICY</code> の4定数を必ず同時に更新する（CLAUDE.md の鉄則）。現状この4箇所のキー整合は取れている（監査確認済み）。
+  </div>
+
+  <div class="flow">
+    <span class="st" style="border-style:dashed"><b>plan</b><span>企画(任意)</span></span><span class="sep">→</span>
+    <span class="st"><b>1 suno</b><span>楽曲生成</span></span><span class="sep">→</span>
+    <span class="st"><b>2 rename</b><span>リネーム+後処理</span></span><span class="sep">→</span>
+    <span class="st"><b>3 bgimage</b><span>背景画像</span></span><span class="sep">→</span>
+    <span class="st"><b>4 psd_composite</b><span>サムネ合成</span></span><span class="sep">→</span>
+    <span class="st"><b>5 premiere</b><span>配置</span></span><span class="sep">→</span>
+    <span class="st"><b>6 export</b><span>書き出し</span></span><span class="sep">→</span>
+    <span class="st"><b>7 qa</b><span>ffprobe検証</span></span><span class="sep">→</span>
+    <span class="st"><b>8 meta</b><span>メタ生成</span></span><span class="sep">→</span>
+    <span class="st"><b>9 localization</b><span>多言語</span></span><span class="sep">→</span>
+    <span class="st"><b>10 thumbnail</b><span>AIサムネ(保険)</span></span><span class="sep">→</span>
+    <span class="st"><b>11 upload</b><span>投稿</span></span>
+  </div>
+
+  <table>
+    <thead><tr><th style="width:40px">#</th><th style="width:120px">工程キー</th><th style="width:90px">ドメイン</th><th>担当モジュール / 完了判定ファイル</th><th style="width:80px">retry</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td class="mono">plan</td><td><span class="b purple">analysis</span></td><td>企画案生成（任意・先頭挿入）。<code>step_plan</code> + <code>_score_plan_via_claude</code></td><td><span class="b info">あり</span></td></tr>
+      <tr><td>1</td><td class="mono">suno</td><td><span class="b ok">music</span></td><td><code>suno_auto_create.py</code> ／ <code>music/*.mp3</code> が1本以上</td><td class="muted">1回</td></tr>
+      <tr><td>2</td><td class="mono">rename</td><td><span class="b ok">music</span></td><td><code>app_process_tracks.py</code>（英題提案+ffmpeg -16LUFS）</td><td class="muted">1回</td></tr>
+      <tr><td>3</td><td class="mono">bgimage</td><td><span class="b info">image</span></td><td><code>codex_imagegen.py</code>（gpt-image-2）／ <code>vol{N}.png</code></td><td class="muted">1回</td></tr>
+      <tr><td>4</td><td class="mono">psd_composite</td><td><span class="b info">image</span></td><td><code>app_photoshop.py</code> ／ <code>vol{N}.jpg</code> + <code>サムネイル.jpg</code> <b>（サムネ本流）</b></td><td class="muted">1回</td></tr>
+      <tr><td>5</td><td class="mono">premiere</td><td><span class="b warn">video</span></td><td><code>app_premiere.py</code>（Pymiere+JSX）／ <code>subtitles_*.srt</code></td><td class="muted">1回</td></tr>
+      <tr><td>6</td><td class="mono">export</td><td><span class="b warn">video</span></td><td>AME（JSX キュー）／ <code>vol_vol*.mp4</code></td><td class="muted">1回</td></tr>
+      <tr><td>7</td><td class="mono">qa</td><td><span class="b purple">qa</span></td><td><code>step_qa</code>（ffprobe で解像度/尺/コーデック/音声検証）</td><td class="muted">1回</td></tr>
+      <tr><td>8</td><td class="mono">meta</td><td><span class="b ok">publish</span></td><td><code>claude_proposer.py</code> ／ <code>youtube_description.txt</code> + <code>youtube_tags.txt</code></td><td><span class="b info">あり</span></td></tr>
+      <tr><td>9</td><td class="mono">localization</td><td><span class="b ok">publish</span></td><td>メイン言語→他言語翻訳 ／ <code>youtube_localizations.json</code></td><td><span class="b info">あり</span></td></tr>
+      <tr><td>10</td><td class="mono">thumbnail</td><td><span class="b warn">image</span></td><td><code>step_thumbnail</code>（codex AIサムネ）／ <b>PSD未出力時のみ稼働＝保険</b></td><td class="muted">1回</td></tr>
+      <tr><td>11</td><td class="mono">upload</td><td><span class="b ok">publish</span></td><td><code>app_youtube.py</code> ／ <code>youtube_upload.json</code></td><td><span class="b info">あり</span></td></tr>
+    </tbody>
+  </table>
+  <p class="muted"><code>RETRY_POLICY</code> は plan / meta / localization / upload のみ明示（LLM・ネットワーク依存工程）。他は <code>DEFAULT_POLICY</code>（attempts=1）。<b>サムネは psd_composite（工程4）が本流、thumbnail（工程10）はその保険</b>という二段構えになっている点が重複の核（→<a href="#dup">§10</a>）。</p>
+</section>
+
+<section id="features">
+  <h3><span class="num">4</span>機能カタログ</h3>
+  <p class="intro">全44機能をドメイン別に整理。<b>区分</b>が重複削減・仕様確定の判断軸になる。</p>
+
+  <div class="tag-legend">
+    <span class="b ok">正規</span><span class="muted">本流・確定</span>
+    <span class="b warn">フォールバック</span><span class="muted">本流の保険</span>
+    <span class="b gray">レガシー</span><span class="muted">旧実装・手動温存</span>
+    <span class="b bad">孤立</span><span class="muted">未配線・要去就判断</span>
+    <span class="b info">試作</span><span class="muted">実装済・要GO</span>
+    <span class="b purple">基盤</span><span class="muted">補助インフラ</span>
+  </div>
+
+  <h4>🎵 music — 楽曲</h4>
+  <table>
+    <thead><tr><th style="width:200px">機能</th><th>役割</th><th style="width:230px">モジュール / API</th><th style="width:120px">区分</th></tr></thead>
+    <tbody>
+      <tr><td>SUNO 楽曲生成</td><td>Playwright で生成ループ（Claude CLI が曲メタ提案）</td><td class="mono">suno_auto_create.py · /api/suno/start</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>SUNO 一括DL</td><td>Workspace 全曲を fetch インターセプタで取得</td><td class="mono">/api/suno/download</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>楽曲リネーム+後処理</td><td>英題提案 + ffmpeg（無音トリム/8sフェード/-16LUFS）</td><td class="mono">app_process_tracks.py</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>楽曲プレイヤー/いいね/削除</td><td>再生 + <code>z</code>プレフィックスいいね + 物理削除</td><td class="mono">/api/videos/{n}/tracks</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>SUNO DL userscript</td><td>Tampermonkey 原典（Python版に刷新済）</td><td class="mono">*.user.js</td><td><span class="b gray">レガシー</span></td></tr>
+      <tr><td>Automator/Shell リネーム</td><td>旧クイックアクション版</td><td class="mono">rename_music.sh</td><td><span class="b gray">レガシー</span></td></tr>
+    </tbody>
+  </table>
+
+  <h4>🖼 image — 画像・サムネ <span class="muted" style="font-size:12px;font-weight:400">（最大の重複領域 → <a href="#dup">§10</a>）</span></h4>
+  <table>
+    <thead><tr><th style="width:200px">機能</th><th>役割</th><th style="width:230px">モジュール / API</th><th style="width:120px">区分</th></tr></thead>
+    <tbody>
+      <tr><td>背景画像生成 (bgimage)</td><td>ベンチ分析→動的プロンプト→gpt-image-2 で <code>vol{N}.png</code></td><td class="mono">codex_imagegen.py · /api/bgimage/run</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>PSD合成 (psd_composite)</td><td>背景をテンプレPSDに流し込み→2枚出し</td><td class="mono">app_photoshop.py · /api/photoshop/render-dual-thumbnail</td><td><span class="b ok">正規(本流)</span></td></tr>
+      <tr><td>シーンテキスト生成</td><td>AI画像をVision分析し英大文字コピー生成</td><td class="mono">scene_text_generator.py ＋ _generate_scene_copy_en</td><td><span class="b warn">正規(2系統)</span></td></tr>
+      <tr><td>シーンテキスト提案(ベンチ)</td><td>ライバルから tone/例/禁止語を提案</td><td class="mono">/api/scene-text/suggest-from-benchmark</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>AIサムネ生成 (thumbnail)</td><td>codex で候補生成→<code>thumbnail.png</code>。PSD未出力時のみ</td><td class="mono">app_pipeline.step_thumbnail</td><td><span class="b warn">フォールバック</span></td></tr>
+      <tr><td>チャンネル横断サムネ一括</td><td>Vision駆動でAIサムネ一括生成+採点</td><td class="mono">app_channel_thumbnail.py · /api/channel-thumbnail/start</td><td><span class="b warn">フォールバック</span></td></tr>
+      <tr><td>サムネ採点</td><td>Claude Vision 100点採点 + 自動承認</td><td class="mono">app_thumbnail_scoring.py</td><td><span class="b purple">基盤</span></td></tr>
+      <tr><td>サムネ状態管理</td><td><code>thumbnail_state.json</code> CRUD</td><td class="mono">app_thumbnail_state.py</td><td><span class="b purple">基盤</span></td></tr>
+      <tr><td><b>反復画像生成ループ</b></td><td>生成→ベンチ比較→合格まで再生成+弱点還流</td><td class="mono">app_image_eval_loop.py</td><td><span class="b bad">孤立(未配線)</span></td></tr>
+      <tr><td>Flow画像生成</td><td>Google Flow（Chromium自動）。pipeline不使用</td><td class="mono">flow_automation.py · /api/flow/*</td><td><span class="b gray">レガシー</span></td></tr>
+      <tr><td>Midjourney画像生成</td><td>AceDataCloud MJ API。channel-thumbnail の provider 選択肢</td><td class="mono">app_midjourney.py · /api/midjourney/*</td><td><span class="b gray">レガシー</span></td></tr>
+      <tr><td>シリーズ画像案提案</td><td>ベンチ駆動で次の画像N件提案→直列生成</td><td class="mono">app_series.py · /api/series/*</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>画像選択(JSX連動)</td><td>メイン/サブ選択→<code>selected_images.json</code></td><td class="mono">/api/videos/{n}/selected-images</td><td><span class="b ok">正規</span></td></tr>
+    </tbody>
+  </table>
+
+  <h4>🎬 video — 動画化</h4>
+  <table>
+    <thead><tr><th style="width:200px">機能</th><th>役割</th><th style="width:230px">モジュール / API</th><th style="width:120px">区分</th></tr></thead>
+    <tbody>
+      <tr><td>Premiere自動配置</td><td>Pymiere+JSX でTL構成+SRT+TC生成</td><td class="mono">app_premiere.py · /api/premiere/run</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>画像のみ後配置</td><td>既存画像削除→再配置</td><td class="mono">/api/premiere/place-images</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>書き出し(AME)</td><td>H.264 で Media Encoder キュー投入</td><td class="mono">app_export_ame.jsx</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>QAチェック</td><td>ffprobe で解像度/アスペクト/尺/コーデック検証</td><td class="mono">app_pipeline.step_qa</td><td><span class="b ok">正規</span></td></tr>
+    </tbody>
+  </table>
+
+  <h4>🚀 publish — メタ・公開</h4>
+  <table>
+    <thead><tr><th style="width:200px">機能</th><th>役割</th><th style="width:230px">モジュール / API</th><th style="width:120px">区分</th></tr></thead>
+    <tbody>
+      <tr><td>AIメタ提案 (/suggest)</td><td>タイトル×5/説明/タグを生成（ベンチ自動注入）</td><td class="mono">claude_proposer.py · /api/videos/{n}/suggest</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>AIメタ提案 (/suggest-with-analysis)</td><td>分析必須・1ショット返却（UIボタン廃止済）</td><td class="mono">/api/videos/{n}/suggest-with-analysis</td><td><span class="b bad">廃止候補</span></td></tr>
+      <tr><td>徹底パクリ進化</td><td>✓パクる/✗避ける/+進化 の3軸提案</td><td class="mono">/api/videos/{n}/suggest-imitate-evolve</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>一気通貫提案 (/suggest-all)</td><td>楽曲・Flow・メタを一括提案</td><td class="mono">/api/videos/{n}/suggest-all</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>多言語メタ生成</td><td>title/desc を翻訳→<code>youtube_localizations.json</code></td><td class="mono">/api/videos/{n}/generate-localizations</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>YouTubeアップロード</td><td>保存ファイルから組立て→Data API v3 投稿</td><td class="mono">app_youtube.py · /api/youtube/upload</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>スニペット更新</td><td>既存動画メタを videos.update（quota 32倍安）</td><td class="mono">/api/youtube/update-snippet/{n}</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>一括アップロード</td><td>複数vol順次 enqueue</td><td class="mono">/api/youtube/batch-upload</td><td><span class="b ok">正規</span></td></tr>
+    </tbody>
+  </table>
+
+  <h4>📊 analysis — 競合・ベンチマーク</h4>
+  <table>
+    <thead><tr><th style="width:200px">機能</th><th>役割</th><th style="width:230px">モジュール / API</th><th style="width:120px">区分</th></tr></thead>
+    <tbody>
+      <tr><td>競合分析（中核）</td><td>ライバルYT API or スプシ→Claude分析→提案</td><td class="mono">app_competitor.py · app_sheets.py</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>ベンチ軸別分析</td><td>concept/title/description/thumbnail の4軸個別</td><td class="mono">app_benchmark_*.py（competitorのキャッシュを読む）</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>ホットch/投稿時刻/タグ頻度</td><td>成長スコア/ヒートマップ/単語頻度集計</td><td class="mono">/api/analysis/{hot-channels,posting-times,tag-frequency}</td><td><span class="b ok">正規</span></td></tr>
+    </tbody>
+  </table>
+
+  <h4>⚙️ 基盤・運用</h4>
+  <table>
+    <thead><tr><th style="width:200px">機能</th><th>役割</th><th style="width:230px">モジュール / API</th><th style="width:120px">区分</th></tr></thead>
+    <tbody>
+      <tr><td>マスター設定</td><td>プロンプト/SUNO/Flow/メタ/スケジュール集約</td><td class="mono">/api/master</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>スケジュール自動実行</td><td>APScheduler 定期ジョブ</td><td class="mono">schedule_jobs.json · /api/schedule/*</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>リモートアクセス</td><td>Cloudflare Tunnel + 認証 + PWA</td><td class="mono">auth_token.txt + Tunnel</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td>Discord通知</td><td>Webhook 通知</td><td class="mono">/api/notify/discord（+/line alias）</td><td><span class="b ok">正規</span></td></tr>
+      <tr><td><b>オーケストレーター</b></td><td>StageWorker/QAWorker で自動投入（dry_run のみ配線）</td><td class="mono">app_orchestrator.py</td><td><span class="b info">試作(要GO)</span></td></tr>
+      <tr><td>Renderキュー</td><td>Premiere/AME の物理シリアル制約を吸収</td><td class="mono">app_render_queue.py (SQLite)</td><td><span class="b purple">基盤</span></td></tr>
+      <tr><td>Run台帳</td><td>実行履歴を SQLite 中央集約</td><td class="mono">app_run_ledger.py</td><td><span class="b purple">基盤</span></td></tr>
+      <tr><td>トークン健全性</td><td>ch別 token 期限点検→Discord警告</td><td class="mono">app_token_health.py</td><td><span class="b purple">基盤</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="api">
+  <h3><span class="num">5</span>API リファレンス</h3>
+  <p class="intro">単一 <code>app.py</code> に <b>263 エンドポイント</b>（<code>@app.get|post|put|delete</code> 実測）。UI から参照されるのは約158種、残り <b>~30件がオーファン</b>（UI 未参照の技術的負債）。</p>
+
+  <h4>ドメイン別分布</h4>
+  <table>
+    <thead><tr><th style="width:200px">ドメイン</th><th>代表パス</th><th style="width:80px">概数</th></tr></thead>
+    <tbody>
+      <tr><td>ベンチマーク/分析</td><td class="mono">/api/analysis/* · /api/benchmark/*（thumbnail/concept/title/description/fuse/profiles）</td><td><b>~55</b> <span class="muted">最大塊</span></td></tr>
+      <tr><td>動画フォルダ/メタ</td><td class="mono">/api/videos/{name}/*（detail/title/tags/concept/meta-status…）</td><td>~45</td></tr>
+      <tr><td>画像生成</td><td class="mono">/api/{flow,codex-imagegen,bgimage,midjourney,channel-thumbnail,thumbnail-state}/*</td><td>~35</td></tr>
+      <tr><td>YouTube</td><td class="mono">/api/youtube/* · /api/youtube-desc/*（upload/batch/schedule-publish/localizations）</td><td>~30</td></tr>
+      <tr><td>キュー/台帳/ヘルス</td><td class="mono">/api/{render-queue,export/queue,ame/queue,runs/ledger,token-health}/*</td><td>~30</td></tr>
+      <tr><td>Premiere/Photoshop</td><td class="mono">/api/premiere/* · /api/photoshop/* · /api/scene-text/*</td><td>~25</td></tr>
+      <tr><td>認証/通知/その他</td><td class="mono">/api/{auth,notify,credentials,setup}/* · / · /sw.js</td><td>~20</td></tr>
+      <tr><td>設定/master</td><td class="mono">/api/config* · /api/master* · /api/automation/config</td><td>~14</td></tr>
+      <tr><td>スケジュール/ワーカー</td><td class="mono">/api/schedule/* · /api/workers/* · /api/quota/status · /api/config/priority</td><td>~12</td></tr>
+      <tr><td>SUNO</td><td class="mono">/api/suno/*（start/download/status/suggest-prompt/generate-drafts）</td><td>~11</td></tr>
+      <tr><td>チャンネル</td><td class="mono">/api/channels*</td><td>~9</td></tr>
+      <tr><td>パイプライン/オーケストレーション</td><td class="mono">/api/pipeline/* · /api/orchestrate/* · /api/process/*</td><td>~6</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <div class="t">オーファン API ~30件（UI 未参照）</div>
+    旧 benchmark/config 系、photoshop 低レベル8件、finder/browse 3件、<code>/api/notify/line</code> 等。<b>orchestrator 系（workers/quota/priority）は API 完成・UI 未配線</b>で「半分つながった」状態。撤去 or UI 接続の判断が必要（→<a href="#open">§12</a>）。
+  </div>
+
+  <h4>主要 API（工程別の代表）</h4>
+  <table>
+    <thead><tr><th style="width:90px">メソッド</th><th style="width:300px">パス</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td><span class="b ok">POST</span></td><td class="mono">/api/videos/create</td><td><code>{publish_date}</code> → フォルダ + .prproj + .psd 自動生成</td></tr>
+      <tr><td><span class="b info">POST</span></td><td class="mono">/api/videos/{name}/run-pipeline</td><td><code>{steps:[...]}</code> で工程選択実行（サムネ = <code>[bgimage,psd_composite]</code>）</td></tr>
+      <tr><td><span class="b info">POST</span></td><td class="mono">/api/suno/start · /download</td><td>楽曲生成ループ / Workspace 一括DL</td></tr>
+      <tr><td><span class="b purple">POST</span></td><td class="mono">/api/videos/{name}/suggest</td><td><code>{mode: titles|description|tags}</code>（ベンチ自動注入）</td></tr>
+      <tr><td><span class="b info">POST</span></td><td class="mono">/api/bgimage/run</td><td>ベンチ参照で背景 <code>vol{N}.png</code> 生成</td></tr>
+      <tr><td><span class="b info">POST</span></td><td class="mono">/api/photoshop/render-dual-thumbnail</td><td>AI背景+シーンテキストで2枚出し</td></tr>
+      <tr><td><span class="b warn">POST</span></td><td class="mono">/api/premiere/run · /export</td><td>.prproj 自動オープン + JSX 配置 / 書き出し</td></tr>
+      <tr><td><span class="b ok">POST</span></td><td class="mono">/api/youtube/upload</td><td>保存ファイル自動読込 → 投稿（未指定はファイル既定）</td></tr>
+      <tr><td><span class="b gray">GET</span></td><td class="mono">/api/runs/ledger/* (7) · /api/token-health (2)</td><td>台帳・健全性（API完成・UIゼロ＝可視化を足すだけ）</td></tr>
+      <tr><td><span class="b gray">WS</span></td><td class="mono">/ws/logs/{task_id}</td><td>ライブログ（suno/premiere/youtube/setup）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="modules">
+  <h3><span class="num">6</span>モジュール責務マップ</h3>
+  <p class="intro">Python <b>35モジュール</b>（行数は <code>wc -l</code> 実測・<b>分析時点の基準値</b>）。上位は app.py（13,205 <span style="color:#5dd879">→D9で7,783＋app_core/routers に分割</span>）・pipeline（2,546）・suno（2,491）・competitor（2,014 <span style="color:#5dd879">→D6で1,308＋app_benchmark_analyze</span>）。<span style="color:#9aa3b2">※flow_automation は D8 で撤去済。</span></p>
+
+  <table>
+    <thead><tr><th style="width:210px">モジュール</th><th style="width:70px">行数</th><th>責務</th><th style="width:150px">主依存</th></tr></thead>
+    <tbody>
+      <tr><td class="mono"><b>app.py</b></td><td>13,205<br><span style="color:#5dd879;font-size:11px">→7,783 (D9)</span></td><td>FastAPI 本体。263ルート + タスク履歴 + 認証 + APScheduler + 全モジュール統括 <span style="color:#5dd879">／ ✅D9: domain API を <code>routers/</code> 4本 + 土台を <code>app_core.py</code> へ分離。残置は組み立て役 + middleware + startup hooks + worker 基盤（runtime core）</span></td><td class="muted">ほぼ全部</td></tr>
+      <tr><td class="mono">app_core.py</td><td>~1,432</td><td><span class="b" style="color:#5dd879">D9新設</span> 共通土台: パス/設定/config ローダ/共有可変グローバル/タスク・subprocess・youtube queue ヘルパ/共有定数</td><td class="muted">_app_config</td></tr>
+      <tr><td class="mono">routers/*.py</td><td>~3,500</td><td><span class="b" style="color:#5dd879">D9新設</span> ドメイン別 APIRouter: benchmark / images / premiere_photoshop / youtube</td><td class="muted">app_core</td></tr>
+      <tr><td class="mono">app_pipeline.py</td><td>2,546</td><td>11工程パイプライン本体（CLI）。stage retry/backoff、channels解決</td><td class="muted">llm_runner, competitor, benchmark_*</td></tr>
+      <tr><td class="mono">suno_auto_create.py</td><td>2,491</td><td>SUNO ブラウザ自動化（Playwright）で生成・DL</td><td class="muted">llm_runner, Playwright</td></tr>
+      <tr><td class="mono">app_competitor.py</td><td>2,014</td><td>競合/ベンチ分析の中核。YT API取得 + Claude分析 + Sheets取込 + プロファイル融合</td><td class="muted">llm_runner, sheets, channel_cache</td></tr>
+      <tr><td class="mono">flow_automation.py</td><td>1,303</td><td><span class="b gray">死蔵</span> Google Flow 画像生成。pipeline 不使用</td><td class="muted">llm_runner, Playwright</td></tr>
+      <tr><td class="mono">jsx_bundle.py</td><td>1,284</td><td>Premiere/Photoshop 向け JSX コード文字列バンドル</td><td class="muted">なし</td></tr>
+      <tr><td class="mono">app_sheets.py</td><td>1,040</td><td>Google スプシ CSV 取得・パース（dataclass群）</td><td class="muted">requests</td></tr>
+      <tr><td class="mono">app_photoshop.py</td><td>959</td><td>Photoshop JSX 実行・PSD合成・サムネ2枚出し</td><td class="muted">jsx_bundle, AppleScript</td></tr>
+      <tr><td class="mono">app_youtube.py</td><td>919</td><td>YouTube アップロード・quota管理・認証・localizationマージ</td><td class="muted">google-api-client</td></tr>
+      <tr><td class="mono">app_premiere.py</td><td>906</td><td>Premiere JSX 実行・TL配置・SRT生成</td><td class="muted">jsx_bundle, pymiere</td></tr>
+      <tr><td class="mono">claude_proposer.py</td><td>860</td><td>タイトル/説明/タグの LLM 提案（メタ生成）</td><td class="muted">llm_runner, benchmark_description</td></tr>
+      <tr><td class="mono">app_process_tracks.py</td><td>860</td><td>楽曲後処理（リネーム/dedup/ffmpeg/ID3）+ サムネからタイトル提案</td><td class="muted">llm_runner, ffmpeg</td></tr>
+      <tr><td class="mono">app_orchestrator.py</td><td>650</td><td><span class="b info">半接続</span> 自走ワーカー（Stage/QA/Plan）。dry_run 読み取りのみ</td><td class="muted">run_ledger</td></tr>
+      <tr><td class="mono">codex_imagegen.py</td><td>571</td><td>OpenAI 画像生成 CLI（gpt-image）。pipeline から subprocess</td><td class="muted">openai API</td></tr>
+      <tr><td class="mono">app_benchmark_thumbnail.py</td><td>519</td><td>ベンチ「サムネ」軸。Vision分析 + picked管理</td><td class="muted">llm_runner, benchmark_common</td></tr>
+      <tr><td class="mono">app_run_ledger.py</td><td>492</td><td>実行台帳（SQLite）。run start/finish/chain/stats</td><td class="muted">sqlite3</td></tr>
+      <tr><td class="mono">app_benchmark_description.py</td><td>459</td><td>ベンチ「投稿文(説明文)」軸</td><td class="muted">competitor, benchmark_common</td></tr>
+      <tr><td class="mono">app_render_queue.py</td><td>395</td><td>レンダリング待ち行列（SQLite）。enqueue/claim/throughput</td><td class="muted">sqlite3</td></tr>
+      <tr><td class="mono">app_benchmark_title.py</td><td>380</td><td>ベンチ「タイトル」軸</td><td class="muted">llm_runner, benchmark_common</td></tr>
+      <tr><td class="mono">app_benchmark_concept.py</td><td>377</td><td>ベンチ「コンセプト」軸</td><td class="muted">llm_runner, benchmark_common</td></tr>
+      <tr><td class="mono">app_image_eval_loop.py</td><td>315</td><td><span class="b bad">孤立</span> 自己評価付き反復画像生成。誰も import しない（CLIのみ）</td><td class="muted">thumbnail_scoring/state</td></tr>
+      <tr><td class="mono">app_image_prompt.py</td><td>307</td><td>画像生成プロンプト構築（gpt-image-2 / 5要素）</td><td class="muted">純ロジック</td></tr>
+      <tr><td class="mono">app_token_health.py</td><td>294</td><td>トークン健全性チェック（YT token / Playwright profile）</td><td class="muted">google-api, cookie</td></tr>
+      <tr><td class="mono">app_midjourney.py</td><td>294</td><td><span class="b gray">レガシー</span> Midjourney(AceDataCloud) 画像生成</td><td class="muted">requests</td></tr>
+      <tr><td class="mono">app_channel_thumbnail.py</td><td>278</td><td>チャンネル横断サムネのキーワードマッチ・コンセプトヒント</td><td class="muted">純ロジック</td></tr>
+      <tr><td class="mono">app_thumbnail_scoring.py</td><td>274</td><td>サムネ Vision スコアリング</td><td class="muted">llm_runner(vision)</td></tr>
+      <tr><td class="mono">app_thumbnail_state.py</td><td>270</td><td>サムネ承認状態の永続化</td><td class="muted">JSON I/O</td></tr>
+      <tr><td class="mono">_app_config.py</td><td>240</td><td>app_id/config_dir 解決・レガシー移行</td><td class="muted">なし</td></tr>
+      <tr><td class="mono">app_series.py</td><td>234</td><td>シリーズ画像案生成（ベンチ駆動）</td><td class="muted">llm_runner, channel_cache</td></tr>
+      <tr><td class="mono"><b>app_llm_runner.py</b></td><td>188</td><td><span class="b ok">集約済</span> LLM 呼び出しの単一窓口。Claude→Codex フォールバック</td><td class="muted">subprocess(claude/codex)</td></tr>
+      <tr><td class="mono">app_channel_cache.py</td><td>167</td><td>チャンネル別 scoped キャッシュ I/O（fingerprint照合）</td><td class="muted">JSON I/O</td></tr>
+      <tr><td class="mono">scene_text_generator.py</td><td>107</td><td>サムネ画像からシーンテキスト生成（Vision）</td><td class="muted">llm_runner(vision)</td></tr>
+      <tr><td class="mono">app_benchmark_common.py</td><td>65</td><td>ベンチ4軸の共有ヘルパ（fingerprint/plan/stamp）</td><td class="muted">なし</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">補足: <code>test_flow.py</code>(800・Flowテスト)・<code>save_auth.py</code>(39・cookie保存)。<b>app_llm_runner / app_channel_cache / app_benchmark_common は「共通化の成功例」</b>＝各所から import される単一窓口。逆に JSON抽出は同型関数が10ファイルに散在（→<a href="#dup">§10 C-2</a>）。</p>
+</section>
+
+<section id="ui">
+  <h3><span class="num">7</span>UI 構成</h3>
+  <p class="intro">単一 SPA（<code>index.html</code> 13,786行）。サイドバー <code>go(name)</code> が <code>&lt;div class="page" id="p-*"&gt;</code> を表示切替。<b>サイドバー7 + go()直叩きの隠れ4 + デッド1 = 計12ページ</b>。</p>
+
+  <table>
+    <thead><tr><th style="width:150px">画面</th><th style="width:110px" class="mono">id</th><th style="width:130px">到達</th><th>役割</th></tr></thead>
+    <tbody>
+      <tr><td>ダッシュボード</td><td class="mono">p-dashboard</td><td><span class="b ok">サイドバー</span></td><td>全体ハブ・KPI・1クリック駆動</td></tr>
+      <tr><td>コンテンツ</td><td class="mono">p-videos</td><td><span class="b ok">サイドバー</span></td><td>動画制作の中核（2ペイン+7段ステッパー+下部5タブ）<span class="b warn" style="margin-left:6px">過密</span></td></tr>
+      <tr><td>ベンチマーク</td><td class="mono">p-benchmark</td><td><span class="b ok">サイドバー</span></td><td>競合分析・取り込み</td></tr>
+      <tr><td>自動化</td><td class="mono">p-automation</td><td><span class="b ok">サイドバー</span></td><td>チャンネル別 自動実行既定値</td></tr>
+      <tr><td>書き出し</td><td class="mono">p-export</td><td><span class="b ok">サイドバー</span></td><td>AME 書き出し管理</td></tr>
+      <tr><td>基本設定</td><td class="mono">p-settings</td><td><span class="b ok">footer</span></td><td>一般設定（publish_mode 実装済）</td></tr>
+      <tr><td>詳細設定</td><td class="mono">p-master</td><td><span class="b ok">footer</span></td><td>高度設定・スケジュール・リモート</td></tr>
+      <tr><td>SUNO</td><td class="mono">p-suno</td><td><span class="b warn">go() 直叩き</span></td><td>SUNO 内部実行</td></tr>
+      <tr><td>Premiere</td><td class="mono">p-premiere</td><td><span class="b warn">go() 直叩き</span></td><td>Premiere 配置</td></tr>
+      <tr><td>Photoshop</td><td class="mono">p-photoshop</td><td><span class="b warn">go() 直叩き</span></td><td>PSD サムネ合成</td></tr>
+      <tr><td>YouTube</td><td class="mono">p-youtube</td><td><span class="b warn">go() 直叩き</span></td><td>説明文/アップロード</td></tr>
+      <tr><td>通知</td><td class="mono">p-notify</td><td><span class="b bad">到達経路なし</span></td><td>通知設定 — <b>実質デッドページ</b></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <div class="t">UI の主な課題（UI_PLAN 棚卸し）</div>
+    <ul class="tight" style="margin-bottom:0">
+      <li><b>ページ階層が二重で発見性が低い</b> — サイドバー7だが実体12。SUNO/Premiere/Photoshop/YouTube は隠れページ</li>
+      <li><b>状態可視化が3分裂</b> — runs/active・Render Queue・パイプライン modal に割れ、台帳APIがあるのに履歴ビューなし</li>
+      <li><b>設定が2画面に分断</b>（基本/詳細）で何がどちらか覚えにくい</li>
+      <li><b>機能ギャップ</b>: runs台帳・token health は「API完成・配線済み・UIだけゼロ」＝可視化を足すだけで即価値</li>
+    </ul>
+  </div>
+  <p class="muted">UI_PLAN は U1〜U6 を策定済み（台帳ビュー・ヘルス信号機・自走パネル・導線整理・ナビ統一・エラー強化）。<b>U3（自走パネルのONトグル）は orchestrator 統合 GO と同期</b>。</p>
+</section>
+
+<section id="config">
+  <h3><span class="num">8</span>設定体系</h3>
+  <p class="intro">設定は <b>3スコープ</b>に分散。中核は <code>_app_config.py</code> の <code>resolve_config_dir()</code>（<code>APP_CONFIG_DIR</code> &gt; <code>~/.config/{app_id}/</code>、app_id は dashboard_config から読む）。<b>実運用の設定の大半は per-channel の <code>.app_channel_config.json</code> に集約</b>しつつある。</p>
+
+  <table>
+    <thead><tr><th style="width:150px">スコープ</th><th style="width:280px">物理位置</th><th style="width:120px">共有性</th><th>代表</th></tr></thead>
+    <tbody>
+      <tr><td><b>グローバル(マシン別)</b></td><td class="mono">~/.config/{app_id}/</td><td>PC別・非共有</td><td>dashboard_config / suno_config(機密) / master_settings / master_prompts / youtube_token</td></tr>
+      <tr><td><b>per-channel(共有)</b></td><td class="mono">&lt;channel&gt;/.app_channel_config.json</td><td>共有D経由で2PC同期</td><td>persona / suno / youtube_upload_defaults / scene_text / psd_* / benchmark_*</td></tr>
+      <tr><td><b>共有(PC間)</b></td><td class="mono">&lt;共有D&gt;/DEV/_claude/config/</td><td>全PC共有</td><td>channels.json(レジストリ) / benchmark_config / benchmark_profiles / competitor_cache</td></tr>
+    </tbody>
+  </table>
+
+  <h4>主要設定ファイル</h4>
+  <table>
+    <thead><tr><th style="width:230px">ファイル</th><th style="width:110px">スコープ</th><th>主なキー</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">dashboard_config.json</td><td>グローバル</td><td><b>アクティブchのポインタ</b>。app_id / file_prefix / channel_folder / *_api_key</td></tr>
+      <tr><td class="mono">suno_config.json <span class="b bad">600</span></td><td>グローバル(機密)</td><td>provider / model / api_key / claude_cli / codex_cli / generation_mode</td></tr>
+      <tr><td class="mono">master_settings.json</td><td>グローバル</td><td>suno.{retry,workspace_pattern} / flow.{default_count} / meta.{title_count,fixed_tags}</td></tr>
+      <tr><td class="mono">master_prompts.json</td><td>グローバル+per-ch</td><td>8キー（title/description/tags/competitor_analysis/suno/flow/imitate_evolve）</td></tr>
+      <tr><td class="mono">channels.json</td><td><b>共有</b></td><td>canonical レジストリ。id/name/folder(絶対)/prefix/template_*/youtube_url/icon_cache</td></tr>
+      <tr><td class="mono">benchmark_config.json</td><td>共有+per-ch</td><td>pinned_names / filter.{top_n,min_subs} / spreadsheet_*_url</td></tr>
+      <tr><td class="mono">.app_channel_config.json</td><td><b>per-channel</b></td><td>persona / suno(prompt,cozy_mix,tag_defaults) / youtube_upload_defaults / scene_text_* / psd_* / publish_mode / autopilot_enabled <b>（最大の設定塊）</b></td></tr>
+    </tbody>
+  </table>
+
+  <h4>マルチチャンネル構造</h4>
+  <table>
+    <thead><tr><th style="width:160px">要素</th><th>仕組み</th></tr></thead>
+    <tbody>
+      <tr><td>レジストリ</td><td><code>config/channels.json</code>（共有）が canonical。4ch: <b>orzz / w_workspace / harbor_notes / sukima</b>。folder は絶対パス</td></tr>
+      <tr><td>切替</td><td><code>dashboard_config.channel_folder</code> がアクティブchポインタ。子プロセスへ <code>APP_CHANNEL_FOLDER/_ID/_NAME</code> で渡す</td></tr>
+      <tr><td>app_id 独立</td><td>SUKIMA は <code>app_id=sk</code>（<code>~/.config/sk/</code>）で orzz と別ディレクトリ → token/suno_config が分離 → <b>別 Google アカウント運用が成立</b></td></tr>
+      <tr><td>2台 Mac 対応</td><td>folder は絶対保存・読込時 <code>_resolve_to_current_host</code> で現マシン解決。<b>永続化は原文維持</b>（解決値を save しない=R1）</td></tr>
+      <tr><td>ベンチ scope</td><td><code>active_channel_context()</code> から key を作り <code>config/benchmark/channels/{key}/*.json</code> にスコープ保存</td></tr>
+    </tbody>
+  </table>
+  <div class="callout bad">
+    <div class="t">⚠ app_id 解決の隠れ依存（構造リスク）</div>
+    <code>~/.config/orzz/dashboard_config.json</code> が <code>app_id: "sk"</code> を指す（orzz はマイグレ元レガシー、実体は <code>~/.config/sk/</code>）。<code>_app_config</code> は<b>レガシー orzz の dashboard から app_id を読む</b>ため、orzz ディレクトリを消すと app_id 解決が <code>"orzz"</code> 既定に暗黙リセットされる。→ 改善案は<a href="#common">§11</a>。
+  </div>
+</section>
+
+<section id="agents">
+  <h3><span class="num">9</span>エージェント体系</h3>
+  <p class="intro">同じ<b>機能ドメイン分割</b>を軸に、開発支援（A）と運用自動化（B）の2系統で整備。</p>
+
+  <h4>(A) Claude Code 開発サブエージェント — <code>.claude/agents/</code> 7個（実在確認済）</h4>
+  <table>
+    <thead><tr><th style="width:120px">name</th><th style="width:90px">model</th><th>担当工程・ファイル</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">music</td><td>sonnet</td><td>suno, rename ／ suno_auto_create, app_process_tracks</td></tr>
+      <tr><td class="mono">image</td><td>sonnet</td><td>bgimage, psd_composite, thumbnail ／ photoshop, codex_imagegen, image_prompt</td></tr>
+      <tr><td class="mono">video</td><td><span class="b purple">opus</span></td><td>premiere, export ／ premiere, jsx_bundle, render_queue</td></tr>
+      <tr><td class="mono">publish</td><td>sonnet</td><td>meta, localization, upload ／ youtube, claude_proposer</td></tr>
+      <tr><td class="mono">analysis</td><td>sonnet</td><td>横断 ／ competitor, sheets, benchmark_*</td></tr>
+      <tr><td class="mono">pipeline</td><td><span class="b purple">opus</span></td><td>工程統括・台帳・retry・scheduler ／ pipeline, run_ledger, token_health</td></tr>
+      <tr><td class="mono">web</td><td><span class="b purple">opus</span></td><td>FastAPIルート・index.html・History API ／ app.py</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">CLAUDE.md では「全エージェント model=opus・tools 無制限」と記載 → AGENTS_DESIGN の model 案（video/pipeline/web=opus, 他=sonnet）と<b>食い違い</b>（→<a href="#open">§12</a> の要確認）。</p>
+
+  <h4>(B) アプリ内 運用自動化エージェント — <code>app_orchestrator.py</code></h4>
+  <p class="muted">台帳(runs.db)を<b>黒板(blackboard)</b>として、各ドメインワーカーが「自分が動かせる vol を台帳から拾う」データ駆動・自律モデル。Phase 0–5 のバックエンドは実装済み。</p>
+  <table>
+    <thead><tr><th style="width:160px">ワーカー</th><th>役割</th><th style="width:120px">状態</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">StageWorker（基底）</td><td><code>can_run</code>(依存解決) / <code>run</code>(既存step_*呼出) / <code>on_fail</code> / <code>record</code></td><td><span class="b info">試作</span></td></tr>
+      <tr><td class="mono">QAWorker</td><td>export完了を検知して自動QA（ffprobe）</td><td><span class="b info">試作</span></td></tr>
+      <tr><td class="mono">PlanWorker</td><td>analysis提案→次vol起案（空枠作成まで自動・SUNO実行は人間合意）</td><td><span class="b info">試作</span></td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <div class="t">⚠ 無人稼働の最後のスイッチが未投入（要GO）</div>
+    バックエンドは完成しているが、<b>app.py への orchestrator 統合（tick→APScheduler 登録）が未配線</b>。これを入れると無人稼働が始まる。安全方針は確定済み（自動投入は export〜thumbnail まで・upload は手動・連続3失敗でブレーカー・能動トリガーは「空枠作成まで」で SUNO 実行は人間合意）。GO 待ち。
+  </div>
+</section>
+
+<section id="dup">
+  <h3><span class="num">10</span>重複機能と統合案</h3>
+  <p class="intro">重複は3種類 — <b>① 経路の重複</b>（同じ目的を複数のUI/実装でやる）<b>② コードの重複</b>（同型関数の散在）<b>③ ドキュメント乖離</b>（実コードと案内文の不一致）。投資対効果順に並べる。</p>
+
+  <h4>① 経路の重複（機能を絞る判断）</h4>
+  <table>
+    <thead><tr><th style="width:50px">ID</th><th style="width:190px">重複領域</th><th>現状と統合案</th><th style="width:80px">優先度</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">B-1</td><td><b>サムネ/画像生成 6経路</b></td>
+        <td>正規 = <code>bgimage→psd_composite</code>（2段）。残り4は保険/レガシー/孤立: <code>thumbnail</code>(保険) / <code>channel-thumbnail</code>(フォールバック) / <code>flow_automation</code>(死蔵) / <code>midjourney</code>(provider選択肢) / <code>image_eval_loop</code>(孤立)。<br><b>統合案</b>: 本流は維持。<code>flow</code>/<code>midjourney</code> の現用実態を確認し、使わないなら撤去 → 保険を <code>thumbnail</code>+<code>channel-thumbnail</code> の2つに絞る</td>
+        <td><span class="b p2">中</span></td></tr>
+      <tr><td class="mono">B-3</td><td><code>/suggest</code> vs <code>/suggest-with-analysis</code></td>
+        <td><code>/suggest</code> が v3 で分析自動注入 → <code>/suggest-with-analysis</code> は UI ボタン廃止済・API 残存のみ。<br><b>統合案</b>: <b>廃止候補</b>。先に AGENTS.md 表 L173 の導線を <code>/suggest</code> に差し替えてから API 削除</td>
+        <td><span class="b p2">中</span></td></tr>
+      <tr><td class="mono">B-7</td><td><b>scene_text 生成 2系統</b></td>
+        <td><code>app_pipeline._generate_scene_copy_en</code>（PSD合成用）と <code>scene_text_generator.py</code>（API用）が同じ「Vision→英大文字コピー」を別実装（app.py のコメント自身が認める並行実装）。<br><b>統合案</b>: <code>scene_text_generator.py</code> に寄せて pipeline 側から呼ぶ。要確認: プロンプト/per-ch設定参照の差分</td>
+        <td><span class="b p2">中</span></td></tr>
+      <tr><td class="mono">B-4</td><td>app_competitor vs app_benchmark_*</td>
+        <td><b>重複ではなく世代差</b>。competitor が一枚岩の取得+分析、benchmark_* が軸分割した新実装（再取得せず competitor のキャッシュを読む）。下流(bgimage/thumbnail/meta)が両方のキャッシュを参照。<br><b>統合案</b>: <b>安易な削除は不可</b>。どちらを正規キャッシュにするか決めてから段階移管を精査</td>
+        <td><span class="b p3">低(要精査)</span></td></tr>
+      <tr><td class="mono">B-5/6</td><td>リネーム / SUNO DL の旧実装</td>
+        <td>リネームは Web版 <code>app_process_tracks.py</code> に一本化済（Automator/Shell版は旧）。SUNO DL も Python版に刷新済（Tampermonkey userscript は原典）。<br><b>統合案</b>: いずれも撤去 or 参照用残置。運用からは外れている</td>
+        <td><span class="b p3">低</span></td></tr>
+    </tbody>
+  </table>
+
+  <h4>② コードの重複（低リスク共通化）</h4>
+  <table>
+    <thead><tr><th style="width:50px">ID</th><th style="width:190px">重複</th><th>詳細と統合案</th><th style="width:80px">優先度</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">C-2</td><td><b>JSON抽出 10ファイル重複</b><br><span class="muted">最有効ターゲット</span></td>
+        <td>同一アルゴリズム（```json 剥がし→<code>{..}</code>抽出→末尾カンマ除去→<code>json.loads</code>）が10箇所:<br><code>_extract_json_object</code>×5（claude_proposer:44, app_series:43, app_competitor:314, app_process_tracks:141, suno_auto_create:379）+ <code>_extract_json</code>×5（benchmark_concept/title/description/thumbnail, thumbnail_scoring）。<b>claude_proposer:44 と app_series:43 はバイト単位で同一</b>。<br><b>統合案</b>: 1関数を <code>app_benchmark_common</code> か <code>app_llm_runner</code> に置いて全10箇所差し替え</td>
+        <td><span class="b p1">高</span></td></tr>
+      <tr><td class="mono">C-3</td><td>ベンチ <code>load_cache()</code> ラッパ4重複</td>
+        <td>4軸（benchmark_concept/title/description/thumbnail）が <code>load_cache()</code> 同型ラッパを各自再定義。実体は <code>app_channel_cache.load_scoped_cache</code> 共有なのにラッパだけ4重コピー。<br><b>統合案</b>: <code>app_benchmark_common</code> へ寄せる</td>
+        <td><span class="b p2">中</span></td></tr>
+    </tbody>
+  </table>
+
+  <h4>③ ドキュメント乖離（コードは正しい・案内文が古い）</h4>
+  <table>
+    <thead><tr><th style="width:50px">ID</th><th style="width:190px">乖離箇所</th><th>実態 vs 記述</th><th style="width:80px">優先度</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">B-2</td><td>Flow 並列の案内</td>
+        <td>コード/SPEC: <b>「Flow削除済み→codex一本化」</b>（<code>app_pipeline.py</code> 明記）。一方 <code>skills/app-thumbnail.md</code> / <code>app-workflow.md STEP8</code> / <code>AGENTS.md 表 L164</code> が今も「Flow/Codex並列」「<code>APP_THUMBNAIL_PROVIDERS=flow,codex</code>」と案内 → <b>3ファイル更新</b></td>
+        <td><span class="b p1">高</span></td></tr>
+      <tr><td class="mono">工程数</td><td>SPEC/AGENTS/DESIGN の工程数</td>
+        <td>実態 <b>11工程</b>。SPEC.md=6・AGENTS.md=9・AGENTS_DESIGN=10 が全て古い → 3ファイル同期</td>
+        <td><span class="b p1">高</span></td></tr>
+      <tr><td class="mono">B-8</td><td><code>claude -p</code> 直叩き前提の記述</td>
+        <td>実態は <code>app_llm_runner.run_llm</code> 集約済。<code>claude_proposer.py:4</code> docstring・<code>app-ai-propose.md</code> が「<code>claude -p</code> を subprocess」と stale → 記述修正</td>
+        <td><span class="b p2">中</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout ok">
+    <div class="t">最優先の3手（安全・確実・即効）</div>
+    <ol class="tight" style="margin-bottom:0">
+      <li><b>JSON抽出 10→1</b>（C-2）— 純粋な共通化、振る舞い不変。最も安全</li>
+      <li><b>ドキュメント同期</b>（工程数11・Flow撤去・suggest-with-analysis）— コードは正しいので記述を直すだけ</li>
+      <li><b>Flow死蔵コード撤去</b>（flow_automation 1,303 + test_flow 800 = ~2,100行）— 現用実態の確認後</li>
+    </ol>
+  </div>
+</section>
+
+<section id="common">
+  <h3><span class="num">11</span>共通設定の導入</h3>
+  <p class="intro">設定の3スコープ（<a href="#config">§8</a>）は方向性として正しいが、<b>同概念が複数ファイル/複数キーに二重化</b>している。まず「どの設定をどのスコープに置くか」のルールを確定し、それに沿って二重管理を解消する。</p>
+
+  <h4>提案: スコープ判定ルール（確定すべき設計原則）</h4>
+  <table>
+    <thead><tr><th style="width:200px">スコープ</th><th>置くもの</th><th>置かないもの</th></tr></thead>
+    <tbody>
+      <tr><td><b>グローバル(マシン別機密)</b><br><code>~/.config/{app_id}/</code></td><td>OAuth token / API キー / CLI パス（claude_cli, codex_cli）/ host bind</td><td>チャンネル固有のノブ・プロンプト</td></tr>
+      <tr><td><b>per-channel(共有)</b><br><code>.app_channel_config.json</code></td><td>persona / prompt / psd_* / scene_text_* / benchmark対象 / publish_mode / SUNO ノブ / メタ目標値</td><td>機密・マシン別パス</td></tr>
+      <tr><td><b>共有レジストリ</b><br><code>config/</code></td><td>channels.json / ベンチキャッシュ・プロファイル</td><td>マシン別の解決済みパス</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">この原則を当てると、<code>master_settings.json</code> / <code>master_prompts.json</code>(グローバル版) / <code>prompts.json</code> / <code>youtube_upload_defaults.json</code>(グローバル版) は<b>「per-channel へ移行完了後は撤去」</b>に位置づけられる。</p>
+
+  <h4>二重管理・分散の解消（優先度順）</h4>
+  <table>
+    <thead><tr><th style="width:50px">ID</th><th style="width:200px">問題</th><th>共通化案</th><th style="width:80px">優先度</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">B-2</td><td><b>LLM provider が4箇所分散</b><br>+ per-ch <code>provider</code> は死にデータ</td>
+        <td>選択入口: ① suno_config（中核）② per-ch suno.provider（<b>get_suno_config が無視＝死にデータ</b>）③ env <code>APP_SUNO_PROVIDER</code> ④ <code>DRAFT_PROVIDER</code>。<br><b>案</b>: <code>app_llm_runner</code> を唯一の真実源と明文化。per-ch <code>provider/model</code> は「効かせる or UI から外す」を決める（<b>表示と実体の乖離が事故源</b>）</td>
+        <td><span class="b p1">高</span></td></tr>
+      <tr><td class="mono">—</td><td><b>app_id レガシー依存</b></td>
+        <td>orzz dashboard が app_id=sk を指す現状を、<code>APP_ID</code> 環境変数 or 新ディレクトリ側 dashboard を正にして明示化。orzz 削除で "orzz" 既定に暗黙リセットされる隠れ依存を断つ</td>
+        <td><span class="b p1">高</span></td></tr>
+      <tr><td class="mono">B-1</td><td><code>master_settings</code> と <code>suno_config</code> の二重</td>
+        <td>suno/flow/meta ノブが別ファイルに分散（<code>dl_wait_sec</code> は両方にありどちらが勝つか非自明）。<br><b>案</b>: suno→suno_config、meta/flow→per-ch か単一 <code>pipeline_defaults</code> へ集約し <code>master_settings</code> 廃止</td>
+        <td><span class="b p2">中</span></td></tr>
+      <tr><td class="mono">B-3</td><td>ホスト依存の絶対パス</td>
+        <td><code>channel_folder</code> は host 解決済だが per-ch <code>export_path</code>(<code>/Volumes/SSD/…</code>)・<code>reference_image*</code> は解決対象外 → <b>SSD未接続マシンで壊れる</b>。<br><b>案</b>: これらも <code>_resolve_to_current_host</code> パイプに通す or 論理名化</td>
+        <td><span class="b p2">中</span></td></tr>
+      <tr><td class="mono">B-4</td><td><code>default_language</code> が1キー2役 + 既定不一致</td>
+        <td>builtin localization 既定 <code>["ja",…]</code> が orzz(en起点)と不一致。レガシー <code>youtube_upload_defaults.json</code> が中間層に混入。<br><b>案</b>: builtin を実態に合わせ、レガシー中間層を撤去して builtin→per-ch の2段に簡素化</td>
+        <td><span class="b p2">中</span></td></tr>
+      <tr><td class="mono">B-5/7</td><td>ベンチ設定のキー名揺れ</td>
+        <td><code>pinned_names</code>↔<code>benchmark_pinned_names</code>、<code>filter</code>↔<code>benchmark_filter</code> の命名違いで変換コードが必要。spreadsheet URL が3箇所に書ける。<br><b>案</b>: キー名統一 + URL を per-ch 一本化 → 3ソースマージを単純化</td>
+        <td><span class="b p3">低</span></td></tr>
+      <tr><td class="mono">C</td><td>環境変数 <code>APP_*</code>/<code>ORZZ_*</code> 二重接頭辞</td>
+        <td><code>_app_config.env()</code> で吸収済だが生 <code>os.environ.get</code> 直読が多数残り ORZZ フォールバックが効かない箇所あり。<br><b>案</b>: <code>env()</code> 経由に統一、<code>ORZZ_*</code> 系は段階廃止</td>
+        <td><span class="b p3">低</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <div class="t">付随して検出したゴミ・残留（清掃候補）</div>
+    <ul class="tight" style="margin-bottom:0">
+      <li><code>config/</code> に <code>channels.json.bak.*</code> / <code>benchmark/channels 2/</code>(FUSE二重化) / <code>youtube_token.json.bak.*</code> が堆積</li>
+      <li><code>suno_config.json</code> の <code>api_key:"AIza…"</code>(Gemini鍵) は provider=codex の現状で<b>未使用の死にキー</b>の可能性</li>
+      <li>orzz per-ch に <code>suno.prompt:"test prompt change"</code> のテスト値が残留</li>
+    </ul>
+  </div>
+</section>
+
+<!-- SECTIONS -->
+
+<footer class="end">
+  Automation Studio 仕様 &amp; 統合計画 — 2026-06-07 生成 · 出典: 実コード監査（機能カタログ / モジュール責務 / 設定構成の3並列調査）+ SPEC.md / AGENTS.md / AGENTS_DESIGN.md / UI_PLAN.md / IMAGE_EVAL_LOOP_PLAN.md。
+  数値は <code>wc -l</code> ・<code>grep</code> 実測（FUSE 上のバイト数は不正確なため行数基準）。
+</footer>
+</main>
+</div>
+<script>
+  // scrollspy
+  const links=[...document.querySelectorAll('#toc a')];
+  const map=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
+  const obs=new IntersectionObserver((es)=>{
+    es.forEach(e=>{if(e.isIntersecting){
+      links.forEach(l=>l.classList.remove('active'));
+      const a=map.get(e.target.id); if(a)a.classList.add('active');
+    }});
+  },{rootMargin:'-10% 0px -80% 0px'});
+  document.querySelectorAll('section[id]').forEach(s=>obs.observe(s));
+</script>
+</body>
+</html>
