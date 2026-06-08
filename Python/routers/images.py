@@ -388,15 +388,47 @@ def api_bgimage_stop():
 
 # ─── step_bgimage: 参照画像フォルダ（per-channel UI 連携） ───
 _REF_IMG_EXTS = ("*.jpg", "*.jpeg", "*.png", "*.webp")
+# 各チャンネルルート直下の既定参照フォルダ名（app_pipeline.DEFAULT_REFERENCE_DIRNAME と一致）
+DEFAULT_REFERENCE_DIRNAME = "ベンチマーク"
+
+
+def _resolve_reference_dir_portable(raw: str) -> Optional[Path]:
+    """reference_image_dir(raw) を「現マシン」へ移植解決して存在する Path を返す（無ければ None）。
+
+    Google Drive のパスはマシン毎にユーザー名が違う(/Users/abe_kota… と /Users/asobimori…)
+    ので、保存値をそのまま使うと別マシンで死ぬ。以下の順で現マシンへ解決する:
+      - 空なら各チャンネルルート/「ベンチマーク」を既定採用
+      - 別マシンの絶対パス → 共有ドライブ marker で現マシン root へ付け替え(_resolve_to_current_host)
+      - 相対パス → アクティブチャンネルフォルダ配下
+    app_pipeline.step_bgimage の _resolve_ref_path と同じ規約（両 Mac でどちらも生きる）。"""
+    cfg = get_dashboard_config()
+    ch_raw = (cfg.get("channel_folder") or "").strip()
+    ch_dir = Path(_resolve_to_current_host(ch_raw)).expanduser() if ch_raw else None
+    raw = (raw or "").strip()
+    candidates: list[Path] = []
+    if not raw:
+        if ch_dir:
+            candidates.append(ch_dir / DEFAULT_REFERENCE_DIRNAME)
+    else:
+        candidates.append(Path(raw).expanduser())
+        swapped = _resolve_to_current_host(raw)
+        if swapped and swapped != raw:
+            candidates.append(Path(swapped).expanduser())
+        if ch_dir and not Path(raw).is_absolute():
+            candidates.append(ch_dir / raw)
+    for c in candidates:
+        try:
+            if c.is_dir():
+                return c
+        except Exception:
+            continue
+    return None
 
 
 def _bgimage_reference_dir() -> Optional[Path]:
-    """アクティブチャンネルの reference_image_dir を Path で返す。未設定 / 不在なら None。"""
-    raw = (get_dashboard_config().get("reference_image_dir") or "").strip()
-    if not raw:
-        return None
-    p = Path(raw).expanduser()
-    return p if p.is_dir() else None
+    """アクティブチャンネルの reference_image_dir を現マシンへ移植解決して返す。未設定時は
+    各チャンネルルート/「ベンチマーク」を既定採用。存在しなければ None。"""
+    return _resolve_reference_dir_portable(get_dashboard_config().get("reference_image_dir") or "")
 
 
 def _bgimage_reference_files(p: Path) -> list[Path]:
@@ -410,22 +442,28 @@ def _bgimage_reference_files(p: Path) -> list[Path]:
 
 @router.get("/api/bgimage/reference-dir/list")
 def api_bgimage_reference_dir_list(limit: int = 6):
-    """アクティブチャンネルの reference_image_dir 内の画像数とサムネ先頭 N 件のファイル名を返す。"""
+    """アクティブチャンネルの reference_image_dir 内の画像数とサムネ先頭 N 件のファイル名を返す。
+    未設定でも各チャンネルルート/「ベンチマーク」を既定採用し、2台 Mac のユーザー名差を吸収して解決する。"""
     raw = (get_dashboard_config().get("reference_image_dir") or "").strip()
-    if not raw:
-        return {"ok": True, "configured": False, "exists": False, "count": 0, "files": [], "path": ""}
-    p = Path(raw).expanduser()
-    if not p.is_dir():
-        return {"ok": True, "configured": True, "exists": False, "count": 0, "files": [], "path": str(p),
+    configured = bool(raw)
+    p = _resolve_reference_dir_portable(raw)
+    if not p:
+        # 解決できなかった（既定ベンチマークも不在）。期待パスを参考表示。
+        cfg = get_dashboard_config()
+        ch = (cfg.get("channel_folder") or "").strip()
+        expected = str(Path(_resolve_to_current_host(ch)) / DEFAULT_REFERENCE_DIRNAME) if ch else (raw or "")
+        return {"ok": True, "configured": configured, "exists": False, "count": 0, "files": [],
+                "path": expected, "default_used": not configured,
                 "error": "ディレクトリが存在しません"}
     files = _bgimage_reference_files(p)
     return {
         "ok": True,
-        "configured": True,
+        "configured": configured,
         "exists": True,
         "count": len(files),
         "files": [f.name for f in files[:max(1, min(int(limit or 6), 48))]],
         "path": str(p),
+        "default_used": not configured,
     }
 
 
@@ -460,26 +498,28 @@ def api_bgimage_reference_dir_dry_run(count: int = 3):
     n = max(1, min(int(count or 3), 12))
     cfg = get_dashboard_config()
     raw = (cfg.get("reference_image_dir") or "").strip()
-    result = {"ok": True, "source": None, "selected": [], "pool_size": 0, "path": "", "note": ""}
-    if raw:
-        p = Path(raw).expanduser()
-        if p.is_dir():
-            pool = _bgimage_reference_files(p)
-            result["path"] = str(p)
-            result["pool_size"] = len(pool)
-            if pool:
-                pool_shuffled = pool[:]
-                _r.shuffle(pool_shuffled)
-                picked = pool_shuffled[:n]
-                result["source"] = "reference_image_dir"
-                result["selected"] = [{"name": x.name, "path": str(x)} for x in picked]
-                result["note"] = f"reference_image_dir から {len(picked)}/{n} 枚（プール {len(pool)} 枚）"
-                return result
-            result["note"] = f"reference_image_dir に画像が 0 枚 — フォールバックします: {p}"
-        else:
-            result["note"] = f"reference_image_dir が存在しません — フォールバックします: {p}"
+    # 未設定でも各チャンネルルート/「ベンチマーク」を既定採用＋現マシンへ移植解決
+    p = _resolve_reference_dir_portable(raw)
+    src_label = "reference_image_dir" if raw else f"既定（チャンネルルート/{DEFAULT_REFERENCE_DIRNAME}）"
+    result = {"ok": True, "source": None, "selected": [], "pool_size": 0, "path": "", "note": "",
+              "default_used": not bool(raw)}
+    if p and p.is_dir():
+        pool = _bgimage_reference_files(p)
+        result["path"] = str(p)
+        result["pool_size"] = len(pool)
+        if pool:
+            pool_shuffled = pool[:]
+            _r.shuffle(pool_shuffled)
+            picked = pool_shuffled[:n]
+            result["source"] = "reference_image_dir"
+            result["selected"] = [{"name": x.name, "path": str(x)} for x in picked]
+            result["note"] = f"{src_label} から {len(picked)}/{n} 枚（プール {len(pool)} 枚）: {p}"
+            return result
+        result["note"] = f"{src_label} に画像が 0 枚 — フォールバックします: {p}"
     else:
-        result["note"] = "reference_image_dir 未設定 — Picked → rival thumbs にフォールバックします"
+        ch = (cfg.get("channel_folder") or "").strip()
+        expected = str(Path(_resolve_to_current_host(ch)) / DEFAULT_REFERENCE_DIRNAME) if ch else (raw or "")
+        result["note"] = f"{src_label} が存在しません — フォールバックします: {expected}"
     # フォールバック先の概要だけ返す（dry-run なので実選択はしない）
     fallback = {"picked_available": False, "rival_pool_size": 0}
     try:

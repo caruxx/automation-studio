@@ -2843,35 +2843,41 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           </div>
         </div>
       </div>
-      <!-- 背景画像生成（step_bgimage）: 参照画像フォルダ（チャンネル別） -->
+      <!-- 背景画像生成 / サムネ自動生成: 参照画像フォルダ（チャンネル別・フォルダ指定方式） -->
       <div class="card" data-cfg-group="channel" data-cfg-card="reference-image-dir">
         <div class="card-header" style="margin-bottom:var(--space-3)">
-          <div class="section-heading"><span class="product-icon sm" style="background:linear-gradient(135deg,#7c3aed,#db2777);color:#fff">🖼</span><div class="sec-title">参照画像フォルダ（背景画像生成）</div></div>
-          <div class="fh" style="margin:0">step_bgimage が codex_imagegen に渡す参照画像の元フォルダ（チャンネル別保存）</div>
+          <div class="section-heading"><span class="product-icon sm" style="background:linear-gradient(135deg,#7c3aed,#db2777);color:#fff">🖼</span><div class="sec-title">参照画像フォルダ（背景画像・サムネ生成）</div></div>
+          <div class="fh" style="margin:0">背景画像生成（step_bgimage）とサムネ自動生成（step_thumbnail）が codex に渡す参照画像の元フォルダ。<strong>フォルダ指定方式</strong>（チャンネル別保存）。</div>
         </div>
         <div class="ff">
-          <label class="fl">固定参照画像パス</label>
-          <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-2)">
-            <input type="text" class="fi" id="cfgReferenceImage" style="flex:1;min-width:240px" placeholder="例: /Users/.../waterfront-reference.jpeg" autocomplete="off">
-            <button class="btn btn-ghost btn-sm" onclick="openF(document.getElementById('cfgReferenceImage').value)" title="Finder で開く">開く</button>
-          </div>
-          <div class="fh" style="margin-bottom:var(--space-3)">
-            指定時はこの 1 枚を最優先の参照画像として使います。SUKIMA は水辺の歩道・橋・俯瞰の代表画像を入れておくと安定します。
-          </div>
-          <label class="fl">フォルダパス</label>
+          <label class="fl">参照フォルダ（チャンネルルート直下）</label>
           <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
-            <input type="text" class="fi" id="cfgReferenceImageDir" style="flex:1;min-width:240px" placeholder="例: /Users/asobimori/.../references" autocomplete="off">
+            <input type="text" class="fi" id="cfgReferenceImageDir" style="flex:1;min-width:240px" placeholder="ベンチマーク" autocomplete="off">
             <button class="btn btn-secondary btn-sm" onclick="pickFolderInto('cfgReferenceImageDir')" title="フォルダを参照して選択">参照</button>
             <button class="btn btn-ghost btn-sm" onclick="openF(document.getElementById('cfgReferenceImageDir').value)" title="Finder で開く">開く</button>
             <button class="btn btn-ghost btn-sm" onclick="loadReferenceImageDirPreview()" title="サムネ枚数とプレビューを更新">更新</button>
           </div>
           <div class="fh">
-            指定フォルダから <code>*.jpg / *.jpeg / *.png / *.webp</code> を 3 枚（既定）ランダム選択して、背景画像生成（step_bgimage）の参照画像にします。<br>
-            <strong>空欄なら</strong> Picked（サムネ分析で✓選別済）→ rival_channels のサムネプールの順にフォールバックします。
+            既定は各チャンネルルート直下の <code>ベンチマーク</code> フォルダです（空欄でもこのフォルダを使用）。<br>
+            このフォルダ内の <code>*.jpg / *.jpeg / *.png / *.webp</code> から <strong>3 枚（既定）をランダム選択</strong>して、背景画像・サムネ自動生成の参照画像にします。<br>
+            💡 <strong>2台の Mac 対応</strong>: <code>ベンチマーク</code> のような相対指定を推奨（パスにユーザー名が入らず、どちらの PC でも参照が生きます）。フルパス指定でも「共有ドライブ」以下を現在の PC に自動で読み替えます。<br>
+            フォルダが存在しない/0枚の時のみ Picked（サムネ分析で✓選別済）→ rival_channels サムネプールの順にフォールバックします。
           </div>
           <div id="cfgReferenceImageDirMeta" class="fh" style="margin-top:var(--space-2);font-size:var(--text-xs);color:var(--text-tertiary)"></div>
           <div id="cfgReferenceImageDirThumbs" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:var(--space-2);margin-top:var(--space-2)"></div>
         </div>
+        <details style="margin-top:var(--space-3)">
+          <summary style="cursor:pointer;font-size:var(--text-sm);color:var(--text-secondary)">固定参照画像（任意・1枚に寄せたい時のみ）</summary>
+          <div class="ff" style="margin-top:var(--space-2)">
+            <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-2)">
+              <input type="text" class="fi" id="cfgReferenceImage" style="flex:1;min-width:240px" placeholder="例: ベンチマーク/representative.jpeg（任意）" autocomplete="off">
+              <button class="btn btn-ghost btn-sm" onclick="openF(document.getElementById('cfgReferenceImage').value)" title="Finder で開く">開く</button>
+            </div>
+            <div class="fh">
+              指定すると、この 1 枚だけを最優先の参照画像として使います（フォルダ3枚選抜より優先）。通常は<strong>空欄のまま</strong>（フォルダ方式）を推奨。相対指定（<code>ベンチマーク/xxx.jpg</code>）にすると両 Mac で生きます。
+            </div>
+          </div>
+        </details>
         <div class="btns" style="margin-top:var(--space-2)">
           <button class="btn btn-primary btn-sm" onclick="saveSettings()">保存</button>
           <button class="btn btn-secondary btn-sm" onclick="testReferenceImageDirDryRun()" title="このチャンネルの設定でどの 3 枚が選ばれるか確認（ファイルは生成しません）">テスト実行（dry-run）</button>

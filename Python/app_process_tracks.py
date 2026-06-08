@@ -410,8 +410,11 @@ def _load_tag_draft(folder: Path, draft_path: Path | None):
     candidates = []
     if draft_path:
         candidates.append(Path(draft_path))
-    # フォルダ直下の draft 候補（_draft.json で終わるもの優先）
-    candidates += sorted(folder.glob("*_draft.json")) + sorted(folder.glob("draft.json"))
+    # フォルダ直下の draft 候補（_draft.json で終わるもの優先）。
+    # 複数形 *_drafts.json（generate_mixed_drafts の suno_mix_drafts.json 等）も拾う。
+    candidates += (sorted(folder.glob("*_draft.json"))
+                   + sorted(folder.glob("*_drafts.json"))
+                   + sorted(folder.glob("draft.json")))
     data = None
     used = None
     for c in candidates:
@@ -422,6 +425,9 @@ def _load_tag_draft(folder: Path, draft_path: Path | None):
                 break
         except Exception:
             continue
+    # {"songs":[...]} 形式（generate_mixed_drafts 保存形）も list に展開して受理する。
+    if isinstance(data, dict) and isinstance(data.get("songs"), list):
+        data = data["songs"]
     kind_map, title_map = {}, {}
     if isinstance(data, list):
         for s in data:

@@ -855,6 +855,137 @@ def _enqueue_and_wait(stage: str, vol: int, folder: Path) -> bool:
         return None
 
 
+# 各チャンネルルート直下の既定参照フォルダ名（reference_image_dir 未設定時のフォールバック）。
+# ⚠ ここを起点に「全チャンネル＝チャンネルルート/ベンチマーク」を規約化している。
+DEFAULT_REFERENCE_DIRNAME = "ベンチマーク"
+_SHARED_MARKER_JP = "共有ドライブ"
+
+
+def _resolve_ref_path(raw, channel_dir: Path) -> Path:
+    """参照画像のファイル/フォルダパスを「現マシン」へ移植解決する（2台 Mac 併用対応）。
+
+    Google Drive のパスはマシン毎にユーザー名が違う
+    (/Users/abe_kota/… と /Users/asobimori/…) ので、保存された絶対パスをそのまま
+    使うと別マシンで死ぬ。channel_dir（現マシンで解決済みのチャンネルフォルダ）を
+    アンカーに「共有ドライブ」以降を付け替えてユーザー名差を吸収する。
+
+    解決順:
+      1. expanduser してそのまま存在 → 採用（同一マシン / 正規パス）
+      2. raw と channel_dir 双方に「共有ドライブ」がある → channel_dir 側の
+         現マシン root へ marker 以降を付け替え（別マシンの絶対パス救済）
+      3. 相対パス → channel_dir 配下へ解決
+    いずれも存在しなくても最善候補を返す（最終的な存在判定は呼び出し側）。
+    """
+    raw = str(raw or "").strip()
+    if not raw:
+        return Path("")
+    p = Path(raw).expanduser()
+    if p.exists():
+        return p
+    s, cur = str(p), str(channel_dir)
+    if _SHARED_MARKER_JP in s and _SHARED_MARKER_JP in cur:
+        root = cur[:cur.index(_SHARED_MARKER_JP) + len(_SHARED_MARKER_JP)]
+        cand = Path(root) / s[s.index(_SHARED_MARKER_JP) + len(_SHARED_MARKER_JP):].lstrip("/\\")
+        if cand.exists():
+            return cand
+        p = cand  # 存在しなくても marker swap 後を最善候補に
+    if not Path(raw).is_absolute():
+        return channel_dir / raw
+    return p
+
+
+def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Path]:
+    """サムネ/背景生成に渡す参照画像を優先順位で収集する（step_bgimage / step_thumbnail 共用）。
+
+    優先順位:
+      0. APP_BGIMAGE_REFERENCE_IMAGE（単発の「このイメージに寄せたい」指定。最優先）
+      1. per-channel `reference_image_dir`（未設定なら各チャンネルルート/「ベンチマーク」）から
+         ref_count 枚ランダム選択
+      2. Picked（サムネ分析で人間が✓を入れたもの）
+      3. rival_channels の thumbs プールからランダム（最終フォールバック）
+
+    すべてのパスは `_resolve_ref_path` で現マシンへ移植解決するため、2台の Mac
+    （ユーザー名 abe_kota / asobimori）どちらでも参照が「生きる」。
+    """
+    import random as _random
+    channel_dir = folder.parent  # vol folder の親 = チャンネルフォルダ（現マシン解決済み）
+    ref_images: list[Path] = []
+
+    # 0. 明示参照画像（単発「寄せたい」用。os.pathsep 区切りで複数可）
+    fixed_refs = (os.environ.get("APP_BGIMAGE_REFERENCE_IMAGE") or "").strip()
+    if fixed_refs:
+        for raw in fixed_refs.split(os.pathsep):
+            p = _resolve_ref_path(raw, channel_dir)
+            if p.exists() and p.is_file():
+                ref_images.append(p)
+            else:
+                print(f"  ⚠ APP_BGIMAGE_REFERENCE_IMAGE が存在しません: {p}")
+        ref_images = ref_images[:ref_count]
+        if ref_images:
+            print(f"  📎 固定参照画像 {len(ref_images)}/{ref_count} 枚")
+            for r in ref_images:
+                print(f"     - {r.name}")
+
+    # 1. reference_image_dir（未設定なら各チャンネルルート/「ベンチマーク」を既定採用）
+    if not ref_images:
+        ref_dir_str = (cfg.get("reference_image_dir") or "").strip() or DEFAULT_REFERENCE_DIRNAME
+        ref_dir = _resolve_ref_path(ref_dir_str, channel_dir)
+        if ref_dir.is_dir():
+            dir_pool = (
+                list(ref_dir.glob("*.jpg"))
+                + list(ref_dir.glob("*.jpeg"))
+                + list(ref_dir.glob("*.png"))
+                + list(ref_dir.glob("*.webp"))
+            )
+            if dir_pool:
+                _random.shuffle(dir_pool)
+                ref_images = dir_pool[:ref_count]
+                print(f"  🗂  reference_image_dir から {len(ref_images)}/{ref_count} 枚ランダム選択 ({ref_dir})")
+                for r in ref_images:
+                    print(f"     - {r.name}")
+            else:
+                print(f"  ⚠ reference_image_dir に画像なし: {ref_dir}（次のソースへフォールバック）")
+        else:
+            print(f"  ⚠ reference_image_dir が存在しません: {ref_dir}（次のソースへフォールバック）")
+
+    # 2. Picked
+    if not ref_images:
+        try:
+            from app_benchmark_thumbnail import get_picked_paths  # type: ignore
+            picked = get_picked_paths(limit=ref_count) or []
+            if picked:
+                ref_images = [Path(p) for p in picked if Path(p).exists()][:ref_count]
+                if ref_images:
+                    print(f"  📌 Picked 参照画像 {len(ref_images)}/{ref_count} 枚（サムネ分析で選別済）")
+                    for r in ref_images:
+                        print(f"     - {r.name}")
+        except Exception as e:
+            print(f"  ⚠ Picked 取得失敗: {e}（rival_channels プールにフォールバック）")
+
+    # 3. rival_channels の thumbs プール（最終フォールバック）
+    if not ref_images:
+        pool: list[Path] = []
+        rival_channels = cfg.get("rival_channels") or []
+        for url in rival_channels:
+            m = re.search(r"channel/(UC[A-Za-z0-9_-]+)", str(url))
+            if not m:
+                continue
+            ch_id = m.group(1)
+            bench_dir = CONFIG_DIR / "benchmark" / "thumbs" / ch_id
+            if bench_dir.exists():
+                pool.extend(list(bench_dir.glob("*.jpg")) + list(bench_dir.glob("*.jpeg")) + list(bench_dir.glob("*.png")))
+        if pool:
+            _random.shuffle(pool)
+            ref_images = pool[:ref_count]
+            print(f"  📷 rival thumbs プール {len(pool)} 枚から {len(ref_images)}/{ref_count} 枚ランダム選択（最終フォールバック）")
+            for r in ref_images:
+                print(f"     - {r.parent.name}/{r.name}")
+        else:
+            print("  ⚠ reference_image_dir / Picked / rival thumbs どれも無し。参照無しで生成")
+
+    return ref_images
+
+
 def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
     """背景画像生成（Premiere 自動配置前）。
 
@@ -872,7 +1003,7 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
       APP_BGIMAGE_TIMEOUT_SEC=N  画像生成 1 件あたりのタイムアウト秒（既定 1800）
       APP_BGIMAGE_REFERENCE_IMAGE=/path/to/ref.jpg[:...]  固定参照画像（os.pathsep 区切り）
     """
-    import random as _random
+    # 参照画像の収集は _gather_reference_images に集約（_random も同関数内で import）。
     print(f"  {STEP_LABELS.get('bgimage', '3/9 背景画像生成')}")
 
     if os.environ.get("APP_BGIMAGE_DISABLE", "").strip() in ("1", "true", "yes"):
@@ -929,95 +1060,12 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
     except ValueError:
         pass
 
-    # 参照画像ソース優先順位:
-    #   0. APP_BGIMAGE_REFERENCE_IMAGE（単発指定。最優先）
-    #   1. per-channel config の reference_image_dir（UI で設定したフォルダパス。最優先）
-    #   2. Picked（サムネ分析で人間が✓を入れたもの。canonical）
-    #   3. rival_channels の thumbs フォルダ全体からランダム（最終フォールバック）
-    ref_images: list[Path] = []
-
-    # 0. 明示参照画像（今回の「このイメージに寄せたい」用）
-    fixed_refs = (os.environ.get("APP_BGIMAGE_REFERENCE_IMAGE") or "").strip()
-    if fixed_refs:
-        for raw in fixed_refs.split(os.pathsep):
-            p = Path(raw).expanduser()
-            if p.exists() and p.is_file():
-                ref_images.append(p)
-            else:
-                print(f"  ⚠ APP_BGIMAGE_REFERENCE_IMAGE が存在しません: {p}")
-        ref_images = ref_images[:ref_count]
-        if ref_images:
-            print(f"  📎 固定参照画像 {len(ref_images)}/{ref_count} 枚")
-            for r in ref_images:
-                print(f"     - {r.name}")
-
-    # 1. reference_image_dir（per-channel UI 設定）
-    ref_dir_str = (cfg.get("reference_image_dir") or "").strip()
-    if not ref_images and ref_dir_str:
-        # ⚠ 移植性(2台Mac・ホーム名 abe_kota/asobimori): 相対パスは channel folder 基準、
-        #   別マシンの絶対パスは「共有ドライブ」marker から現マシンのルートへ付け替え。
-        channel_dir = folder.parent  # vol folder の親 = チャンネルフォルダ(現マシン解決済み)
-        ref_dir = Path(ref_dir_str).expanduser()
-        if not ref_dir.is_dir():
-            _marker = "共有ドライブ"
-            _s, _cur = str(ref_dir), str(channel_dir)
-            if _marker in _s and _marker in _cur:
-                _root = _cur[:_cur.index(_marker) + len(_marker)]
-                ref_dir = Path(_root) / _s[_s.index(_marker) + len(_marker):].lstrip("/\\")
-            elif not Path(ref_dir_str).is_absolute():
-                ref_dir = channel_dir / ref_dir_str  # 相対 → チャンネルフォルダ配下
-        if ref_dir.is_dir():
-            dir_pool = (
-                list(ref_dir.glob("*.jpg"))
-                + list(ref_dir.glob("*.jpeg"))
-                + list(ref_dir.glob("*.png"))
-                + list(ref_dir.glob("*.webp"))
-            )
-            if dir_pool:
-                _random.shuffle(dir_pool)
-                ref_images = dir_pool[:ref_count]
-                print(f"  🗂  reference_image_dir から {len(ref_images)}/{ref_count} 枚ランダム選択 ({ref_dir})")
-                for r in ref_images:
-                    print(f"     - {r.name}")
-            else:
-                print(f"  ⚠ reference_image_dir に画像なし: {ref_dir}（次のソースへフォールバック）")
-        else:
-            print(f"  ⚠ reference_image_dir が存在しません: {ref_dir}（次のソースへフォールバック）")
-
-    # 2. Picked
-    if not ref_images:
-        try:
-            from app_benchmark_thumbnail import get_picked_paths  # type: ignore
-            picked = get_picked_paths(limit=ref_count) or []
-            if picked:
-                ref_images = [Path(p) for p in picked if Path(p).exists()][:ref_count]
-                if ref_images:
-                    print(f"  📌 Picked 参照画像 {len(ref_images)}/{ref_count} 枚（サムネ分析で選別済）")
-                    for r in ref_images:
-                        print(f"     - {r.name}")
-        except Exception as e:
-            print(f"  ⚠ Picked 取得失敗: {e}（rival_channels プールにフォールバック）")
-
-    # 3. rival_channels の thumbs プール（最終フォールバック）
-    if not ref_images:
-        pool: list[Path] = []
-        rival_channels = cfg.get("rival_channels") or []
-        for url in rival_channels:
-            m = re.search(r"channel/(UC[A-Za-z0-9_-]+)", str(url))
-            if not m:
-                continue
-            ch_id = m.group(1)
-            bench_dir = CONFIG_DIR / "benchmark" / "thumbs" / ch_id
-            if bench_dir.exists():
-                pool.extend(list(bench_dir.glob("*.jpg")) + list(bench_dir.glob("*.jpeg")) + list(bench_dir.glob("*.png")))
-        if pool:
-            _random.shuffle(pool)
-            ref_images = pool[:ref_count]
-            print(f"  📷 rival thumbs プール {len(pool)} 枚から {len(ref_images)}/{ref_count} 枚ランダム選択（最終フォールバック）")
-            for r in ref_images:
-                print(f"     - {r.parent.name}/{r.name}")
-        else:
-            print("  ⚠ reference_image_dir / Picked / rival thumbs どれも無し。参照無しで生成")
+    # 参照画像の収集は step_thumbnail と共通の _gather_reference_images に集約。
+    #   0. APP_BGIMAGE_REFERENCE_IMAGE（単発指定）
+    #   1. reference_image_dir（未設定なら各チャンネルルート/「ベンチマーク」）から ref_count 枚
+    #   2. Picked → 3. rival thumbs（フォールバック）
+    # すべて _resolve_ref_path で現マシンへ移植解決（2台 Mac のユーザー名差を吸収）。
+    ref_images = _gather_reference_images(cfg, folder, ref_count)
 
     # P: 背景プロンプトを動的構築（ベンチマーク concept/visual_direction 由来）。
     # APP_BGIMAGE_DYNAMIC_PROMPT=0 で旧固定テンプレに即ロールバック可能（移行安全弁）。
@@ -1080,6 +1128,74 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
             except Exception as e:
                 print(f"  ⚠ source JPG 生成失敗（PNG はそのまま、フォールバック無効）: {e}")
     return ok
+
+
+def _overlay_thumbnail_script(out_thumb: Path, cfg: dict, out_bg: Path = None) -> None:
+    """per-channel の筆記体ブランド文字（thumbnail_script_text）をサムネに常時オーバーレイ合成する。
+
+    PSD テンプレに文字レイヤーを焼き込む代わりに pipeline 側で毎回合成することで、
+    PSD レンダリング（render_dual_thumbnail の base 差替・レイヤー toggle）を一切壊さず、
+    全 vol に一貫したブランド文字（例: orzz の筆記体 "Jazz House"）を自動付与する。
+    render_dual_thumbnail は毎回 PSD から素のサムネを出すので、本関数は 1 回合成で二重焼きしない。
+
+    config キー:
+      thumbnail_script_text  : 筆記体で入れる文字（空/未設定 = 無効＝従来どおり何も足さない）
+      thumbnail_script_cy    : 縦位置比 0..1（既定 0.5 = ど真ん中）。被写体に被る回だけ下げ/上げ。
+      thumbnail_script_width : 文字幅の画像比（既定 0.58）
+      thumbnail_script_font  : フォントパス（既定 Snell Roundhand = 上品なカッパープレート体）
+      thumbnail_script_on_bg : True なら Premiere 背景(vol{N}.jpg)にも入れる（既定 False＝サムネのみ）
+    """
+    text = (cfg.get("thumbnail_script_text") or "").strip()
+    if not text:
+        return
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    except Exception as e:
+        print(f"  ⚠ 筆記体オーバーレイ: PIL 不可 → スキップ ({e})")
+        return
+    try:
+        cy = float(cfg.get("thumbnail_script_cy") if cfg.get("thumbnail_script_cy") is not None else 0.5)
+    except (TypeError, ValueError):
+        cy = 0.5
+    try:
+        width_ratio = float(cfg.get("thumbnail_script_width") or 0.58)
+    except (TypeError, ValueError):
+        width_ratio = 0.58
+    font_path = (cfg.get("thumbnail_script_font") or
+                 "/System/Library/Fonts/Supplemental/SnellRoundhand.ttc")
+    targets = [out_thumb]
+    if bool(cfg.get("thumbnail_script_on_bg")) and out_bg is not None:
+        targets.append(out_bg)
+    for tgt in targets:
+        try:
+            if not Path(tgt).exists():
+                continue
+            base = Image.open(str(tgt)).convert("RGBA")
+            W, H = base.size
+            sz = 120
+            for s in range(120, 560, 8):
+                b = ImageFont.truetype(font_path, s, index=0).getbbox(text)
+                if (b[2] - b[0]) <= int(W * width_ratio):
+                    sz = s
+                else:
+                    break
+            font = ImageFont.truetype(font_path, sz, index=0)
+            ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            d = ImageDraw.Draw(ov)
+            b = d.textbbox((0, 0), text, font=font)
+            tw, th = b[2] - b[0], b[3] - b[1]
+            x = (W - tw) // 2 - b[0]
+            y = int(H * cy) - th // 2 - b[1]
+            sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            ImageDraw.Draw(sh).text((x + 6, y + 8), text, font=font, fill=(30, 18, 8, 190))
+            sh = sh.filter(ImageFilter.GaussianBlur(9))
+            ov = Image.alpha_composite(ov, sh)
+            ImageDraw.Draw(ov).text((x, y), text, font=font, fill=(255, 251, 242, 255),
+                                    stroke_width=2, stroke_fill=(100, 62, 28, 150))
+            Image.alpha_composite(base, ov).convert("RGB").save(str(tgt), quality=92)
+            print(f"  ✍️  筆記体オーバーレイ: '{text}' → {Path(tgt).name} (cy={cy}, font={Path(font_path).stem})")
+        except Exception as e:
+            print(f"  ⚠ 筆記体オーバーレイ失敗 ({Path(tgt).name}): {e}")
 
 
 def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
@@ -1317,6 +1433,9 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             **extra,
         )
         print(f"  ✅ bg: {Path(result.get('bg', '?')).name} / thumbnail: {Path(result.get('thumbnail', '?')).name}")
+        # per-channel 筆記体ブランド文字を常時オーバーレイ（thumbnail_script_text 設定時のみ）。
+        # 全 vol へ自動付与（PSD テンプレ常設の代替・PSD レンダリングを壊さない）。
+        _overlay_thumbnail_script(out_thumb, cfg, out_bg=out_bg)
         return True
     except FileNotFoundError as e:
         print(f"  ⚠ ファイル不在: {e}")
@@ -2160,16 +2279,26 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
         except Exception:
             video_concept = ""
 
-    # 競合参照（picked サムネ）と生成参照（先頭1枚）
+    # 生成参照: 各チャンネルルート/「ベンチマーク」フォルダから 3 枚（既定）を共有ヘルパで収集
+    #   （Picked 1 枚固定をやめ、フォルダ指定＋複数枚＋2台 Mac 移植解決に統一）。
+    # 採点用の競合参照（ref_paths）とサムネ軸は従来どおり Picked / キャッシュから。
     ref_paths: list = []
-    picked_ref = None
+    gen_refs: list = []
     thumbnail_axis: dict = {}
+    try:
+        _eval_cfg = _load_dashboard_config()
+        try:
+            _eval_refcount = int(os.environ.get("APP_THUMBNAIL_REFCOUNT")
+                                 or os.environ.get("APP_BGIMAGE_REFCOUNT", "3"))
+        except ValueError:
+            _eval_refcount = 3
+        gen_refs = _gather_reference_images(_eval_cfg, folder, _eval_refcount)
+    except Exception as e:
+        print(f"  ⚠ eval-loop 生成参照（ベンチマーク3枚）の収集失敗: {e}")
     try:
         import app_benchmark_thumbnail as _bt
         picked = _bt.get_picked_paths(limit=4) or []
         ref_paths = [Path(p) for p in picked if Path(p).exists()]
-        if ref_paths:
-            picked_ref = str(ref_paths[0])
         tc = _bt.load_cache() or {}
         thumbnail_axis = ((tc.get("analysis") or {}).get("aggregate") or {}) or {}
     except Exception as e:
@@ -2203,8 +2332,8 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
             "--n", str(n_per),
             "--prompt", prompt_text,
         ]
-        if picked_ref:
-            codex_cmd += ["--reference-image", picked_ref]
+        for _gr in gen_refs:
+            codex_cmd += ["--reference-image", str(_gr)]
         try:
             p = subprocess.Popen(codex_cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -2249,7 +2378,7 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
 
     max_attempts = _eval_loop_env_int("APP_THUMB_MAX_ATTEMPTS", 2)
     print(f"  🔁 eval-loop 開始（max_attempts={max_attempts}, n/attempt={n_per}, "
-          f"ref={len(ref_paths)} 枚, picked_ref={'有' if picked_ref else '無'}）")
+          f"採点用ref={len(ref_paths)} 枚, 生成用ベンチマーク参照={len(gen_refs)} 枚）")
     res = run_eval_loop(
         generate_fn=generate_fn, score_fn=score_fn,
         judge_fn=judge_auto_approval, status_counts_fn=status_counts, best_of_fn=best_of,
@@ -2369,14 +2498,23 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
             "--quality", os.environ.get("APP_THUMBNAIL_IMAGE_QUALITY", "medium"),
             "--prompt", f"{prompt}::vol{vol}_thumb",
         ]
+        # 参照画像: 各チャンネルルート/「ベンチマーク」フォルダから 3 枚（既定）。
+        # step_bgimage と同じ _gather_reference_images に集約（Picked 1 枚固定をやめ、
+        # フォルダ指定＋複数枚＋2台 Mac 移植解決に統一）。
         try:
-            import app_benchmark_thumbnail as _bt
-            picked_paths = _bt.get_picked_paths(limit=1)
-            if picked_paths:
-                codex_cmd += ["--reference-image", picked_paths[0]]
-                print(f"  📎 codex reference: {Path(picked_paths[0]).name}")
+            thumb_cfg = _load_dashboard_config()
+            try:
+                thumb_refcount = int(os.environ.get("APP_THUMBNAIL_REFCOUNT")
+                                     or os.environ.get("APP_BGIMAGE_REFCOUNT", "3"))
+            except ValueError:
+                thumb_refcount = 3
+            thumb_refs = _gather_reference_images(thumb_cfg, folder, thumb_refcount)
+            for r in thumb_refs:
+                codex_cmd += ["--reference-image", str(r)]
+            if thumb_refs:
+                print(f"  📎 codex reference: {len(thumb_refs)} 枚 ({', '.join(p.name for p in thumb_refs)})")
         except Exception as e:
-            print(f"  ⚠ codex picked 参照失敗: {e}")
+            print(f"  ⚠ codex 参照画像の収集失敗: {e}")
         try:
             p = subprocess.Popen(codex_cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, bufsize=1)

@@ -773,10 +773,12 @@ def generate_content_batch(settings, count):
 # draft genre は整備 step(_tag_args_from_channel/genre_by_kind)で ID3 ジャンルに使うため
 # config.tag_defaults.genre_by_kind のキー（bossa / rnb）に揃える。
 _MIX_GROUP_MAP = {
-    "bossa_female": ("bossa_female_style", "female", "bossa"),
-    "bossa_male":   ("bossa_male_style",   "male",   "bossa"),
-    "rnb_female":   ("rnb_female_style",   "female", "rnb"),
-    "rnb_male":     ("rnb_male_style",     "male",   "rnb"),
+    "bossa_female":    ("bossa_female_style",    "female", "bossa"),
+    "bossa_male":      ("bossa_male_style",      "male",   "bossa"),
+    "chillpop_female": ("chillpop_female_style", "female", "chillpop"),
+    "chillpop_male":   ("chillpop_male_style",   "male",   "chillpop"),
+    "rnb_female":      ("rnb_female_style",      "female", "rnb"),
+    "rnb_male":        ("rnb_male_style",        "male",   "rnb"),
 }
 
 
