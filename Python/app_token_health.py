@@ -7,9 +7,9 @@
 対象:
   1. YouTube OAuth: `<channel_folder>/.youtube_token.json` の有効期限と refresh
      可否を確認。refresh-token が無い / scope が古い / 期限切れ → warn。
-  2. Playwright プロファイル: `~/.flow-playwright-profile` の cookie DB から
-     Google アカウント関連 cookie の expires_utc を抽出。最短の expires が
-     N 日以内なら warn。
+  2. SUNO ブラウザプロファイル: `~/.config/{app_id}/chromium_profile` の cookie DB
+     から Google アカウント関連 cookie の expires_utc を抽出。最短の expires が
+     N 日以内なら warn。（旧 Flow 用 `.flow-playwright-profile` は D8 撤去に伴い廃止）
 
 設計方針:
 - 副作用は Discord 通知のみ（自動再認証はやらない、運営者の同意が必要）
@@ -35,7 +35,9 @@ except Exception:
     CONFIG_DIR = Path.home() / ".config" / "orzz"
 
 CHANNELS_FILE = CONFIG_DIR / "channels.json"
-PLAYWRIGHT_PROFILE = Path.home() / ".flow-playwright-profile"
+# SUNO 自動生成（suno_auto_create.py L1459）が使う persistent Chromium プロファイル。
+# suno 側は app_id に依らず ~/.config/orzz/ 固定なのでここも同じパスを見る。
+PLAYWRIGHT_PROFILE = Path.home() / ".config" / "orzz" / "chromium_profile"
 
 # 期限が WARN_DAYS 日以内に切れる場合は通知
 WARN_DAYS = int(os.environ.get("APP_TOKEN_HEALTH_WARN_DAYS", "7"))
@@ -43,8 +45,39 @@ WARN_DAYS = int(os.environ.get("APP_TOKEN_HEALTH_WARN_DAYS", "7"))
 
 # ─── YouTube token check ───────────────────────────
 
-def check_youtube_token(channel_folder: str | Path) -> dict:
+def _live_refresh_check(token_path: Path) -> Optional[str]:
+    """refresh_token が実際に使えるかを 1 回の refresh で検証する。
+
+    返り値: None=検証成功（token は更新保存される） / エラーメッセージ文字列=失敗。
+    背景: 2026-06-10 に 4ch 全ての refresh_token が invalid_grant で沈黙失効していたのに
+    「ok（自動更新される想定）」と誤判定していた。expiry の静的チェックでは
+    refresh_token 自体の失効（OAuth 同意画面がテストモードだと 7 日で失効）を検出できない。"""
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+    except Exception as e:
+        return None  # ライブラリ無し環境では静的チェックのみ（誤検出させない）
+    try:
+        creds = Credentials.from_authorized_user_file(str(token_path))
+        creds.refresh(Request())
+        # 成功 → 新しいアクセストークンを書き戻し（定期 refresh による延命も兼ねる）
+        try:
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        msg = str(e)
+        if "invalid_grant" in msg:
+            return "refresh_token 失効（invalid_grant）— 再認証が必要"
+        return f"refresh 検証失敗: {msg[:80]}"
+
+
+def check_youtube_token(channel_folder: str | Path, *, live: bool = True) -> dict:
     """`<channel_folder>/.youtube_token.json` を点検。
+
+    live=True（既定）なら refresh を実試行して refresh_token の生死まで検証する
+    （invalid_grant の沈黙失効を検出。env APP_TOKEN_HEALTH_LIVE=0 で静的のみに戻せる）。
 
     Returns:
       {"status": "ok" | "missing" | "warn" | "expired" | "no_refresh",
@@ -76,6 +109,13 @@ def check_youtube_token(channel_folder: str | Path) -> dict:
         out["status"] = "no_refresh"
         out["message"] = "refresh_token が無い → 期限切れ後に手動再認証が必要"
         return out
+    # 実 refresh 検証（refresh_token の生死を確かめる・成功時は token を更新保存）
+    if live and (os.environ.get("APP_TOKEN_HEALTH_LIVE") or "1").strip() in ("1", "true", "yes"):
+        err = _live_refresh_check(token_path)
+        if err:
+            out["status"] = "expired"
+            out["message"] = err + "（python3 app_youtube.py --auth-only か 設定ページの再認証ボタン）"
+            return out
     if not out["expiry"]:
         out["status"] = "ok"  # refresh_token があれば expiry なくても再取得可
         out["message"] = "expiry 未記録（refresh_token あり、原則 OK）"
@@ -105,15 +145,17 @@ def check_youtube_token(channel_folder: str | Path) -> dict:
     return out
 
 
-# ─── Playwright profile cookie check ──────────────
+# ─── SUNO browser profile cookie check ──────────────
+# ログイン状態の本体は Clerk 認証 cookie（auth.suno.com の __client / __client_uat）。
+# __session / sessionid は短命だが __client から自動再発行されるため判定対象にしない。
 
-GOOGLE_COOKIE_NAMES = (
-    "SID", "SAPISID", "HSID", "SSID", "APISID", "__Secure-1PSID",
+SUNO_COOKIE_NAMES = (
+    "__client", "__client_uat",
 )
 
 
 def check_playwright_profile(profile_dir: Path = None) -> dict:
-    """Playwright プロファイルの Google アカウント関連 cookie の最短 expires を返す。
+    """SUNO ブラウザプロファイルの Google アカウント関連 cookie の最短 expires を返す。
 
     Returns:
       {"status": "ok" | "missing" | "warn" | "expired",
@@ -131,7 +173,7 @@ def check_playwright_profile(profile_dir: Path = None) -> dict:
         "message": "",
     }
     if not profile_dir.exists():
-        out["message"] = "Playwright プロファイル未作成（初回ログイン未完了）"
+        out["message"] = "SUNO ブラウザプロファイル未作成（初回ログイン未完了）"
         return out
     # Chromium プロファイルの Cookie DB を探す
     candidates = [
@@ -146,12 +188,12 @@ def check_playwright_profile(profile_dir: Path = None) -> dict:
         # read-only で開く（ブラウザ実行中でも読める）
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
         try:
-            placeholders = ",".join("?" for _ in GOOGLE_COOKIE_NAMES)
+            placeholders = ",".join("?" for _ in SUNO_COOKIE_NAMES)
             rows = conn.execute(
                 f"""SELECT name, expires_utc FROM cookies
-                    WHERE host_key LIKE '%.google.com'
+                    WHERE host_key LIKE '%suno.com'
                       AND name IN ({placeholders})""",
-                list(GOOGLE_COOKIE_NAMES),
+                list(SUNO_COOKIE_NAMES),
             ).fetchall()
         finally:
             conn.close()
@@ -159,7 +201,7 @@ def check_playwright_profile(profile_dir: Path = None) -> dict:
         out["message"] = f"Cookie DB 読込失敗: {e}"
         return out
     if not rows:
-        out["message"] = "Google アカウント cookie が見つからない（ログアウト中？）"
+        out["message"] = "SUNO ログイン cookie が見つからない（ログアウト中？）"
         return out
     # Chromium の expires_utc は 1601-01-01 起点のマイクロ秒
     EPOCH_DELTA = datetime.datetime(1970, 1, 1) - datetime.datetime(1601, 1, 1)
@@ -188,7 +230,7 @@ def check_playwright_profile(profile_dir: Path = None) -> dict:
     out["days_left"] = days_left
     if days_left < 0:
         out["status"] = "expired"
-        out["message"] = f"cookie 期限切れ ({-days_left}日前) — 次回 SUNO/Flow 起動で再ログインが必要"
+        out["message"] = f"cookie 期限切れ ({-days_left}日前) — 次回 SUNO 起動で再ログインが必要"
     elif days_left <= WARN_DAYS:
         out["status"] = "warn"
         out["message"] = f"cookie 残 {days_left}日（{WARN_DAYS}日以内に再ログイン推奨）"
@@ -237,14 +279,15 @@ def check_all(notify=None) -> dict:
                 "status": result["status"],
                 "message": result["message"],
             })
-    # Playwright（共通プロファイル）
+    # SUNO ブラウザ（共通プロファイル）。missing は「まだ一度も SUNO を使っていない」
+    # だけの可能性があるため warning には含めない（warn/expired のみ通知対象）。
     pw = check_playwright_profile()
     out["playwright"] = pw
-    if pw["status"] in ("warn", "expired", "missing"):
+    if pw["status"] in ("warn", "expired"):
         out["warnings"].append({
             "kind": "playwright",
             "channel_id": "(global)",
-            "channel_name": "(SUNO/Flow ブラウザ)",
+            "channel_name": "(SUNO ブラウザ)",
             "status": pw["status"],
             "message": pw["message"],
         })
@@ -259,7 +302,7 @@ def check_all(notify=None) -> dict:
         lines = [f"[{w['channel_name']}] {w['kind']}: {w['status']}（{w['message']}）"
                  for w in out["warnings"]]
         try:
-            notify("🔑 トークン点検アラート:\n" + "\n".join(lines))
+            notify(" トークン点検アラート:\n" + "\n".join(lines))
         except Exception:
             pass
     return out

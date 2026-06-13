@@ -276,7 +276,7 @@ def fetch_competitor_data(rival_urls: list[str], desc_limit: int = 500) -> dict:
         url = url.strip()
         if not url:
             continue
-        print(f"  📡 {url}")
+        print(f" {url}")
         try:
             ch_id = _extract_channel_id(youtube, url)
             if not ch_id:
@@ -411,12 +411,12 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
 
     # 1) ライバルチャンネル優先
     if rivals:
-        print(f"\n📡 ライバルチャンネルを YouTube API で取得（{len(rivals)} 件）")
+        print(f"\n ライバルチャンネルを YouTube API で取得（{len(rivals)} 件）")
         try:
             competitor_data = fetch_competitor_data(rivals)
             if competitor_data and competitor_data.get("channels"):
                 source = "youtube_api_rivals"
-                print(f"  ✅ {len(competitor_data['channels'])} チャンネル取得成功")
+                print(f" {len(competitor_data['channels'])} チャンネル取得成功")
             else:
                 competitor_data = None
                 print("  ⚠️ ライバル取得 0 件 → スプシフォールバック")
@@ -438,7 +438,7 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
                     exclude_names=bench_filter.get("exclude_names") or None,
                 )
                 if growth_summary:
-                    print(f"  ℹ️ スプシから growth_summary を補助取得（hot {len((growth_summary or {}).get('hot_channels') or [])} 件）")
+                    print(f" スプシから growth_summary を補助取得（hot {len((growth_summary or {}).get('hot_channels') or [])} 件）")
             except Exception as e:
                 print(f"  ⚠️ growth_summary 取得失敗（無視して続行）: {e}")
                 growth_summary = None
@@ -447,7 +447,7 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
     if not competitor_data:
         if not (detail_url and growth_url):
             raise RuntimeError("データソースが設定されていません（ライバルチャンネル または スプシ URL のどちらかが必要）")
-        print("\n📊 スプレッドシートからデータ取得（API quota ゼロ）")
+        print("\n スプレッドシートからデータ取得（API quota ゼロ）")
         try:
             from app_sheets import fetch_from_spreadsheets
             bench_filter = cfg.get("benchmark_filter", {}) or {}
@@ -464,7 +464,7 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
         if not competitor_data or not competitor_data.get("channels"):
             raise RuntimeError("競合データの取得に失敗しました（スプシも空）")
         source = "spreadsheet"
-        print(f"  ✅ {len(competitor_data['channels'])} チャンネル取得成功")
+        print(f" {len(competitor_data['channels'])} チャンネル取得成功")
 
     # Claude で分析（growth_summary があれば注入）
     # 分析関数は app_benchmark_analyze へ物理移動済み（D6）。局所 import で逆依存を持たない。
@@ -487,7 +487,7 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
         cache = save_scoped_cache(CACHE_FILENAME, CACHE_FILE, cache)
     except Exception:
         CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n💾 キャッシュ保存: {CACHE_FILE} (source: {source}, language: ja, v5)")
+    print(f"\n キャッシュ保存: {CACHE_FILE} (source: {source}, language: ja, v5)")
     return cache
 
 
@@ -815,7 +815,7 @@ def build_channel_profile(channel_meta: dict, comments_by_video: dict = None,
             summary_lines.append(f"\n<Video: {title[:60]}>")
             for c in clist[:8]:
                 txt = (c.get("text") or "").replace("\n", " ")[:200]
-                summary_lines.append(f"  · [{c.get('likes', 0)}👍] {txt}")
+                summary_lines.append(f" · [{c.get('likes', 0)}] {txt}")
 
     prompt = f"""あなたは BGM / インストゥルメンタル系 YouTube チャンネル分析の専門家です。次のチャンネルを分析し、構造化されたベンチマークプロフィールを JSON で返してください。
 
@@ -1138,7 +1138,7 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
     all_channels = []
     # 1) Sheet A
     if sheet_a_url:
-        log("📊 Sheet A を取得中...")
+        log(" Sheet A を取得中...")
         try:
             sa = import_benchmark_from_sheet(sheet_a_url)
             for tab in sa.get("tabs", []):
@@ -1153,7 +1153,7 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
     # 2) Sheet B (成長トラッキング — 既存チャンネルに merge)
     growth_map = {}
     if sheet_b_url:
-        log("📈 Sheet B を取得中...")
+        log(" Sheet B を取得中...")
         try:
             sb = import_benchmark_from_sheet(sheet_b_url)
             for tab in sb.get("tabs", []):
@@ -1186,7 +1186,7 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
         wanted = set(n.strip() for n in channel_filter if n and n.strip())
         before = len(all_channels)
         all_channels = [ch for ch in all_channels if (ch.get("channel_name") or "").strip() in wanted]
-        log(f"🎯 フィルタ適用: {before} → {len(all_channels)} チャンネル")
+        log(f" フィルタ適用: {before} → {len(all_channels)} チャンネル")
 
     # 既存プロファイルをロード（S0 マージ保存 / S1 スキップ判定の基盤）
     import datetime as _dt
@@ -1254,7 +1254,7 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
                 continue
             name = ch.get("channel_name") or ch.get("url") or "(unknown)"
             try:
-                log(f"🔄 最新動画情報を Data API で更新: {name}")
+                log(f" 最新動画情報を Data API で更新: {name}")
                 plan[i] = (refresh_channel_with_youtube_api(ch, api_key), action, ex)
             except Exception as e:
                 log(f"  ⚠️ 更新失敗（Sheet値で続行）: {e}")
@@ -1264,7 +1264,7 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
     # 5) 各チャンネルの TOP3 コメント取得 + プロファイル生成（reuse は流用）
     profiles = []
     total = len(plan)
-    log(f"\n🧠 対象 {total} ch（生成 {gen_total}・流用 {reuse_n}）プロファイル処理開始...")
+    log(f"\n 対象 {total} ch（生成 {gen_total}・流用 {reuse_n}）プロファイル処理開始...")
     done = 0
     for idx, (ch, action, ex) in enumerate(plan, 1):
         name = ch.get("channel_name") or "(unknown)"
@@ -1273,21 +1273,21 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
             profiles.append(ex)
             continue
         done += 1
-        log(f"\n[{idx}/{total}] 🔍 {name}（生成 {done}/{gen_total}）")
+        log(f"\n[{idx}/{total}]  {name}（生成 {done}/{gen_total}）")
         comments_by_video = {}
         if api_key:
             for v in (ch.get("top_videos") or [])[:3]:
                 vid = v.get("video_id") or _extract_video_id(v.get("url", ""))
                 if not vid:
                     continue
-                log(f"  💬 コメント取得: {v.get('title', '')[:50]}")
+                log(f" コメント取得: {v.get('title', '')[:50]}")
                 cs = fetch_video_comments_by_key(vid, api_key, max_results=30)
                 comments_by_video[vid] = cs
                 log(f"     → {len(cs)} 件")
         else:
             log("  ⚠️ YouTube API key 未設定のためコメントスキップ")
 
-        log("  🧠 Claude で統合プロファイル生成...")
+        log(" Claude で統合プロファイル生成...")
         profile = build_channel_profile(ch, comments_by_video, cli_cmd=cli_cmd)
         profiles.append({
             "channel_name": name,
@@ -1320,5 +1320,5 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
         "profiles": final_profiles,
     }
     BENCHMARK_PROFILES_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    log(f"\n✅ 保存: {BENCHMARK_PROFILES_FILE}（全{len(final_profiles)} / 今回生成{gen_total}・流用{reuse_n}）")
+    log(f"\n 保存: {BENCHMARK_PROFILES_FILE}（全{len(final_profiles)} / 今回生成{gen_total}・流用{reuse_n}）")
     return payload

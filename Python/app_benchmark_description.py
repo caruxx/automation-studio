@@ -175,7 +175,7 @@ def _resolve_competitor_data(refetch_full: bool) -> tuple[dict, str]:
             cfg = _ac._load_analysis_config()
             rivals = cfg.get("rival_channels") or []
             if rivals:
-                print(f"  📡 投稿文軸: full 説明文を再取得（{len(rivals)} ch / desc_limit={DESC_LIMIT_FULL}）")
+                print(f" 投稿文軸: full 説明文を再取得（{len(rivals)} ch / desc_limit={DESC_LIMIT_FULL}）")
                 data = _ac.fetch_competitor_data(rivals, desc_limit=DESC_LIMIT_FULL)
                 # channels があっても説明文が全て空/短い場合は full を採用せず、
                 # 説明文を持つ共有キャッシュ（過去の500字版）へ二段フォールバックする
@@ -184,7 +184,7 @@ def _resolve_competitor_data(refetch_full: bool) -> tuple[dict, str]:
                     return data, "youtube_api_full"
                 print("  ⚠ full 再取得に有効な説明文が無い → 共有キャッシュにフォールバック")
             else:
-                print("  ℹ rival_channels 未設定 → full 再取得せず共有キャッシュを使用")
+                print(" rival_channels 未設定 → full 再取得せず共有キャッシュを使用")
         except Exception as e:
             print(f"  ⚠ full 再取得失敗（{e}） → 共有キャッシュにフォールバック")
     outer = _load_competitor_cache() or {}
@@ -384,7 +384,7 @@ def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
              self_persona: str = "", refetch_full: bool = True,
              only_channel_ids=None, skip_unchanged: bool = True) -> dict:
     """エントリポイント: 競合データ（full 再取得 or キャッシュ）をソースに分析 → 保存。"""
-    print("🧠 投稿文（説明文）軸分析を開始")
+    print(" 投稿文（説明文）軸分析を開始")
     result = analyze_descriptions(cli_cmd=cli_cmd, per_channel_cap=per_channel_cap,
                                   self_persona=self_persona, refetch_full=refetch_full,
                                   only_channel_ids=only_channel_ids,
@@ -394,7 +394,7 @@ def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
         **result,
     }
     save_cache(payload)
-    print(f"✅ description.json 保存: {ANALYSIS_FILE} (no_data={payload.get('no_data')}, source={payload.get('source')})")
+    print(f" description.json 保存: {ANALYSIS_FILE} (no_data={payload.get('no_data')}, source={payload.get('source')})")
     return payload
 
 

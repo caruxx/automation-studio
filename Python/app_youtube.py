@@ -296,7 +296,7 @@ def get_credentials(video_folder=None, token_override=None):
     if creds is None and allow_legacy_fallback and legacy_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(legacy_path), SCOPES)
-            print(f"ℹ️ レガシーグローバルトークンを使用: {legacy_path}")
+            print(f" レガシーグローバルトークンを使用: {legacy_path}")
         except Exception:
             pass
 
@@ -308,7 +308,7 @@ def get_credentials(video_folder=None, token_override=None):
                 print(f"エラー: {CLIENT_SECRET} が見つかりません")
                 print("Google Cloud Console からOAuthクライアントシークレットをダウンロードして配置してください")
                 sys.exit(1)
-            print("🔑 OAuth 同意画面を開きます。ブランドアカウントを使う場合はアップロード先のチャンネルを選択してください。")
+            print(" OAuth 同意画面を開きます。ブランドアカウントを使う場合はアップロード先のチャンネルを選択してください。")
             print(f"   トークン保存先: {token_path}")
             sys.stdout.flush()
             flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET), SCOPES)
@@ -317,7 +317,7 @@ def get_credentials(video_folder=None, token_override=None):
         try:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json())
-            print(f"✅ トークン保存: {token_path}")
+            print(f" トークン保存: {token_path}")
         except Exception as e:
             print(f"⚠️ トークン保存失敗 ({token_path}): {e}")
             # フォールバック: グローバルへ保存
@@ -345,6 +345,230 @@ def get_authenticated_channel_info(youtube) -> dict:
         "custom_url": primary.get("custom_url", ""),
         "channels": channels,
     }
+
+
+# ─── ライブ配信（liveBroadcasts / VPS 24-7 ループ配信のメタ管理） ───
+
+def load_channel_credentials(token_file):
+    """対話フロー（OAuth 同意画面）を起こさずに token_file から Credentials を読む。
+
+    サーバープロセス内から呼ぶ用途。token が無い/壊れている/refresh 不能なら None。
+    refresh に成功したら token_file を更新して返す。
+    """
+    p = Path(token_file)
+    if not p.exists():
+        return None
+    try:
+        creds = Credentials.from_authorized_user_file(str(p), SCOPES)
+    except Exception:
+        return None
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+                p.write_text(creds.to_json())
+            except Exception:
+                return None
+        else:
+            return None
+    return creds
+
+
+def _pick_thumbnail(snippet: dict) -> str:
+    """snippet.thumbnails から表示用 URL を 1 つ選ぶ（medium 優先）。"""
+    thumbs = (snippet or {}).get("thumbnails") or {}
+    for k in ("medium", "high", "standard", "default"):
+        url = (thumbs.get(k) or {}).get("url", "")
+        if url:
+            return url
+    return ""
+
+
+def list_live_broadcasts(token_file, statuses=("active", "upcoming"), max_results=10) -> dict:
+    """自チャンネルのライブ配信（broadcast）一覧。quota: list 1 unit × len(statuses)。
+
+    Returns: {"status": "ok|unauthorized|error", "broadcasts": [{id,title,description,bound_stream_id,...}]}
+    """
+    creds = load_channel_credentials(token_file)
+    if creds is None:
+        return {"status": "unauthorized", "error": f"トークンが無効: {token_file}", "broadcasts": []}
+    youtube = build("youtube", "v3", credentials=creds)
+    items, seen = [], set()
+    try:
+        for st in statuses:
+            resp = youtube.liveBroadcasts().list(
+                part="id,snippet,status,contentDetails", broadcastStatus=st, maxResults=max_results,
+            ).execute()
+            for it in resp.get("items", []):
+                bid = it.get("id")
+                if not bid or bid in seen:
+                    continue
+                seen.add(bid)
+                sn = it.get("snippet") or {}
+                stt = it.get("status") or {}
+                cd = it.get("contentDetails") or {}
+                items.append({
+                    "id": bid,
+                    "title": sn.get("title", ""),
+                    "description": sn.get("description", ""),
+                    "thumbnail": _pick_thumbnail(sn),
+                    "scheduled_start": sn.get("scheduledStartTime", ""),
+                    "actual_start": sn.get("actualStartTime", ""),
+                    "life_cycle": stt.get("lifeCycleStatus", ""),
+                    "privacy": stt.get("privacyStatus", ""),
+                    "contains_synthetic_media": bool(stt.get("containsSyntheticMedia", False)),
+                    "broadcast_status": st,
+                    "bound_stream_id": cd.get("boundStreamId", ""),
+                    "watch_url": f"https://www.youtube.com/watch?v={bid}",
+                })
+    except HttpError as e:
+        return {"status": "error", "error": f"liveBroadcasts.list 失敗: {e}", "broadcasts": items}
+    # containsSyntheticMedia（AI生成の開示）は liveBroadcasts には無く videos.status のみ → 1 コールで補完
+    if items:
+        try:
+            vresp = youtube.videos().list(part="status", id=",".join(i["id"] for i in items[:50])).execute()
+            syn = {v.get("id"): bool((v.get("status") or {}).get("containsSyntheticMedia", False))
+                   for v in vresp.get("items", [])}
+            for i in items:
+                i["contains_synthetic_media"] = syn.get(i["id"], i["contains_synthetic_media"])
+        except HttpError:
+            pass
+    return {"status": "ok", "broadcasts": items}
+
+
+def list_my_live_streams(token_file, max_results=50) -> dict:
+    """自チャンネルのライブストリーム（ストリームキー）一覧。quota: 1 unit。
+
+    boundStreamId と突き合わせて「VPS の env に入っているキー ⇔ broadcast(video)」の
+    マッピングに使う。Returns: {"status": ..., "streams": [{id, key, title}]}
+    """
+    creds = load_channel_credentials(token_file)
+    if creds is None:
+        return {"status": "unauthorized", "error": f"トークンが無効: {token_file}", "streams": []}
+    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        resp = youtube.liveStreams().list(part="id,snippet,cdn", mine=True, maxResults=max_results).execute()
+    except HttpError as e:
+        return {"status": "error", "error": f"liveStreams.list 失敗: {e}", "streams": []}
+    streams = []
+    for it in resp.get("items", []):
+        cdn = it.get("cdn") or {}
+        ingest = cdn.get("ingestionInfo") or {}
+        streams.append({
+            "id": it.get("id", ""),
+            "key": ingest.get("streamName", ""),
+            "title": (it.get("snippet") or {}).get("title", ""),
+        })
+    return {"status": "ok", "streams": streams}
+
+
+def get_live_viewers(token_file, video_ids) -> dict:
+    """ライブ動画の同時視聴者数。quota: 1 unit（最大50件まで1コール）。
+
+    Returns: {"status": ..., "videos": {video_id: {viewers, title, actual_start}}}
+    """
+    creds = load_channel_credentials(token_file)
+    if creds is None:
+        return {"status": "unauthorized", "error": f"トークンが無効: {token_file}", "videos": {}}
+    ids = [v for v in (video_ids or []) if v][:50]
+    if not ids:
+        return {"status": "ok", "videos": {}}
+    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        resp = youtube.videos().list(part="liveStreamingDetails,snippet", id=",".join(ids)).execute()
+    except HttpError as e:
+        return {"status": "error", "error": f"videos.list 失敗: {e}", "videos": {}}
+    out = {}
+    for it in resp.get("items", []):
+        det = it.get("liveStreamingDetails") or {}
+        sn = it.get("snippet") or {}
+        out[it.get("id", "")] = {
+            "viewers": int(det.get("concurrentViewers") or 0),
+            "title": sn.get("title", ""),
+            "thumbnail": _pick_thumbnail(sn),
+            "actual_start": det.get("actualStartTime", ""),
+        }
+    return {"status": "ok", "videos": out}
+
+
+def set_video_thumbnail(token_file, video_id, image_path) -> dict:
+    """ライブ動画（broadcast id = video id）のサムネイルを設定。quota: 50 unit。"""
+    p = Path(image_path)
+    if not p.exists():
+        return {"status": "error", "error": f"画像が見つからない: {image_path}"}
+    creds = load_channel_credentials(token_file)
+    if creds is None:
+        return {"status": "unauthorized", "error": f"トークンが無効: {token_file}"}
+    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+        youtube.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(str(p), mimetype=mime),
+        ).execute()
+        return {"status": "ok", "video_id": video_id, "image": str(p)}
+    except HttpError as e:
+        return {"status": "error", "error": f"thumbnails.set 失敗: {e}"}
+
+
+def update_live_video_meta(token_file, video_id, *, title=None, description=None,
+                           privacy=None, contains_synthetic_media=None) -> dict:
+    """ライブ配信（broadcast id = video id）のタイトル/説明/公開設定/AI開示を videos.update で更新する。
+
+    現在の snippet/status を取得して部分的に差し替える（categoryId 必須・status は
+    省略すると書込可能フィールドが消えるため merge 方式）。
+    privacy: public | unlisted | private。contains_synthetic_media: AI生成（改変コンテンツ）の開示。
+    quota: videos.list 1 + videos.update 50 unit。
+    """
+    creds = load_channel_credentials(token_file)
+    if creds is None:
+        return {"status": "unauthorized", "error": f"トークンが無効: {token_file}"}
+    want_status = privacy is not None or contains_synthetic_media is not None
+    parts = "snippet,status" if want_status else "snippet"
+    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        resp = youtube.videos().list(part=parts, id=video_id).execute()
+        items = resp.get("items") or []
+        if not items:
+            return {"status": "error", "error": f"video が見つからない: {video_id}"}
+        sn = items[0]["snippet"]
+        prev_title = sn.get("title", "")
+        if title is not None and str(title).strip():
+            sn["title"] = str(title).strip()
+        if description is not None:
+            sn["description"] = str(description)
+        body = {
+            "id": video_id,
+            "snippet": {
+                "title": sn.get("title", ""),
+                "description": sn.get("description", ""),
+                "categoryId": sn.get("categoryId") or "10",
+            },
+        }
+        if sn.get("defaultLanguage"):
+            body["snippet"]["defaultLanguage"] = sn["defaultLanguage"]
+        if sn.get("tags"):
+            body["snippet"]["tags"] = sn["tags"]
+        if want_status:
+            cur = items[0].get("status") or {}
+            # 書込可能フィールドのみ現在値を引き継ぐ（読み取り専用フィールドを送ると 400）
+            stt = {k: cur[k] for k in
+                   ("privacyStatus", "embeddable", "license", "publicStatsViewable",
+                    "selfDeclaredMadeForKids", "containsSyntheticMedia") if k in cur}
+            if privacy is not None:
+                if privacy not in ("public", "unlisted", "private"):
+                    return {"status": "error", "error": f"不正な公開設定: {privacy}"}
+                stt["privacyStatus"] = privacy
+            if contains_synthetic_media is not None:
+                stt["containsSyntheticMedia"] = bool(contains_synthetic_media)
+            body["status"] = stt
+        youtube.videos().update(part=parts, body=body).execute()
+        return {"status": "ok", "video_id": video_id, "previous_title": prev_title,
+                "new_title": sn.get("title", ""),
+                "privacy": (body.get("status") or {}).get("privacyStatus", ""),
+                "contains_synthetic_media": (body.get("status") or {}).get("containsSyntheticMedia")}
+    except HttpError as e:
+        return {"status": "error", "error": f"videos.update 失敗: {e}"}
 
 
 def assert_expected_channel(youtube, expected_channel_id=None, expected_channel_name=None) -> dict:
@@ -504,7 +728,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             flush=True,
         )
         sys.exit(EXIT_QUOTA_EXHAUSTED)
-    print(f"\n📊 quota: used={used} / cap={cap} (残 {remaining} unit ≈ {remaining // QUOTA_PER_UPLOAD} upload 分)")
+    print(f"\n quota: used={used} / cap={cap} (残 {remaining} unit ≈ {remaining // QUOTA_PER_UPLOAD} upload 分)")
 
     file_size_mb = video_file.stat().st_size / 1024 / 1024
     print(f"動画: {video_file.name} ({file_size_mb:.1f} MB)")
@@ -531,7 +755,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         expected_channel_id=expected_channel_id,
         expected_channel_name=expected_channel_name,
     )
-    print("✅ 認証OK")
+    print(" 認証OK")
     if ch_info.get("channel_id"):
         print(f"アップロード先チャンネル: {ch_info.get('channel_title') or '?'} ({ch_info.get('channel_id')})")
     sys.stdout.flush()
@@ -602,19 +826,19 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                 remaining = (file_size_mb - uploaded_mb) / speed if speed > 0 else 0
                 remaining_min = int(remaining // 60)
                 remaining_sec = int(remaining % 60)
-                print(f"  📤 {pct}% ({uploaded_mb:.0f}/{file_size_mb:.0f} MB) | {speed:.1f} MB/s | 残り約 {remaining_min}分{remaining_sec:02d}秒")
+                print(f" {pct}% ({uploaded_mb:.0f}/{file_size_mb:.0f} MB) | {speed:.1f} MB/s | 残り約 {remaining_min}分{remaining_sec:02d}秒")
                 sys.stdout.flush()
     except HttpError as e:
         # 403 quotaExceeded / 429 / 5xx は上位 retry 層に回す
         if _is_retryable_http_error(e):
             status = getattr(e.resp, "status", "?") if getattr(e, "resp", None) else "?"
-            print(f"\n🔁 [RETRYABLE_UPLOAD_ERROR] HTTP {status} — pipeline retry layer へ委譲します", flush=True)
+            print(f"\n [RETRYABLE_UPLOAD_ERROR] HTTP {status} — pipeline retry layer へ委譲します", flush=True)
             sys.exit(EXIT_RETRYABLE)
         raise
 
     video_id = response["id"]
     total_time = time.time() - start_time
-    print(f"\n✅ アップロード完了: https://youtu.be/{video_id}")
+    print(f"\n アップロード完了: https://youtu.be/{video_id}")
     print(f"  所要時間: {int(total_time//60)}分{int(total_time%60):02d}秒")
     sys.stdout.flush()
 
@@ -622,7 +846,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
     try:
         record_upload_quota(channel_folder, cost=QUOTA_PER_UPLOAD)
         used_after = quota_used_in_window(channel_folder)
-        print(f"  📊 quota 消費記録: 累計 {used_after} unit / 24h")
+        print(f" quota 消費記録: 累計 {used_after} unit / 24h")
     except Exception as e:
         print(f"  ⚠️ quota 記録失敗: {e}")
 
@@ -634,7 +858,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             videoId=video_id,
             media_body=MediaFileUpload(str(thumbnail), mimetype=thumb_mime),
         ).execute()
-        print("✅ サムネイル設定完了")
+        print(" サムネイル設定完了")
         sys.stdout.flush()
 
     # アップロード完了マーカーを書き出し（ダッシュボード用）

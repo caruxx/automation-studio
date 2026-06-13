@@ -139,7 +139,42 @@ def _build_codex_command(
 ) -> list[str]:
     refs = [p for p in (reference_images or []) if p.exists()]
     ref_block = ""
-    if refs:
+    # APP_IMAGEGEN_REF_MODE=anchor のとき、参照画像を「ゆるく翻訳」ではなく
+    # 「構図・配色・光・被写体配置を強く踏襲する style anchor」として扱う。
+    # 背景(bgimage)で「参照に寄せたい」ケース専用。テキスト無視ルールは維持する。
+    # （既定 = translate = 従来の「訴えられない程度に抽象化」挙動。他chの安全側を壊さない）
+    ref_mode = (os.environ.get("APP_IMAGEGEN_REF_MODE") or "translate").strip().lower()
+    if refs and ref_mode == "anchor":
+        listed = "\n".join(f"  - {p}" for p in refs)
+        primary = refs[0]
+        ref_block = (
+            "\n## 参照画像（必ず最初に1枚ずつ画像ファイルを開いて視覚的に分析すること）\n"
+            f"{listed}\n\n"
+            f"**最優先アンカー画像**: {primary}\n"
+            "（この1枚目を「目指す完成形のスタイル基準」として最も強く踏襲する。"
+            "2枚目以降は補助的に色/光/小物の参考にする）\n\n"
+            "## 参照画像の踏襲ルール（style anchor モード・厳守）\n"
+            "0. ⚠最重要(唯一の例外): 参照画像に写っている**文字・テロップ・キャプション・字幕・"
+            "日本語/韓国語/英語のテキスト・ロゴ・透かし・看板・読める文字列**だけは"
+            "**完全に無視し、生成画像には一切描き込まないこと**"
+            "（偽の日本語コピーやタイトル文字を作らない）。文字以外は積極的に踏襲してよい。\n"
+            "1. 先にアンカー画像を精密に分析し、次を言語化する:"
+            "シーンの種類（屋内/屋外・場所）/ 構図と被写体の配置（前景の主役オブジェクト・"
+            "余白の位置）/ 光源方向と色温度 / 配色（主要3色）/ 素材感と質感 / 全体のムード。\n"
+            "2. 生成画像は、その分析結果に**強く寄せて**ください。具体的には:\n"
+            "   - 同種のシーン・同じ時間帯・同じ明るさ・同じ色調を保つ\n"
+            "   - 前景の主役配置（例: テーブル上のコーヒー＋本＋緑）と余白の取り方を踏襲する\n"
+            "   - 光源方向・コントラスト・色温度をアンカー画像に合わせる\n"
+            "   - 素材感（自然木・観葉植物・やわらかい自然光）を再現する\n"
+            "3. ただし**ピクセル単位の複製は禁止**。固有の人物の顔・実在ロゴ・商標・チャンネル名・"
+            "特定の店舗看板は持ち込まず、小物の配置・角度・個数・種類は少し変えて"
+            "「同一写真の複製ではない、しかし明らかに同じ世界観・同じスタイルの別カット」"
+            "に仕上げてください（“別アングルで撮り直した姉妹カット”のイメージ）。\n"
+            "4. 参照が複数あるときは、1枚目のアンカーを土台に、2枚目以降の良い要素"
+            "（配色のニュアンス・小物・光の質）を補助的に混ぜてください。\n"
+            "5. 文字は一切描かない。それ以外は「寄せる」ことが目的です（抽象化しすぎない）。\n"
+        )
+    elif refs:
         listed = "\n".join(f"  - {p}" for p in refs)
         ref_block = (
             "\n## 参照画像（必ず最初に読み込んで視覚的に分析すること）\n"
@@ -178,13 +213,27 @@ def _build_codex_command(
         f"以下で最も新しいファイルを {dest_path} にコピーして。"
         "コピー先のファイルパスだけを出力して。"
     )
-    return [
+    cmd = [
         codex_cli,
         "exec",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
-        instruction,
     ]
+    # 参照画像は codex の -i/--image でマルチモーダル入力として「直接添付」する。
+    # プロンプト本文へのパス列挙だけだと codex がファイルを自力で開く保証がなく、
+    # 参照が視覚的に効かない（旧実装の弱点）。-i 添付なら OPENAI_API_KEY 無しの
+    # codex CLI 経路でも、参照画像を実際にモデルへ視覚入力として渡せる。
+    # 各画像ごとに -i を付ける（`-i a b PROMPT` だと PROMPT も画像扱いされる恐れがあるため）。
+    # ⚠ `-i, --image <FILE>...` は clap の可変長(variadic)オプション。最後の -i の直後に
+    # 位置引数 PROMPT を置くと、その PROMPT まで画像ファイルとして食われ、codex が
+    # 「プロンプトが無い」と判断して stdin 待ちになり rc=1（"No prompt provided via stdin"）。
+    # よって refs があるときは `--` で可変長オプションを打ち切ってから PROMPT を渡す。
+    for r in refs:
+        cmd += ["-i", str(r)]
+    if refs:
+        cmd.append("--")
+    cmd.append(instruction)
+    return cmd
 
 
 def _api_headers(api_key: str) -> dict[str, str]:
@@ -376,7 +425,7 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
     if not codex_cli:
         codex_cli = find_codex_cli()
     if refs:
-        _log(f"  参照画像 {len(refs)} 枚を Codex CLI 経路で分析 → 再構成指示で渡します")
+        _log(f"  参照画像 {len(refs)} 枚を Codex CLI に -i で直接添付（視覚入力）します")
     cmd = _build_codex_command(
         codex_cli, prompt, dest,
         model=model,
@@ -385,6 +434,10 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
         output_format=output_format,
         reference_images=refs,
     )
+    _img_refs = [cmd[i + 1] for i, c in enumerate(cmd) if c == "-i"]
+    if _img_refs:
+        _log("  [codex -i 添付] " + str(len(_img_refs)) + "枚: "
+             + ", ".join(Path(p).name for p in _img_refs))
     try:
         proc = subprocess.run(
             cmd,
@@ -416,8 +469,8 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
         retry_at = m.group(1).strip() if m else "(時刻不明)"
         explicit = (
             f"Codex CLI (ChatGPT サブスクリプション) の使用量上限に到達しています。"
-            f"回復時刻: {retry_at}。当面は右パネルのプロバイダーで Flow / Nano Banana 2 に切り替えてください。"
-            f"または ChatGPT Pro へのアップグレード、OpenAI API キーの取得で回避できます。"
+            f"回復時刻: {retry_at}。回復を待つか、ChatGPT Pro へのアップグレード、"
+            f"OpenAI API キーの取得で回避できます。"
         )
         _log(f"[QUOTA] {filename}: {explicit}")
         return {"ok": False, "filename": filename, "prompt": prompt,

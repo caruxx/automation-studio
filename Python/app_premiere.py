@@ -40,7 +40,7 @@ def _cleanup_stale_ipc_files(max_age=300):
                 age = time.time() - os.path.getmtime(path)
                 if age > max_age:
                     os.unlink(path)
-                    print(f"🧹 古い IPC ファイルを削除: {path} (age={int(age)}s)")
+                    print(f" 古い IPC ファイルを削除: {path} (age={int(age)}s)")
         except Exception:
             pass
 
@@ -68,7 +68,7 @@ def open_pymiere_panel():
     アクセシビリティ権限（システム設定 > プライバシーとセキュリティ > アクセシビリティ）が必要。
     関数名は後方互換のため open_pymiere_panel のまま。"""
     if _panel_alive():
-        print("✅ Premiere Link パネルは既に起動中")
+        print(" Premiere Link パネルは既に起動中")
         return True
 
     app_name = _get_premiere_app_name()
@@ -100,7 +100,7 @@ end tell
             for _ in range(30):
                 time.sleep(0.5)
                 if _panel_alive():
-                    print("✅ Premiere Link パネルを自動で開きました")
+                    print(" Premiere Link パネルを自動で開きました")
                     return True
             print("⚠️  パネルをクリックしましたが応答待ちです...")
             return False
@@ -160,7 +160,7 @@ def check_pymiere():
             print("❌ Premiere Pro が起動していません")
             return False
         result = eval_script('app.project.name')
-        print(f"✅ Premiere Pro 接続OK (pymiere): {result}")
+        print(f" Premiere Pro 接続OK (pymiere): {result}")
         return True
     except Exception as e:
         print(f"⚠️  Pymiere HTTP 未接続 ({e})")
@@ -176,7 +176,7 @@ def check_pymiere():
         return False
     try:
         result = _file_eval_script('app.project.name', timeout=10)
-        print(f"✅ Premiere Pro 接続OK (file poll): {result}")
+        print(f" Premiere Pro 接続OK (file poll): {result}")
         return True
     except Exception as e2:
         print(f"❌ ファイルポーリング エラー: {e2}")
@@ -314,7 +314,7 @@ def run_jsx(target_duration=10800, video_folder=None):
         safe_path = tmp.name.replace('\\', '\\\\').replace('"', '\\"')
         # file_eval_script で timeout を延長（3時間分の自動配置は 60s では足りない）
         _file_eval_script(f'$.evalFile("{safe_path}")', timeout=LONG_JSX_TIMEOUT)
-        print("✅ JSX 実行完了")
+        print(" JSX 実行完了")
         return True
     except Exception as e:
         print(f"❌ JSX 実行エラー: {e}")
@@ -384,7 +384,7 @@ def generate_srt(clips, output_path):
             f.write(f"{clip['title']}\r\n")
             f.write("\r\n")
 
-    print(f"✅ SRT 生成: {output_path} ({len(clips)} エントリ)")
+    print(f" SRT 生成: {output_path} ({len(clips)} エントリ)")
 
 
 def generate_timecode(clips, output_path, total_songs=None):
@@ -417,7 +417,7 @@ def generate_timecode(clips, output_path, total_songs=None):
         for line in lines:
             f.write(line + "\n")
 
-    print(f"✅ タイムコード生成: {output_path} ({len(lines)} 行)")
+    print(f" タイムコード生成: {output_path} ({len(lines)} 行)")
 
 
 def import_srt_to_timeline(srt_path):
@@ -498,12 +498,12 @@ def wait_for_project(expected_name=None, timeout=120):
             name = eval_script('app.project.name')
             if name:
                 if expected_name is None or expected_name in name:
-                    print(f"  ✅ 読み込み完了: {name}")
+                    print(f" 読み込み完了: {name}")
                     return True
         except Exception:
             pass
         time.sleep(1)
-    print("  ⏰ タイムアウト")
+    print(" タイムアウト")
     return False
 
 
@@ -644,7 +644,7 @@ def save_project(timeout: int = 180) -> bool:
         return False
     ok = "ok" in str(result)
     if ok:
-        print("  ✅ プロジェクト保存完了")
+        print(" プロジェクト保存完了")
     else:
         print(f"  ⚠️ プロジェクト保存失敗: {result}")
     return ok
@@ -817,7 +817,7 @@ def run_full(target_duration=10800, prproj_path=None, auto_export=False):
         export_to_media_encoder()
 
     print("\n" + "=" * 50)
-    print("  ✅ 完了")
+    print(" 完了")
     print(f"  SRT: subtitles_{num}.srt")
     print(f"  TC:  music_time_code_info_{num}.txt")
     if auto_export:
@@ -849,7 +849,7 @@ def regenerate_subtitles():
     generate_srt(clips, srt_path)
     generate_timecode(clips, tc_path)
 
-    print(f"✅ {len(clips)} クリップ分の字幕を再生成しました")
+    print(f" {len(clips)} クリップ分の字幕を再生成しました")
     return True
 
 

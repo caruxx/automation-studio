@@ -309,7 +309,7 @@ def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
              self_persona: str = "", only_channel_ids=None,
              skip_unchanged: bool = True) -> dict:
     """エントリポイント: 競合キャッシュをソースに分析 → 保存。"""
-    print("🧠 コンセプト軸分析を開始")
+    print(" コンセプト軸分析を開始")
     result = analyze_concepts(cli_cmd=cli_cmd, per_channel_cap=per_channel_cap,
                               self_persona=self_persona,
                               only_channel_ids=only_channel_ids,
@@ -319,7 +319,7 @@ def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
         **result,
     }
     save_cache(payload)
-    print(f"✅ concept.json 保存: {ANALYSIS_FILE}")
+    print(f" concept.json 保存: {ANALYSIS_FILE}")
     return payload
 
 

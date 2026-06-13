@@ -272,6 +272,7 @@ class DashboardConfigUpdate(BaseModel):
     reference_image_dir: Optional[str] = None    # step_bgimage: 参照画像フォルダ（空文字でクリア）
     reference_image: Optional[str] = None        # step_bgimage: 固定参照画像（空文字でクリア）
     default_duration_sec: Optional[int] = None   # Premiere 自動配置の規定尺（秒）。0/空でクリア（10800 にフォールバック）
+    export_engine: Optional[str] = None          # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(ループ連結方式)
 
 @app.put("/api/config/dashboard")
 def api_update_dashboard_config(update: DashboardConfigUpdate):
@@ -336,6 +337,13 @@ def api_update_dashboard_config(update: DashboardConfigUpdate):
                         save_channel_config(cc)
                 except Exception as _e:
                     print(f"⚠ default_duration_sec 削除に失敗: {_e}")
+        elif k == "export_engine":
+            # 書き出しエンジン（per-channel）。app_pipeline._export_engine() と同じ正規化。
+            #   - "ame"   → Premiere/AME（既定）
+            #   - "ffmpeg" → app_ffrender ループ連結方式（静止画チャンネル向け）
+            #   - 不正値/空 → "ame" にフォールバック
+            eng = str(v or "ame").strip().lower()
+            config["export_engine"] = eng if eng in ("ame", "ffmpeg") else "ame"
         else:
             config[k] = v
     save_dashboard_config_smart(config)
@@ -428,7 +436,7 @@ def api_update_benchmark_config(update: BenchmarkConfigUpdate):
 
 # ─── API: マスター設定（プロンプト + 詳細パラメータの一元管理） ───
 
-MASTER_PROMPTS_FILE = CONFIG_DIR / "master_prompts.json"
+MASTER_PROMPTS_FILE = SHARED_CONFIG_DIR / "master_prompts.json"  # PC 間共有（チャンネル運用資産）
 # プロンプトキー一覧と「上書き対象のスクリプト」のメモ
 MASTER_PROMPT_KEYS = {
     "title_generation":      "claude_proposer.py の _TITLES_PROMPT を上書き",
@@ -636,11 +644,11 @@ def api_finder_list(path: str = ""):
     roots = []
     volumes = Path("/Volumes")
     if volumes.exists():
-        roots.append({"label": "外部ストレージ", "path": "/Volumes", "icon": "💾"})
-    roots.append({"label": "ホーム", "path": str(HOME), "icon": "🏠"})
+        roots.append({"label": "外部ストレージ", "path": "/Volumes", "icon": ""})
+    roots.append({"label": "ホーム", "path": str(HOME), "icon": ""})
     cloud = HOME / "Library" / "CloudStorage"
     if cloud.exists():
-        roots.append({"label": "クラウド", "path": str(cloud), "icon": "☁"})
+        roots.append({"label": "クラウド", "path": str(cloud), "icon": ""})
     # パス解決（空なら HOME）
     target_str = (path or "").strip() or str(HOME)
     try:
@@ -686,34 +694,7 @@ def api_finder_list(path: str = ""):
         "truncated": truncated,
     }
 
-class FolderCreateRequest(BaseModel):
-    path: str
-    open_after: bool = True
-
-@app.post("/api/finder/create-folder")
-def api_finder_create_folder(req: FolderCreateRequest):
-    p = _safe_user_path(req.path)
-    p.mkdir(parents=True, exist_ok=True)
-    if req.open_after:
-        open_in_finder(p)
-    return {"status": "ok", "path": str(p), "exists": p.exists()}
-
-class FolderDeleteRequest(BaseModel):
-    path: str
-    confirm_name: str  # 安全のためフォルダ名を再入力
-
-@app.post("/api/finder/delete-folder")
-def api_finder_delete_folder(req: FolderDeleteRequest):
-    p = _safe_user_path(req.path)
-    if not p.exists():
-        raise HTTPException(404, "フォルダが存在しません")
-    if p.name != req.confirm_name:
-        raise HTTPException(400, "フォルダ名が一致しません（安全確認）")
-    children = list(p.iterdir()) if p.is_dir() else []
-    if len(children) > 0:
-        raise HTTPException(400, f"フォルダが空ではありません（{len(children)}件）。先に中身を削除してください。")
-    p.rmdir()
-    return {"status": "ok"}
+# /api/finder/create-folder・delete-folder は UI/運用経路とも参照ゼロのため削除（2026-06-10 掃除）
 
 @app.get("/api/finder/browse")
 def api_finder_browse(path: str = ""):
@@ -750,7 +731,7 @@ class SunoRunRequest(BaseModel):
     batch: Optional[bool] = False    # Claude CLI 一括生成モード
     generation_mode: Optional[str] = None  # styles_title_only / lyrics_styles / lyrics
     headless: Optional[bool] = None
-    # フロント「⚡ 生成+DL+整理」用（app.py は直接消費しないが forward 互換のため受理）
+    # フロント「 生成+DL+整理」用（app.py は直接消費しないが forward 互換のため受理）
     dl_wait_sec: Optional[int] = None
     dl_min_duration: Optional[int] = None
     auto_download: Optional[bool] = None
@@ -953,7 +934,7 @@ async def api_suno_start(req: SunoRunRequest):
     ]
     if songs_file_path:
         task_logs["suno"].insert(
-            1, f"🎯 合意済みドラフト {len(req.songs_draft_json)} 曲を投入（--songs-file、LLM生成スキップ）"
+            1, f" 合意済みドラフト {len(req.songs_draft_json)} 曲を投入（--songs-file、LLM生成スキップ）"
         )
     import datetime as _dt
     task_meta["suno"] = {
@@ -2558,7 +2539,7 @@ class TrackLikeRequest(BaseModel):
     delta: int = 0              # いいね: +1 / -1
     set_to: Optional[int] = None
     set_likes: Optional[int] = None  # set_to のエイリアス
-    toggle_bad: Optional[bool] = None  # True で 👎 トグル
+    toggle_bad: Optional[bool] = None  # True で  トグル
 
 @app.post("/api/videos/{video_name}/track-like")
 def api_video_track_like(video_name: str, req: TrackLikeRequest):
@@ -3771,6 +3752,78 @@ def api_tracking_events(record: int = 0):
             "first_run": first_run, "events": events}
 
 
+# ─── API: 動画単位の競合インテリジェンス（S1 新作ウォッチ / S2 サムネ DNA） ───
+
+class VideoIntelAnalyzeRequest(BaseModel):
+    limit: int = 8
+    dry_run: bool = False
+
+
+@app.get("/api/video-intel/records")
+def api_video_intel_records(limit: int = 100):
+    """新作ウォッチのレコード一覧（初速・サムネ・Vision 要素）。"""
+    import app_video_intel as _vi
+    recs = _vi.list_records(limit=limit)
+    pending = sum(1 for r in recs if r.get("vision") is None and r.get("thumb_url"))
+    return {"records": recs, "vision_pending": pending}
+
+
+@app.post("/api/video-intel/collect")
+def api_video_intel_collect():
+    """TRACK タブから新作レコードを回収し YouTube Data API でサムネ URL を解決。
+    LLM コストゼロ（YouTube quota は channelId 初回解決時のみ ~100 units/ch）。"""
+    growth_url = _resolve_growth_url()
+    if not growth_url:
+        raise HTTPException(400, "追跡スプレッドシート（growth_tracking_url）が未設定です")
+    config = get_dashboard_config()
+    folder = config.get("channel_folder") or ""
+    import app_video_intel as _vi
+    try:
+        return {"status": "ok", **_vi.collect(growth_url, channel_folder=folder)}
+    except Exception as e:
+        raise HTTPException(500, f"収集失敗: {e}")
+
+
+@app.post("/api/video-intel/analyze")
+def api_video_intel_analyze(req: VideoIntelAnalyzeRequest):
+    """未分析サムネの Vision 要素抽出（手動トリガ・dry_run でコスト可視化）。"""
+    import app_video_intel as _vi
+    sc = get_suno_config()
+    try:
+        return {"status": "ok", **_vi.analyze(limit=req.limit, dry_run=req.dry_run,
+                                              cli_cmd=sc.get("claude_cli") or None)}
+    except Exception as e:
+        raise HTTPException(500, f"分析失敗: {e}")
+
+
+@app.get("/api/video-intel/dna")
+def api_video_intel_dna(refresh: int = 0):
+    """サムネ DNA（初速上位 vs 全体の要素出現率差ランキング）。refresh=1 で再集計。"""
+    import app_video_intel as _vi
+    if refresh:
+        return _vi.aggregate_dna()
+    return _vi.load_dna() or _vi.aggregate_dna()
+
+
+@app.get("/api/weekly-report/latest")
+def api_weekly_report_latest():
+    """最新の週次 PDCA レポート（無ければ generate=1 で即時生成可能）。"""
+    p = CONFIG_DIR / "weekly_report_latest.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"ok": False, "hint": "レポート未生成。POST /api/weekly-report/generate で生成できます"}
+
+
+@app.post("/api/weekly-report/generate")
+def api_weekly_report_generate():
+    """週次 PDCA レポートを即時生成（cron は毎週月曜 07:00 JST）。"""
+    try:
+        return _build_weekly_report(notify=False)
+    except Exception as e:
+        raise HTTPException(500, f"レポート生成失敗: {e}")
+
+
 @app.get("/api/analysis/cache")
 def api_analysis_cache():
     """キャッシュされた分析結果を返す"""
@@ -4024,7 +4077,7 @@ def _load_analysis_cache_or_409():
     except Exception:
         raise HTTPException(500, "キャッシュ読み込み失敗")
     if not cache:
-        raise HTTPException(400, "先に競合分析を実行してください（📡 競合分析ボタン）")
+        raise HTTPException(400, "先に競合分析を実行してください（ 競合分析ボタン）")
     return cache
 
 
@@ -4434,14 +4487,14 @@ def api_benchmark_context_status():
 # ─── API: 全体ステータス（共通ステータスバー向け） ───
 
 _TASK_LABELS = {
-    "suno": {"label": "SUNO 生成", "icon": "🎵"},
-    "process": {"label": "楽曲後処理", "icon": "🎛"},
-    "pipeline": {"label": "パイプライン", "icon": "🚀"},
-    "analysis": {"label": "競合分析", "icon": "📊"},
-    "benchmark": {"label": "ベンチマーク", "icon": "🎯"},
-    "youtube": {"label": "YouTube アップロード", "icon": "📤"},
-    "flow": {"label": "Flow 画像生成", "icon": "🖼"},
-    "premiere": {"label": "Premiere 配置", "icon": "🎬"},
+    "suno": {"label": "SUNO 生成", "icon": ""},
+    "process": {"label": "楽曲後処理", "icon": ""},
+    "pipeline": {"label": "パイプライン", "icon": ""},
+    "analysis": {"label": "競合分析", "icon": ""},
+    "benchmark": {"label": "ベンチマーク", "icon": ""},
+    "youtube": {"label": "YouTube アップロード", "icon": ""},
+    "flow": {"label": "Flow 画像生成", "icon": ""},
+    "premiere": {"label": "Premiere 配置", "icon": ""},
 }
 
 
@@ -4859,6 +4912,111 @@ def api_ab_log_delete(video_name: str):
     return {"status": "ok"}
 
 
+def _timeline_value_near(daily: list, target, tolerance_days: int = 2):
+    """ChannelTimeline.daily_* [("M/D", value)] から target 日に最も近い値を返す。
+
+    タブの日付には年が無いので、target の前後 1 年で最も近い実日付に解釈する。
+    tolerance_days を超えて離れている場合は None（データ欠落扱い）。"""
+    import datetime as _dt
+    best = None  # (abs_days, value)
+    for ds, val in daily:
+        try:
+            m, d = (int(x) for x in str(ds).split("/")[:2])
+        except Exception:
+            continue
+        for year in (target.year - 1, target.year, target.year + 1):
+            try:
+                cand = _dt.date(year, m, d)
+            except ValueError:
+                continue
+            diff = abs((cand - target).days)
+            if best is None or diff < best[0]:
+                best = (diff, val)
+    if best is None or best[0] > tolerance_days:
+        return None
+    return best[1]
+
+
+def _ab_entry_channel_name(video_name: str, channels: list[dict], fallback: str) -> str:
+    """ab-log エントリの所属チャンネル名を、video_name フォルダの実在で判定する。
+
+    ab_log.json はチャンネル横断で 1 ファイルなので、エントリにチャンネル情報が無い。
+    各チャンネル folder 直下に同名フォルダがあるものを所属とみなす。"""
+    for ch in channels:
+        folder = ch.get("folder") or ""
+        name = (ch.get("name") or "").strip()
+        if folder and name and (Path(folder) / video_name).exists():
+            return name
+    return fallback
+
+
+@app.post("/api/ab-log/auto-measure")
+def api_ab_log_auto_measure():
+    """7日経過・未計測の全エントリを、追跡スプシ（TRACK_該当チャンネル）から自動計測。
+
+    delta はチャンネル総再生/総登録者の「投稿時点 → 7日後」の差分（手動転記と同義）。
+    エントリの所属チャンネルは video_name フォルダの実在から判定する。
+    個別タブに該当日のデータが無いエントリはスキップして理由を返す。"""
+    import datetime as _dt
+    growth_url = _resolve_growth_url()
+    if not growth_url:
+        raise HTTPException(400, "追跡スプレッドシート（growth_tracking_url）が未設定です")
+    fallback_ch = (get_dashboard_config().get("channel_name") or "").strip()
+    channels = get_channels()
+    from app_sheets import fetch_channel_timeline
+    timelines: dict = {}  # channel_name -> ChannelTimeline（同一リクエスト内キャッシュ）
+
+    def _tl_for(ch_name: str):
+        if ch_name not in timelines:
+            timelines[ch_name] = fetch_channel_timeline(growth_url, ch_name)
+        return timelines[ch_name]
+
+    entries = _load_ab_log()
+    now = _dt.datetime.now()
+    results = []
+    changed = False
+    for e in entries:
+        if e.get("views_delta_7d") is not None:
+            continue
+        vn = e.get("video_name") or ""
+        pub = e.get("published_at")
+        try:
+            pub_date = _dt.datetime.fromisoformat(pub).date()
+        except Exception:
+            results.append({"video_name": vn, "ok": False, "reason": "published_at 不正"})
+            continue
+        if (now.date() - pub_date).days < 7:
+            continue  # まだ計測対象でない
+        ch_name = _ab_entry_channel_name(vn, channels, fallback_ch)
+        if not ch_name:
+            results.append({"video_name": vn, "ok": False, "reason": "所属チャンネル不明"})
+            continue
+        tl = _tl_for(ch_name)
+        if tl.error:
+            results.append({"video_name": vn, "ok": False, "reason": f"TRACK_{ch_name} 取得失敗: {tl.error}"})
+            continue
+        day7 = pub_date + _dt.timedelta(days=7)
+        v0 = _timeline_value_near(tl.daily_views, pub_date)
+        v7 = _timeline_value_near(tl.daily_views, day7)
+        s0 = _timeline_value_near(tl.daily_subs, pub_date)
+        s7 = _timeline_value_near(tl.daily_subs, day7)
+        if v0 is None or v7 is None:
+            results.append({"video_name": vn, "ok": False,
+                            "reason": f"追跡データ欠落（{pub_date} or {day7} 前後に記録なし）"})
+            continue
+        e["views_delta_7d"] = int(v7 - v0)
+        e["subs_delta_7d"] = int((s7 - s0) if (s0 is not None and s7 is not None) else 0)
+        e["measured_at"] = now.isoformat()
+        e["measure_note"] = f"auto: TRACK_{ch_name}（ch総数の7日差分）"
+        changed = True
+        results.append({"video_name": vn, "ok": True, "channel": ch_name,
+                        "views_delta_7d": e["views_delta_7d"], "subs_delta_7d": e["subs_delta_7d"]})
+    if changed:
+        _save_ab_log(entries)
+    measured = sum(1 for r in results if r.get("ok"))
+    return {"status": "ok", "measured": measured, "skipped": len(results) - measured, "results": results}
+
+
 # ─── API: チャンネルアイコン ───
 
 @app.get("/api/channel-icon")
@@ -4961,6 +5119,11 @@ app.include_router(_images_router)
 # ─── premiere_photoshop ドメインは routers/premiere_photoshop.py へ分離（D9）───
 from routers.premiere_photoshop import router as _premiere_photoshop_router
 app.include_router(_premiere_photoshop_router)
+
+
+# ─── live（VPS ライブ配信）ドメインは routers/live.py ───
+from routers.live import router as _live_router
+app.include_router(_live_router)
 
 
 # ─── API: 環境セットアップ ───
@@ -5069,8 +5232,7 @@ def api_credentials_status():
     }
 
     # Discord notification
-    discord_cfg = CONFIG_DIR / "discord_config.json"
-    result["discord"] = {"configured": discord_cfg.exists()}
+    result["discord"] = {"configured": DISCORD_CONFIG.exists()}
     result["line"] = {"configured": False, "deprecated": True}
 
     # SUNO (Playwright profile)
@@ -5144,7 +5306,7 @@ def api_setup_status():
     else:
         checks["suno_api_key"] = bool(_suno_cfg.get("api_key"))
     checks["youtube_secret"] = (CONFIG_DIR / "youtube_client_secret.json").exists()
-    checks["discord_config"] = (CONFIG_DIR / "discord_config.json").exists()
+    checks["discord_config"] = DISCORD_CONFIG.exists()
     checks["chromium_profile"] = (CONFIG_DIR / "chromium_profile").exists()
     return {"checks": checks}
 
@@ -6334,7 +6496,7 @@ async def _job_publish_now(payload: dict):
     if status == "ok":
         url = f"https://youtu.be/{vid}"
         _record_history(job_id, "done", f"[{ch_name}] {video_name} → public ({vid})")
-        _send_line_notify(f"🎉 [{ch_name}] {video_name} を public に公開しました\n{url}")
+        _send_line_notify(f" [{ch_name}] {video_name} を public に公開しました\n{url}")
     elif status == "already_public":
         _record_history(job_id, "done", f"[{ch_name}] {video_name} は既に public")
     elif status == "retryable":
@@ -6446,7 +6608,7 @@ async def _job_auto_resume(payload: dict):
     _record_history(job_id, "started",
                     f"[{ch_name}] resume vol.{vol} from {from_stage} (attempt {attempt}, run={run_id[-12:] if run_id else '?'})")
     _send_line_notify(
-        f"🔄 [{ch_name}] vol.{vol} を {from_stage} から自動再投入中（{attempt} 回目）"
+        f" [{ch_name}] vol.{vol} を {from_stage} から自動再投入中（{attempt} 回目）"
     )
     cmd = [sys.executable, str(SHARED_BASE / "Python" / "app_pipeline.py"),
            str(vol), "--auto", "--from", from_stage]
@@ -6464,7 +6626,7 @@ async def _job_auto_resume(payload: dict):
         stdout_str = (out or b"").decode(errors="replace")
         if proc.returncode == 0:
             _record_history(job_id, "done", f"[{ch_name}] resume vol.{vol} 完了")
-            _send_line_notify(f"✅ [{ch_name}] vol.{vol} 再投入で完了")
+            _send_line_notify(f" [{ch_name}] vol.{vol} 再投入で完了")
             if run_id:
                 try:
                     import app_run_ledger as _ledger
@@ -6489,7 +6651,7 @@ async def _job_auto_resume(payload: dict):
             payload["_parent_run_id"] = run_id
             _schedule_resume(payload, next_stage, attempt + 1)
             _send_line_notify(
-                f"❌→🔄 [{ch_name}] vol.{vol} 再失敗、{int(payload.get('auto_resume_delay_min') or 30)} 分後に再々投入をスケジュール（{attempt + 1} 回目）"
+                f"❌→ [{ch_name}] vol.{vol} 再失敗、{int(payload.get('auto_resume_delay_min') or 30)} 分後に再々投入をスケジュール（{attempt + 1} 回目）"
             )
             _record_history(job_id, "error",
                             f"[{ch_name}] resume vol.{vol} 失敗、再々投入予約: {next_stage}")
@@ -6572,7 +6734,7 @@ async def _job_vol_create(job: dict):
     except Exception as e:
         print(f"[ledger] start_run 失敗（無視）: {e}")
     _record_history(job_id, "started", f"[{ch_name}] vol.{next_vol} 作成開始 (run={run_id[-12:] if run_id else '?'})")
-    _send_line_notify(f"🚀 [{ch_name}] vol.{next_vol} の作成を開始 ({job.get('name', job_id)})")
+    _send_line_notify(f" [{ch_name}] vol.{next_vol} の作成を開始 ({job.get('name', job_id)})")
     # app_pipeline.py を起動（registry 由来の id があれば --channel-id 優先）
     cmd = [sys.executable, str(SHARED_BASE / "Python" / "app_pipeline.py"),
            str(next_vol), "--from-benchmark", "--auto"]
@@ -6590,7 +6752,7 @@ async def _job_vol_create(job: dict):
         stdout_str = (out or b"").decode(errors="replace")
         if proc.returncode == 0:
             _record_history(job_id, "done", f"[{ch_name}] vol.{next_vol} 完了")
-            _send_line_notify(f"✅ [{ch_name}] vol.{next_vol} 完了")
+            _send_line_notify(f" [{ch_name}] vol.{next_vol} 完了")
             if run_id:
                 try:
                     import app_run_ledger as _ledger
@@ -6622,7 +6784,7 @@ async def _job_vol_create(job: dict):
             if ok:
                 _schedule_resume(resume_payload, failed_stage, attempt=2)
                 _send_line_notify(
-                    f"❌→🔄 [{ch_name}] vol.{next_vol} 失敗（{failed_stage}）、"
+                    f"❌→ [{ch_name}] vol.{next_vol} 失敗（{failed_stage}）、"
                     f"{int(job.get('auto_resume_delay_min') or 30)} 分後に自動再投入"
                 )
             else:
@@ -6693,7 +6855,7 @@ async def _job_spot_create(job: dict):
     except Exception as e:
         print(f"[ledger] start_run 失敗（無視）: {e}")
     _record_history(job_id, "started", f"[{ch_name}] spot vol.{vol} (run={run_id[-12:] if run_id else '?'})")
-    _send_line_notify(f"🚀 [{ch_name}] スポット vol.{vol} 開始")
+    _send_line_notify(f" [{ch_name}] スポット vol.{vol} 開始")
     cmd = [sys.executable, str(SHARED_BASE / "Python" / "app_pipeline.py"),
            str(vol), "--from-benchmark", "--auto"]
     if ch_id:
@@ -6711,7 +6873,7 @@ async def _job_spot_create(job: dict):
         ok = proc.returncode == 0
         if ok:
             _record_history(job_id, "done", f"[{ch_name}] vol.{vol} 完了")
-            _send_line_notify(f"✅ [{ch_name}] スポット vol.{vol}")
+            _send_line_notify(f" [{ch_name}] スポット vol.{vol}")
             if run_id:
                 try:
                     import app_run_ledger as _ledger
@@ -6738,7 +6900,7 @@ async def _job_spot_create(job: dict):
             if should_resume:
                 _schedule_resume(resume_payload, failed_stage, attempt=2)
                 _send_line_notify(
-                    f"❌→🔄 [{ch_name}] スポット vol.{vol} 失敗（{failed_stage}）、"
+                    f"❌→ [{ch_name}] スポット vol.{vol} 失敗（{failed_stage}）、"
                     f"{int(job.get('auto_resume_delay_min') or 30)} 分後に自動再投入"
                 )
             else:
@@ -6781,6 +6943,142 @@ async def _job_token_health(job: dict):
     _send_line_notify("\n".join(lines))
     _record_history(job_id, "error" if any(w.get("status") in ("expired", "missing") for w in warnings) else "done",
                     f"{len(warnings)} 件の warn")
+
+
+def _job_tracking_snapshot():
+    """ベンチ追跡: 日次スナップショットを保存し、新着ch/新作/急伸があれば Discord 通知。
+    あわせて動画単位レコード（video_intel）の収集・初速更新も行う（LLM コストゼロ）。
+
+    tracking-events の差分検知は「前回保存スナップショット vs 今回」なので、
+    保存が止まると検知も止まる。毎朝 1 回 cron で保存する。"""
+    try:
+        growth_url = _resolve_growth_url()
+        if not growth_url:
+            return
+        from app_sheets import fetch_csv, parse_growth_tracking, record_daily_snapshot
+        entries = parse_growth_tracking(fetch_csv(growth_url))
+        result = record_daily_snapshot(entries)
+        events = result.get("events") or {}
+        # S1: 動画単位レコードの収集（Vision はやらない＝手動トリガ方針）
+        try:
+            import app_video_intel as _vi
+            folder = get_dashboard_config().get("channel_folder") or ""
+            ci = _vi.collect(growth_url, channel_folder=folder)
+            print(f"[video-intel] collect: {ci}")
+        except Exception as e:
+            print(f"[video-intel] collect 失敗: {e}")
+        if result.get("first_run"):
+            print("[tracking] 初回スナップショット保存")
+            return
+        new_ch = events.get("new_channels") or []
+        new_vid = events.get("new_videos") or []
+        surging = events.get("surging") or []
+        if not (new_ch or new_vid or surging):
+            return
+        lines = [" ベンチ追跡 日次レポート:"]
+        if new_ch:
+            lines.append(f"  • 新着チャンネル {len(new_ch)} 件: " + ", ".join(str(c.get('name', c) if isinstance(c, dict) else c) for c in new_ch[:5]))
+        if new_vid:
+            lines.append(f"  • 新作投稿 {len(new_vid)} 件: " + ", ".join(str(v.get('channel', v) if isinstance(v, dict) else v) for v in new_vid[:5]))
+        if surging:
+            lines.append(f"  • 急伸 {len(surging)} 件: " + ", ".join(str(s.get('name', s) if isinstance(s, dict) else s) for s in surging[:5]))
+        _send_line_notify("\n".join(lines))
+    except Exception as e:
+        print(f"[tracking] snapshot 失敗: {e}")
+
+
+def _build_weekly_report(*, notify: bool = True) -> dict:
+    """S4: 週次 PDCA レポート。自ch 実績（A/B ログ）＋競合の刺さり新作＋サムネ DNA を整形。
+
+    テンプレベース（LLM 不使用）。APP_WEEKLY_REPORT_LLM=1 のときのみ末尾に LLM 考察を付ける。
+    結果は CONFIG_DIR/weekly_report_latest.json に保存し、notify=True なら Discord にも送る。"""
+    import datetime as _dt
+    import app_video_intel as _vi
+    now = _dt.datetime.now()
+    week_ago = (now - _dt.timedelta(days=7)).date().isoformat()
+
+    # 1) 自ch: 計測待ちを先に自動計測 → 直近の実績を集める
+    try:
+        api_ab_log_auto_measure()
+    except Exception:
+        pass
+    ab = _load_ab_log()
+    measured = [e for e in ab if e.get("measured_at") and (e.get("measured_at") or "") >= week_ago]
+    pending = [e for e in ab if e.get("views_delta_7d") is None]
+
+    # 2) 競合: 直近 7 日に検知した新作の初速 TOP5
+    recs = [r for r in _vi.list_records(limit=300)
+            if (r.get("detected_date") or "") >= week_ago]
+    recs.sort(key=lambda r: int(r.get("first_v48") or 0), reverse=True)
+    top_new = recs[:5]
+
+    # 3) サムネ DNA（分析済みが足りなければ hint が返る）
+    dna = _vi.aggregate_dna()
+
+    lines = [f" 週次 PDCA レポート（{week_ago} 〜 {now.date().isoformat()}）", ""]
+    lines.append("■ 自チャンネル実績（7日 delta）")
+    if measured:
+        for e in measured[:6]:
+            lines.append(f"  • {e.get('video_name')}: +{e.get('views_delta_7d', 0):,}再生 / +{e.get('subs_delta_7d', 0)}登録")
+    else:
+        lines.append("  （今週計測された動画なし）")
+    if pending:
+        lines.append(f"  ⏳ 計測待ち {len(pending)} 件")
+    lines.append("")
+    lines.append("■ 競合の刺さり新作 TOP5（48h 初速）")
+    if top_new:
+        for r in top_new:
+            v = r.get("vision") or {}
+            elem = f"［{v.get('scene', '?')}/{v.get('people', '?')}/{v.get('style', '?')}］" if isinstance(v, dict) and v.get("scene") else "（未分析）"
+            lines.append(f"  • [{r.get('channel', '')[:14]}] {r.get('title', '')[:38]} — {int(r.get('first_v48') or 0):,}v {elem}")
+    else:
+        lines.append("  （今週検知した新作なし）")
+    lines.append("")
+    lines.append("■ 勝ちサムネ要素（初速上位での出現率リフト）")
+    if dna.get("ok"):
+        for x in (dna.get("top_positive") or [])[:5]:
+            lines.append(f"  • {x['value']}: +{x['lift_pct']}pt（上位{x['win_rate_pct']}% vs 全体{x['base_rate_pct']}%・n={x['n']}）")
+    else:
+        lines.append(f"  （{dna.get('hint', 'データ不足')}）")
+    vp = sum(1 for r in _vi.list_records(limit=300) if r.get("vision") is None and r.get("thumb_url"))
+    if vp:
+        lines.append(f"  → 未分析サムネ {vp} 件。ベンチマークページの「新作ウォッチ」から分析を実行できます")
+
+    # オプション: LLM による考察（既定 OFF）
+    if (os.environ.get("APP_WEEKLY_REPORT_LLM") or "").strip() in ("1", "true", "yes"):
+        try:
+            from app_llm_runner import run_llm
+            sc = get_suno_config()
+            insight = run_llm(
+                "以下は YouTube BGM チャンネル運営の週次データです。改善アクションを日本語で3点、"
+                "各1行で提案してください。\n\n" + "\n".join(lines),
+                cli_cmd=sc.get("claude_cli") or None, timeout=120, label="weekly-report")
+            lines += ["", "■ 考察（AI）", insight.strip()[:800]]
+        except Exception as e:
+            lines += ["", f"（AI 考察スキップ: {e}）"]
+
+    text = "\n".join(lines)
+    report = {"ok": True, "generated_at": now.isoformat()[:19], "period_from": week_ago,
+              "text": text,
+              "measured": measured[:6], "pending_count": len(pending),
+              "top_new": top_new, "dna_ok": bool(dna.get("ok")),
+              "dna_top": (dna.get("top_positive") or [])[:5]}
+    try:
+        (CONFIG_DIR / "weekly_report_latest.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+    if notify:
+        _send_line_notify(text)
+    return report
+
+
+def _job_weekly_report():
+    try:
+        _build_weekly_report(notify=True)
+        print("[weekly-report] 生成・通知 完了")
+    except Exception as e:
+        print(f"[weekly-report] 失敗: {e}")
 
 
 JOB_HANDLERS = {
@@ -7099,6 +7397,23 @@ async def _start_scheduler():
                 print(f"[orchestrator] tick 登録（{_tick_min}分間隔・autopilot ON channel のみ実投入＝既定 dormant）")
             except Exception as e:
                 print(f"[orchestrator] tick 登録失敗: {e}")
+        # ベンチ追跡: 日次スナップショット（tracking-events の差分検知は前回スナップ
+        # ショットとの比較なので、API を叩かない日があると新着/急伸を取りこぼす）
+        if (os.environ.get("APP_TRACKING_SNAPSHOT_ENABLED") or "1").strip() in ("1", "true", "yes"):
+            try:
+                from apscheduler.triggers.cron import CronTrigger as _SnapCron
+                _scheduler.add_job(_job_tracking_snapshot, trigger=_SnapCron(hour=6, minute=30),
+                                   id="tracking_snapshot_daily", replace_existing=True,
+                                   max_instances=1, coalesce=True)
+                print("[tracking] 日次スナップショット登録（毎日 06:30 JST）")
+                # S4: 週次 PDCA レポート（毎週月曜 07:00 JST・日次スナップショットの後）
+                _scheduler.add_job(_job_weekly_report,
+                                   trigger=_SnapCron(day_of_week="mon", hour=7, minute=0),
+                                   id="weekly_pdca_report", replace_existing=True,
+                                   max_instances=1, coalesce=True)
+                print("[weekly-report] 週次レポート登録（毎週月曜 07:00 JST）")
+            except Exception as e:
+                print(f"[tracking] スナップショット登録失敗: {e}")
         print(f"[scheduler] started ({len(_scheduler.get_jobs())} jobs registered)")
     except ImportError:
         print("[scheduler] apscheduler 未インストール。pip install apscheduler が必要")
@@ -7159,7 +7474,7 @@ def _execute_render_job(job: dict) -> None:
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if proc.returncode == 0:
             _rq.mark_done(job_id)
-            print(f"[render-queue] ✅ job#{job_id} done", flush=True)
+            print(f"[render-queue]  job#{job_id} done", flush=True)
         else:
             tail = (proc.stdout or b"").decode(errors="replace")[-300:]
             _rq.mark_error(job_id, f"exit={proc.returncode} {tail}")
@@ -7170,7 +7485,7 @@ def _execute_render_job(job: dict) -> None:
     except subprocess.TimeoutExpired:
         _rq.mark_error(job_id, f"timeout {timeout}s")
         _send_line_notify(
-            f"⏰ render queue: [{job.get('channel_name','?')}] "
+            f" render queue: [{job.get('channel_name','?')}] "
             f"vol.{job['vol']} {stage} タイムアウト ({timeout}s)"
         )
     except Exception as e:
@@ -7215,6 +7530,11 @@ async def _validate_channel_registry():
             migrate_benchmark_to_shared(verbose=True)
         except Exception as e:
             print(f"[benchmark] 移行呼び出し失敗（続行）: {e}")
+        # PC 間共有: discord/prompts/master_prompts を共有ドライブへ移行
+        try:
+            migrate_shared_settings(verbose=True)
+        except Exception as e:
+            print(f"[shared-config] 移行呼び出し失敗（続行）: {e}")
         chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
         if not chs:
             print("[registry] channels.json が空。基本設定 > チャンネル管理から追加してください。")
@@ -7894,6 +8214,41 @@ def api_set_autopilot(req: AutopilotRequest):
        別途 app.py への orchestrator 統合（GO 後）が必要。ここでは scheduler に
        一切触れない（add_job しない）。"""
     return _save_channel_scalar(req.channel_id, {"autopilot_enabled": bool(req.enabled)})
+
+
+class BreakerResetRequest(BaseModel):
+    channel_id: str
+
+
+@app.post("/api/workers/breaker/reset")
+def api_workers_breaker_reset(req: BreakerResetRequest):
+    """ブレーカー手動解除: 該当チャンネルの直近連続 failed run を cancelled に降格。
+
+    ブレーカー状態は専用ストアを持たず台帳から都度算出されるため、解除＝台帳の更新
+    （従来は runs.db を SQLite 直接 UPDATE するしかなかった操作の正規 API 化）。
+    summary には「手動リセット」が追記される。"""
+    channel_id = (req.channel_id or "").strip()
+    if not channel_id:
+        raise HTTPException(400, "channel_id は必須です")
+    sys.path.insert(0, str(SHARED_BASE / "Python"))
+    try:
+        import app_run_ledger as _ledger
+    except Exception as e:
+        raise HTTPException(500, f"run_ledger import 失敗: {e}")
+    try:
+        n = _ledger.reset_consecutive_failures(channel_id)
+    except Exception as e:
+        raise HTTPException(500, f"breaker reset 失敗: {e}")
+    # 解除後の状態を返す（UI 即時反映用）
+    fails, tripped = 0, False
+    try:
+        import app_orchestrator as _orch
+        fails = _orch.consecutive_failures(channel_id)
+        tripped = _orch.is_channel_tripped(channel_id)
+    except Exception:
+        pass
+    return {"status": "ok", "channel_id": channel_id, "cancelled_runs": n,
+            "consecutive_failures": fails, "tripped": tripped}
 
 
 def _run_uvicorn():

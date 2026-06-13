@@ -174,6 +174,12 @@ lsof -ti:8888 | xargs kill -9
 | 「今伸びてるチャンネルは？」 | `curl GET /api/analysis/hot-channels?top_n=10` |
 | 「WEB を起動して」 | `bash start.sh` |
 | 「WEB を再起動して」 | `lsof -ti:8888 | xargs kill -9; bash start.sh` |
+| 「ライブ配信を開始して/止めて」 | `curl POST /api/live/streams/<id>/start`（stop/restart も同形）。状態は `curl GET /api/live/status` |
+| 「ライブの動画を差し替えて」 | 設定変更後 `curl POST /api/live/streams/<id>/swap`（プレイリスト次へは `?next=1`）。**配信は止まらない** |
+| 「ライブ配信の調子は？」「VPS の負荷は？」 | `curl GET /api/live/status`（load/mem/送信Mbps/グループ別容量 + 配信別稼働）。ログは `GET /api/live/streams/<id>/log` |
+| 「何人見てる？」 | `curl GET /api/live/viewers?force=1`（同時視聴者数。5分キャッシュ） |
+| 「ライブのタイトル/サムネを変えて」 | `GET /api/live/broadcasts?stream_id=<id>` で video_id → `PUT /api/live/broadcasts` / `POST /api/live/thumbnail` |
+| 「VPS を初期設定して」 | Web UI「ライブ配信」→ 初期設定。CLI なら `curl POST /api/live/setup {host, password?}`（詳細 [skills/app-live-streaming.md](skills/app-live-streaming.md)） |
 
 ## vol 番号からフォルダ名の解決
 

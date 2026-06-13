@@ -318,7 +318,7 @@ def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 10,
         **result,
     }
     save_cache(payload)
-    print(f"✅ title.json 保存: {ANALYSIS_FILE}")
+    print(f" title.json 保存: {ANALYSIS_FILE}")
     return payload
 
 

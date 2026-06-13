@@ -1139,7 +1139,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                 vids = [c["video_id"] for c in ctxs if c.get("video_id")]
                 self_stats_map = _ct_fetch_self_stats(vids)
                 if self_stats_map:
-                    logs.append(f"📊 YouTube Data API で {len(self_stats_map)} 件の自動画 stats を取得")
+                    logs.append(f" YouTube Data API で {len(self_stats_map)} 件の自動画 stats を取得")
                 elif vids:
                     logs.append(f"⚠ self_stats 取得失敗（YouTube API key 未設定？）— concept のみで継続")
             except Exception as e:
@@ -1152,7 +1152,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
 
         for idx, vn in enumerate(targets, 1):
             if meta.get("stop_requested"):
-                logs.append(f"⏹ 停止要求により中断（{idx-1}/{len(targets)} 完了）")
+                logs.append(f" 停止要求により中断（{idx-1}/{len(targets)} 完了）")
                 break
             meta["current"] = vn
             logs.append(f"\n=== [{idx}/{len(targets)}] {vn} ===")
@@ -1173,7 +1173,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                     benchmark_cache=bench_cache,
                     top_n=max(1, min(int(req.max_competitors_per_video or 4), 8)),
                 )
-                logs.append(f"🎯 matched: {len(matched)} 件 " +
+                logs.append(f" matched: {len(matched)} 件 " +
                             (", ".join(f"{m['channelName']}:{m['title'][:30]}" for m in matched[:3]) or "(0 件 → aggregate fallback)"))
 
                 # 2) 参照画像 paths
@@ -1203,7 +1203,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                         vision_obj = _bt._extract_json(vraw) or {}
                         if vision_obj:
                             thumbnail_axis = _vision_to_thumbnail_axis(vision_obj)
-                            logs.append(f"🧠 Vision 抽出: subject={(vision_obj.get('subject','') or '')[:70]}")
+                            logs.append(f" Vision 抽出: subject={(vision_obj.get('subject','') or '')[:70]}")
                             # Phase C: attention_hooks を Viewer resonance として強調する hint を追加
                             hooks = vision_obj.get("attention_hooks") or []
                             if isinstance(hooks, list) and hooks:
@@ -1240,7 +1240,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                 image_dir.mkdir(parents=True, exist_ok=True)
                 start_idx, existing = _ct.scan_start_index(image_dir, vn)
                 if existing > 0:
-                    logs.append(f"📂 既存 {existing} 枚 → v{start_idx} から生成")
+                    logs.append(f" 既存 {existing} 枚 → v{start_idx} から生成")
 
                 n_per_video = max(1, min(int(req.n_per_video or 4), 8))
                 items = _ip.build_5element_prompts(
@@ -1388,7 +1388,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                 # Vision スコアリング (auto_score=True のとき)
                 eval_entries: list[dict] = []
                 if req.auto_score and generated_files:
-                    logs.append(f"📊 Vision スコアリング開始 ({len(generated_files)} 枚)…")
+                    logs.append(f" Vision スコアリング開始 ({len(generated_files)} 枚)…")
                     try:
                         scoring = _tscore.score_thumbnails(
                             generated_paths=generated_files,
@@ -1434,7 +1434,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                             counts = _tscore.status_counts(judged)
                             best = _tscore.best_of(judged)
                             logs.append(
-                                f"📊 スコア: 自動承認 {counts.get('auto_approved',0)} / "
+                                f" スコア: 自動承認 {counts.get('auto_approved',0)} / "
                                 f"要確認 {counts.get('needs_review',0)} / "
                                 f"最高 {best.get('score_total',0) if best else 0}/100 ({best.get('filename','') if best else '-'})"
                             )
@@ -1972,7 +1972,7 @@ async def api_series_generate(req: SeriesGenerateRequest):
                             if picked_paths:
                                 cmd += ["--reference-image", picked_paths[0]]
                                 task_logs["series_generate"].append(
-                                    f"  📎 image2 reference(API): {Path(picked_paths[0]).name}"
+                                    f" image2 reference(API): {Path(picked_paths[0]).name}"
                                 )
                             else:
                                 task_logs["series_generate"].append(

@@ -28,10 +28,10 @@
 |--------|----------|------|
 | **app-bgimage（本ファイル）** | パイプライン STEP 3。**自動・無人**で背景 1 枚 | `<vol_folder>/vol{N}.png` |
 | [app-image-select.md](./app-image-select.md) | ユーザーが UI で **メイン + サブ** を手動選択 | `<vol_folder>/selected_images.json` |
-| [app-series-proposals.md](./app-series-proposals.md) | コンテンツページ上部で **複数 vol まとめて** 提案 → Flow/Codex で一括生成 | ステージングフォルダ |
+| [app-series-proposals.md](./app-series-proposals.md) | コンテンツページ上部で **複数 vol まとめて** 提案 → codex（gpt-image-2）で一括生成 | ステージングフォルダ |
 
 - app-bgimage は **「無人パイプラインの最低限の保険」**。常時 1 枚は揃う。
-- ユーザーが Flow / Codex で複数枚作って手動で main/sub を組みたい場合は app-image-select / app-series-proposals。
+- ユーザーが codex で複数枚作って手動で main/sub を組みたい場合は app-image-select / app-series-proposals。
 - 3 つは併存可能。bgimage が生成した `vol{N}.png` は app-image-select で `main` に明示採用すれば JSX が優先する。
 
 ## データソース

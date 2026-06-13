@@ -3,7 +3,7 @@
 > 実装: `Python/app_pipeline.py` `step_thumbnail`（描画）/ `_build_thumbnail_prompt`（プロンプト構築）/ `Python/app_image_prompt.py`（visual brief 正規化）/ `Python/codex_imagegen.py`（Codex/gpt-image）
 > STEP キー: `thumbnail`（`STEPS` 内）。出力: `<vol_folder>/thumbnail.png`
 
-> ⚠ **自動サムネ生成は codex 一本化済み（Flow 経路は削除）**。Flow は手動 UI（`app.py` の `/api/flow/*`）でのみ利用。このパイプライン step から Flow は呼ばれない。
+> ⚠ **自動サムネ生成は codex 一本化済み**。D8 で Flow/Midjourney は完全撤去され、`/api/flow/*` も存在しない（手動 UI 含め Flow 経路は無い）。
 
 ## 目的
 
@@ -37,7 +37,7 @@ Codex に `app_benchmark_thumbnail.get_picked_paths(limit=1)` の先頭 1 枚を
 
 プロバイダは env `APP_THUMBNAIL_PROVIDERS`（**既定 `codex`**。自動サムネ生成は codex 一本化済み）。`flow` を指定すると「⚠ Flow は削除済み → codex で生成します」と警告のうえ codex にフォールバックする。値が完全に空・無効なときだけ step をスキップ。
 
-> ⚠ Flow（`flow_automation.py`）はこの step から呼ばれない。Flow は `app.py` の手動 UI（`/api/flow/login` `/api/flow/generate` `/api/flow/login-status`）専用に温存。
+> ⚠ Flow（`flow_automation.py`）は D8 で完全撤去（`/api/flow/*` も廃止）。残っているのは `flow` 指定時の後方互換警告のみ。
 
 ### Codex（`codex_imagegen.py`）
 ```

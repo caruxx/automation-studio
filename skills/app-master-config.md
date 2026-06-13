@@ -1,7 +1,8 @@
 # app-master-config: マスター設定（統合管理タブ）
 
-プロンプト・SUNO/Flow パラメータ・スケジュール・書き出し・リモートアクセス・インポート/エクスポートを
-**1 画面で集約管理**する「⚙ マスター設定」タブ。v2 で新設。
+プロンプト・SUNO パラメータ・スケジュール・書き出し・リモートアクセス・インポート/エクスポートを
+**1 画面で集約管理**する「⚙ マスター設定（詳細設定）」タブ。v2 で新設。
+（D12 で `master_settings.json` は完全廃止 — suno 系は `suno_config.json`、tunnel_url は `dashboard_config.json`、その他は per-channel 設定へ移行。D8 で Flow/Midjourney は撤去され画像生成は codex 一本化。）
 
 ## 目的
 
@@ -15,9 +16,9 @@ v1 までは設定が以下 5 箇所に散在していた:
 | `~/.config/{app_id}/prompts.json` | プロンプトプリセット |
 | `{channel_folder}/_automation.json` | チャンネル別自動化 |
 | `claude_proposer.py` ハードコード | タイトル/説明/タグ生成プロンプト（編集不可） |
-| `flow_automation.py:60` | `DEFAULT_COUNT="x4"` 決め打ち |
+| `flow_automation.py:60`（D8 で本体ごと撤去済み） | `DEFAULT_COUNT="x4"` 決め打ち |
 
-→ 「プロンプトを調整したい」「Flow の枚数を変えたい」だけでコード編集が必要だった。
+→ 「プロンプトを調整したい」「生成枚数を変えたい」だけでコード編集が必要だった。
 
 v2 では**物理ファイル分離は維持**（後方互換）しつつ、API 層で統合し、UI で 1 画面編集できるようにした。
 
@@ -33,23 +34,23 @@ v2 では**物理ファイル分離は維持**（後方互換）しつつ、API 
 基本設定          ← 既存（チャンネル基本・API キー・ペルソナ）
 ```
 
-## 9 セクション構成
+## セクション構成（v2 当初 9 → D8/D12 後は実質 6）
 
 | # | セクション | 対応ファイル |
 |---|-----------|-------------|
-| 1 | 📝 プロンプト管理 | `master_prompts.json`（8 種を上書き可） |
-| 2 | 🎵 SUNO 詳細 | `suno_config.json` + `master_settings.suno` |
-| 3 | 🖼 Flow 生成 | `master_settings.flow`（default_count, batch_size, reference_image） |
-| 4 | 📝 メタ生成 | `master_settings.meta`（title_count, description_target_chars, tags_target_count, fixed_tags） |
-| 5 | 🎯 ベンチマーク | `benchmark_config.json` + 「日本語で再分析」「キャッシュクリア」 |
+| 1 | 📝 プロンプト管理 | `master_prompts.json`（7 種を上書き可。チャンネル別保存 → グローバルにフォールバック） |
+| 2 | 🎵 SUNO 詳細 | `suno_config.json`（基本設定と同期） |
+| 3 | Flow 生成 | **D8/D12 で撤去**（Flow 機能撤去 + `master_settings.flow` 廃止。画像生成は codex 一本化） |
+| 4 | メタ生成 | **D12 で撤去**（`master_settings.meta` は実処理に未配線の死蔵設定だったため廃止） |
+| 5 | ベンチマーク | UI カードは撤去（競合分析キャッシュカードに集約）。API の `benchmark` セクションは存続 |
 | 6 | ⏱ 自動化スケジュール | `schedule_jobs.json`（詳細は [app-schedule.md](./app-schedule.md)） |
 | 7 | 📤 書き出し | `export_rules.json`（自動化タブへのショートカット） |
-| 8 | 🌐 リモートアクセス | `auth_token.txt` + Tunnel URL（詳細は [app-remote-access.md](./app-remote-access.md)） |
+| 8 | 🌐 リモートアクセス | `auth_token.txt` + Tunnel URL（D12 で `dashboard_config.json` の `tunnel_url` に移送。詳細は [app-remote-access.md](./app-remote-access.md)） |
 | 9 | 💾 インポート/エクスポート | 全設定の JSON ダンプ・復元 |
 
 ## プロンプト管理（Section 1）
 
-`~/.config/{app_id}/master_prompts.json` に 8 種のプロンプトを上書き保存可能。
+7 種のプロンプトを上書き保存可能（アクティブチャンネルの設定に保存され、グローバル `~/.config/{app_id}/master_prompts.json` にフォールバック）。
 **空文字列にするとハードコード（ソースコード内のデフォルト）にフォールバック**。
 
 | キー | 上書き対象 | 場所 |
@@ -59,7 +60,6 @@ v2 では**物理ファイル分離は維持**（後方互換）しつつ、API 
 | `tags_generation` | `_TAGS_PROMPT` | [Python/claude_proposer.py](../Python/claude_proposer.py) L129-154 |
 | `competitor_analysis` | `analyze_with_claude` 内 | [Python/app_competitor.py](../Python/app_competitor.py) L335 付近（v3 で言語ハイブリッド化: descriptive=日本語 / シード=英語 / 数値=numeric） |
 | `suno_from_analysis` | `propose_suno_prompt` | [Python/app_competitor.py](../Python/app_competitor.py) L446 |
-| `flow_from_analysis` | `propose_flow_prompt` | [Python/app_competitor.py](../Python/app_competitor.py) L514 |
 | `suno_from_persona` | `/api/suno/suggest-prompt` | [Python/app.py](../Python/app.py) `api_suno_suggest_prompt` |
 | `imitate_evolve` | `/api/videos/.../suggest-imitate-evolve` | 徹底パクリ進化分析（[app-imitate-evolve.md](./app-imitate-evolve.md)） |
 
@@ -89,27 +89,13 @@ v3 で `_TITLES_PROMPT` / `_DESCRIPTION_PROMPT` / `_TAGS_PROMPT` に **`{benchma
 | 生成回数 | `suno_config.loop_count` | 5 |
 | 間隔（秒） | `suno_config.loop_interval_sec` | 180 |
 | 一括生成 | `suno_config.loop_batch` | false |
-| Workspace パターン | `master_settings.suno.workspace_pattern` | `{channel}_vol{vol}` |
-| DL 待機秒 | `master_settings.suno.dl_wait_sec` | 30 |
-| リトライ回数 | `master_settings.suno.retry_count` | 2 |
 
-**設定タブの SUNO セクションと同じ値**（双方向同期）。マスター側の方が詳細項目を扱う。
+**設定タブの SUNO セクションと同じ値**（双方向同期）。
+旧 `master_settings.suno`（workspace_pattern / dl_wait_sec / retry_count）は D12 で廃止 — DL 待機秒等は自動化タブ・実行リクエスト側（`suno_config` / API パラメータ）に統合済み。
 
 ## Flow 生成（Section 3）
 
-`master_settings.flow.default_count` を 1〜8 で設定すると、
-[Python/flow_automation.py](../Python/flow_automation.py) の `_master_flow_count()` が起動時に参照し、
-`DEFAULT_COUNT="x4"` を上書きする。
-
-```python
-def _master_flow_count() -> str:
-    p = Path.home() / ".config/{app_id}/master_settings.json"
-    if p.exists():
-        data = json.loads(p.read_text(encoding="utf-8"))
-        n = int((data.get("flow") or {}).get("default_count") or 0)
-        if 1 <= n <= 8: return f"x{n}"
-    return DEFAULT_COUNT
-```
+D8 で撤去（Flow 機能ごと削除・画像生成は codex 一本化）。`master_settings.flow` も D12 で廃止。
 
 ## API
 
@@ -122,18 +108,20 @@ def _master_flow_count() -> str:
 
 ### セクション一覧（PUT 時の `section` 値）
 
-- `prompts` — master_prompts.json
-- `settings.suno` / `settings.flow` / `settings.meta` / `settings.remote` — master_settings.json の各サブ
+- `prompts` — master_prompts（アクティブチャンネル別保存 → グローバルフォールバック）
 - `suno` — suno_config.json
 - `benchmark` — benchmark_config.json
 - `export` — export_rules.json
+- `remote` — dashboard_config.json の `tunnel_url`（D12 で master_settings から移送）
 
-### 例: Flow 枚数を x2 に
+（旧 `settings.suno` / `settings.flow` / `settings.meta` / `settings.remote` は D12 の master_settings.json 廃止に伴い削除）
+
+### 例: リモートアクセスの Tunnel URL を保存
 
 ```bash
 curl -X PUT http://localhost:8888/api/master \
   -H 'Content-Type: application/json' \
-  -d '{"section":"settings.flow","patch":{"default_count":2}}'
+  -d '{"section":"remote","patch":{"tunnel_url":"https://example.trycloudflare.com"}}'
 ```
 
 ### 例: タイトル生成プロンプトを上書き
@@ -160,7 +148,7 @@ curl http://localhost:8888/api/master/export > app_settings_$(date +%Y%m%d).json
 ```
 
 返却 JSON は以下を含む:
-- `dashboard` / `suno` / `benchmark` / `channels` / `master_prompts` / `master_settings` / `export_rules`
+- `dashboard` / `suno` / `benchmark` / `channels` / `master_prompts` / `export_rules`（`master_settings` は D12 廃止で含まれない）
 - `schema_version`, `exported_at`
 
 ### インポート
@@ -181,7 +169,7 @@ curl -X POST http://localhost:8888/api/master/import \
 |------|------|
 | `loadMaster()` | `/api/master` を叩いて 9 セクションを描画 |
 | `saveMasterPrompt(key)` | プロンプト個別保存 |
-| `saveMasterSection(sec)` | SUNO / Flow / Meta / Remote セクション単位保存 |
+| `saveMasterSection(sec)` | SUNO / Remote セクション単位保存（Flow / Meta は D8/D12 で撤去） |
 | `exportMaster()` | ブラウザから JSON ダウンロード |
 | `importMasterModal()` / `doImportMaster()` | ファイル選択 → インポート |
 
@@ -191,4 +179,4 @@ curl -X POST http://localhost:8888/api/master/import \
 
 - **物理ファイルは分離維持**: 各スクリプトが CLI 単独でも動作する（DB を持たない SPEC.md 設計原則）
 - **空 = デフォルトフォールバック**: プロンプトを空にするとハードコードに戻る。リセットが安全
-- **後方互換**: v1 の設定ファイルはそのまま使える。master_* は追加レイヤー
+- **後方互換**: v1 の設定ファイルはそのまま使える。master_prompts は追加レイヤー（master_settings は D12 で廃止）

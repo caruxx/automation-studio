@@ -102,7 +102,7 @@ Sheet 2（54ch）→ Sheet 1（195ch）の名前マッチング:
 - **キャッシュメタ更新**: `language: "ja-en-mix"` / `prompt_version: 4`（旧 v3 = 英語固定）。
 - **/api/videos/{name}/suggest が分析を自動参照**: 旧版は persona のみ。v3 から `competitor_analysis_cache.json` を optional に読んで viewer_needs / keywords / tag_suggestions をプロンプトに自動注入（無ければ従来挙動）。これにより「英語タイトル候補」「英語説明文」「英語タグ」ボタンも分析連動になった。
 - **UI 統合**: 「AI アシスト（英語）」と「ベンチマーク分析」の 2 パネルを 1 パネル「AI 提案（ベンチマーク連動）」に統合。`/api/videos/{name}/suggest-with-analysis`（旧「刺さる英語メタ提案」ボタン）は UI 削除に続き **D13 で API も廃止**（競合分析を反映したメタ提案は `suggest-all` が `propose_with_analysis` を内部利用）。
-- **シリーズ画像案（[app-series-proposals.md](./app-series-proposals.md)）**: 同じ analysis を `visual_direction` 軸で消費して「次に作るべき画像」を提案 → Flow/Codex 一括生成 → `_series_drafts/` に格納する新機能を追加。
+- **シリーズ画像案（[app-series-proposals.md](./app-series-proposals.md)）**: 同じ analysis を `visual_direction` 軸で消費して「次に作るべき画像」を提案 → codex（gpt-image-2）一括生成 → `_series_drafts/` に格納する新機能を追加。
 
 ## 設定
 

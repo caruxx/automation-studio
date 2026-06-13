@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -195,6 +196,8 @@ class QAWorker(StageWorker):
 
     def can_run(self, vol: int, folder: Path, *, channel_id: str = "") -> bool:
         # qa は export 済み（mp4 存在）かつ未検証（qa_report.json 無し）が条件。
+        # passed:false の report が残っている間も候補外（再dispatchループ防止）。
+        # 人間が原因を解消して qa_report.json を削除すると再検査対象に戻る。
         if not _has_export_mp4(folder):
             return False
         if (folder / "qa_report.json").exists():
@@ -238,7 +241,17 @@ def _export_done(folder: Path, vol: int) -> bool:
 
 
 def _qa_done(folder: Path, vol: int) -> bool:
-    return (folder / "qa_report.json").exists()
+    # qa_report.json があり passed:true のみ done。passed:false（不合格/検査不能）は
+    # done でも候補でもない保留状態＝人間が原因を直して qa_report.json を消すまで
+    # 後続 stage に進めない（壊れ mp4 で report 無し→再dispatchループ→ブレーカー
+    # 発動した vol87 の再発防止）。
+    p = folder / "qa_report.json"
+    if not p.exists():
+        return False
+    try:
+        return bool(json.loads(p.read_text(encoding="utf-8")).get("passed", False))
+    except Exception:
+        return False
 
 
 def _meta_done(folder: Path, vol: int) -> bool:
@@ -627,6 +640,20 @@ if __name__ == "__main__":
     # [done,...] → 0（先頭成功）
     assert _mock_consecutive([{"status":"done"},{"status":"failed"}]) == 0
     print("breaker logic asserts: PASS（threshold=%d）" % BREAKER_THRESHOLD)
+    # _qa_done / can_run: passed:true のみ done。passed:false は保留（候補にも done にもならない）
+    print("--- qa_done logic ---")
+    import tempfile
+    with tempfile.TemporaryDirectory() as _td:
+        _tp = Path(_td)
+        assert _qa_done(_tp, 1) is False, "report 無し → not done"
+        (_tp / "test_vol1.mp4").write_bytes(b"x")
+        assert WORKERS["qa"].can_run(1, _tp) is True, "mp4 あり + report 無し → 候補"
+        (_tp / "qa_report.json").write_text('{"passed": false, "issues": ["x"]}', encoding="utf-8")
+        assert _qa_done(_tp, 1) is False, "passed:false → not done（保留）"
+        assert WORKERS["qa"].can_run(1, _tp) is False, "passed:false → 候補外（再dispatchしない）"
+        (_tp / "qa_report.json").write_text('{"passed": true}', encoding="utf-8")
+        assert _qa_done(_tp, 1) is True, "passed:true → done"
+    print("qa_done logic asserts: PASS")
     print("WORKERS に upload 無し（自動投稿しない）:", "upload" not in WORKERS)
     # policy-aware 配分の単体確認
     print("--- policy ---")

@@ -86,7 +86,10 @@ SUNO_CONFIG = CONFIG_DIR / "suno_config.json"
 SHARED_CONFIG_DIR = SHARED_BASE / "config"
 CHANNELS_CONFIG = SHARED_CONFIG_DIR / "channels.json"
 LOCAL_CHANNELS_CONFIG = CONFIG_DIR / "channels.json"
-PROMPTS_CONFIG = CONFIG_DIR / "prompts.json"
+# PC 非依存の運用設定は共有ドライブ config/ に置く（live_config.json と同方針）。
+# prompts/master_prompts はチャンネル運用資産、discord は通知先で全 PC 共通。
+PROMPTS_CONFIG = SHARED_CONFIG_DIR / "prompts.json"
+DISCORD_CONFIG = SHARED_CONFIG_DIR / "discord_config.json"
 SCHEDULE_CONFIG = CONFIG_DIR / "schedule.json"
 BENCHMARK_CONFIG = SHARED_CONFIG_DIR / "benchmark_config.json"  # チャンネル横断・全体共通（PC間共有）
 SCHEDULE_JOBS_FILE = CONFIG_DIR / "schedule_jobs.json"   # APScheduler 用
@@ -245,6 +248,7 @@ PER_CHANNEL_KEYS = {
     "spreadsheet_channel_detail_url", "spreadsheet_growth_tracking_url",
     "benchmark_pinned_names", "benchmark_filter", "benchmark_extra_urls",
     "channel_icon", "template_prproj", "template_psd", "export_path",
+    "export_engine",  # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(app_ffrender ループ連結方式・静止画チャンネル向け)
     "psd_base_layer", "psd_toggle_layer", "psd_image_subdir",
     "scene_text_enabled", "scene_text_tone", "scene_text_examples",
     "scene_text_forbidden", "scene_text_structure",  # 文字入れ（シーンテキスト）設定（チャンネル別）
@@ -654,6 +658,46 @@ def migrate_benchmark_to_shared(verbose: bool = True) -> None:
             print(f"[benchmark] 共有へ移行: {len(copied)} 件 -> {SHARED_CONFIG_DIR}")
     except Exception as e:
         print(f"[benchmark] 移行失敗（続行）: {e}")
+
+
+def migrate_shared_settings(verbose: bool = True) -> None:
+    """PC 非依存の運用設定（discord_config / prompts / master_prompts）を
+    旧ローカル置き場 ~/.config/<app_id>/ から共有 config/ へ未存在のみ移行する。
+
+    旧置き場は per-PC かつ per-app_id（チャンネル切替で分裂）だったため、
+    全 app_id ディレクトリを走査して mtime 最新を採用する。旧ファイルは残す。
+    """
+    try:
+        if _norm_folder(str(CONFIG_DIR)) == _norm_folder(str(SHARED_CONFIG_DIR)):
+            return  # フォールバック時は同一 → 何もしない
+        SHARED_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        for fn in ("discord_config.json", "prompts.json", "master_prompts.json"):
+            dst = SHARED_CONFIG_DIR / fn
+            if dst.exists():
+                continue
+            candidates = []
+            for p in (Path.home() / ".config").glob(f"*/{fn}"):
+                try:
+                    candidates.append((p.stat().st_mtime, p))
+                except OSError:
+                    continue
+            for _, src in sorted(candidates, key=lambda t: t[0], reverse=True):
+                try:
+                    if not json.loads(src.read_text(encoding="utf-8")):
+                        continue  # 空データはスキップして次候補へ
+                    shutil.copy2(src, dst)
+                    if fn == "discord_config.json":
+                        try:
+                            dst.chmod(0o600)
+                        except Exception:
+                            pass
+                    if verbose:
+                        print(f"[shared-config] 共有へ移行: {fn} ← {src}")
+                    break
+                except Exception:
+                    continue
+    except Exception as e:
+        print(f"[shared-config] 移行失敗（続行）: {e}")
 
 
 def folder_name_pattern() -> "re.Pattern":

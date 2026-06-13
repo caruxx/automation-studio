@@ -171,7 +171,7 @@ Respond with a SINGLE JSON object (no markdown fences):
 }}
 """
 
-    print(f"🎨 Claude CLI でシリーズ案 {count} 件を生成中...")
+    print(f" Claude CLI でシリーズ案 {count} 件を生成中...")
     from app_llm_runner import run_llm
     out = run_llm(prompt, cli_cmd=cli_cmd, timeout=DEFAULT_TIMEOUT, label="series")
 

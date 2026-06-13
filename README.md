@@ -39,11 +39,15 @@
 
 ### Adobe Creative Cloud（動画工程に必須・有料サブスク）
 
-> Premiere Pro / Media Encoder / Photoshop はいずれも **Adobe Creative Cloud の有料サブスク（月額契約）が別途必要**です。本ツールに Adobe ライセンスは含まれません（Adobe との契約・支払いは各自で行ってください）。
+> 本ツールが自動操作する Premiere Pro / Media Encoder / Photoshop はいずれも **Adobe Creative Cloud の有料サブスク（月額契約）が別途必要**です。本ツールに Adobe ライセンスは含まれません（Adobe との契約・支払いは各自で）。**コンプリートプラン（全アプリ込み）**を契約していれば、これら3アプリも、制作で併用する After Effects 等もまとめてカバーされます。
 
+**本ツールが自動操作するソフト（必須）:**
 - **Adobe Premiere Pro 2024 以降** … 音源・字幕・画像の自動配置／シーケンス組み立て
 - **Adobe Media Encoder** … MP4 書き出し（Premiere とセットで導入）
 - **Adobe Photoshop** … サムネ合成・2 枚出し（新版は UXP 連携／旧版は AppleScript）
+
+**制作で併用（任意・本ツールの自動操作対象外）:**
+- **Adobe After Effects** … モーション・エフェクトを手作業で加える場合（コンプリートプランに含まれる）
 
 ### API キー・認証（UI から登録）
 - OpenAI（背景・AI サムネ画像生成）

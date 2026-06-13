@@ -223,6 +223,43 @@ def cancel_run(run_id: str, summary: str = "") -> bool:
         return cur.rowcount > 0
 
 
+def reset_consecutive_failures(channel_id: str, *, lookback: int = 20) -> int:
+    """指定チャンネルの「直近の連続 failed run」を cancelled に降格（ブレーカー手動解除用）。
+
+    orchestrator のブレーカーは台帳から consecutive_failures を都度算出するため、
+    解除＝台帳の更新。走査順は orchestrator.consecutive_failures と同一
+    （新しい順、done/cancelled で連続が切れる、in_progress/reconstructed はスキップ）。
+    summary に「手動リセット」を追記。Returns: 降格した run 数。
+    """
+    if not channel_id:
+        return 0
+    runs = list_runs(channel_id=channel_id, limit=lookback)
+    targets = []
+    for r in runs:
+        st = r.get("status")
+        if st == "failed":
+            targets.append(r)
+        elif st in ("done", "cancelled"):
+            break
+    if not targets:
+        return 0
+    n = 0
+    now = _now_iso()
+    note = "手動リセット（breaker 解除）"
+    with _txn() as conn:
+        for r in targets:
+            base = (r.get("summary") or "").strip()
+            summary = (f"{base} ／ {note}" if base else note)[:500]
+            cur = conn.execute(
+                """UPDATE runs
+                   SET status='cancelled', finished_at=COALESCE(finished_at, ?), summary=?
+                   WHERE run_id=? AND status='failed'""",
+                (now, summary, r["run_id"]),
+            )
+            n += cur.rowcount
+    return n
+
+
 def get_run(run_id: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
@@ -467,7 +504,7 @@ def _main():
 
     if args.cmd == "init":
         init_db()
-        print(f"✅ DB 初期化: {DB_PATH}")
+        print(f" DB 初期化: {DB_PATH}")
     elif args.cmd == "list":
         for r in list_runs(channel_id=args.channel_id, status=args.status, limit=args.limit):
             print(f"  [{r['run_id']}] {r['status']:<12} kind={r['kind']:<14} ch={r['channel_id'] or '?'} vol.{r['vol']} dur={r.get('duration_sec') or '-'}s")
@@ -475,7 +512,7 @@ def _main():
         print(json.dumps(stats(args.days), ensure_ascii=False, indent=2))
     elif args.cmd == "reap":
         n = reap_stale(args.sec)
-        print(f"✅ {n} 件を stale → failed に降格")
+        print(f" {n} 件を stale → failed に降格")
     elif args.cmd == "chain":
         for r in get_run_chain(args.run_id):
             print(f"  [{r['run_id']}] parent={r.get('parent_run_id') or '-'} status={r['status']} from={r.get('from_stage') or '-'}")

@@ -375,7 +375,7 @@ def _main():
 
     if args.cmd == "init":
         init_db()
-        print(f"✅ DB 初期化: {DB_PATH}")
+        print(f" DB 初期化: {DB_PATH}")
     elif args.cmd == "list":
         for j in list_jobs(limit=50):
             print(f"  [{j['id']:>4}] {j['status']:<10} {j['stage']:<8} "
@@ -385,10 +385,10 @@ def _main():
         print(json.dumps(stats(args.days), ensure_ascii=False, indent=2))
     elif args.cmd == "reap":
         n = reap_stale_running(args.sec)
-        print(f"✅ {n} 件を stale → error に降格")
+        print(f" {n} 件を stale → error に降格")
     elif args.cmd == "cancel":
         ok = cancel(args.id)
-        print(("✅ cancelled" if ok else "⚠ pending ではありません") + f" (id={args.id})")
+        print((" cancelled" if ok else "⚠ pending ではありません") + f" (id={args.id})")
 
 
 if __name__ == "__main__":

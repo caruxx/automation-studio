@@ -169,7 +169,7 @@ def run_eval_loop(
         # コスト上限・中断（周回前）
         if should_stop():
             res.abort_reason = "stopped"
-            log_fn(f"  ⏹ eval-loop: 中断要求で停止（attempt={attempt}）")
+            log_fn(f" eval-loop: 中断要求で停止（attempt={attempt}）")
             break
         if res.total_generated >= max_total_generated or res.vision_calls >= max_vision_calls:
             res.abort_reason = "cost_cap"
@@ -178,7 +178,7 @@ def run_eval_loop(
             break
 
         res.attempts_used = attempt
-        log_fn(f"  🔁 eval-loop attempt {attempt}/{max_attempts}")
+        log_fn(f" eval-loop attempt {attempt}/{max_attempts}")
 
         # 生成（注入）
         gen = generate_fn(concept_hint, axis, attempt)
@@ -220,7 +220,7 @@ def run_eval_loop(
         res.approved_files = list(approved_set)
         res.best = best_of_fn(res.all_evaluations)
 
-        log_fn(f"  📊 eval-loop attempt {attempt}: 合格 {len(approved_now)} / "
+        log_fn(f" eval-loop attempt {attempt}: 合格 {len(approved_now)} / "
                f"判定 {sum(counts.values())}（累積合格 {len(approved_set)}）"
                f"{(' best=' + str(round(res.best.get('score_total', 0), 1))) if res.best else ''}")
 
@@ -231,7 +231,7 @@ def run_eval_loop(
         # 停止条件: 必要枚数に達したら合格 break（初合格で確定＝振動前に止める）
         if len(approved_set) >= required_pass:
             res.passed = True
-            log_fn(f"  ✅ eval-loop: 合格（{len(approved_set)}/{required_pass}）→ 停止")
+            log_fn(f" eval-loop: 合格（{len(approved_set)}/{required_pass}）→ 停止")
             break
 
         # 不合格 → フィードバック還流して次 attempt

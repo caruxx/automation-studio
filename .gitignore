@@ -30,10 +30,8 @@ node_modules/
 !.vscode/settings.json.example
 .idea/
 
-# Claude Code
-.claude/settings.local.json
-.claude/projects/
-.claude/scheduled_tasks.lock
+# Claude Code（個人専用のツール設定・サブエージェント定義。リポジトリには含めない）
+.claude/
 
 # 作業ツリー内に生成されるローカル設定/キャッシュ一式
 # （channels.json.bak / .suno_history / benchmark_profiles 等の機密・個人データを含むため丸ごと除外）

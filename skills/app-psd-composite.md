@@ -17,7 +17,7 @@ bgimage で AI 生成した `vol{N}.png` を、per-channel テンプレ PSD の 
        → 9/10 thumbnail (PSD失敗時のフォールバック) → 10/10 upload
 ```
 
-`step_thumbnail` (AI Flow/Codex) は `サムネイル.jpg` が既にあるとスキップする仕様なので、PSD 合成が成功すれば AI サムネは走らない（フォールバック共存）。
+`step_thumbnail` (codex 直接生成) は `サムネイル.jpg` が既にあるとスキップする仕様なので、PSD 合成が成功すれば AI サムネは走らない（フォールバック共存）。
 
 ## 入力素材のフォールバック順
 

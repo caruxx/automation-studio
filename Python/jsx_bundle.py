@@ -305,7 +305,7 @@ AUTO_PLACE_JSX = r"""
          */
         function getBgmStartTimesMMSS(seq) {
             seq = seq || app.project.activeSequence;
-            if (!seq) { alert("アクティブなシーケンスが見つからないよ🥲"); return []; }
+            if (!seq) { alert("アクティブなシーケンスが見つからないよ"); return []; }
 
             // 秒 → "MM:SS"
             function mmss(sec) {

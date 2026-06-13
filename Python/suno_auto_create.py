@@ -757,9 +757,9 @@ def generate_content_batch(settings, count):
         _save_suno_history(state)
 
     if instrumental_filler:
-        print(f"  ✅ {len(accepted)}曲分のメタデータを取得（lyrics は [instrumental] x {INSTRUMENTAL_TARGET_CHARS}文字 で充填）")
+        print(f" {len(accepted)}曲分のメタデータを取得（lyrics は [instrumental] x {INSTRUMENTAL_TARGET_CHARS}文字 で充填）")
     else:
-        print(f"  ✅ {len(accepted)}曲分のメタデータを取得しました（多様性チェック済み）")
+        print(f" {len(accepted)}曲分のメタデータを取得しました（多様性チェック済み）")
     return accepted
 
 
@@ -1164,15 +1164,15 @@ def ensure_workspace(page, workspace_name):
     # /create?wid=* へのリダイレクトを待機
     try:
         page.wait_for_url("**/create?wid=*", timeout=10000)
-        print(f"  ✅ Workspace '{workspace_name}' を作成しました (URL: {page.url})")
-        _set_status(page, f"Workspace '{workspace_name}' 作成完了 ✅", "ok")
+        print(f" Workspace '{workspace_name}' を作成しました (URL: {page.url})")
+        _set_status(page, f"Workspace '{workspace_name}' 作成完了 ", "ok")
         time.sleep(2)
         return True
     except Exception as e:
         print(f"  ⚠️ リダイレクト未検知 (URL: {page.url}): {e}")
         time.sleep(2)
         if "/create" in page.url:
-            print(f"  ℹ️ /create にいるので続行します")
+            print(f" /create にいるので続行します")
             _set_status(page, f"Workspace 作成 → 続行", "ok")
             return True
         try:
@@ -1221,14 +1221,14 @@ def download_workspace_tracks(page, workspace_name, target_dir):
     #    されていない場合はこの時点で evaluate 注入する（既存タブで呼ばれた場合の救済）
     installed = page.evaluate("() => !!window.__sunoAudioInterceptorInstalled")
     if not installed:
-        print("  ℹ️ インターセプタ未インストール。現ページに後注入します（既存トラフィックの一部は取り逃す可能性）")
+        print(" インターセプタ未インストール。現ページに後注入します（既存トラフィックの一部は取り逃す可能性）")
         page.evaluate(_SUNO_AUDIO_URL_INTERCEPTOR)
 
     # 3) スクロールしつつ全 song UUID を収集
     #    これにより SUNO SPA が内部で /api/feed 等を叩き、__sunoAudioUrlCache が埋まる
     _set_status(page, "楽曲一覧をスクロール取得中...", "info")
     uuids = _collect_all_song_uuids(page)
-    print(f"  📋 検出楽曲数: {len(uuids)}")
+    print(f" 検出楽曲数: {len(uuids)}")
     _set_status(page, f"楽曲検出: {len(uuids)}曲 / audio_url 収集中...", "info")
     if not uuids:
         print("  ⚠️ clip-row が見つかりません。DOM 構造が変わっている可能性")
@@ -1249,7 +1249,7 @@ def download_workspace_tracks(page, workspace_name, target_dir):
     _deadline = time.time() + _wait_budget
     _stagn = 0
     _last = ready
-    print(f"  🗂 audio_url 充足: {ready}/{len(uuids)}")
+    print(f" audio_url 充足: {ready}/{len(uuids)}")
     while ready < len(uuids) and time.time() < _deadline:
         _collect_all_song_uuids(page, from_top=True)
         time.sleep(3)
@@ -1264,7 +1264,7 @@ def download_workspace_tracks(page, workspace_name, target_dir):
             _stagn = 0
         _last = ready
     cache_keys = list(cache.keys()) if cache else []
-    print(f"  🗂 audio_url キャッシュ件数: {len(cache_keys)} (ready={ready}/{len(uuids)})")
+    print(f" audio_url キャッシュ件数: {len(cache_keys)} (ready={ready}/{len(uuids)})")
 
     # 5) 各 UUID について audio_url を引いて MP3 をダウンロード
     success = 0
@@ -1348,8 +1348,8 @@ def download_workspace_tracks(page, workspace_name, target_dir):
             print(f"  ⚠️ [{idx}/{len(uuids)}] 予期せぬエラー: {e}")
             failed += 1
 
-    print(f"\n  📥 完了: 成功 {success} / 失敗 {failed} / 総数 {len(uuids)}")
-    _set_status(page, f"📥 完了: 成功 {success} / 失敗 {failed}", "ok" if failed == 0 else "warn")
+    print(f"\n   完了: 成功 {success} / 失敗 {failed} / 総数 {len(uuids)}")
+    _set_status(page, f" 完了: 成功 {success} / 失敗 {failed}", "ok" if failed == 0 else "warn")
     return success
 
 
@@ -1562,12 +1562,12 @@ def run_browser_automation(settings):
                             page.goto("https://suno.com/create", wait_until="domcontentloaded", timeout=15000)
                             time.sleep(3)
                         if is_logged_in():
-                            print("  ✅ ログイン検知!")
+                            print(" ログイン検知!")
                             break
                 except Exception:
                     pass
             else:
-                print("⏰ タイムアウト: ログインが完了しませんでした")
+                print(" タイムアウト: ログインが完了しませんでした")
                 if _is_unattended():
                     # 無人モードではハングせず例外で抜ける（呼び出し側が Discord 通知 + 失敗扱い）
                     try:
@@ -1606,10 +1606,10 @@ def run_browser_automation(settings):
         pregenerated = settings.get("pregenerated_songs")
         if pregenerated:
             batch_songs = pregenerated
-            print(f"🎯 事前生成済み {len(batch_songs)} 曲をそのまま投入します（LLM生成スキップ）")
+            print(f" 事前生成済み {len(batch_songs)} 曲をそのまま投入します（LLM生成スキップ）")
         elif settings.get("batch_mode") and settings.get("provider") in ("claude", "codex"):
             try:
-                print(f"🎯 バッチモード: {settings.get('provider')} CLI でまとめて生成します")
+                print(f" バッチモード: {settings.get('provider')} CLI でまとめて生成します")
                 batch_songs = generate_content_batch(settings, loop_count)
                 if len(batch_songs) < loop_count:
                     print(f"  ⚠️ 要求 {loop_count}曲 / 取得 {len(batch_songs)}曲。不足分はスキップ")
@@ -1630,10 +1630,10 @@ def run_browser_automation(settings):
                     print(f"  ⏭ バッチ分を使い切ったためスキップ")
                     break
                 content = batch_songs[i - 1]
-                print(f"  📋 バッチから使用: {content.get('title', '')}")
-                print(f"  🎨 スタイル: {content.get('styles', '')[:80]}...")
+                print(f" バッチから使用: {content.get('title', '')}")
+                print(f" スタイル: {content.get('styles', '')[:80]}...")
                 if content.get("lyrics"):
-                    print(f"  🎵 歌詞: {content['lyrics'][:50]}...")
+                    print(f" 歌詞: {content['lyrics'][:50]}...")
             else:
                 try:
                     content = generate_content(settings)
@@ -1663,7 +1663,7 @@ def run_browser_automation(settings):
                 # 3-a. Bot チャレンジ検出
                 if detect_bot_challenge(page):
                     brand = (_load_dashboard_config_for_brand().get("channel_name") or "SUNO")
-                    msg = f"🤖 [{brand}] Bot 判定が表示されました（楽曲 {i}/{loop_count}）。手動で解除してください。"
+                    msg = f" [{brand}] Bot 判定が表示されました（楽曲 {i}/{loop_count}）。手動で解除してください。"
                     print(f"\n  {msg}")
                     _set_status(page, "Bot 判定を検出。手動操作が必要です", "err")
                     _notify_discord(msg)
@@ -1682,7 +1682,7 @@ def run_browser_automation(settings):
                             except Exception:
                                 pass
                         if resolved:
-                            print(f"  ✅ Bot 判定が解除されました。続行します")
+                            print(f" Bot 判定が解除されました。続行します")
                             _set_status(page, "Bot 判定解除を確認、続行します", "ok")
                             try:
                                 inject_into_suno(page, content)
@@ -1694,7 +1694,7 @@ def run_browser_automation(settings):
                     raise BotChallengeDetected(msg)
 
                 if not detect_copyright_error(page):
-                    print(f"  ✅ Create ボタンをクリックしました")
+                    print(f" Create ボタンをクリックしました")
                     create_ok = True
                     break
 
@@ -1705,12 +1705,12 @@ def run_browser_automation(settings):
                 if attempt == 0 and content.get("lyrics"):
                     sanitized = sanitize_lyrics_for_suno(content["lyrics"])
                     if sanitized != content["lyrics"]:
-                        print(f"  🔧 歌詞をブラケット構造のみにサニタイズして再投入")
+                        print(f" 歌詞をブラケット構造のみにサニタイズして再投入")
                         content["lyrics"] = sanitized
                         inject_into_suno(page, content)
                         continue
                 if attempt == 1:
-                    print(f"  🔧 フォールバック歌詞で再投入")
+                    print(f" フォールバック歌詞で再投入")
                     content["lyrics"] = _FALLBACK_BRACKET_LYRICS
                     inject_into_suno(page, content)
                     continue
@@ -1976,11 +1976,11 @@ def inject_into_suno(page, content):
     })
 
     if title:
-        print(f"  📝 タイトル: {'✅' if results.get('title') else '❌'} {title}")
+        print(f" タイトル: {'' if results.get('title') else '❌'} {title}")
         if not results.get('title') and results.get('debug', {}).get('title_inputs'):
             print(f"     ⚠️ 見つかった input placeholder: {results['debug']['title_inputs']}")
     if styles:
-        print(f"  🎨 スタイル: {'✅' if results.get('styles') else '❌'} {styles[:60]}...")
+        print(f" スタイル: {'' if results.get('styles') else '❌'} {styles[:60]}...")
         if not results.get('styles'):
             dbg = results.get('debug', {})
             if dbg.get('styles_div_found_but_no_textarea'):
@@ -1988,7 +1988,7 @@ def inject_into_suno(page, content):
             elif dbg.get('styles_divs'):
                 print(f"     ⚠️ 'Styles' div が見つかりません。空div一覧: {dbg['styles_divs'][:10]}")
     if lyrics and mode != "styles_title_only":
-        print(f"  🎵 歌詞: {'✅' if results.get('lyrics') else '❌'} {lyrics[:50]}...")
+        print(f" 歌詞: {'' if results.get('lyrics') else '❌'} {lyrics[:50]}...")
         if not results.get('lyrics') and results.get('debug', {}).get('lyrics_textareas'):
             print(f"     ⚠️ 歌詞 textarea が見つかりません。textarea placeholder 一覧: {results['debug']['lyrics_textareas']}")
 
@@ -2210,7 +2210,7 @@ _STATUS_OVERLAY_SCRIPT = r"""
                 'max-width:380px', 'pointer-events:none'
             ].join(';');
             const title = document.createElement('div');
-            title.textContent = '🤖 ' + (window.__appBrandLabel || 'Automation Studio') + ' 自動操作中';
+            title.textContent = ' ' + (window.__appBrandLabel || 'Automation Studio') + ' 自動操作中';
             title.style.cssText = 'font-weight:700;color:#3ea6ff;margin-bottom:4px;';
             const body = document.createElement('div');
             body.id = '__orzz_status_body';

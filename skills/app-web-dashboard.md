@@ -66,7 +66,7 @@ SPA 内のページ遷移は `history.pushState` で URL ハッシュを更新:
 | 🎨 Premiere | JSX 自動配置 + Media Encoder 書き出し |
 | 📤 YouTube | 説明文エディタ + アップロード |
 | 🔔 通知 | Discord メッセージ送信 |
-| ⚙ マスター設定（v2） | プロンプト管理 / SUNO/Flow/メタ詳細 / スケジュール / リモート / 入出力 |
+| ⚙ マスター設定（v2） | プロンプト管理 / SUNO 詳細 / スケジュール / リモート / 入出力（Flow・メタ詳細カードは D8/D12 で撤去） |
 | 基本設定 | チャンネル / 運営チャンネル管理 / ペルソナ / ベンチマーク / API キー |
 
 v2 で **「⚙ マスター設定」を新設**（旧「設定」は「基本設定」に改名）。詳細は [app-master-config.md](./app-master-config.md)。
@@ -122,7 +122,7 @@ UI ステッパーは詳細タブと過密にしないため pipeline の 11 工
 | AI 提案パネル統合（v3） | 動画詳細 → メタタブ | 旧「AI アシスト（英語）」+「ベンチマーク分析」の 2 パネルを 1 パネル「AI 提案（ベンチマーク連動）」に統合。「英語タイトル候補/英語説明文/英語タグ」が分析を自動参照するため「刺さる英語メタ提案」ボタンは廃止（API も D13 で廃止） |
 | サムネ Vision 入力（v3） | 動画詳細 → メタタブ | サムネ画像（`vol*.jpg` / `サムネイル.jpg`）があれば自動で Read ツール経由で読み取り、英語タイトル/説明文に視覚情景を反映。詳細は [app-ai-propose.md](./app-ai-propose.md) |
 | 競合分析の自動表示（v3） | 動画詳細 → メタタブ表示時 | `showVideoDetail` 内で `showCachedAnalysisIfAny()` が `/api/analysis/cache` を取得し、保存済み分析結果（バズパターン/ホットキーワード/トレンド変化/推奨）を AI 提案パネル冒頭に自動描画。再分析ボタンを押さなくても前回結果が常時可視 |
-| シリーズ画像案 + 一括生成（v3） | コンテンツページ上部 → アコーディオン | ベンチマーク分析駆動で「次に作るべき画像」を Claude が日本語で N 件提案 → チェック → Flow / Codex で直列一括生成 → `_series_drafts/<slug>/Image/` に格納。詳細は [app-series-proposals.md](./app-series-proposals.md) |
+| シリーズ画像案 + 一括生成（v3） | コンテンツページ上部 → アコーディオン | ベンチマーク分析駆動で「次に作るべき画像」を Claude が日本語で N 件提案 → チェック → codex で直列一括生成 → `_series_drafts/<slug>/Image/` に格納。詳細は [app-series-proposals.md](./app-series-proposals.md) |
 | PWA | manifest.json + sw.js | スマホ「ホーム画面に追加」で全画面起動 |
 
 ## 主要 API
@@ -141,7 +141,7 @@ UI ステッパーは詳細タブと過密にしないため pipeline の 11 工
 - `POST /api/videos/{name}/suggest` — body: `{mode: "titles"|"description"|"tags", count?, reference?}`
   - v3 から `competitor_analysis_cache.json` を自動参照し、視聴者文脈をプロンプトに注入（無ければ persona のみで従来挙動）
 - ~~`POST /api/videos/{name}/suggest-with-analysis`~~ — **D13 で廃止**（競合分析を反映したメタ提案は `suggest-all` が `propose_with_analysis` を内部利用）
-- `POST /api/videos/{name}/suggest-all` — 一気通貫提案（楽曲・Flow・メタ）
+- `POST /api/videos/{name}/suggest-all` — 一気通貫提案（楽曲・メタの 2 提案。Flow サムネ提案は D8 で撤去）
 - `POST /api/videos/{name}/suggest-imitate-evolve` — 徹底パクリ進化分析（[app-imitate-evolve.md](./app-imitate-evolve.md)）
 - 詳細は [app-ai-propose.md](./app-ai-propose.md)
 

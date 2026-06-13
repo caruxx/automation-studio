@@ -172,7 +172,7 @@ Web UI から手動で実行する代わりに、以下を組み合わせれば*
 | APScheduler | 毎週月・金 9:00 に vol.X+1 をフル自動 / 毎朝 7:00 に分析リフレッシュ / AME 深夜 ON/OFF / スポット実行 | [app-schedule.md](./app-schedule.md) |
 | 認証 + Cloudflare Tunnel + PWA | 外出先スマホから操作。Discord 通知で実行確認、緊急時は QR 経由でログイン | [app-remote-access.md](./app-remote-access.md) |
 | AME 書き出しキュー | 完成条件マッチ（prproj + music + srt、mp4 なし）を自動 enqueue → AME 投入 → ファイルサイズ安定化で完了検知 | 自動化タブ / `export_rules.json` |
-| マスター設定 | 上記すべてを 1 画面で管理（プロンプト / SUNO/Flow パラメータ / スケジュール / リモート / インポート・エクスポート） | [app-master-config.md](./app-master-config.md) |
+| マスター設定 | 上記すべてを 1 画面で管理（プロンプト / SUNO パラメータ / スケジュール / リモート / インポート・エクスポート） | [app-master-config.md](./app-master-config.md) |
 | 徹底パクリ進化 | 動画詳細メタタブで ✓パクる/✗避ける/+進化 を Claude が提案、ベンチマーク参照サイドパネル付き | [app-imitate-evolve.md](./app-imitate-evolve.md) |
 
 ## フォルダ構成（1動画単位）

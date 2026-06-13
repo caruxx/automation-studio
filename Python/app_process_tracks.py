@@ -113,7 +113,7 @@ def _dedup_same_title_keep_shorter(mp3s, dry_run: bool = False):
         keep, keep_dur = with_dur[0]
         survivors.append(keep)
         keep_s = "?" if keep_dur == float("inf") else f"{keep_dur:.1f}s"
-        print(f"  🧹 同タイトル {len(files)}件 → 残す: {keep.name} ({keep_s})")
+        print(f" 同タイトル {len(files)}件 → 残す: {keep.name} ({keep_s})")
         for f, d in with_dur[1:]:
             dur_s = "?" if d == float("inf") else f"{d:.1f}s"
             if dry_run:
@@ -121,12 +121,12 @@ def _dedup_same_title_keep_shorter(mp3s, dry_run: bool = False):
             else:
                 try:
                     f.unlink()
-                    print(f"       🗑 削除: {f.name} ({dur_s}, 長い方)")
+                    print(f" 削除: {f.name} ({dur_s}, 長い方)")
                     removed += 1
                 except Exception as e:
                     print(f"       ⚠️ 削除失敗 {f.name}: {e}")
                     survivors.append(f)
-    print(f"  🧹 重複削除: {removed} 件削除 / 残 {len(survivors)} 件")
+    print(f" 重複削除: {removed} 件削除 / 残 {len(survivors)} 件")
     return sorted(survivors)
 
 
@@ -180,7 +180,7 @@ def _chunked_titles(cli_cmd: str, *, prompt_builder, allow_read: bool,
         prompt = prompt_builder(n, chunk_index, total_chunks, avoid_hint)
         # タイムアウトは n に比例（10件=120s, 20件=180s...）
         timeout = max(120, 60 + n * 10)
-        print(f"  📦 [{chunk_index}/{total_chunks}] Claude CLI 呼び出し ({n}件, timeout={timeout}s)... [{source_label}]")
+        print(f" [{chunk_index}/{total_chunks}] Claude CLI 呼び出し ({n}件, timeout={timeout}s)... [{source_label}]")
         try:
             titles = _run_claude_titles(cli_cmd, prompt, allow_read=allow_read, timeout=timeout)
         except RuntimeError as e:
@@ -209,7 +209,7 @@ def _chunked_titles(cli_cmd: str, *, prompt_builder, allow_read: bool,
 
 def propose_titles_from_thumbnail(cli_cmd: str, thumbnail: Path, count: int):
     """サムネ画像を読ませて count 個の英語タイトル候補を JSON で返させる（チャンク分割）"""
-    print(f"🎨 Claude CLI でタイトル提案中... (サムネ: {thumbnail.name}, 目標 {count}件)")
+    print(f" Claude CLI でタイトル提案中... (サムネ: {thumbnail.name}, 目標 {count}件)")
 
     def _build(n, idx, total_chunks, avoid_hint):
         avoid = f"\n- Avoid these titles (already proposed): {avoid_hint}" if avoid_hint else ""
@@ -240,7 +240,7 @@ Rules:
 def propose_titles_from_persona(cli_cmd: str, channel_name: str, persona: str, count: int):
     """チャンネルペルソナから count 個の英語タイトル候補を JSON で返させる（チャンク分割）"""
     persona_clean = (persona or "").strip() or "(not set)"
-    print(f"🧭 Claude CLI でタイトル提案中... (ペルソナ経由, 目標 {count}件)")
+    print(f" Claude CLI でタイトル提案中... (ペルソナ経由, 目標 {count}件)")
 
     def _build(n, idx, total_chunks, avoid_hint):
         avoid = f"\n- Avoid these titles (already proposed): {avoid_hint}" if avoid_hint else ""
@@ -383,7 +383,7 @@ def process_mp3(src: Path, dst: Path):
     if res2.returncode != 0:
         raise RuntimeError(f"loudnorm 2nd pass 失敗:\n{res2.stderr}")
 
-    print(f"    📊 loudnorm: input_i={in_i} LUFS → target {TARGET_LUFS} LUFS (offset={target_offset})")
+    print(f" loudnorm: input_i={in_i} LUFS → target {TARGET_LUFS} LUFS (offset={target_offset})")
 
 
 # ─── 公開前整備: AI透かし除去 + ID3タグ付与 + ファイル名正規化 ──────────
@@ -528,7 +528,7 @@ def _apply_metadata_tags(folder: Path, *, album: str | None = None,
         album = f"SUKIMA vol.{vol}" if vol is not None else "SUKIMA"
 
     kind_map, title_map, draft_used = _load_tag_draft(folder, draft_path)
-    print(f"  🏷 整備(タグ付与+透かし除去): {folder.name}")
+    print(f" 整備(タグ付与+透かし除去): {folder.name}")
     print(f"     album='{album}' artist='{artist}' genre_default='{genre_default}'")
     if draft_used:
         print(f"     draft={draft_used.name}（title/genre {len(title_map)}件マッチ用）")
@@ -600,13 +600,13 @@ def _apply_metadata_tags(folder: Path, *, album: str | None = None,
         return False
     music.rename(raw)
     out.rename(music)
-    print(f"  ✅ 入替完了: 旧music→music_raw_pre_tag, music_tagged→music")
+    print(f" 入替完了: 旧music→music_raw_pre_tag, music_tagged→music")
 
     # original_music/ のファイル名も新 music/ の正式名へ正規化
     music_set = set(p.name for p in music.glob("*.mp3"))
     rn = _normalize_original_names(folder, music_set, dry_run=False)
     if rn["renamed"] or rn["unknown"]:
-        print(f"  📁 original_music 正規化: renamed={rn['renamed']} unknown={rn['unknown']}")
+        print(f" original_music 正規化: renamed={rn['renamed']} unknown={rn['unknown']}")
     return True
 
 
@@ -633,6 +633,20 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
         if not p.name.startswith(".") and not _is_deleted_track(p)
     ])
     if not mp3s:
+        if not skip_tagging:
+            print(f"フォルダ直下MP3なし → 既存 music/ の公開前整備のみ実行: {folder.name}")
+            if rename_only:
+                ensure_ffmpeg()
+            ok = _apply_metadata_tags(
+                folder,
+                album=album,
+                artist=artist,
+                genre_default=(genre or "Bossa Nova"),
+                genre_by_kind=genre_by_kind,
+                draft_path=draft_path,
+                dry_run=dry_run,
+            )
+            return 0 if ok else 1
         print(f"⚠️ MP3 ファイルが見つかりません: {folder}")
         return 0
 
@@ -652,7 +666,7 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
     # タイトル生成: サムネ優先 → 無ければチャンネルペルソナ → 失敗なら保持
     # keep_names=True なら既存ファイル名を維持（タイトル再生成を一切スキップ）
     if keep_names:
-        print("  📌 --keep-names: 既存ファイル名を維持（タイトル再生成スキップ）")
+        print(" --keep-names: 既存ファイル名を維持（タイトル再生成スキップ）")
     thumbnail = None if keep_names else _find_thumbnail(folder)
     titles = None
     if thumbnail:
@@ -690,15 +704,15 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
 
     # 取得数が不足しているなら明示
     if titles:
-        print(f"  📊 取得済タイトル {len(titles)} 件 / 対象 {len(mp3s)} 件")
+        print(f" 取得済タイトル {len(titles)} 件 / 対象 {len(mp3s)} 件")
         if len(titles) < len(mp3s):
             print(f"     → {len(mp3s) - len(titles)} 件は元ファイル名を保持します")
 
     # 処理方針の表示
     if rename_only:
-        print(f"\n📝 モード: リネームのみ（FFmpeg スキップ、music/ 出力なし）")
+        print(f"\n モード: リネームのみ（FFmpeg スキップ、music/ 出力なし）")
     else:
-        print(f"\n🎛 モード: 後処理（original_music/ バックアップ + ffmpeg + music/ 出力）")
+        print(f"\n モード: 後処理（original_music/ バックアップ + ffmpeg + music/ 出力）")
 
     # プレビュー + 一意化
     print("\n--- 処理プレビュー ---")

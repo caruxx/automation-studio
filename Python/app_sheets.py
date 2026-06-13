@@ -5,8 +5,10 @@
 公開 CSV エクスポート URL からチャンネル詳細 + 成長トラッキングを取得し、
 既存の competitor_data スキーマに変換する。YouTube API quota ゼロ。
 
-Sheet 1 (チャンネル詳細): 195 チャンネル、TOP5/新着5 動画 + 非表示の再生数/いいね
-Sheet 2 (成長トラッキング): 54 チャンネル、日次伸び率（Channel Tracker 自動更新）
+Sheet 1 (チャンネル詳細・リサーチシート): TOP5/新着5 動画 + 再生数/いいね。
+  列はヘッダ名で動的検出（英語技術名 URL/TITLE/... と日本語ラベル 取得対象URL/チャンネル名/... 両対応）。
+  ※旧 195ch の全量データは同 book の BACKUP タブに退避されている（現行タブは絞り込み済み）。
+Sheet 2 (成長トラッキング): CHANNEL_TRACK 15列、日次伸び率（Channel Tracker 自動更新）
 """
 
 from __future__ import annotations
@@ -229,7 +231,7 @@ def _safe_get(row: list, idx: int) -> str:
 
 # ─── Sheet 1: チャンネル詳細パーサ ──────────────────────
 
-# 列マッピング（0-indexed）
+# 旧形式の固定列マッピング（0-indexed）。ヘッダ検出に失敗した場合のフォールバック専用。
 # TOP 動画: 各 8 列 (サムネ, タイトル, URL, 公開日, 公開日時, 再生数, いいね, コメント)
 _TOP_VIDEO_OFFSETS = [
     (13, 14, 15, 16, 17, 18, 19, 20),  # TOP 1
@@ -327,10 +329,170 @@ def _extract_hyperlinked_image(cell: str) -> tuple[str, str]:
     return (img, img)
 
 
-def parse_channel_detail(rows: list[list[str]]) -> list[ChannelDetail]:
-    """Sheet 1 の全行をパース。ヘッダー 2 行をスキップ。
-    ICON IMAGE 列があれば自動で検出して channel.icon_url に格納。
+_VIDEO_ID_RE = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})")
+
+
+def _extract_video_id(url: str) -> str:
+    m = _VIDEO_ID_RE.search(url or "")
+    return m.group(1) if m else ""
+
+
+def _norm_header(s: str) -> str:
+    """ヘッダ名の正規化: 改行/空白/アンダースコア除去 + 小文字化（完全一致判定用）。"""
+    return (s or "").replace("\n", "").replace(" ", "").replace("_", "").strip().lower()
+
+
+# チャンネル列のヘッダ候補（正規化後の完全一致）。
+# リサーチシートは 1 行目=英語技術名（URL/ICON_IMAGE/TITLE/...）、2 行目=日本語ラベル。
+# gviz CSV 経路は英語ヘッダ行が落ちて日本語ラベル行が先頭になるため両対応にする。
+_DETAIL_CHANNEL_COLS: dict[str, list[str]] = {
+    "url": ["url", "取得対象url"],
+    "icon": ["iconimage", "chアイコン", "iconurl", "アイコン画像"],
+    "title": ["title", "チャンネル名"],
+    "country": ["countrycode", "地域"],
+    "description": ["description", "チャンネル説明"],
+    "video_count": ["videocount", "総動画数"],
+    "total_views": ["totalviews", "総再生回数"],
+    "subscribers": ["subscribers", "登録者数"],
+    "created": ["publisheddate", "開設日"],
+    "memo": ["memo", "メモ"],
+}
+
+
+def _top_video_col_candidates(n: int) -> dict[str, list[str]]:
+    """TOP n 位（1-5）の各列ヘッダ候補。英語は 1 位のみ無印（TOP_VIDEO_TITLE）、2 位以降は数字付き。"""
+    sfx = "" if n == 1 else str(n)
+    return {
+        "thumb": [f"topvideothumbnail{sfx}", f"{n}位サムネイル"],
+        "title": [f"topvideotitle{sfx}", f"{n}位タイトル"],
+        "url": [f"topvideourl{sfx}", f"{n}位url"],
+        "date": [f"topvideodate{sfx}", f"{n}位公開日"],
+        "datetime": [f"topvideodatetime{sfx}", f"{n}位公開時間"],
+        "views": [f"topvideoviews{sfx}", f"{n}位再生回数"],
+        "likes": [f"topvideolikes{sfx}", f"{n}位高評価数"],
+        "comments": [f"topvideocomments{sfx}", f"{n}位コメント数"],
+    }
+
+
+def _recent_video_col_candidates(n: int) -> dict[str, list[str]]:
+    """新着 n（1-5）の各列ヘッダ候補（コメント列なし）。"""
+    return {
+        "thumb": [f"videothumbnail{n}", f"新着{n}サムネイル"],
+        "title": [f"videotitle{n}", f"新着{n}タイトル"],
+        "url": [f"videourl{n}", f"新着{n}url"],
+        "date": [f"videodate{n}", f"新着{n}公開日"],
+        "datetime": [f"videodatetime{n}", f"新着{n}公開時間"],
+        "views": [f"videoviews{n}", f"新着{n}再生回数"],
+        "likes": [f"videolikes{n}", f"新着{n}高評価数"],
+    }
+
+
+def _map_cols(norm_cells: list[str], candidates: dict[str, list[str]]) -> dict[str, int]:
+    """正規化済みヘッダセル列から {field: col_index} を構築。見つからない field は -1。"""
+    out = {}
+    for field, cands in candidates.items():
+        out[field] = -1
+        for i, cell in enumerate(norm_cells):
+            if cell in cands:
+                out[field] = i
+                break
+    return out
+
+
+def _find_detail_header(rows: list[list[str]]) -> tuple[int, dict[str, int], list[str]]:
+    """先頭 5 行からヘッダ行を探索。(行 index, チャンネル列マップ, 正規化セル列) を返す。
+    title + subscribers が見つかった行をヘッダとみなす。失敗時は (-1, {}, [])。
     """
+    for ri, row in enumerate(rows[:5]):
+        norm_cells = [_norm_header(c) for c in (row or [])]
+        idx = _map_cols(norm_cells, _DETAIL_CHANNEL_COLS)
+        if idx.get("title", -1) >= 0 and idx.get("subscribers", -1) >= 0:
+            return ri, idx, norm_cells
+    return -1, {}, []
+
+
+def _video_from_cols(row: list, cols: dict[str, int], with_comments: bool) -> VideoInfo | None:
+    def g(field: str) -> str:
+        i = cols.get(field, -1)
+        return _safe_get(row, i) if i >= 0 else ""
+
+    title = g("title")
+    url = g("url")
+    if not title and not url:
+        return None
+    vid = _extract_video_id(url)
+    # サムネセルは =IMAGE() 数式のため CSV では空になりがち → video_id から合成
+    thumb = _extract_hyperlinked_image(g("thumb"))[1]
+    if not thumb and vid:
+        thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+    return VideoInfo(
+        thumbnail=thumb,
+        title=title,
+        url=url,
+        publish_date=g("date"),
+        publish_datetime=g("datetime"),
+        view_count=_parse_int(g("views")),
+        like_count=_parse_int(g("likes")),
+        comment_count=_parse_int(g("comments")) if with_comments else 0,
+        video_id=vid,
+    )
+
+
+def parse_channel_detail(rows: list[list[str]]) -> list[ChannelDetail]:
+    """Sheet 1（リサーチシート）の全行をパース。
+
+    列はヘッダ名で動的検出（parse_channel_timeline 方式・英語技術名/日本語ラベル両対応）。
+    gviz CSV は英語ヘッダ行が落ち日本語ラベル行が先頭、export CSV は英語+日本語の 2 行が
+    残るため、先頭 5 行からヘッダ行を探索し、データ行に混ざるラベル行はスキップする。
+    ヘッダが見つからない場合は旧形式の固定列マッピングにフォールバック。
+    """
+    if not rows:
+        return []
+    hi, idx, norm_cells = _find_detail_header(rows)
+    if hi < 0:
+        return _parse_channel_detail_legacy(rows)
+
+    top_groups = [_map_cols(norm_cells, _top_video_col_candidates(n)) for n in range(1, 6)]
+    recent_groups = [_map_cols(norm_cells, _recent_video_col_candidates(n)) for n in range(1, 6)]
+    title_labels = set(_DETAIL_CHANNEL_COLS["title"])
+
+    def g(row: list, field: str) -> str:
+        i = idx.get(field, -1)
+        return _safe_get(row, i) if i >= 0 else ""
+
+    channels = []
+    for row in rows[hi + 1:]:
+        title = g(row, "title")
+        if not title:
+            continue
+        if _norm_header(title) in title_labels:
+            continue  # 英語ヘッダ直後の日本語ラベル行など
+        ch = ChannelDetail(
+            url=g(row, "url"),
+            title=title,
+            country_code=g(row, "country"),
+            description=g(row, "description"),
+            video_count=_parse_int(g(row, "video_count")),
+            total_views=_parse_int(g(row, "total_views")),
+            subscribers=_parse_int(g(row, "subscribers")),
+            created_date=g(row, "created"),
+            memo=g(row, "memo"),
+            icon_url=_extract_image_url(g(row, "icon")),
+        )
+        for cols in top_groups:
+            v = _video_from_cols(row, cols, with_comments=True)
+            if v:
+                ch.top_videos.append(v)
+        for cols in recent_groups:
+            v = _video_from_cols(row, cols, with_comments=False)
+            if v:
+                ch.recent_videos.append(v)
+        channels.append(ch)
+    return channels
+
+
+def _parse_channel_detail_legacy(rows: list[list[str]]) -> list[ChannelDetail]:
+    """旧形式（固定列・ヘッダ 2 行スキップ）のフォールバックパーサ。"""
     if len(rows) < 3:
         return []
     # ヘッダ行から ICON IMAGE 列の位置を動的検出（任意位置に配置可能）
@@ -984,7 +1146,7 @@ def fetch_from_spreadsheets(
     pinned_names が指定されていれば、スコア計算は行わずピン留めリストのみを採用。
     未指定ならフィルタ込みで identify_hot_channels() の TOP N を自動選択。
     """
-    print(f"  📊 Sheet 2 (成長トラッキング) を取得中...")
+    print(f" Sheet 2 (成長トラッキング) を取得中...")
     growth_rows = fetch_csv(growth_url)
     growth_entries = parse_growth_tracking(growth_rows)
     print(f"     → {len(growth_entries)} チャンネル")
@@ -995,7 +1157,7 @@ def fetch_from_spreadsheets(
         # スコア計算（フィルタなし・全エントリ基準の正規化）
         identify_hot_channels(growth_entries, top_n=len(growth_entries))
         hot.sort(key=lambda e: e.score, reverse=True)
-        print(f"     → 📌 ピン留め {len(hot)}/{len(pinned_names)} チャンネル採用")
+        print(f" →  ピン留め {len(hot)}/{len(pinned_names)} チャンネル採用")
     else:
         hot = identify_hot_channels(
             growth_entries, top_n=top_n,
@@ -1003,7 +1165,7 @@ def fetch_from_spreadsheets(
         )
         print(f"     → ホット {len(hot)} チャンネル特定 (filter: subs {min_subs}-{max_subs or '∞'})")
 
-    print(f"  📊 Sheet 1 (チャンネル詳細) を取得中...")
+    print(f" Sheet 1 (チャンネル詳細) を取得中...")
     detail_rows = fetch_csv(detail_url)
     detail_channels = parse_channel_detail(detail_rows)
     print(f"     → {len(detail_channels)} チャンネル")

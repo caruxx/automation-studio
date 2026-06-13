@@ -244,22 +244,22 @@ def _run(cmd, label, timeout=None, env_overrides=None):
     try:
         proc = subprocess.run(cmd, **run_kwargs)
         if proc.returncode == EXIT_UNATTENDED:
-            print(f"\n🔐 {label} 中断: ブラウザ手動ログインが必要です (exit={proc.returncode})")
+            print(f"\n {label} 中断: ブラウザ手動ログインが必要です (exit={proc.returncode})")
             return "unattended_login"
         if proc.returncode == EXIT_RETRYABLE:
-            print(f"\n🔁 {label} 一時失敗: retry 対象 (exit={proc.returncode})")
+            print(f"\n {label} 一時失敗: retry 対象 (exit={proc.returncode})")
             return "retryable"
         if proc.returncode == EXIT_QUOTA_EXHAUSTED:
-            print(f"\n📊 {label} 中断: YouTube クオータ枯渇 (exit={proc.returncode})")
+            print(f"\n {label} 中断: YouTube クオータ枯渇 (exit={proc.returncode})")
             return "quota_exhausted"
         if proc.returncode != 0:
             print(f"\n❌ {label} 失敗 (exit={proc.returncode})")
             return False
-        print(f"\n✅ {label} 完了")
+        print(f"\n {label} 完了")
         return True
     except subprocess.TimeoutExpired:
         suffix = f" ({timeout}s)" if timeout else ""
-        print(f"\n⏰ {label} タイムアウト{suffix}")
+        print(f"\n {label} タイムアウト{suffix}")
         return False
     except Exception as e:
         print(f"\n❌ {label} エラー: {e}")
@@ -285,7 +285,7 @@ def _preflight_premiere() -> tuple:
     return True, "Premiere Pro + CEP panel 疎通 OK"
 
 
-RUNBOOK_HINT = "📖 docs/runbook.md（共有ドライブ）に対応手順あり"
+RUNBOOK_HINT = " docs/runbook.md（共有ドライブ）に対応手順あり"
 
 
 def _notify_discord(message: str) -> None:
@@ -353,7 +353,7 @@ def _api_poll(status_path, label, timeout=7200, interval=3):
                     if last_running_seen:
                         # 自ジョブが走った後の完了マーカーのみ信用する
                         if "[完了] 終了コード: 0" in tail:
-                            print(f"\n✅ {label} 完了")
+                            print(f"\n {label} 完了")
                             return True
                         if "[完了] 終了コード:" in tail:
                             print(f"\n❌ {label} 失敗: {tail.splitlines()[-1] if tail else '?'}")
@@ -369,7 +369,7 @@ def _api_poll(status_path, label, timeout=7200, interval=3):
         except Exception:
             pass
         time.sleep(interval)
-    print(f"\n⏰ {label} タイムアウト ({timeout}s)")
+    print(f"\n {label} タイムアウト ({timeout}s)")
     return False
 
 
@@ -480,7 +480,7 @@ def step_plan(vol: int, folder: Path, via_api: bool, **kw):
         cache = {}
     if not cache:
         print("  ⚠️ 競合分析キャッシュが見つかりません")
-        print("     先に Web UI で「📡 競合データ取得 + 分析」を実行してください")
+        print(" 先に Web UI で「 競合データ取得 + 分析」を実行してください")
         print("     スキップして既定プロンプトで進みます")
         return True
 
@@ -571,7 +571,7 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
             plan_prompt = plan.get("suno_prompt", "")
             if plan_prompt:
-                print(f"  📋 plan.json のプロンプトを使用")
+                print(f" plan.json のプロンプトを使用")
         except Exception:
             pass
     # env 上書き（ダッシュボードのフォーム値）
@@ -685,6 +685,7 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             sys.executable, str(BASE / "suno_auto_create.py"),
             "--prompt", prompt, "--count", str(count), "--interval", str(interval),
             "--provider", provider,
+            "--mode", mode,
             "--workspace", workspace,
         ]
         if batch:
@@ -739,7 +740,7 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             return False
 
         # リネーム + フェード（既存の step_rename ロジックを subprocess で利用）
-        print(f"\n  🎵 リネーム + フェード処理")
+        print(f"\n   リネーム + フェード処理")
         process_cmd = [
             sys.executable, str(BASE / "app_process_tracks.py"),
             str(folder),
@@ -841,11 +842,11 @@ def _enqueue_and_wait(stage: str, vol: int, folder: Path) -> bool:
             channel_folder=ch_folder, channel_name=ch_name,
             vol=int(vol), video_name=folder.name, stage=stage,
         )
-        print(f"  📥 enqueued render queue id={jid} (stage={stage}, vol={vol})")
+        print(f" enqueued render queue id={jid} (stage={stage}, vol={vol})")
         timeout = 3600 if stage == "premiere" else 7200
         job = _rq.wait_for(jid, timeout_sec=timeout)
         if job.get("status") == "done":
-            print(f"  ✅ render queue id={jid} done ({job.get('duration_sec') or '-'}s)")
+            print(f" render queue id={jid} done ({job.get('duration_sec') or '-'}s)")
             return True
         msg = (job.get("error_message") or "")[:200]
         print(f"  ❌ render queue id={jid} {job.get('status')}: {msg}")
@@ -922,7 +923,7 @@ def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Pa
                 print(f"  ⚠ APP_BGIMAGE_REFERENCE_IMAGE が存在しません: {p}")
         ref_images = ref_images[:ref_count]
         if ref_images:
-            print(f"  📎 固定参照画像 {len(ref_images)}/{ref_count} 枚")
+            print(f" 固定参照画像 {len(ref_images)}/{ref_count} 枚")
             for r in ref_images:
                 print(f"     - {r.name}")
 
@@ -940,7 +941,7 @@ def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Pa
             if dir_pool:
                 _random.shuffle(dir_pool)
                 ref_images = dir_pool[:ref_count]
-                print(f"  🗂  reference_image_dir から {len(ref_images)}/{ref_count} 枚ランダム選択 ({ref_dir})")
+                print(f" reference_image_dir から {len(ref_images)}/{ref_count} 枚ランダム選択 ({ref_dir})")
                 for r in ref_images:
                     print(f"     - {r.name}")
             else:
@@ -956,7 +957,7 @@ def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Pa
             if picked:
                 ref_images = [Path(p) for p in picked if Path(p).exists()][:ref_count]
                 if ref_images:
-                    print(f"  📌 Picked 参照画像 {len(ref_images)}/{ref_count} 枚（サムネ分析で選別済）")
+                    print(f" Picked 参照画像 {len(ref_images)}/{ref_count} 枚（サムネ分析で選別済）")
                     for r in ref_images:
                         print(f"     - {r.name}")
         except Exception as e:
@@ -977,7 +978,7 @@ def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Pa
         if pool:
             _random.shuffle(pool)
             ref_images = pool[:ref_count]
-            print(f"  📷 rival thumbs プール {len(pool)} 枚から {len(ref_images)}/{ref_count} 枚ランダム選択（最終フォールバック）")
+            print(f" rival thumbs プール {len(pool)} 枚から {len(ref_images)}/{ref_count} 枚ランダム選択（最終フォールバック）")
             for r in ref_images:
                 print(f"     - {r.parent.name}/{r.name}")
         else:
@@ -1073,7 +1074,7 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
     if use_dynamic:
         try:
             base_prompt = _build_bgimage_prompt(folder, ref_images=ref_images)
-            print("  📝 背景プロンプト: 参照3枚のVision共通要素＋ベンチマーク分析から動的構築")
+            print(" 背景プロンプト: 参照3枚のVision共通要素＋ベンチマーク分析から動的構築")
         except Exception as e:
             print(f"  ⚠ 動的プロンプト構築失敗 → 固定テンプレにフォールバック: {e}")
             base_prompt = _legacy_bgimage_prompt(persona, channel_name)
@@ -1124,7 +1125,7 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
                      str(png_path), "--out", str(src_jpg)],
                     check=True, capture_output=True, timeout=60,
                 )
-                print(f"  📷 source JPG 生成: {src_jpg.name}（PSD 合成フォールバック用）")
+                print(f" source JPG 生成: {src_jpg.name}（PSD 合成フォールバック用）")
             except Exception as e:
                 print(f"  ⚠ source JPG 生成失敗（PNG はそのまま、フォールバック無効）: {e}")
     return ok
@@ -1247,7 +1248,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
         fallback = folder / f"vol{vol}_source.jpg"
         if fallback.exists():
             base_image = fallback
-            print(f"  📷 vol{vol}.png 無し → フォールバック {fallback.name} を使用")
+            print(f" vol{vol}.png 無し → フォールバック {fallback.name} を使用")
     if not base_image.exists():
         print(f"  ⚠ 背景画像 vol{vol}.png / vol{vol}_source.jpg どちらも無い（bgimage step を先に実行してください）→ スキップ")
         return True
@@ -1302,7 +1303,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             print(f"     vol_folder 作成プロセスを確認してください（テンプレ {template_psd_name} の自動コピーが効いていない可能性）")
             print(f"     復旧後に再実行: python3 app_pipeline.py {vol} --only psd_composite")
             return False
-    print(f"  📄 vol 固有 PSD を使用: {psd_path.name}")
+    print(f" vol 固有 PSD を使用: {psd_path.name}")
 
     # NOTE: strip しない — PSD のレイヤー名には末尾スペースが含まれることがある
     # （例: Harbor Notes hn_base.psd の "PLAY LIST " は末尾スペース必須）
@@ -1343,7 +1344,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             if scene_text:
                 try:
                     scene_file.write_text(scene_text + "\n", encoding="utf-8")
-                    print(f"  💬 scene_en: {scene_text!r}（{scene_file.name} に保存）")
+                    print(f" scene_en: {scene_text!r}（{scene_file.name} に保存）")
                 except Exception as e:
                     print(f"  ⚠ scene_en.txt 書き込み失敗: {e}（続行）")
             else:
@@ -1380,7 +1381,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
                 if scene_ja_text:
                     try:
                         scene_ja_file.write_text(scene_ja_text + "\n", encoding="utf-8")
-                        print(f"  💬 scene_ja: {scene_ja_text!r}（{scene_ja_file.name} に保存・layer={scene_ja_layer!r}）")
+                        print(f" scene_ja: {scene_ja_text!r}（{scene_ja_file.name} に保存・layer={scene_ja_layer!r}）")
                     except Exception as e:
                         print(f"  ⚠ scene_ja.txt 書き込み失敗: {e}（続行）")
                 else:
@@ -1432,7 +1433,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             save_psd=True,
             **extra,
         )
-        print(f"  ✅ bg: {Path(result.get('bg', '?')).name} / thumbnail: {Path(result.get('thumbnail', '?')).name}")
+        print(f" bg: {Path(result.get('bg', '?')).name} / thumbnail: {Path(result.get('thumbnail', '?')).name}")
         # per-channel 筆記体ブランド文字を常時オーバーレイ（thumbnail_script_text 設定時のみ）。
         # 全 vol へ自動付与（PSD テンプレ常設の代替・PSD レンダリングを壊さない）。
         _overlay_thumbnail_script(out_thumb, cfg, out_bg=out_bg)
@@ -1537,20 +1538,38 @@ def _generate_scene_copy_ja(*, cli: str, persona: str, folder_name: str, vol: in
         return ""
 
 
-def step_premiere(vol: int, folder: Path, via_api: bool, **kw):
-    # duration 優先順位: kw["duration"] > APP_DURATION_SEC env > per-channel default_duration_sec > 10800
+def _export_engine() -> str:
+    """per-channel `export_engine`（"ame" | "ffmpeg"）。既定 "ame"。
+
+    "ffmpeg" は app_ffrender.py（ループ連結方式）で premiere+export を置換する。
+    静止画ベースのチャンネル向け。Premiere/AME の物理シリアル制約と無関係なので
+    render_queue を経由せず CPU 並列で書き出せる。"""
+    eng = (_load_dashboard_config().get("export_engine") or "ame").strip().lower()
+    return eng if eng in ("ame", "ffmpeg") else "ame"
+
+
+def _resolve_target_duration(kw: dict) -> int:
+    """duration 優先順位: kw["duration"] > APP_DURATION_SEC env > per-channel default_duration_sec > 10800"""
     duration = kw.get("duration")
     if duration is None:
         env_d = os.environ.get("APP_DURATION_SEC") or os.environ.get("ORZZ_DURATION_SEC")
         if env_d and env_d.strip().isdigit():
             duration = int(env_d.strip())
     if duration is None:
-        ch_cfg = _load_dashboard_config()
-        ch_default = ch_cfg.get("default_duration_sec")
+        ch_default = _load_dashboard_config().get("default_duration_sec")
         if isinstance(ch_default, (int, float)) and ch_default > 0:
             duration = int(ch_default)
     if duration is None:
         duration = 10800
+    return int(duration)
+
+
+def step_premiere(vol: int, folder: Path, via_api: bool, **kw):
+    if _export_engine() == "ffmpeg":
+        print(" export_engine=ffmpeg → premiere step スキップ"
+              "（ffrender が export 時に 音声/映像/字幕(SRT)/チャプター(TC) を一括生成）")
+        return True
+    duration = _resolve_target_duration(kw)
     if _use_render_queue():
         result = _enqueue_and_wait("premiere", vol, folder)
         if result is not None:
@@ -1624,6 +1643,40 @@ def _resolve_external_output_path(vol: int, folder: Path):
     return ext_dir / f"{file_prefix}_vol{num}.mp4"
 
 
+def _wait_for_mp4_ready(path: Path, *, expected_duration: float = 0.0,
+                        timeout: int = 7200, interval: int = 30) -> bool:
+    """AME が非同期で書き続ける mp4 を、ffprobe が通りサイズが安定するまで待つ。"""
+    deadline = time.time() + timeout
+    last_size = -1
+    stable = 0
+    min_duration = max(0.0, expected_duration - 5.0) if expected_duration else 0.0
+    while time.time() < deadline:
+        size = path.stat().st_size if path.exists() else 0
+        duration = None
+        probe_ok = False
+        if size > 0:
+            try:
+                r = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                    capture_output=True, text=True, timeout=20,
+                )
+                if r.returncode == 0:
+                    duration = float((r.stdout or "0").strip() or 0)
+                    probe_ok = duration >= min_duration
+            except Exception:
+                probe_ok = False
+        stable = stable + 1 if size == last_size and size > 0 else 0
+        last_size = size
+        dur_s = f"{duration:.1f}s" if duration is not None else "pending"
+        print(f" 書き出し完了待ち: {size/1024/1024:.1f}MB / duration={dur_s} / stable={stable}")
+        if probe_ok and stable >= 2:
+            return True
+        time.sleep(interval)
+    print(f"  ⚠ 書き出し完了待ちタイムアウト: {path}")
+    return False
+
+
 def _backup_existing_meta(folder: Path) -> None:
     """既存の youtube_*.txt を *_backup.txt に退避（言語切替時の誤上書き防止）。"""
     import shutil as _sh
@@ -1650,7 +1703,36 @@ def _channel_meta_lang_handle(cfg: dict) -> tuple:
     return source_lang, handle
 
 
+def _resolve_local_output_path(vol: int, folder: Path) -> Path:
+    """export_path 未設定時の vol フォルダ内出力パス。prefix は AME と同じ規約で解決
+    （registry の prefix → dashboard file_prefix → フォルダ名 `^\\d+_([^_]+)` → "vol"）。"""
+    m = re.match(r"^(\d+)_", folder.name)
+    num = m.group(1) if m else str(vol)
+    prefix = (_resolve_channel(channel_folder=str(folder.parent)).get("prefix") or "").strip()
+    if not prefix:
+        prefix = (_load_dashboard_config().get("file_prefix") or "").strip()
+    if not prefix:
+        fm = re.match(r"^\d+_([^_]+)", folder.name)
+        prefix = fm.group(1) if fm else "vol"
+    return folder / f"{prefix}_vol{num}.mp4"
+
+
+def _run_ffrender_export(vol: int, folder: Path, kw: dict) -> bool:
+    """export_engine=ffmpeg: app_ffrender.py で音声+映像(ループ連結)+字幕+TC を一括書き出し。
+    Premiere/AME を使わないので render_queue を経由しない（CPU 並列可）。
+    出力先は常に明示指定（外部 export_path 優先、無ければ vol フォルダ内 {prefix}_vol{N}.mp4）。"""
+    duration = _resolve_target_duration(kw)
+    out = _resolve_external_output_path(vol, folder) or _resolve_local_output_path(vol, folder)
+    print(f" 出力先: {out}")
+    cmd = [sys.executable, str(BASE / "app_ffrender.py"),
+           "--vol-folder", str(folder), "--duration", str(duration),
+           "--output-path", str(out)]
+    return _run(cmd, STEP_LABELS["export"], timeout=7200)
+
+
 def step_export(vol: int, folder: Path, via_api: bool, **kw):
+    if _export_engine() == "ffmpeg":
+        return _run_ffrender_export(vol, folder, kw)
     if _use_render_queue():
         result = _enqueue_and_wait("export", vol, folder)
         if result is not None:
@@ -1670,8 +1752,15 @@ def step_export(vol: int, folder: Path, via_api: bool, **kw):
         ext_out = _resolve_external_output_path(vol, folder)
         if ext_out:
             cmd += ["--output-path", str(ext_out)]
-            print(f"  📦 外部出力先: {ext_out}")
-        return _run(cmd, STEP_LABELS["export"], timeout=7200)
+            print(f" 外部出力先: {ext_out}")
+        ok = _run(cmd, STEP_LABELS["export"], timeout=7200)
+        if ok is True and ext_out:
+            try:
+                expected = float(_load_dashboard_config().get("default_duration_sec") or 0)
+            except (TypeError, ValueError):
+                expected = 0.0
+            return _wait_for_mp4_ready(ext_out, expected_duration=expected, timeout=7200)
+        return ok
 
 
 def step_meta(vol: int, folder: Path, via_api: bool, **kw):
@@ -1695,7 +1784,7 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
         persona = cfg.get("persona", "")
         channel_name = cfg.get("channel_name", "orzz.")
         source_lang, handle = _channel_meta_lang_handle(cfg)
-        print(f"  🌐 source_lang={source_lang} / channel={channel_name} / handle={handle or '-'}")
+        print(f" source_lang={source_lang} / channel={channel_name} / handle={handle or '-'}")
         ctx = gather_context(folder)
         _backup_existing_meta(folder)
         try:
@@ -1722,7 +1811,7 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
                 print(f"  ✓ タグ: {len(tags)} 件")
         except Exception as e:
             print(f"  ⚠️ タグ: {e}")
-        print(f"\n✅ {STEP_LABELS['meta']} 完了")
+        print(f"\n {STEP_LABELS['meta']} 完了")
         return True
 
 
@@ -1758,7 +1847,7 @@ def step_localization(vol: int, folder: Path, via_api: bool, **kw):
     cli = _load_suno_config().get("claude_cli", "claude")
     sys.path.insert(0, str(BASE))
     from claude_proposer import translate_metadata
-    print(f"  🌐 {source_lang} → {', '.join(targets)}")
+    print(f" {source_lang} → {', '.join(targets)}")
     try:
         result = translate_metadata(
             title=title, description=description,
@@ -1772,8 +1861,35 @@ def step_localization(vol: int, folder: Path, via_api: bool, **kw):
         return True
     out_path = folder / "youtube_localizations.json"
     out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"  ✅ {len(result)} 言語生成: {', '.join(result.keys())} → {out_path.name}")
+    print(f" {len(result)} 言語生成: {', '.join(result.keys())} → {out_path.name}")
     return True
+
+
+def _write_qa_report(folder: Path, report: dict) -> None:
+    """qa_report.json を保存。検査不能/不合格でも必ず書く。
+
+    orchestrator（QAWorker.can_run / _qa_done）は本ファイルの存在と passed を見る。
+    書かずに False を返すと同一 vol が候補に残り続け、tick 毎の再dispatch→再失敗で
+    ブレーカーが発動する（vol87 で実例）。人間が原因を解消したら qa_report.json を
+    削除すると再検査対象に戻る。"""
+    try:
+        (folder / "qa_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"  ⚠ qa_report.json 保存失敗: {e}")
+
+
+def _qa_fail_unverifiable(folder: Path, mp4, reason: str) -> bool:
+    """検査自体が不能（壊れ mp4 等）。passed:false の report を書いて False を返す。"""
+    _write_qa_report(folder, {
+        "checked_at": __import__("datetime").datetime.now().isoformat(),
+        "mp4": str(mp4),
+        "issues": [reason],
+        "passed": False,
+        "unverifiable": True,
+    })
+    return False
 
 
 def step_qa(vol: int, folder: Path, via_api: bool, **kw):
@@ -1791,7 +1907,9 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
     NG 時は False を返し、pipeline は失敗扱い → auto_resume が `--from premiere` で
     Premiere に差し戻す（タイムライン or 書き出し設定の問題のはず）。
 
-    出力: `<vol_folder>/qa_report.json`（次回起動時の参照や運営者の確認用）
+    出力: `<vol_folder>/qa_report.json`（次回起動時の参照や運営者の確認用）。
+    検査不能（ffprobe 失敗/タイムアウト＝壊れ mp4 等）でも passed:false で必ず書く
+    （orchestrator の再dispatchループ防止。原因解消後に本ファイルを消すと再検査）。
     """
     print(f"\n{'='*60}")
     print(f"  {STEP_LABELS.get('qa', 'QA チェック')}")
@@ -1802,6 +1920,11 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
 
     # 対象 mp4 を解決
     mp4 = next(iter(folder.glob("*vol*.mp4")), None) or next(iter(folder.glob("*.mp4")), None)
+    if not mp4 or not mp4.exists():
+        ext_mp4 = _resolve_external_output_path(vol, folder)
+        if ext_mp4 and ext_mp4.exists():
+            mp4 = ext_mp4
+            print(f" 外部出力MP4をQA対象に使用: {mp4}")
     if not mp4 or not mp4.exists():
         print(f"  ⚠ mp4 が見つからない（書き出し未完？） — QA をスキップ")
         return True  # mp4 が無い時点で upload も走らないので QA は素通し
@@ -1819,15 +1942,16 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         print("  ❌ ffprobe タイムアウト")
-        return False
+        return _qa_fail_unverifiable(folder, mp4, "ffprobe タイムアウト（60s）")
     if r.returncode != 0:
         print(f"  ❌ ffprobe 失敗: {r.stderr[:200]}")
-        return False
+        return _qa_fail_unverifiable(
+            folder, mp4, f"ffprobe 失敗（壊れ mp4 の可能性）: {r.stderr[:200]}")
     try:
         info = json.loads(r.stdout)
     except Exception as e:
         print(f"  ❌ ffprobe JSON parse 失敗: {e}")
-        return False
+        return _qa_fail_unverifiable(folder, mp4, f"ffprobe JSON parse 失敗: {e}")
 
     # 解析
     streams = info.get("streams", [])
@@ -1881,7 +2005,7 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
     # オプション: ラウドネス
     if os.environ.get("APP_QA_LOUDNESS", "").strip() in ("1", "true", "yes"):
         if _sh.which("ffmpeg"):
-            print(f"  📏 ラウドネス測定中（{dur:.0f}s 動画 → {int(dur/600)+1}分程度）...")
+            print(f" ラウドネス測定中（{dur:.0f}s 動画 → {int(dur/600)+1}分程度）...")
             ln_cmd = [
                 "ffmpeg", "-hide_banner", "-nostats", "-i", str(mp4),
                 "-af", "loudnorm=print_format=summary",
@@ -1903,16 +2027,10 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
 
     report["issues"] = issues
     report["passed"] = len(issues) == 0
-    # report 保存
-    try:
-        (folder / "qa_report.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except Exception as e:
-        print(f"  ⚠ qa_report.json 保存失敗: {e}")
+    _write_qa_report(folder, report)
 
     if not issues:
-        print(f"  ✅ QA 合格（{dur:.1f}s {report['video']['width']}x{report['video']['height']} {report['size_mb']}MB）")
+        print(f" QA 合格（{dur:.1f}s {report['video']['width']}x{report['video']['height']} {report['size_mb']}MB）")
         return True
     print(f"  ❌ QA 不合格（{len(issues)} 件）:")
     for it in issues:
@@ -1997,6 +2115,15 @@ def _build_thumbnail_prompt(folder: Path) -> str:
         persona = (cfg.get("persona") or "").strip()
         if persona:
             parts.append(persona[:200])
+    # S2: サムネ DNA（競合の初速上位で出現率が高い見た目要素・app_video_intel が集計）を
+    # 任意注入。thumb_dna.json が無い/データ不足なら何も足さない（既存挙動と完全互換）。
+    try:
+        _dna = json.loads((CONFIG_DIR / "thumb_dna.json").read_text(encoding="utf-8"))
+        _hint = (_dna.get("prompt_hint") or "").strip()
+        if _hint and int(_dna.get("records") or 0) >= 8:
+            parts.append(f"proven high-traction elements among competitors: {_hint}")
+    except Exception:
+        pass
     body = ". ".join(parts) if parts else "cinematic atmospheric scene for a BGM YouTube channel"
     try:
         from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
@@ -2076,6 +2203,41 @@ def _legacy_bgimage_prompt(persona: str, channel_name: str) -> str:
         f"combine ONLY their color palette, lighting and overall mood "
         f"while making the composition original — do not copy any element verbatim and do not reproduce any text."
     )
+
+
+def _sanitize_vision_background(raw) -> str:
+    """run_llm_vision の「参照共通要素」応答を背景プロンプト用に検証・整形する。
+
+    LLM が指示を無視して日本語の長文分析・マークダウン表・会話的な前置きを返すこと
+    があり（実害: vol9 で会話文がプロンプトに混入）、それをそのまま
+    background_context に入れると生成プロンプトが汚染される。次のいずれかに該当したら
+    「不正」と判断して空文字を返し、呼び出し側でベンチ分析の既定値にフォールバックさせる。
+      - 空
+      - 日本語（ひらがな/カタカナ/CJK）を多く含む（英語1〜2文を要求しているため）
+      - マークダウンの表/見出し/箇条書き記号を含む
+      - 長すぎる（複数文の分析＝指示無視）
+    通過時は単一行・320字以内に丸めて返す。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    # 改行は単一スペースへ（単一行の英語記述を期待）
+    flat = " ".join(text.split())
+    # マークダウン構造（表・見出し・箇条書き）の混入は分析文＝不正
+    if any(marker in flat for marker in ("|", "##", "**", "- ", "•", "—", "→")):
+        return ""
+    # 日本語（CJK/かな）を一定割合以上含むなら不正（英語指定を無視している）
+    jp = sum(1 for ch in flat if (
+        "぀" <= ch <= "ヿ"      # ひらがな・カタカナ
+        or "一" <= ch <= "鿿"   # CJK 統合漢字
+        or "＀" <= ch <= "￯"   # 全角記号
+    ))
+    if jp >= 8 or (flat and jp / max(1, len(flat)) > 0.05):
+        return ""
+    # 長すぎ（英語1〜2文を要求。会話的前置き/多段落分析の混入を弾く）
+    if len(flat) > 320:
+        return ""
+    return flat[:320].strip()
 
 
 def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
@@ -2185,16 +2347,23 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
             try:
                 from app_llm_runner import run_llm_vision
                 _common = run_llm_vision(
-                    "これら複数のベンチマーク用サムネ画像に共通する視覚要素"
-                    "（被写体・構図・時間帯・光・色調・雰囲気）を分析し、それらを踏襲した"
-                    "新しい16:9背景画像のための英語ビジュアル記述を1〜2文で作れ。"
-                    "文字/ロゴ/固有名詞は含めない。被写体は控えめ・余白多め。",
+                    "Analyze these reference thumbnail images and describe ONLY their shared "
+                    "visual elements (subject, composition, time of day, lighting, color palette, "
+                    "mood) as a single ENGLISH visual description for a new 16:9 background image. "
+                    "Output requirements (strict): respond with ONE single line of plain English, "
+                    "1 to 2 sentences, 40 words maximum, no preamble, no commentary, no Japanese, "
+                    "no markdown, no tables, no bullet points, no headings. Do not mention text, "
+                    "logos, captions or proper nouns. Keep the subject understated with lots of "
+                    "negative space. Begin the answer directly with the scene description.",
                     [str(p) for p in ref_images],
                     label="bgimage:参照3枚の共通要素抽出",
                 )
-                if _common and _common.strip():
-                    visual["background_context"] = _common.strip()
-                    print("  🔍 参照3枚のVision共通要素を背景コンテキストに採用(TTPS)")
+                _clean = _sanitize_vision_background(_common)
+                if _clean:
+                    visual["background_context"] = _clean
+                    print(" 参照3枚のVision共通要素を背景コンテキストに採用(TTPS)")
+                elif (_common or "").strip():
+                    print("  ⚠ Vision共通要素が記述として不正（日本語/表/長文等）→ ベンチ分析の背景コンテキストを維持")
             except Exception as e:
                 print(f"  ⚠ 参照3枚のVision共通要素抽出失敗（ベンチ分析にフォールバック）: {e}")
         visual["camera_composition"] = (
@@ -2377,7 +2546,7 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
         return ScoreResult(sc.get("evaluations") or [], error=sc.get("error") or "")
 
     max_attempts = _eval_loop_env_int("APP_THUMB_MAX_ATTEMPTS", 2)
-    print(f"  🔁 eval-loop 開始（max_attempts={max_attempts}, n/attempt={n_per}, "
+    print(f" eval-loop 開始（max_attempts={max_attempts}, n/attempt={n_per}, "
           f"採点用ref={len(ref_paths)} 枚, 生成用ベンチマーク参照={len(gen_refs)} 枚）")
     res = run_eval_loop(
         generate_fn=generate_fn, score_fn=score_fn,
@@ -2421,7 +2590,7 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
         import shutil as _sh
         _sh.copy2(src, final_path)
         tag = "合格" if res.passed else "best(fail-adopt)"
-        print(f"  ✅ eval-loop: {src.name} → {final_path.name}（{tag}・"
+        print(f" eval-loop: {src.name} → {final_path.name}（{tag}・"
               f"attempts={res.attempts_used}, gen={res.total_generated}, vision={res.vision_calls}）")
     except Exception as e:
         print(f"  ⚠ eval-loop: thumbnail.png コピー失敗: {e}")
@@ -2472,7 +2641,7 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
             return True
 
     prompt = _build_thumbnail_prompt(folder)
-    print(f"  📝 prompt: {prompt[:180]}{'…' if len(prompt) > 180 else ''}")
+    print(f" prompt: {prompt[:180]}{'…' if len(prompt) > 180 else ''}")
     out_dir = folder / "thumbnail_candidates"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2512,14 +2681,14 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
             for r in thumb_refs:
                 codex_cmd += ["--reference-image", str(r)]
             if thumb_refs:
-                print(f"  📎 codex reference: {len(thumb_refs)} 枚 ({', '.join(p.name for p in thumb_refs)})")
+                print(f" codex reference: {len(thumb_refs)} 枚 ({', '.join(p.name for p in thumb_refs)})")
         except Exception as e:
             print(f"  ⚠ codex 参照画像の収集失敗: {e}")
         try:
             p = subprocess.Popen(codex_cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, bufsize=1)
             procs.append(("codex", p))
-            print(f"  🚀 codex_imagegen.py を起動 (pid={p.pid})")
+            print(f" codex_imagegen.py を起動 (pid={p.pid})")
         except Exception as e:
             print(f"  ❌ Codex 起動失敗: {e}")
 
@@ -2529,12 +2698,12 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
         try:
             stdout, _ = p.communicate(timeout=600)
             results[name] = (p.returncode, (stdout or "")[-300:])
-            tag = "✅" if p.returncode == 0 else "❌"
+            tag = "" if p.returncode == 0 else "❌"
             print(f"  {tag} {name}: exit={p.returncode}")
         except subprocess.TimeoutExpired:
             p.terminate()
             results[name] = (-1, "timeout")
-            print(f"  ⏰ {name}: timeout 600s")
+            print(f" {name}: timeout 600s")
 
     # 候補を thumbnail.png に昇格（先頭 1 枚を選ぶ。codex 生成物のみ）
     candidates = []
@@ -2550,7 +2719,7 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
     try:
         import shutil as _sh
         _sh.copy2(chosen, final_path)
-        print(f"  ✅ {chosen.name} → {final_path.name}（残り {len(candidates) - 1} 件は thumbnail_candidates に保管）")
+        print(f" {chosen.name} → {final_path.name}（残り {len(candidates) - 1} 件は thumbnail_candidates に保管）")
     except Exception as e:
         print(f"  ⚠ thumbnail.png コピー失敗: {e}")
     return True
@@ -2576,17 +2745,17 @@ def step_upload(vol: int, folder: Path, via_api: bool, **kw):
     schedule_gate = False
     if mode == "public":
         privacy = "public"
-        print("  🌐 publish_mode=public → 即時公開で upload")
+        print(" publish_mode=public → 即時公開で upload")
     elif mode == "delayed" and delay_h > 0:
         privacy = "private"
         schedule_gate = True
-        print(f"  🔒 publish_mode=delayed → upload は private、{delay_h}h 後に自動 public 化")
+        print(f" publish_mode=delayed → upload は private、{delay_h}h 後に自動 public 化")
     elif mode == "delayed" and delay_h <= 0:
         # delayed なのに遅延時間が無い → 即時 public とみなす（設定の取りこぼし救済）
         privacy = "public"
-        print("  🌐 publish_mode=delayed だが publish_delay_hours=0 → 即時公開で upload")
+        print(" publish_mode=delayed だが publish_delay_hours=0 → 即時公開で upload")
     else:
-        print(f"  🔗 publish_mode=unlisted → 限定公開で upload（公開ゲート無し）")
+        print(f" publish_mode=unlisted → 限定公開で upload（公開ゲート無し）")
 
     if via_api:
         r = _api_post("/api/youtube/upload", {
@@ -2599,10 +2768,16 @@ def step_upload(vol: int, folder: Path, via_api: bool, **kw):
             _schedule_publish_after_upload(folder, delay_h)
         return ok
     else:
-        ok = _run([
+        cmd = [
             sys.executable, str(BASE / "app_youtube.py"),
             str(folder), "--privacy", privacy,
-        ], STEP_LABELS["upload"], timeout=7200)
+        ]
+        if not any(folder.glob("*.mp4")):
+            ext_mp4 = _resolve_external_output_path(vol, folder)
+            if ext_mp4 and ext_mp4.exists():
+                cmd += ["--video-path", str(ext_mp4)]
+                print(f" 外部出力MP4をupload対象に使用: {ext_mp4}")
+        ok = _run(cmd, STEP_LABELS["upload"], timeout=7200)
         if ok is True and schedule_gate:
             _schedule_publish_after_upload(folder, delay_h)
         return ok
@@ -2623,7 +2798,7 @@ def _schedule_publish_after_upload(folder: Path, delay_hours: float) -> None:
     try:
         r = _api_post("/api/youtube/schedule-publish", body, "公開ゲート登録")
         if r and r.get("status") == "ok":
-            print(f"  ⏰ 公開予定: {r.get('scheduled_at')} ({delay_hours}h 後)")
+            print(f" 公開予定: {r.get('scheduled_at')} ({delay_hours}h 後)")
         else:
             print(f"  ⚠ 公開ゲート登録の応答が不正（marker は更新済 → 次回起動で復旧）")
     except Exception as e:
@@ -2791,7 +2966,7 @@ def main():
         os.environ["APP_CHANNEL_NAME"] = resolved_ch.get("name") or ch_path.name
         if resolved_ch.get("id"):
             os.environ["APP_CHANNEL_ID"] = resolved_ch["id"]
-        print(f"  📌 channel: id={resolved_ch.get('id') or '(unregistered)'} "
+        print(f" channel: id={resolved_ch.get('id') or '(unregistered)'} "
               f"name={os.environ['APP_CHANNEL_NAME']} folder={ch_path}")
     if args.auto:
         os.environ["APP_NO_INTERACTIVE"] = "1"
@@ -2845,7 +3020,8 @@ def main():
     # ─── preflight チェック（Premiere/Export 工程を含む場合のみ） ───
     # 起動していない Premiere に向けて長時間 SUNO を回した後で気付く事故を防ぐ。
     # APP_PREFLIGHT_DISABLE=1 で抑止可能（CEP 不要なテスト時など）。
-    needs_premiere = any(s in ("premiere", "export") for s in steps)
+    # export_engine=ffmpeg のチャンネルは Premiere/CEP を使わないので preflight 不要。
+    needs_premiere = any(s in ("premiere", "export") for s in steps) and _export_engine() != "ffmpeg"
     if needs_premiere and os.environ.get("APP_PREFLIGHT_DISABLE", "").strip() not in ("1", "true", "yes"):
         ok, msg = _preflight_premiere()
         if not ok:
@@ -2861,7 +3037,7 @@ def main():
             print(f"  ⛔ preflight 失敗のため pipeline を開始しません")
             print(f"{'='*60}")
             sys.exit(EXIT_PREFLIGHT_FAIL)
-        print(f"\n✅ preflight: {msg}")
+        print(f"\n preflight: {msg}")
 
     # 各工程を順に実行
     # ポジショナル引数として渡すキー（vol / folder / via_api）は kw から除外して
@@ -2891,7 +3067,7 @@ def main():
                 f"対応: 該当サービスにブラウザでログインし、再開: python3 app_pipeline.py {args.vol} --from {s}"
             )
             print(f"\n{'='*60}")
-            print(f"  🔐 {STEP_LABELS[s]} で中断しました（手動ログイン要求）")
+            print(f" {STEP_LABELS[s]} で中断しました（手動ログイン要求）")
             print(f"  再開: python3 app_pipeline.py {args.vol} --from {s}")
             print(f"{'='*60}")
             sys.exit(EXIT_UNATTENDED)
@@ -2901,13 +3077,13 @@ def main():
             sys.stdout.flush()
             ch_name = _load_dashboard_config().get("channel_name", "(unknown channel)")
             _notify_line(
-                f"📊 [{ch_name}] vol.{args.vol} の {STEP_LABELS[s]} が中断しました\n"
+                f" [{ch_name}] vol.{args.vol} の {STEP_LABELS[s]} が中断しました\n"
                 f"原因: YouTube Data API の 24h クオータを使い切りました\n"
                 f"対応: ~24h 後に自動再投入されるか、手動で再開: "
                 f"python3 app_pipeline.py {args.vol} --from {s}"
             )
             print(f"\n{'='*60}")
-            print(f"  📊 {STEP_LABELS[s]} で中断しました（YouTube quota 枯渇）")
+            print(f" {STEP_LABELS[s]} で中断しました（YouTube quota 枯渇）")
             print(f"  再開: python3 app_pipeline.py {args.vol} --from {s}")
             print(f"{'='*60}")
             sys.exit(EXIT_QUOTA_EXHAUSTED)
@@ -2932,7 +3108,7 @@ def main():
             sys.exit(1)
 
     print(f"\n{'='*60}")
-    print(f"  🎉 vol.{args.vol} の全工程が完了しました！")
+    print(f" vol.{args.vol} の全工程が完了しました！")
     print(f"{'='*60}")
 
 

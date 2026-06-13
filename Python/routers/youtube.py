@@ -125,6 +125,55 @@ def api_notify_line_compat(req: NotifyRequest):
     """Backward-compatible alias. Notifications now go to Discord."""
     return api_notify_discord(req)
 
+# ─── API: Discord Webhook 設定 ───
+# 通知先は全 PC・全チャンネル共通のため共有ドライブ config/ に保存（app_core.DISCORD_CONFIG）。
+# app_notify.sh も同じ共有パス（スクリプト位置基準 ../config/）を読む。
+_DISCORD_CONFIG_FILE = DISCORD_CONFIG
+
+class DiscordConfigUpdate(BaseModel):
+    webhook_url: str = ""
+    username: str = ""
+
+def _read_discord_config() -> dict:
+    try:
+        return json.loads(_DISCORD_CONFIG_FILE.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+@router.get("/api/notify/discord/config")
+def api_notify_discord_config():
+    cfg = _read_discord_config()
+    url = (cfg.get("webhook_url") or "").strip()
+    configured = url.startswith("https://discord.com/api/webhooks/") or url.startswith("https://discordapp.com/api/webhooks/")
+    preview = (url[:45] + "…" + url[-4:]) if configured and len(url) > 55 else ("" if not configured else url)
+    return {
+        "configured": configured,
+        "preview": preview,
+        "username": cfg.get("username") or "Automation Studio",
+    }
+
+@router.put("/api/notify/discord/config")
+def api_notify_discord_config_save(req: DiscordConfigUpdate):
+    url = (req.webhook_url or "").strip()
+    if url and not (url.startswith("https://discord.com/api/webhooks/") or url.startswith("https://discordapp.com/api/webhooks/")):
+        raise HTTPException(400, "Discord Webhook URL の形式ではありません（https://discord.com/api/webhooks/… を貼り付けてください）")
+    cfg = _read_discord_config()
+    if url:
+        cfg["webhook_url"] = url
+    elif "webhook_url" in cfg and not url:
+        # 空文字での保存は「削除」扱い
+        cfg["webhook_url"] = ""
+    if req.username.strip():
+        cfg["username"] = req.username.strip()
+    cfg.setdefault("username", "Automation Studio")
+    _DISCORD_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _DISCORD_CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        _DISCORD_CONFIG_FILE.chmod(0o600)
+    except Exception:
+        pass
+    return api_notify_discord_config()
+
 # ─── API: YouTube ───
 
 # YouTube ローカリゼーション言語マスタ（BCP47 + 表示名 + ネイティブ + 国旗）

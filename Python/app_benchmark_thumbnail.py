@@ -385,12 +385,12 @@ def analyze_channels(channels: list[dict], cli_cmd: str = DEFAULT_CLI,
 def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
              only_channel_ids=None, skip_unchanged: bool = True) -> dict:
     """既存の競合キャッシュをソースに、サムネ DL + 分析 + 保存を実行。"""
-    print("📥 サムネ DL 開始")
+    print(" サムネ DL 開始")
     channels = download_thumbnails()
     if not channels:
         raise RuntimeError("DL 対象がありません。先に競合データ取得を実行してください。")
 
-    print("🧠 Claude Vision で分析中")
+    print(" Claude Vision で分析中")
     existing_pc = (load_cache().get("analysis") or {}).get("per_channel", {}) or {}
     analysis = analyze_channels(channels, cli_cmd=cli_cmd, per_channel_cap=per_channel_cap,
                                 only_channel_ids=only_channel_ids, skip_unchanged=skip_unchanged,
@@ -405,7 +405,7 @@ def run_full(cli_cmd: str = DEFAULT_CLI, per_channel_cap: int = 8,
         "picked": _filter_valid_picks(existing.get("picked", []), channels),
     }
     save_cache(payload)
-    print(f"✅ thumbnail.json 保存: {ANALYSIS_FILE}")
+    print(f" thumbnail.json 保存: {ANALYSIS_FILE}")
     return payload
 
 
@@ -493,7 +493,7 @@ def _main():
         cache["channels"] = chs
         cache["generated_at"] = datetime.now().isoformat(timespec="seconds")
         save_cache(cache)
-        print(f"✅ DL 完了: {sum(len(c.get('thumbnails',[])) for c in chs)} 枚")
+        print(f" DL 完了: {sum(len(c.get('thumbnails',[])) for c in chs)} 枚")
         return
 
     run_full(cli_cmd=args.cli, per_channel_cap=args.per_channel_cap)

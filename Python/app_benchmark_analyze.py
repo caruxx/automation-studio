@@ -123,7 +123,7 @@ JSON 内の説明・分析・提案・理由はすべて自然な日本語で書
 - JSON オブジェクトのみを出力（前置き・コードフェンス不要）
 """
 
-    print("🧠 Claude CLI で競合分析中...")
+    print(" Claude CLI で競合分析中...")
     from app_llm_runner import run_llm
     out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="competitor-analyze")
 
@@ -258,7 +258,7 @@ Tag Rules:
 Output ONLY the JSON object.
 """
 
-    print("🎯 Claude CLI で最適化提案中...")
+    print(" Claude CLI で最適化提案中...")
     from app_llm_runner import run_llm
     out = run_llm(prompt, cli_cmd=cli_cmd, timeout=300, label="propose-with-analysis")
 
@@ -364,7 +364,7 @@ JSON オブジェクトのみを出力してください。
             "fallback": "local",
         }
 
-    print("🎵 Claude CLI で SUNO プロンプト提案中...")
+    print(" Claude CLI で SUNO プロンプト提案中...")
     # Claude → Codex（共通ランナー）→ ローカル生成 の3段フォールバック
     from app_llm_runner import run_llm, LLMError
     try:
@@ -482,7 +482,7 @@ def analyze_thumbnail_elements(
 JSON オブジェクトのみを出力してください。余計な説明文・マークダウンは不要。
 """
 
-    print(f"🖼 Claude Vision で {len(local_paths)} 枚のサムネ要素分析中...")
+    print(f" Claude Vision で {len(local_paths)} 枚のサムネ要素分析中...")
     # Vision 共通ランナーに委譲（Claude→Codex フォールバック・画像は -i / --add-dir で渡す）
     from app_llm_runner import run_llm_vision, LLMError
     try:

@@ -572,11 +572,11 @@ def render_thumbnail_set(
         m = re.search(r"vol\d+", psd.stem, re.IGNORECASE)
         vol_name = m.group(0).lower() if m else psd.stem
 
-    print(f"📂 open: {psd.name}")
+    print(f" open: {psd.name}")
     open_psd(str(psd))
 
     if base_image:
-        print(f"🖼️  '{base_layer}' に差し替え: {Path(base_image).name}")
+        print(f" '{base_layer}' に差し替え: {Path(base_image).name}")
         replace_smart_object(base_layer, base_image)
 
     if text_replacements:
@@ -590,7 +590,7 @@ def render_thumbnail_set(
     # toggle_layer が PSD に無い（テンプレ未整備）でも vol{N}.jpg は出す（graceful）。
     toggle_ok = True
     try:
-        print(f"👁  show '{toggle_layer}' → {out_with.name}")
+        print(f" show '{toggle_layer}' → {out_with.name}")
         set_layer_visible(toggle_layer, True)
     except RuntimeError as e:
         if "layer not found" in str(e):
@@ -601,7 +601,7 @@ def render_thumbnail_set(
     export_image(str(out_with), "jpg", quality)
 
     if toggle_ok:
-        print(f"🚫 hide '{toggle_layer}' → {out_without.name}")
+        print(f" hide '{toggle_layer}' → {out_without.name}")
         set_layer_visible(toggle_layer, False)
         export_image(str(out_without), "jpg", quality)
         return {"with_toggle": str(out_with), "thumbnail": str(out_without)}
@@ -700,10 +700,10 @@ def render_dual_thumbnail(
         m = re.search(r"vol\d+", psd.stem, re.IGNORECASE)
         vol_name = m.group(0).lower() if m else psd.stem
 
-    print(f"📂 open: {psd.name}")
+    print(f" open: {psd.name}")
     open_psd(str(psd))
 
-    print(f"🖼️  '{base_layer}' に差し替え: {Path(base_image).name}")
+    print(f" '{base_layer}' に差し替え: {Path(base_image).name}")
     replace_smart_object(base_layer, base_image)
     # Photoshop は SO 差し替え時にレイヤー名を画像ファイル名に変える → 元名に戻す
     try:
@@ -735,7 +735,7 @@ def render_dual_thumbnail(
     #   両出力の差は scene_text / scene_text_ja のオン/オフだけになる。
     # 既定（False）: 従来どおり背景=playlist ON / サムネ=playlist OFF で切り替える。
     if toggle_always_visible:
-        print(f"📌 headline 常時表示モード: '{playlist_layer}' は両出力で ON")
+        print(f" headline 常時表示モード: '{playlist_layer}' は両出力で ON")
         bg_toggle_note = on_toggle_note = f" / show '{playlist_layer}' (always)"
     else:
         bg_toggle_note = f" / show '{playlist_layer}'"
@@ -745,7 +745,7 @@ def render_dual_thumbnail(
     if bg_base_only:
         # 背景は base レイヤーのみ（テキスト/ロゴ層を全部 OFF）。SUKIMA 等
         # 「背景に文字を焼き込まない」運用向け。出力後に元の可視状態へ復元する。
-        print(f"👁  背景モード: '{base_layer}' 以外の全トップ層を非表示 → {out_bg.name}")
+        print(f" 背景モード: '{base_layer}' 以外の全トップ層を非表示 → {out_bg.name}")
         hidden_idx = _hide_top_level_except(base_layer)
         export_image(str(out_bg), "jpg", quality, target_width=target_width, target_height=target_height)
         # 復元は index で行う（名前マッチングだと SUKIMA のタグライン層
@@ -757,7 +757,7 @@ def render_dual_thumbnail(
             print(f"⚠ 背景モードのトップ層復元に失敗（続行）: {e}")
     else:
         # 従来: シーン文字OFF / headline（toggle）ON
-        print(f"👁  hide '{scene_text_layer}'{ja_off_note}{bg_toggle_note} → {out_bg.name}")
+        print(f" hide '{scene_text_layer}'{ja_off_note}{bg_toggle_note} → {out_bg.name}")
         set_layer_visible(scene_text_layer, False)
         if use_ja:
             try:
@@ -774,7 +774,7 @@ def render_dual_thumbnail(
         export_image(str(out_bg), "jpg", quality, target_width=target_width, target_height=target_height)
 
     # 出力2: サムネイル.jpg — シーン文字ON / headline は常時表示なら ON、従来は OFF
-    print(f"👁  show '{scene_text_layer}'{ja_on_note}{on_toggle_note} → {out_thumb.name}")
+    print(f" show '{scene_text_layer}'{ja_on_note}{on_toggle_note} → {out_thumb.name}")
     set_layer_visible(scene_text_layer, True)
     if use_ja:
         try:
@@ -802,7 +802,7 @@ def render_dual_thumbnail(
         if isinstance(result, str) and result.startswith("ERROR:"):
             print(f"⚠ PSD save 失敗（書き出しは成功・編集状態は未保存）: {result}")
         else:
-            print(f"💾 PSD save: {psd.name}")
+            print(f" PSD save: {psd.name}")
         # 書き出し + save が完了したので document を close（Photoshop アプリは起動したまま）。
         # 連続 vol 処理時にドキュメントが溜まるのを防ぐ。save_psd=False の場合は呼び出し側で
         # 未保存変更があるはずなので close しない（誤って失う可能性）。
@@ -817,7 +817,7 @@ def render_dual_thumbnail(
         if isinstance(cresult, str) and cresult.startswith("ERROR:"):
             print(f"⚠ PSD close 失敗（非致命、Photoshop は起動継続）: {cresult}")
         else:
-            print(f"🚪 PSD close: {psd.name}")
+            print(f" PSD close: {psd.name}")
 
     return {"bg": str(out_bg), "thumbnail": str(out_thumb)}
 
@@ -931,12 +931,12 @@ def _cli():
         return
 
     if args.open:
-        print("📂 open:", args.open)
+        print(" open:", args.open)
         print("→", open_psd(args.open))
 
     if args.layers:
         layers = list_layers()
-        print(f"📋 {len(layers)} layers:")
+        print(f" {len(layers)} layers:")
         for l in layers:
             print(f"  [{l.get('kind','?'):>20}] {l.get('path','')}")
 
@@ -947,17 +947,17 @@ def _cli():
 
     if args.replace_so:
         layer, img = args.replace_so
-        print(f"🖼️  replace SO: {layer} ← {img}")
+        print(f" replace SO: {layer} ← {img}")
         print("→", replace_smart_object(layer, img))
 
     if args.set_visible:
         layer, val = args.set_visible
         vis = val.lower() in ("true", "1", "yes", "on")
-        print(f"👁  set visible: {layer} = {vis}")
+        print(f" set visible: {layer} = {vis}")
         print("→", set_layer_visible(layer, vis))
 
     if args.export:
-        print(f"💾 export ({args.fmt}, q={args.quality}): {args.export}")
+        print(f" export ({args.fmt}, q={args.quality}): {args.export}")
         print("→", export_image(args.export, args.fmt, args.quality))
 
     if args.render_thumbs:
