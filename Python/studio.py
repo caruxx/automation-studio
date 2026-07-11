@@ -655,6 +655,8 @@ def main() -> int:
         "vol": vol or "",
         "video_name": (resolved or {}).get("video_name", ""),
         "folder": (resolved or {}).get("folder", ""),
+        # SUNO workspace 等のチャンネル別命名に使う（rw_vol 固定だと orzz 等で誤 workspace になる）
+        "channel_prefix": get_active_channel_info().get("prefix") or "vol",
         "publish_date": args.publish_date,
         "prompt": args.prompt,
         "count": args.count,

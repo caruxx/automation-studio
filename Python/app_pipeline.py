@@ -706,9 +706,15 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             cmd += ["--diversity-retry", str(div_retry)]
         if hist_limit is not None:
             cmd += ["--history-limit", str(hist_limit)]
-        # 絶対 timeout: count × (interval + 60s) + 起動/最終 close 余裕 600s。
-        # 子プロセスが固まっても親側で打ち切れるようにする（最終曲ハング対策）。
-        suno_timeout = count * (interval + 60) + 600
+        # 絶対 timeout: 送信フェーズ count×(interval+90s) に加え、--auto-download の
+        # レンダ待ち（既定 2700s）+ DL/close 余裕 900s を確保する。
+        # 旧式 count*(interval+60)+600 は 15曲で 1950s となり、レンダ待ちに届かず
+        # 「submitted_all で打ち切り → DL 0曲 → 生名のまま動画化」事故の起点になった（vol128/131）。
+        # APP_SUNO_STEP_TIMEOUT で明示上書き可。
+        suno_timeout = int(
+            (os.environ.get("APP_SUNO_STEP_TIMEOUT") or "").strip()
+            or (count * (interval + 90) + 2700 + 900)
+        )
         # Cloudflare Bot 判定対策: 既定で APP_KEEP_BROWSER=1 を立てる
         suno_env_overrides = {}
         if os.environ.get("APP_KEEP_BROWSER", "").strip() not in ("0", "false", "no"):

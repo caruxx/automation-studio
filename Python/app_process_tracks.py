@@ -791,6 +791,13 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
             ])
             source_from_original = bool(mp3s)
     if not mp3s:
+        # フォルダ直下にも music/ にも 1 曲も無いなら、この vol は素材ゼロ。
+        # 静かに成功を返すと後段 step が空のまま走り切ってしまう（vol131 で実例）
+        music_dir = folder / "music"
+        music_mp3s = sorted(music_dir.glob("*.mp3")) if music_dir.is_dir() else []
+        if not music_mp3s:
+            print(f"❌ MP3 が 1 件もありません（フォルダ直下・music/ とも空）: {folder}")
+            return 1
         if not skip_tagging:
             print(f"フォルダ直下MP3なし → 既存 music/ の公開前整備のみ実行: {folder.name}")
             if rename_only:
@@ -806,7 +813,9 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
             )
             return 0 if ok else 1
         print(f"⚠️ MP3 ファイルが見つかりません: {folder}")
-        return 0
+        # 0曲は成功ではない: 静かに OK を返すと後段 step が空のまま進み、
+        # 生ファイル名 (_2 付き) の動画が出来上がる事故になる（vol128/131 で実例）
+        return 1
 
     # ── 後処理の順序: ① 同タイトル重複（SUNO の2テイク）の長い方を削除 ──
     #    リネーム/フェードより前に行う。リネーム後はタイトルが別々に化けて束ねられなくなるため。

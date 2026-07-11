@@ -72,14 +72,14 @@ for v in json.load(sys.stdin).get("videos",[]):
 - [ ] dry-run で解決結果を確認する。
 
 ```bash
-python3 Python/studio.py suno-auto --vol N --count 15 --dry-run
+python3 Python/studio.py suno-auto --vol N --count 10 --dry-run
 ```
 
 - [ ] 実行する。生成、レンダ待ち、ダウンロード、後処理まで自動で進む。
 
 ```bash
 python3 Python/parallel_guard.py suno-auto -- \
-  python3 Python/studio.py suno-auto --vol N --count 15
+  python3 Python/studio.py suno-auto --vol N --count 10
 ```
 
 Ragtime Whiskers では `--mode instrumental_filler` が route 側で使われ、Lyrics=Write タブに `[instrumental]` 5000 字充填、Styles=プロンプトで入力される。

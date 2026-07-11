@@ -14,7 +14,7 @@ vol 制作を一気通貫で進める場合は、まず該当 domain の `skills
 単一リソース操作は必ず opt-in ロックを通す。SUNO / Premiere / Photoshop を直接叩かず、次の形で包む。
 
 ```bash
-python3 Python/parallel_guard.py suno-auto -- python3 Python/studio.py suno-auto --vol <N> --count 15
+python3 Python/parallel_guard.py suno-auto -- python3 Python/studio.py suno-auto --vol <N> --count 10
 python3 Python/parallel_guard.py psd -- python3 Python/app_pipeline.py <N> --only psd_composite
 python3 Python/parallel_guard.py premiere -- python3 Python/app_pipeline.py <N> --from premiere
 ```
@@ -75,13 +75,13 @@ curl -s -X POST http://localhost:8888/api/videos/create \
 ```bash
 python3 suno_auto_create.py \
   --prompt "lounge jazz BGM, elegant cafe atmosphere" \
-  --count 20 --interval 40 --provider claude --batch \
+  --count 10 --interval 15 --provider claude --batch \
   --workspace vol_vol78
 ```
 
 ### SUNO 楽曲生成 → DL → 後処理（一気通貫）
 ```bash
-python3 studio.py suno-auto --vol 78 --prompt "lounge jazz BGM, elegant cafe atmosphere" --count 20
+python3 studio.py suno-auto --vol 78 --prompt "lounge jazz BGM, elegant cafe atmosphere" --count 10
 ```
 
 ### SUNO 楽曲ダウンロード
@@ -204,7 +204,7 @@ lsof -ti:8888 | xargs kill -9
 | 「vol.78 を作って」 | `curl POST /api/videos/create {"publish_date":"..."}` |
 | 「新しい動画を作って」 | 下の「新規動画の企画ルール(seed分析の反映)」を確認してから、必要に応じて `curl POST /api/videos/create {"publish_date":"..."}` |
 | 「vol.78 の楽曲を作って」 | `python3 suno_auto_create.py --workspace vol_vol78 ...` |
-| 「生成からDL、後処理まで自動でやって」 | `python3 studio.py suno-auto --vol 78 --prompt "..." --count 20` |
+| 「生成からDL、後処理まで自動でやって」 | `python3 studio.py suno-auto --vol 78 --prompt "..." --count 10` |
 | 「楽曲をダウンロードして」 | `python3 suno_auto_create.py --download-workspace vol_vol78 ...` |
 | 「リネームして」 | `python3 app_process_tracks.py <folder> --rename-only` |
 | 「後処理して」 | `python3 app_process_tracks.py <folder>` |
@@ -298,6 +298,51 @@ for v in vs:
 | Web サーバーが応答しない | launchd 常駐時は `launchctl list | grep automation` で状態確認後 `bash setup_launchd.sh --sync`。非常駐時は `lsof -ti:8888 | xargs kill -9; bash Python/start.sh` |
 | パイプライン途中で止まった | `python3 app_pipeline.py <vol> --from <止まった工程>` で再開 |
 | Claude CLI がない | `which claude` で確認。無ければ Claude Code CLI をインストール |
+
+## 復旧・再開の鉄則（Codex / Claude 共通・必読）
+
+vol128/131（2026-07-12）の実事故から定めた約束事。**どのエージェント（Codex CLI / Claude / 人間）がどの工程を引き継いでも、以下を必ず守る。**
+
+### SUNO 復旧の鉄則
+1. **手動 DL の置き場所はフォルダ直下**（`music/` に直接置くことは禁止）。
+   `music/` に直接置くと rename step が「処理済み」と誤認してスキップし、
+   生ファイル名（`〜_2` 付き）・同曲2テイク重複・フェード/音量正規化なしのまま動画化される。
+   ```bash
+   # 正: vol フォルダ直下に DL → rename step が選曲/リネーム/フェードを行う
+   python3 suno_auto_create.py --download-workspace <ws> --download-dir "<vol_folder>"
+   python3 app_pipeline.py <N> --from rename
+   ```
+2. **「生成リクエスト送信 = 完了」ではない**。suno step がタイムアウトしても曲は SUNO 側でレンダリングが続いている。
+   時間をおいて DL だけ再実行すれば回収できる（workspace は残っている）。
+3. suno step の絶対タイムアウトは `APP_SUNO_STEP_TIMEOUT` で上書き可（既定はレンダ待ち 2700s を含む値に修正済み）。
+
+### 再レンダ（export やり直し）の鉄則
+4. music/ の中身を差し替えたら、**再 export 前に必ず stale キャッシュを消す**:
+   ```bash
+   rm -f "<vol_folder>/.ffrender_manifest.json"
+   rm -rf /tmp/ffrender/<vol_folder_name> ~/.cache/ffrender/<vol_folder_name>
+   ```
+   旧 manifest が残っていると「曲順が空（music/ 解決に失敗）」で export が落ちる、
+   または旧曲リストのまま静かにレンダされる。
+
+### 検証の鉄則
+5. **step の「OK」表示を信用しない。アップロード前に実体で裏取りする**:
+   - `music/` に想定曲数があるか・ファイル名に `_2` が残っていないか
+   - `youtube_description.txt` の Tracklist に `_2` や重複曲が無いか
+   - `ffprobe` で尺・コーデック
+   - `youtube_upload.json` の `schedule` / `privacy`
+6. 0 曲は失敗（`app_process_tracks.py` は素材ゼロで exit 1 に修正済み。silent OK に戻さない）。
+
+### インストゥルメンタル系の生成数（標準）
+7. **SUNO 生成リクエストは 10 曲 = 20 テイク**（SUNO は 1 リクエスト 2 テイク）。
+   `suno.keep_both_takes=true` で 20 テイク全部を候補にし、そこから選曲する（捨てテイクの無駄を出さない）。
+   90 分尺なら 20 テイク × 約5分 = 100 分で充足。3 時間尺チャンネル（Ragtime Whiskers 等）は例外で 20 リクエスト。
+   適用済み: orzz / w_workspace / harbor_notes / sukima（loop_count=10, keep_both_takes=true）。
+8. **送信間隔は 15 秒を下限とする**（Cloudflare ボット判定対策。これ未満に詰めない。`APP_KEEP_BROWSER=1` 既定も維持）。
+
+### チャンネル切替の鉄則
+9. `studio.py` 実行時は **active channel の表示を必ず確認**。suno-auto の workspace は
+   `{channel_prefix}_vol{N}`（routes.json 修正済み）。チャンネルをまたぐ作業の前に `--channel <id> --switch` を明示。
 
 ## 仕様書・スキル参照
 
