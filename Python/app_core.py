@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""app_core — orzz. Dashboard の共通土台（D9: app.py 段階分割の第1段で抽出）。
+"""app_core — Automation Studio の共通土台（D9: app.py 段階分割の第1段で抽出）。
 
 パス/設定定数・config ローダ・チャンネル別設定・ベンチ設定・認証ヘルパ・
 共有可変グローバル（active_tasks/task_logs/task_meta/_youtube_* など）・
@@ -32,7 +32,10 @@ from fastapi import FastAPI, WebSocket, HTTPException, UploadFile, File, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Union
+
+from atomic_json import CorruptJsonError, atomic_write_json, load_json as _atomic_load_json
+from resource_lock import ResourceBusyError, acquire_resource, env_with_held_resource
 # ─── パス定義（ポータブル）───
 HOME = Path.home()
 
@@ -43,9 +46,19 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _app_config import (
     resolve_config_dir as _resolve_config_dir,
     resolve_app_id as _resolve_app_id,
+    resolve_shared_base as _resolve_shared_base,
+    resolve_shared_config_dir as _resolve_shared_config_dir,
     migrate_legacy_if_needed as _migrate_legacy_if_needed,
     LEGACY_CONFIG_DIR as _LEGACY_CONFIG_DIR,
 )
+try:
+    from settings_service import audit_dict_changes as _audit_dict_changes
+except Exception:
+    _audit_dict_changes = None
+try:
+    from publish_schedule import resolve_publish_at_iso as _resolve_publish_at_iso
+except Exception:
+    _resolve_publish_at_iso = None
 # マイグレーション結果をモジュール変数で保持（API で返す）
 _MIGRATION_RESULT = _migrate_legacy_if_needed(verbose=True)
 CONFIG_DIR = _resolve_config_dir()
@@ -58,6 +71,12 @@ def find_shared_drive():
         p = Path(env_path).expanduser()
         if p.exists():
             return p
+    try:
+        p = _resolve_shared_base()
+        if p.exists():
+            return p
+    except Exception:
+        pass
     for pattern in [
         HOME / "Library/CloudStorage" / "GoogleDrive-*" / "共有ドライブ/DEV/_claude",
         HOME / "Google Drive" / "共有ドライブ/DEV/_claude",
@@ -83,7 +102,7 @@ SUNO_CONFIG = CONFIG_DIR / "suno_config.json"
 # per-channel 設定は各チャンネルフォルダ内 .app_channel_config.json で既に共有済みだが、
 # 「どのチャンネルが存在するか」のレジストリだけがローカルだったため別 PC に伝播しなかった。
 # 旧ローカル版(LOCAL_CHANNELS_CONFIG)は起動時に共有版へマージして引き継ぐ。
-SHARED_CONFIG_DIR = SHARED_BASE / "config"
+SHARED_CONFIG_DIR = _resolve_shared_config_dir()
 CHANNELS_CONFIG = SHARED_CONFIG_DIR / "channels.json"
 LOCAL_CHANNELS_CONFIG = CONFIG_DIR / "channels.json"
 # PC 非依存の運用設定は共有ドライブ config/ に置く（live_config.json と同方針）。
@@ -94,6 +113,39 @@ SCHEDULE_CONFIG = CONFIG_DIR / "schedule.json"
 BENCHMARK_CONFIG = SHARED_CONFIG_DIR / "benchmark_config.json"  # チャンネル横断・全体共通（PC間共有）
 SCHEDULE_JOBS_FILE = CONFIG_DIR / "schedule_jobs.json"   # APScheduler 用
 AUTH_TOKEN_FILE = CONFIG_DIR / "auth_token.txt"
+
+
+def ensure_config_templates(verbose: bool = False) -> list[str]:
+    """配布版の初回起動用に config/*.template.json を実ファイルへコピーする。
+
+    既存環境では実ファイルがあるため何もしない。テンプレートは空/ダミー値のみを
+    配布し、配布先ごとの channels/token/webhook が混ざらないようにする。
+    """
+    copied: list[str] = []
+    try:
+        SHARED_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        for template in sorted(SHARED_CONFIG_DIR.glob("*.template.json")):
+            if template.name == "update_config.template.json":
+                continue
+            target = template.with_name(template.name.replace(".template.json", ".json"))
+            if target.exists():
+                continue
+            shutil.copy2(template, target)
+            if target.name == "discord_config.json":
+                try:
+                    target.chmod(0o600)
+                except Exception:
+                    pass
+            copied.append(target.name)
+            if verbose:
+                print(f"[config-template] created {target.name} from {template.name}")
+    except Exception as e:
+        if verbose:
+            print(f"[config-template] 初期化失敗（続行）: {e}")
+    return copied
+
+
+_TEMPLATE_INIT_COPIED = ensure_config_templates(verbose=True)
 
 # 統合設定スキーマのバージョン（フロントが古い時の警告用）
 CONFIG_SCHEMA_VERSION = 2
@@ -153,13 +205,17 @@ def auto_detect_paths():
         yt_root = yt_candidates[0]
         result["yt_root"] = str(yt_root)
         # 最初の orzz チャンネルフォルダを探す
-        for d in sorted(yt_root.iterdir()):
+        try:
+            entries = sorted(yt_root.iterdir())
+        except PermissionError:
+            entries = []
+        for d in entries:
             if d.is_dir() and "orzz" in d.name.lower():
                 result["channel_folder"] = str(d)
                 break
         # チャンネルが見つからなかったら最初のチャンネルフォルダ
         if not result["channel_folder"]:
-            for d in sorted(yt_root.iterdir()):
+            for d in entries:
                 if d.is_dir() and not d.name.startswith('.'):
                     result["channel_folder"] = str(d)
                     break
@@ -209,13 +265,11 @@ DEFAULT_DASHBOARD_CONFIG = {
 
 # ─── ユーティリティ ───
 def load_json(path, default=None):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default if default is not None else {}
+    return _atomic_load_json(Path(path), default)
 
 def save_json(path, data):
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    path = Path(path)
+    old = atomic_write_json(path, data, indent=2, ensure_ascii=False)
     # セキュリティ: 機密ファイルは owner のみ読み書き (600)
     sensitive_names = {"youtube_client_secret.json", "youtube_token.json",
                        "discord_config.json", "line_config.json", "suno_config.json"}
@@ -224,6 +278,14 @@ def save_json(path, data):
             path.chmod(0o600)
         except Exception:
             pass
+    try:
+        if _audit_dict_changes and path.name in {
+            "dashboard_config.json", "suno_config.json", "benchmark_config.json",
+            "youtube_upload_defaults.json", "prompts.json", _CHANNEL_CONFIG_FILENAME,
+        } and isinstance(old, dict) and isinstance(data, dict):
+            _audit_dict_changes("ui", path.stem, old, data, path=str(path))
+    except Exception:
+        pass
 
 def get_dashboard_config():
     config = DEFAULT_DASHBOARD_CONFIG.copy()
@@ -255,11 +317,14 @@ PER_CHANNEL_KEYS = {
     "export_ignore_list",  # AME 書き出し watcher が無視する video_name のリスト（2 PC 間自動同期）
     "publish_mode",  # P3-3: 公開方式（unlisted=限定公開 / public=即時公開 / delayed=N時間後自動公開）
     "publish_delay_hours",  # P2-7: upload 後の公開ゲート（0=即時、>0=N時間後 public化）
+    "publish_time_jst",  # Phase G: フォルダ日付に対する予約公開時刻（HH:MM / JST）
     "reference_image_dir",  # step_bgimage: 参照画像フォルダ（空なら Picked → rival thumbs にフォールバック）
     "reference_image",  # step_bgimage: 固定参照画像（最優先。水辺プロムナード等の代表参照）
+    "reference_image_mix_mode",  # fixed_only / identity_plus_benchmark / benchmark_only
     "default_duration_sec",  # Premiere 自動配置の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
+    "ffrender",  # app_ffrender のチャンネル別挙動（intro_sound / song_order / intro_visual など）
     "priority",  # U3: orchestrator policy 配分の channel 優先度（大きいほど優先。既定 100）
-    "autopilot_enabled",  # U3: 自走運用 ON/OFF（保存のみ。実 scheduler 起動は別途 GO 後）
+    "autopilot_enabled",  # U3: 自動運転 ON/OFF（保存のみ。実 scheduler 起動は別途 GO 後）
 }
 
 # グローバル維持（マシン別）: API キー、OAuth トークン、ブランド設定など
@@ -310,6 +375,12 @@ def load_channel_config() -> dict:
     try:
         d = json.loads(p.read_text(encoding="utf-8"))
         return d if isinstance(d, dict) else {}
+    except CorruptJsonError:
+        raise
+    except json.JSONDecodeError as e:
+        # Keep corrupt and missing states distinct even on this legacy direct
+        # read path. atomic writes will create the recovery copy and abort.
+        raise CorruptJsonError(p, f"{e.msg} at line {e.lineno} column {e.colno}") from e
     except Exception:
         return {}
 
@@ -325,8 +396,12 @@ def save_channel_config(data: dict) -> bool:
     data["_last_modified_at"] = datetime.utcnow().isoformat() + "Z"
     data["_last_modified_by"] = f"{getpass.getuser()}@{_pf.node()}"
     data["_schema_version"] = 1
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    old = atomic_write_json(p, data, indent=2, ensure_ascii=False)
+    try:
+        if _audit_dict_changes and isinstance(old, dict) and isinstance(data, dict):
+            _audit_dict_changes("ui", "channel_config", old, data, path=str(p))
+    except Exception:
+        pass
     return True
 
 
@@ -364,8 +439,7 @@ def _migrate_channel_config_initial(target_path: Path):
     seed["_last_modified_by"] = f"{getpass.getuser()}@{_pf.node()}"
     seed["_schema_version"] = 1
     seed["_migrated_from_global"] = True
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(json.dumps(seed, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(target_path, seed, indent=2, ensure_ascii=False)
     print(f"✓ チャンネル別設定をマイグレート: {target_path}")
 
 
@@ -442,6 +516,42 @@ def parse_video_folder_name(name: str) -> Optional[dict]:
     }
 
 
+def validate_video_name(video_name: str) -> str:
+    """Validate the canonical vol folder segment used by every video API."""
+    name = unicodedata.normalize("NFC", str(video_name or "").strip())
+    if not name or name in {".", ".."} or ".." in name:
+        raise HTTPException(400, "video_name が不正です")
+    if any(ch in name for ch in ("/", "\\", "\x00")):
+        raise HTTPException(400, "video_name はフォルダ名のみ指定できます")
+    if not parse_video_folder_name(name):
+        raise HTTPException(400, "video_name は {vol}_{prefix}_{YYMMDD} 形式で指定してください")
+    return name
+
+
+def resolve_video_folder(
+    video_name: str,
+    *,
+    channel_root: Optional[Union[Path, str]] = None,
+    must_exist: bool = True,
+) -> Path:
+    """Resolve a validated video folder and prove it stays under channel root."""
+    name = validate_video_name(video_name)
+    if channel_root is None:
+        channel_root = get_dashboard_config().get("channel_folder") or ""
+    root = Path(channel_root).expanduser()
+    if not str(channel_root or "").strip():
+        raise HTTPException(400, "channel_folder が未設定です")
+    root_resolved = root.resolve()
+    target = (root_resolved / name).resolve()
+    try:
+        target.relative_to(root_resolved)
+    except ValueError as exc:
+        raise HTTPException(400, "video_name がチャンネル外を指しています") from exc
+    if must_exist and (not target.exists() or not target.is_dir()):
+        raise HTTPException(404, f"動画フォルダが見つかりません: {name}")
+    return target
+
+
 def infer_file_prefix_from_folder(channel_dir: Path) -> str:
     """既存動画フォルダから最頻 prefix を推定する。"""
     counts: dict[str, int] = {}
@@ -465,12 +575,23 @@ _SHARED_MARKER = "/共有ドライブ/"
 
 def _shared_drive_root() -> Path:
     """現マシンの <共有ドライブ> ルート（SHARED_BASE = <共有ドライブ>/DEV/_claude の 2 つ上）。"""
+    env_base = os.environ.get("STUDIO_DRIVE_BASE") or os.environ.get("APP_DRIVE_BASE")
+    if env_base:
+        text = unicodedata.normalize("NFC", str(Path(env_base).expanduser()))
+        idx = text.find(_SHARED_MARKER)
+        if idx >= 0:
+            return Path(text[:idx + len(_SHARED_MARKER) - 1])
+    cfg_s = unicodedata.normalize("NFC", str(SHARED_CONFIG_DIR))
+    marker = _SHARED_MARKER
+    idx = cfg_s.find(marker)
+    if idx >= 0:
+        return Path(cfg_s[:idx + len(marker) - 1])
     return SHARED_BASE.parent.parent
 
 
 def _rel_under_shared(folder) -> Optional[str]:
     """folder 文字列から '/共有ドライブ/' 以降の相対部分を NFC で返す（無ければ None）。
-    2 台の Mac（/Users/abe_kota… と /Users/asobimori…）でホーム名が違っても
+    2 台の Mac（/Users/user_a… と /Users/user_b…）でホーム名が違っても
     共有ドライブ以降は共通なので、これをホーム非依存キー／移植の基点に使う。"""
     if not folder:
         return None
@@ -502,7 +623,7 @@ def _resolve_to_current_host(folder):
 def _norm_folder(f) -> str:
     """フォルダパスを比較キーに正規化する。
     - 共有ドライブ配下なら『共有ドライブ/<相対>』(NFC) を返し、ホーム名差
-      (/Users/abe_kota vs /Users/asobimori) を吸収する（2 台 Mac の重複増殖を防ぐ）。
+      (/Users/user_a vs /Users/user_b) を吸収する（2 台 Mac の重複増殖を防ぐ）。
     - 共有ドライブ外は従来どおり resolve() で実パスに畳み NFC 統一。"""
     if not f:
         return ""
@@ -717,7 +838,7 @@ def get_suno_config():
       （<channel_folder>/.app_channel_config.json["suno"]）でグローバルを上書き
     """
     base = load_json(SUNO_CONFIG, {
-        "provider": "gemini", "model": "gemini-3-flash-preview",
+        "provider": "claude", "model": "cli-default",
         "api_key": "", "claude_cli": "claude", "codex_cli": "codex",
         "generation_mode": "styles_title_only",
         "prompt": "", "loop_count": 5, "loop_interval_sec": 180,
@@ -849,6 +970,7 @@ active_tasks = {}
 task_logs = {}
 task_meta = {}  # {task_id: {"started_at": iso, ...}}
 _active_tasks_lock = asyncio.Lock()
+_active_tasks_registry_lock = threading.RLock()
 
 _youtube_upload_queue = deque()
 _youtube_queue_lock = threading.Lock()
@@ -856,11 +978,91 @@ _youtube_worker_thread = None
 _youtube_current_job = None
 _youtube_job_seq = 0
 
+class _TaskReservation:
+    """Atomic claim placed in active_tasks before a process is spawned."""
+
+    returncode = None
+
+    def __init__(self, key: str):
+        self.key = key
+        self.created_at = time.monotonic()
+
+    def poll(self):
+        return None
+
+
+def _active_object_running(obj) -> bool:
+    if obj is None:
+        return False
+    if isinstance(obj, _TaskReservation):
+        # Failed starts must not wedge a task forever even if a caller forgot
+        # to explicitly release its reservation.
+        return (time.monotonic() - obj.created_at) < 30.0
+    if hasattr(obj, "poll"):
+        try:
+            return obj.poll() is None
+        except Exception:
+            return getattr(obj, "returncode", None) is None
+    if hasattr(obj, "done"):
+        try:
+            return not obj.done()
+        except Exception:
+            return False
+    if hasattr(obj, "is_alive"):
+        return bool(obj.is_alive())
+    return False
+
+
 async def _ensure_not_running(key, err_msg):
+    """Atomically check and reserve a task key (closes check/start TOCTOU)."""
     async with _active_tasks_lock:
-        proc = active_tasks.get(key)
-        if proc is not None and proc.returncode is None and proc.poll() is None:
-            raise HTTPException(400, err_msg)
+        with _active_tasks_registry_lock:
+            current = active_tasks.get(key)
+            if _active_object_running(current):
+                raise HTTPException(409, err_msg)
+            reservation = _TaskReservation(key)
+            active_tasks[key] = reservation
+            return reservation
+
+
+def _reserve_task_sync(key: str, err_msg: str) -> _TaskReservation:
+    with _active_tasks_registry_lock:
+        current = active_tasks.get(key)
+        if _active_object_running(current):
+            raise ResourceBusyError(key, err_msg)
+        reservation = _TaskReservation(key)
+        active_tasks[key] = reservation
+        return reservation
+
+
+def _register_active_task(key: str, obj, reservation=None):
+    with _active_tasks_registry_lock:
+        current = active_tasks.get(key)
+        if reservation is not None and current is not reservation:
+            raise RuntimeError(f"task reservation lost: {key}")
+        if reservation is None and _active_object_running(current):
+            raise ResourceBusyError(key, f"task already running: {key}")
+        active_tasks[key] = obj
+    return obj
+
+
+def _release_task_reservation(key: str, reservation) -> None:
+    with _active_tasks_registry_lock:
+        if active_tasks.get(key) is reservation:
+            active_tasks.pop(key, None)
+
+
+def _clear_active_task(key: str, obj=None) -> None:
+    with _active_tasks_registry_lock:
+        if obj is None or active_tasks.get(key) is obj:
+            active_tasks.pop(key, None)
+
+
+def _acquire_resource_or_409(resource: str, *, owner: str):
+    try:
+        return acquire_resource(resource, owner=owner, blocking=False)
+    except ResourceBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 # ─── タスク履歴の永続化 ───
 TASK_HISTORY_FILE = CONFIG_DIR / "task_history.json"
@@ -891,17 +1093,14 @@ def _save_task_history():
             if k in task_meta:
                 done_meta[k] = task_meta[k]
         data = {"logs": done_logs, "meta": done_meta}
-        TASK_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TASK_HISTORY_FILE.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(TASK_HISTORY_FILE, data, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
 # 起動時に復元
 _load_task_history()
 
-def _stream_subprocess(proc, task_key):
+def _stream_subprocess(proc, task_key, *, timeout=None, resource_lock=None):
     """Popen の stdout を非同期で task_logs に流し込む共通ヘルパー。
     例外を捕捉して [エラー] 行として記録する。"""
     async def _reader():
@@ -921,11 +1120,39 @@ def _stream_subprocess(proc, task_key):
         except Exception as e:
             task_logs.setdefault(task_key, []).append(f"[エラー] read_output: {e}")
         finally:
+            # stdout 読取側の例外でも、子プロセスが終了するまで
+            # OS 資源 lock は離さない。
+            if proc.poll() is None:
+                try:
+                    await loop.run_in_executor(None, proc.wait)
+                except Exception:
+                    pass
+            if resource_lock is not None:
+                resource_lock.release()
             try:
                 _save_task_history()
             except Exception:
                 pass
     asyncio.create_task(_reader())
+    if timeout and float(timeout) > 0:
+        async def _watchdog():
+            await asyncio.sleep(float(timeout))
+            if proc.poll() is not None:
+                return
+            task_logs.setdefault(task_key, []).append(
+                f"[エラー] deadline exceeded: {int(float(timeout))}s; terminating"
+            )
+            try:
+                proc.terminate()
+            except Exception:
+                return
+            await asyncio.sleep(10)
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        asyncio.create_task(_watchdog())
 
 
 def _append_task_log(task_key: str, line: str, max_lines: int = 1000) -> None:
@@ -1078,8 +1305,106 @@ def get_channels():
             ch["prefix"] = infer_file_prefix_from_folder(Path(ch.get("folder") or "")) or ""
     return chs
 
+
+def get_active_channel_info() -> dict:
+    """現在の dashboard_config が指すチャンネル情報を返す。
+
+    戻り値は studio.py / API のガード用途なので、folder は現マシン向け解決済みにする。
+    """
+    cfg = get_dashboard_config()
+    active_folder = _resolve_to_current_host(cfg.get("channel_folder") or "")
+    active_name = (cfg.get("channel_name") or "").strip()
+    active_prefix = (cfg.get("file_prefix") or "").strip()
+    match = {}
+    for ch in get_channels():
+        if active_folder and _norm_folder(ch.get("folder") or "") == _norm_folder(active_folder):
+            match = ch
+            break
+    if not match and active_name:
+        for ch in get_channels():
+            if (ch.get("name") or "") == active_name:
+                match = ch
+                break
+    return {
+        "id": match.get("id", ""),
+        "name": match.get("name") or active_name,
+        "folder": match.get("folder") or active_folder,
+        "prefix": match.get("prefix") or active_prefix,
+    }
+
+
+def _resolve_channel_for_vol(channel_id: str = "", channel_folder: str = "") -> dict:
+    if channel_id:
+        for ch in get_channels():
+            if ch.get("id") == channel_id:
+                return ch
+        return {}
+    if channel_folder:
+        target = _norm_folder(_resolve_to_current_host(channel_folder))
+        for ch in get_channels():
+            if _norm_folder(ch.get("folder") or "") == target:
+                return ch
+        return {"id": "", "name": "", "folder": _resolve_to_current_host(channel_folder), "prefix": ""}
+    return get_active_channel_info()
+
+
+def resolve_vol_folder(num, channel_id: str = "", channel_folder: str = "") -> dict:
+    """vol番号から動画フォルダを解決する。
+
+    サーバー停止時の studio.py からも使えるよう、HTTP に依存せず channels.json /
+    dashboard_config とフォルダ走査だけで完結する。
+    """
+    num_text = str(num).strip().lstrip("0") or "0"
+    channel = _resolve_channel_for_vol(channel_id=channel_id, channel_folder=channel_folder)
+    folder = Path(channel.get("folder") or "")
+    candidates = []
+    if folder.exists():
+        for d in folder.iterdir():
+            if not d.is_dir():
+                continue
+            info = parse_video_folder_name(d.name)
+            if not info:
+                continue
+            item = {
+                "video_name": d.name,
+                "channel_id": channel.get("id", ""),
+                "channel_name": channel.get("name", ""),
+                "folder": str(d),
+                "exists": d.exists(),
+                "num": info["num_text"],
+                "prefix": info["prefix"],
+                "publish_date": info["publish_date"],
+            }
+            if str(info["num"]) == num_text:
+                candidates.append(item)
+    candidates.sort(key=lambda x: x.get("video_name", ""))
+    hit = candidates[0] if candidates else {}
+    return {
+        "ok": bool(hit),
+        "video_name": hit.get("video_name", ""),
+        "channel_id": hit.get("channel_id") or channel.get("id", ""),
+        "channel_name": hit.get("channel_name") or channel.get("name", ""),
+        "channel_folder": str(folder) if str(folder) != "." else "",
+        "folder": hit.get("folder", ""),
+        "exists": bool(hit.get("exists", False)),
+        "num": num_text,
+        "candidates": candidates,
+        "error": "" if hit else f"vol.{num_text} の動画フォルダが見つかりません",
+    }
+
+
+def load_routes_table() -> dict:
+    p = PYTHON_DIR / "routes.json"
+    if not p.exists():
+        return {"version": 1, "intents": {}}
+    return load_json(p, {"version": 1, "intents": {}})
+
 def _read_matching_timecodes_until_loop(folder: Path, vol: str = "") -> tuple[str, Optional[Path]]:
-    """対応する music_time_code_info_*.txt を読み、LOOP 行の直前まで返す。"""
+    """対応する music_time_code_info_*.txt を読み、LOOP マーカーを除いた全行を返す。
+
+    関数名は互換のため残す。1時間半動画では1周目の終わりに LOOP 行が入るが、
+    説明文/API表示では2周目以降のタイムスタンプも必要なので打ち切らない。
+    """
     folder = Path(folder)
     candidates: list[Path] = []
     vol = (vol or "").strip()
@@ -1105,7 +1430,7 @@ def _read_matching_timecodes_until_loop(folder: Path, vol: str = "") -> tuple[st
         out = []
         for line in lines:
             if "LOOP" in line.upper():
-                break
+                continue
             out.append(line.rstrip())
         return "\n".join(out).strip(), p
     return "", None
@@ -1207,6 +1532,15 @@ def _build_youtube_upload_command(req: UploadRequest) -> tuple[list[str], dict]:
     except Exception as e:
         print(f"[upload] external path resolve failed: {e}")
 
+    channel_cfg = load_json(folder_path.parent / _CHANNEL_CONFIG_FILENAME, {})
+    schedule = req.schedule
+    if not schedule and _resolve_publish_at_iso:
+        try:
+            schedule = _resolve_publish_at_iso(folder_path, channel_cfg)
+        except Exception:
+            schedule = None
+    privacy = "private" if schedule else (req.privacy or "private")
+
     cmd = [sys.executable, "-u", str(YOUTUBE_SCRIPT), folder]  # -u: unbuffered
     if video_path_arg: cmd += ["--video-path", video_path_arg]
     # チャンネル別トークンを明示指定（ブランドアカウント運用で複数チャンネル対応）
@@ -1225,8 +1559,8 @@ def _build_youtube_upload_command(req: UploadRequest) -> tuple[list[str], dict]:
     if expected_channel_name:
         cmd += ["--expected-channel-name", expected_channel_name]
     if req.title: cmd += ["--title", req.title]
-    if req.schedule: cmd += ["--schedule", req.schedule]
-    if req.privacy: cmd += ["--privacy", req.privacy]
+    if schedule: cmd += ["--schedule", schedule]
+    if privacy: cmd += ["--privacy", privacy]
     if req.tags: cmd += ["--tags", ",".join(req.tags)]
     if req.category_id: cmd += ["--category-id", str(req.category_id)]
     if req.default_language: cmd += ["--default-language", req.default_language]
@@ -1242,9 +1576,9 @@ def _build_youtube_upload_command(req: UploadRequest) -> tuple[list[str], dict]:
         "folder": str(folder_path),
         "video_name": video_name,
         "video_path": video_path_arg or "",
-        "privacy": req.privacy or "",
+        "privacy": privacy or "",
         "title": req.title or "",
-        "schedule": req.schedule or "",
+        "schedule": schedule or "",
     }
 
 

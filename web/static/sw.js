@@ -1,8 +1,8 @@
-// orzz. Dashboard Service Worker v3 (network-first)
+// Automation Studio Service Worker v3 (network-first)
 // 過去版のキャッシュを破棄し、HTML と manifest は常にネットワーク優先とする。
 // 静的資産（/static/*）のみキャッシュ（stale-while-revalidate）。
 
-const CACHE_NAME = 'orzz-static-v3';
+const CACHE_NAME = 'automation-studio-static-v4';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

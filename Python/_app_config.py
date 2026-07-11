@@ -137,7 +137,18 @@ def resolve_shared_base() -> Path:
 
 def resolve_shared_config_dir() -> Path:
     """PC 間で共有する設定/データの置き場（<共有ドライブ>/DEV/_claude/config）。
-    channels.json・ベンチマークのプロファイル/設定/分析などを置く。"""
+    channels.json・ベンチマークのプロファイル/設定/分析などを置く。
+
+    launchd 常駐時はコードをローカルミラーから起動するが、共有 config は
+    Drive 側を真実にする必要があるため、STUDIO_CONFIG_DIR で明示できる。
+    """
+    env_path = (
+        os.environ.get("STUDIO_CONFIG_DIR")
+        or os.environ.get("APP_SHARED_CONFIG_DIR")
+        or os.environ.get("ORZZ_SHARED_CONFIG_DIR")
+    )
+    if env_path:
+        return Path(env_path).expanduser()
     return resolve_shared_base() / "config"
 
 

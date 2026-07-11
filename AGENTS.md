@@ -1,5 +1,41 @@
 # Automation Studio — Claude Code 向け運用ガイド
 
+## Codex 単独実行モード
+
+`codex exec "vol3を作って"` のような短い指示でも、Codex は会話履歴に頼りすぎず、次の順番でローカル文書を確認してから実行する。
+
+1. `AGENTS.md`
+2. `skills/<domain>.md`
+3. `docs/ARCHITECTURE_MAP.md`
+4. `docs/RUNBOOK_VOL.md`
+
+vol 制作を一気通貫で進める場合は、まず該当 domain の `skills/<domain>.md` を読み、全体構造や step の分岐に迷ったら `docs/ARCHITECTURE_MAP.md`、実作業のチェックリストは `docs/RUNBOOK_VOL.md` を正とする。チャンネル固有ルールがある場合は `docs/CHANNELS/<channel>.md` も確認する。
+
+単一リソース操作は必ず opt-in ロックを通す。SUNO / Premiere / Photoshop を直接叩かず、次の形で包む。
+
+```bash
+python3 Python/parallel_guard.py suno-auto -- python3 Python/studio.py suno-auto --vol <N> --count 15
+python3 Python/parallel_guard.py psd -- python3 Python/app_pipeline.py <N> --only psd_composite
+python3 Python/parallel_guard.py premiere -- python3 Python/app_pipeline.py <N> --from premiere
+```
+
+実行前チェック:
+
+```bash
+pgrep -f suno_auto_create || true
+curl -fsS http://localhost:8888/api/config/migration-status >/dev/null
+```
+
+- `pgrep -f suno_auto_create` で既存 SUNO 実行が見つかったら、同時実行せず完了を待つ。
+- port 8888 が応答しない場合は `bash Python/start.sh` で起動してから再確認する(launchd 常駐は 2026-07-04 に廃止済み。Google Drive File Provider 制約のため手動起動運用)。
+- ネットワーク断や一時的な接続拒否は即失敗扱いにせず、`curl` が 200 を返すまで待って再試行する。
+
+## 正規入口
+
+AI / 人間の正規の入口は `_claude` ルートから `python3 Python/studio.py`。
+個別コマンドを直接実行する前に、まず `python3 Python/studio.py <intent> --vol <N> --dry-run` で解決結果と実行コマンドを確認する。
+機械可読な真実は `Python/routes.json`。下の自然言語対応表は概要として残す。
+
 ## クイックリファレンス
 
 スクリプトフォルダ:
@@ -41,6 +77,11 @@ python3 suno_auto_create.py \
   --prompt "lounge jazz BGM, elegant cafe atmosphere" \
   --count 20 --interval 40 --provider claude --batch \
   --workspace vol_vol78
+```
+
+### SUNO 楽曲生成 → DL → 後処理（一気通貫）
+```bash
+python3 studio.py suno-auto --vol 78 --prompt "lounge jazz BGM, elegant cafe atmosphere" --count 20
 ```
 
 ### SUNO 楽曲ダウンロード
@@ -143,8 +184,14 @@ curl -s http://localhost:8888/api/analysis/hot-channels?top_n=10
 
 ### Web サーバー起動 / 停止
 ```bash
-# 起動
-bash start.sh
+# launchd 常駐時: コードミラー再同期 + 再起動
+bash setup_launchd.sh --sync
+
+# launchd 状態確認
+launchctl list | grep automation
+
+# 非常駐時: 直接起動
+bash Python/start.sh
 
 # 停止
 lsof -ti:8888 | xargs kill -9
@@ -155,13 +202,15 @@ lsof -ti:8888 | xargs kill -9
 | ユーザーの言い方 | 実行すべきこと |
 |----------------|-------------|
 | 「vol.78 を作って」 | `curl POST /api/videos/create {"publish_date":"..."}` |
+| 「新しい動画を作って」 | 下の「新規動画の企画ルール(seed分析の反映)」を確認してから、必要に応じて `curl POST /api/videos/create {"publish_date":"..."}` |
 | 「vol.78 の楽曲を作って」 | `python3 suno_auto_create.py --workspace vol_vol78 ...` |
+| 「生成からDL、後処理まで自動でやって」 | `python3 studio.py suno-auto --vol 78 --prompt "..." --count 20` |
 | 「楽曲をダウンロードして」 | `python3 suno_auto_create.py --download-workspace vol_vol78 ...` |
 | 「リネームして」 | `python3 app_process_tracks.py <folder> --rename-only` |
 | 「後処理して」 | `python3 app_process_tracks.py <folder>` |
 | 「背景画像を作って」 | `curl POST /api/bgimage/run {"video_name":"..."}` または `python3 app_pipeline.py <vol> --only bgimage` |
 | 「サムネを Photoshop で作って」「PSD を合成して」 | `python3 app_pipeline.py <vol> --only psd_composite`（bgimage 後・premiere 前。`<vol_folder>/vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し） |
-| 「サムネを AI で作って」「サムネを自動生成して」 | `python3 app_pipeline.py <vol> --only thumbnail`（ベンチマーク分析 concept/visual_direction から**プロンプトを動的構築** → Flow/Codex で生成 → `thumbnail.png` に昇格。既定は Flow のみ、両方使うなら `APP_THUMBNAIL_PROVIDERS=flow,codex`。詳細 [skills/app-thumbnail.md](skills/app-thumbnail.md)。⚠ 既に `サムネイル.jpg`(PSD合成)があるとスキップ） |
+| 「サムネを AI で作って」「サムネを自動生成して」 | `python3 app_pipeline.py <vol> --only thumbnail`（ベンチマーク分析 concept/visual_direction から**プロンプトを動的構築** → codex で生成 → `thumbnail.png` に昇格。`APP_THUMBNAIL_PROVIDERS=flow` 指定時も警告のうえ codex にフォールバック。詳細 [skills/app-thumbnail.md](skills/app-thumbnail.md)。⚠ 既に `サムネイル.jpg`(PSD合成)があるとスキップ） |
 | 「参照画像フォルダを変更して」 | Web UI → 設定タブ → **参照画像フォルダ（背景画像生成）** → フォルダパス欄を編集 → 保存（`.app_channel_config.json` の `reference_image_dir` に per-channel 保存。空欄なら Picked → rival thumbs にフォールバック） |
 | 「タイトルを提案して」 | `curl POST /api/videos/.../suggest {"mode":"titles"}` |
 | 「Premiere で配置して」 | `curl POST /api/premiere/run {"video_name":"..."}` |
@@ -170,16 +219,25 @@ lsof -ti:8888 | xargs kill -9
 | 「全部やって」 | `python3 app_pipeline.py <vol>` |
 | 「Premiere からやり直して」 | `python3 app_pipeline.py <vol> --from premiere` |
 | 「競合を分析して」 | `python3 app_competitor.py --analyze` |
+| 「seed動画を分析して」 | `python3 Python/studio.py seed-analyze --url <動画URL>` または `curl POST /api/benchmark/seed/run` |
 | 「競合分析から提案して」 | Web UI「AI 提案（ベンチマーク連動）」パネル、または `curl POST /api/videos/.../suggest-all`（競合分析を内部で反映。旧 suggest-with-analysis は廃止） |
 | 「今伸びてるチャンネルは？」 | `curl GET /api/analysis/hot-channels?top_n=10` |
-| 「WEB を起動して」 | `bash start.sh` |
-| 「WEB を再起動して」 | `lsof -ti:8888 | xargs kill -9; bash start.sh` |
+| 「WEB を起動して」 | launchd 常駐時は `bash setup_launchd.sh --sync`、非常駐時は `bash Python/start.sh` |
+| 「WEB を再起動して」 | launchd 常駐時は `bash setup_launchd.sh --sync`、非常駐時は `lsof -ti:8888 | xargs kill -9; bash Python/start.sh` |
 | 「ライブ配信を開始して/止めて」 | `curl POST /api/live/streams/<id>/start`（stop/restart も同形）。状態は `curl GET /api/live/status` |
 | 「ライブの動画を差し替えて」 | 設定変更後 `curl POST /api/live/streams/<id>/swap`（プレイリスト次へは `?next=1`）。**配信は止まらない** |
 | 「ライブ配信の調子は？」「VPS の負荷は？」 | `curl GET /api/live/status`（load/mem/送信Mbps/グループ別容量 + 配信別稼働）。ログは `GET /api/live/streams/<id>/log` |
 | 「何人見てる？」 | `curl GET /api/live/viewers?force=1`（同時視聴者数。5分キャッシュ） |
 | 「ライブのタイトル/サムネを変えて」 | `GET /api/live/broadcasts?stream_id=<id>` で video_id → `PUT /api/live/broadcasts` / `POST /api/live/thumbnail` |
 | 「VPS を初期設定して」 | Web UI「ライブ配信」→ 初期設定。CLI なら `curl POST /api/live/setup {host, password?}`（詳細 [skills/app-live-streaming.md](skills/app-live-streaming.md)） |
+
+### 新規動画の企画ルール(seed分析の反映)
+
+「新しい動画を作って」と依頼されたら、フォルダ作成の前に seed 分析を確認する:
+1. `python3 Python/app_benchmark_seed.py --list` で保存済み seed 分析を確認（空なら通常フローでよい）
+2. 最新 seed の `pdca_hypothesis.changed_element` を今回の1本で検証する変更点として採用（変えるのは1要素だけ）
+3. `do_not_copy` / `risk_notes` の要素は企画に使わない
+4. メタ生成(meta step)・提案(suggest-all)・SUNOプロンプト提案には seed 分析が自動注入される（claude_proposer / app_benchmark_analyze 経由）ので、手動で貼り込む必要はない
 
 ## vol 番号からフォルダ名の解決
 
@@ -237,7 +295,7 @@ for v in vs:
 
 | エラー | 対処 |
 |--------|------|
-| Web サーバーが応答しない | `lsof -ti:8888 | xargs kill -9; bash start.sh` |
+| Web サーバーが応答しない | launchd 常駐時は `launchctl list | grep automation` で状態確認後 `bash setup_launchd.sh --sync`。非常駐時は `lsof -ti:8888 | xargs kill -9; bash Python/start.sh` |
 | パイプライン途中で止まった | `python3 app_pipeline.py <vol> --from <止まった工程>` で再開 |
 | Claude CLI がない | `which claude` で確認。無ければ Claude Code CLI をインストール |
 
@@ -249,3 +307,54 @@ for v in vs:
 - [skills/app-thumbnail.md](skills/app-thumbnail.md) — AI サムネ生成（ベンチ分析から動的プロンプト構築 → codex で生成。Flow 経路は廃止）
 - [skills/app-web-dashboard.md](skills/app-web-dashboard.md) — Web UI / API / History API
 - 個別スキルは [skills/](skills/) ディレクトリ内の各 `.md` を参照
+
+## Codex への委譲テンプレ
+
+Codex に作業を渡すときは、会話履歴に依存しすぎず、次の情報を 1 つの指示にまとめる。
+
+```md
+# 作業対象
+repo: /Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude
+domain: <music|image|video|publish|analysis|pipeline|web>
+参照 skill: skills/<domain>.md
+
+# 目的
+<何を直す/調べる/作るかを 1-3 文で書く>
+
+# 正規入口
+まず `python3 Python/studio.py <intent> --vol <N> --dry-run` で解決結果を確認。
+直接 CLI が必要な場合も、dry-run の結果と差分を説明してから実行。
+
+# 禁止事項
+- 推測で仕様を書かない。コードを読んで根拠を確認する。
+- 既存ファイルの削除・大規模書き換えをしない。
+- credentials / token / secret をログやドキュメントに保存しない。
+- SUNO / Premiere / Photoshop の同一リソースを同時実行しない。
+- 既存のユーザー変更を revert しない。
+
+# 並列・ロック
+単一リソースを触る場合は必要に応じて opt-in ラッパを使う:
+- SUNO: `python3 Python/parallel_guard.py suno -- <cmd...>`
+- Premiere/AME: `python3 Python/parallel_guard.py premiere -- <cmd...>`
+- Photoshop: `python3 Python/parallel_guard.py psd -- <cmd...>`
+
+# 検証
+<実行するコマンド/API/ファイル確認を列挙>
+
+# 報告形式
+- 変更/成果物パス
+- 実行した検証と結果
+- 見つけた不整合・残リスク
+```
+
+ドメイン別の最低限の前提・入口・並列可否は以下を参照する。
+
+| domain | 参照 skill |
+|---|---|
+| music | [skills/music.md](skills/music.md) |
+| image | [skills/image.md](skills/image.md) |
+| video | [skills/video.md](skills/video.md) |
+| publish | [skills/publish.md](skills/publish.md) |
+| analysis | [skills/analysis.md](skills/analysis.md) |
+| pipeline | [skills/pipeline.md](skills/pipeline.md) |
+| web | [skills/web.md](skills/web.md) |

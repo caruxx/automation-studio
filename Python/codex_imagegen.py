@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import mimetypes
 import os
 import re
@@ -365,7 +366,8 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
                  quality: str = "medium", output_format: str = "png",
                  backend: Literal["auto", "api", "codex"] = "auto",
                  background: str = "auto", moderation: str = "auto",
-                 input_fidelity: str = "high", n: int = 1) -> dict:
+                 input_fidelity: str = "high", n: int = 1,
+                 generation_meta: dict | None = None) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     dest = output_dir / filename
     # 衝突回避（安全網）: 既存ファイルがあれば -2, -3, ... を付与
@@ -416,9 +418,11 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
         except Exception:
             head_size = 0
         suffix = f" + {len(saved)-1} more" if len(saved) > 1 else ""
+        _write_generation_sidecars(saved, prompt, generation_meta, meta)
         _log(f"[OK] {filename} ({elapsed}s, {head_size}KB{suffix}, {meta['backend']})")
         return {"ok": True, "filename": filename, "prompt": prompt,
-                "path": saved[0], "paths": saved, "elapsed": elapsed, **meta}
+                "path": saved[0], "paths": saved, "elapsed": elapsed,
+                "generation_meta": generation_meta or {}, **meta}
 
     # Codex CLI 経路 — ChatGPT サブスク経由で Codex のエージェントが
     # Python で画像生成スクリプトを書いて実行する流れ（過去実績あり）
@@ -454,9 +458,10 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
     elapsed = int(time.time() - started)
     out_text = (proc.stdout or "").strip()
     if dest.exists() and dest.stat().st_size > 0:
+        _write_generation_sidecars([str(dest)], prompt, generation_meta, {"backend": "codex_cli"})
         _log(f"[OK] {filename} ({elapsed}s, {dest.stat().st_size // 1024}KB)")
         return {"ok": True, "filename": filename, "prompt": prompt,
-                "path": str(dest), "elapsed": elapsed}
+                "path": str(dest), "elapsed": elapsed, "generation_meta": generation_meta or {}}
     # 失敗時は標準出力末尾を診断材料として返す
     tail = "\n".join(out_text.splitlines()[-15:]) if out_text else ""
 
@@ -500,7 +505,8 @@ def run(prompts: list[tuple[str, str]], output_dir: Path,
         quality: str = "medium", output_format: str = "png",
         backend: Literal["auto", "api", "codex"] = "auto",
         background: str = "auto", moderation: str = "auto",
-        input_fidelity: str = "high", n: int = 1) -> list[dict]:
+        input_fidelity: str = "high", n: int = 1,
+        generation_meta: dict[str, dict] | None = None) -> list[dict]:
     if not prompts:
         _log("[WARN] プロンプトが空です")
         return []
@@ -519,11 +525,16 @@ def run(prompts: list[tuple[str, str]], output_dir: Path,
         _log("参照画像: " + ", ".join(p.name for p in refs) + f"  (input_fidelity={input_fidelity})")
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=max(1, min(max_parallel, len(prompts)))) as ex:
+        def _meta_for(fn: str) -> dict:
+            if not generation_meta:
+                return {}
+            stem = Path(fn).stem
+            return generation_meta.get(fn) or generation_meta.get(stem) or {}
         futs = {
             ex.submit(
                 generate_one, codex_cli, p, fn, output_dir, timeout_sec,
                 reference_images, model, size, quality, output_format, backend,
-                background, moderation, input_fidelity, n,
+                background, moderation, input_fidelity, n, _meta_for(fn),
             ): (p, fn)
             for p, fn in prompts
         }
@@ -547,6 +558,50 @@ def run(prompts: list[tuple[str, str]], output_dir: Path,
         else:
             _log(f"  {mark} {r['filename']} : {r.get('error','')[:200]}")
     return results
+
+
+def _write_generation_sidecars(paths: list[str], prompt: str, generation_meta: dict | None,
+                               backend_meta: dict | None = None) -> None:
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for idx, raw in enumerate(paths):
+        p = Path(raw)
+        payload = {
+            "schema_version": 1,
+            "generated_at": now,
+            "filename": p.name,
+            "prompt": prompt,
+            "prompt_sections": _parse_prompt_sections(prompt),
+            "generation_meta": generation_meta or {},
+            "module_ids": (generation_meta or {}).get("module_ids") or {},
+            "sections": (generation_meta or {}).get("sections") or {},
+            "backend": (backend_meta or {}).get("backend") or "",
+            "variant_index": idx + 1,
+        }
+        try:
+            p.with_suffix(p.suffix + ".generation.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            summary = p.parent / "image_generation_meta.json"
+            rows = []
+            if summary.exists():
+                try:
+                    old = json.loads(summary.read_text(encoding="utf-8"))
+                    rows = old if isinstance(old, list) else (old.get("items") or [])
+                except Exception:
+                    rows = []
+            rows.append(payload)
+            summary.write_text(json.dumps(rows[-200:], ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            _log(f"  ⚠ generation meta write failed for {p.name}: {e}")
+
+
+def _parse_prompt_sections(prompt: str) -> dict[str, str]:
+    try:
+        from app_image_modules import heuristic_split_prompt
+        return heuristic_split_prompt(prompt)
+    except Exception:
+        return {}
 
 
 def _read_prompts(args: argparse.Namespace) -> list[str]:
@@ -589,6 +644,8 @@ def main() -> int:
                     help="1 リクエストあたりの生成枚数 (1-10)。複数の場合は filename-1.png, -2.png 形式")
     ap.add_argument("--aspect", default="",
                     help="アスペクト比 (16:9 / 9:16 / 1:1 / 4:3 / 3:4)。指定時は --size より優先して標準サイズへ変換")
+    ap.add_argument("--generation-meta-json", default="",
+                    help="filename stem -> structured prompt metadata の JSON ファイル")
     args = ap.parse_args()
 
     size = args.size
@@ -602,6 +659,13 @@ def main() -> int:
         return 2
     out = Path(args.output_dir).expanduser().resolve()
     refs = [Path(p).expanduser().resolve() for p in args.reference_image]
+    generation_meta = {}
+    if args.generation_meta_json:
+        try:
+            d = json.loads(Path(args.generation_meta_json).read_text(encoding="utf-8"))
+            generation_meta = d if isinstance(d, dict) else {}
+        except Exception as e:
+            print(f"generation-meta-json 読み込み失敗: {e}", file=sys.stderr)
     results = run(
         parsed, out,
         max_parallel=args.max_parallel,
@@ -616,6 +680,7 @@ def main() -> int:
         moderation=args.moderation,
         input_fidelity=args.input_fidelity,
         n=args.n,
+        generation_meta=generation_meta,
     )
     return 0 if all(r["ok"] for r in results) else 1
 

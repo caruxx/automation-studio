@@ -25,9 +25,12 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from resource_lock import ResourceBusyError, ResourceLock
+
 DEFAULT_TIMEOUT = 240  # JSX 実行のデフォルトタイムアウト（秒）。重い PSD 合成（スマートオブジェクト流し込み＋2枚書き出し）に対応
 
 _cached_app_name: Optional[str] = None
+_cached_app_bundle: Optional[Path] = None
 
 # ExtendScript には JSON が無いので polyfill（最小実装）。
 # Douglas Crockford の json2.js から stringify のみ。
@@ -76,7 +79,72 @@ if (typeof JSON.stringify !== "function") {
 
 def _is_photoshop_running() -> bool:
     return subprocess.run(["pgrep", "-fi", "Adobe Photoshop"],
-                          capture_output=True).returncode == 0
+                          capture_output=True, timeout=10).returncode == 0
+
+
+def _find_photoshop_app_bundle() -> Optional[Path]:
+    """Installed Photoshop.app を探す（2024/2025/2026 などの名前差を吸収）。"""
+    global _cached_app_bundle
+    if _cached_app_bundle and _cached_app_bundle.exists():
+        return _cached_app_bundle
+
+    candidates: list[Path] = []
+    apps = Path("/Applications")
+    patterns = [
+        "Adobe Photoshop*/Adobe Photoshop*.app",
+        "Adobe Photoshop*.app",
+    ]
+    for pattern in patterns:
+        candidates.extend(apps.glob(pattern))
+
+    if not candidates:
+        try:
+            r = subprocess.run(
+                ["mdfind", 'kMDItemKind == "Application" && kMDItemDisplayName == "*Photoshop*"'],
+                capture_output=True, text=True, timeout=8,
+            )
+            candidates.extend(Path(x.strip()) for x in r.stdout.splitlines() if x.strip())
+        except Exception:
+            pass
+
+    candidates = [p for p in candidates if p.exists() and p.suffix == ".app"]
+    if not candidates:
+        return None
+
+    # バージョン付きは新しいものを優先。名前に数字が無いものは最後。
+    def version_key(path: Path) -> tuple[int, str]:
+        nums = [int(x) for x in re.findall(r"20\d{2}|\d+(?:\.\d+)?", path.name)]
+        return (max(nums) if nums else 0, path.name)
+
+    _cached_app_bundle = sorted(candidates, key=version_key, reverse=True)[0]
+    return _cached_app_bundle
+
+
+def ensure_photoshop_running(wait_sec: float = 20.0) -> bool:
+    """Photoshop が未起動ならインストール済み app を探して起動する。"""
+    if _is_photoshop_running():
+        return True
+    if os.environ.get("APP_PHOTOSHOP_AUTO_LAUNCH", "1").strip().lower() in ("0", "false", "no"):
+        return False
+
+    bundle = _find_photoshop_app_bundle()
+    if not bundle:
+        return False
+    print(f" Photoshop 未起動 → 起動します: {bundle.name}")
+    try:
+        subprocess.run(["open", "-a", str(bundle)], check=False, capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        print(f"  ⚠ Photoshop 起動コマンド失敗: {e}")
+        return False
+
+    deadline = time.time() + max(1.0, wait_sec)
+    while time.time() < deadline:
+        if _is_photoshop_running():
+            # AppleScript の application process 登録が一拍遅れることがある。
+            time.sleep(1.5)
+            return True
+        time.sleep(0.5)
+    return _is_photoshop_running()
 
 
 def _get_photoshop_app_name() -> str:
@@ -105,7 +173,16 @@ def run_jsx(code: str, timeout: float = DEFAULT_TIMEOUT) -> Any:
 
     末尾を JSON.stringify(...) にすると Python 側で json.loads した値を返す。
     """
-    if not _is_photoshop_running():
+    resource = ResourceLock("photoshop", owner="cli:app_photoshop").acquire(blocking=False)
+    try:
+        return _run_jsx_locked(code, timeout)
+    finally:
+        resource.release()
+
+
+def _run_jsx_locked(code: str, timeout: float = DEFAULT_TIMEOUT) -> Any:
+    """Photoshop resource lock 保持中の JSX 実行本体。"""
+    if not ensure_photoshop_running():
         raise RuntimeError("Photoshop が起動していません")
 
     app_name = _get_photoshop_app_name()

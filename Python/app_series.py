@@ -104,6 +104,12 @@ def propose_series(
     bp = analysis.get("buzz_patterns") or {}
     ts = analysis.get("trend_shift") or {}
     rec = analysis.get("recommendations") or {}
+    demand_hint = ""
+    try:
+        import app_comment_mining
+        demand_hint = app_comment_mining.prompt_hint(limit=3)
+    except Exception:
+        demand_hint = ""
 
     existing_block = _summarize_existing(existing_videos or [])
 
@@ -138,6 +144,9 @@ Persona: {persona or '(unspecified)'}
 - trend_shift: {ts.get('from_buzz_to_recent', '')}
 - underserved_niches: {json.dumps(ts.get('underserved_niches', []), ensure_ascii=False)}
 - title_tips: {json.dumps(rec.get('title_tips', []), ensure_ascii=False)}
+
+## Viewer Demand Memo (from comment mining)
+{demand_hint or '(not generated yet)'}
 
 ## Your task
 Propose {count} distinct, NEW image scenes — each one is a candidate for ONE future video's hero/thumbnail.

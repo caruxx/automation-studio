@@ -103,3 +103,9 @@ credentials*.json
 cookies*.txt
 *_apikey*
 apikey*.txt
+
+# 生成物・バックアップ（コミット対象外）
+/config_backups/
+/backup/
+/generated_product_images/
+/test-results/

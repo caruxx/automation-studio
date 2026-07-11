@@ -1,5 +1,5 @@
 #!/bin/bash
-# orzz. Dashboard Cloudflare Tunnel セットアップ
+# Automation Studio Cloudflare Tunnel セットアップ
 # 外出先のスマホから https://xxx.trycloudflare.com 経由でアクセスするための簡易トンネル。
 #
 # 使い方:
@@ -28,7 +28,7 @@ if [[ "${1:-}" == "--check" ]]; then
 fi
 
 echo "=================================="
-echo "  orzz. Cloudflare Tunnel"
+echo "  Automation Studio Cloudflare Tunnel"
 echo "=================================="
 echo "  ローカル: http://localhost:${APP_PORT}"
 echo "  注: Tunnel URL は起動後に表示されます"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""orzz. Dashboard — Web管理画面 (共有ドライブ版)"""
+"""Automation Studio — Web管理画面 (共有ドライブ版)"""
 
 import asyncio
 import json
@@ -27,6 +27,10 @@ from typing import Optional, List
 # ─── 土台は app_core へ分離（D9 第1段）。foundation シンボルを取り込む ───
 import app_core  # noqa: F401  （app_core.X 直接参照用）
 from app_core import *  # noqa: F401,F403  土台の全シンボル
+import app_updater
+from settings_service import config_get, config_set, load_catalog
+
+APP_STARTED_AT = time.time()
 
 # ─── FastAPI ───
 app = FastAPI(title=load_json(DASHBOARD_CONFIG, {}).get("brand_full") or DEFAULT_DASHBOARD_CONFIG["brand_full"])
@@ -39,7 +43,7 @@ if static_dir.exists():
 # ─── 認証ミドルウェア（Sprint 5-C） ───
 # ORZZ_AUTH_REQUIRED=1 のときのみ有効。loopback アドレスはスキップ。
 _AUTH_PUBLIC_PATHS = {"/login.html", "/login", "/api/auth/login", "/api/auth/check",
-                       "/manifest.json", "/sw.js", "/favicon.ico"}
+                       "/manifest.json", "/sw.js", "/favicon.ico", "/privacy"}
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -77,6 +81,176 @@ def _mask_secret(val, visible=4):
     if not val or len(val) <= visible:
         return val
     return val[:visible] + "●" * min(8, len(val) - visible)
+
+
+@app.get("/api/version")
+def api_version():
+    root = _update_code_root()
+    result = app_updater.check_for_update(root)
+    result["version"] = app_updater.read_version(root)
+    return result
+
+
+@app.get("/api/settings-catalog")
+def api_settings_catalog():
+    return load_catalog()
+
+
+class SettingsCatalogValueUpdate(BaseModel):
+    key: str
+    value: object
+    channel_id: Optional[str] = ""
+
+
+@app.put("/api/settings-catalog/value")
+def api_settings_catalog_value(update: SettingsCatalogValueUpdate):
+    try:
+        value = update.value
+        if isinstance(value, (list, dict)):
+            raw = json.dumps(value, ensure_ascii=False)
+        elif isinstance(value, bool):
+            raw = "true" if value else "false"
+        elif value is None:
+            raw = ""
+        else:
+            raw = str(value)
+        result = config_set(update.key, raw, channel_id=update.channel_id or "", actor="ui")
+        if (update.channel_id or "") == "all":
+            return {"status": "ok", "result": result, "current": None}
+        current = config_get(update.key, channel_id=update.channel_id or "")
+        return {"status": "ok", "result": result, "current": current}
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/settings-catalog/value")
+def api_settings_catalog_get_value(key: str, channel_id: str = ""):
+    try:
+        return {"status": "ok", "current": config_get(key, channel_id=channel_id or "")}
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/fonts")
+def api_fonts():
+    """macOS system/user fonts available to ffmpeg drawtext."""
+    roots = [Path("/System/Library/Fonts"), Path("/Library/Fonts"), Path.home() / "Library/Fonts"]
+    rows, seen = [], set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in {".ttf", ".otf", ".ttc"}:
+                continue
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({"name": path.stem, "path": key, "format": path.suffix.lower()[1:]})
+    rows.sort(key=lambda x: (0 if "hiragino" in x["name"].lower() else 1, x["name"].lower()))
+    return {"count": len(rows), "fonts": rows, "default": next((x for x in rows if "hiragino" in x["name"].lower()), rows[0] if rows else None)}
+
+
+@app.get("/api/health")
+def api_health():
+    version = app_updater.read_version(SHARED_BASE)
+    try:
+        disk = shutil.disk_usage(str(CONFIG_DIR))
+        disk_free = {"path": str(CONFIG_DIR), "free_bytes": disk.free, "total_bytes": disk.total}
+    except Exception as e:
+        disk_free = {"path": str(CONFIG_DIR), "error": str(e)}
+    rq_counts = {}
+    try:
+        import app_render_queue as _rq
+        rq_counts = {
+            "pending": len(_rq.list_jobs("pending", limit=999)),
+            "running": len(_rq.list_jobs("running", limit=999)),
+        }
+    except Exception as e:
+        rq_counts = {"error": str(e)}
+    scheduler_registered = bool(_scheduler is not None and any(
+        getattr(j, "id", "") == "orchestrator_tick" for j in _scheduler.get_jobs()))
+    return {
+        "status": "ok",
+        "version": version,
+        "uptime_sec": int(time.time() - APP_STARTED_AT),
+        "scheduler": {"active": _scheduler is not None, "orchestrator_registered": scheduler_registered},
+        "render_queue": {"worker_started": bool(_rq_worker_started), **rq_counts},
+        "disk": disk_free,
+        "update_guard": _autopilot_update_guard_status(),
+    }
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page(lang: str = "ja"):
+    is_en = (lang or "").lower().startswith("en")
+    ja_style = "display:none" if is_en else ""
+    en_style = "" if is_en else "display:none"
+    return f"""<!doctype html><html lang="{ 'en' if is_en else 'ja' }"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy | Caruvi Star</title>
+<style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;margin:0;background:#f7f8fa;color:#17202a}}main{{max-width:880px;margin:0 auto;background:#fff;min-height:100vh;padding:28px 20px 54px}}h1{{font-size:28px;margin:0 0 10px}}h2{{font-size:18px;margin:24px 0 8px;border-top:1px solid #e5e7eb;padding-top:16px}}a{{color:#0b63ce}}.switch{{margin-bottom:20px}}</style>
+</head><body><main>
+<div class="switch"><a href="/privacy?lang=ja">日本語</a> / <a href="/privacy?lang=en">English</a></div>
+<section id="privacy-ja" style="{ja_style}">
+<h1>プライバシーポリシー</h1><p>事業者: Caruvi Star / 所在地: 日本</p>
+<h2 data-policy-item="location">1. 所在地</h2><p>本サービスの運営者は Caruvi Star、所在地は日本です。</p>
+<h2 data-policy-item="youtube-api">2. YouTube API Services の使用</h2><p>本サービスは YouTube API Services を使用し、チャンネル、動画、統計、サムネイル等の情報を取得・更新する場合があります。</p>
+<h2 data-policy-item="google-privacy">3. Google プライバシーポリシー</h2><p><a href="https://policies.google.com/privacy">Google プライバシーポリシー</a>をご確認ください。</p>
+<h2 data-policy-item="data">4. 収集・保存・共有するデータ</h2><p>OAuth トークン、チャンネル情報、動画メタデータ、公開統計、分析キャッシュ、操作ログを保存します。第三者への販売や広告目的の共有は行いません。</p>
+<h2 data-policy-item="ads">5. 第三者広告</h2><p>第三者広告は表示せず、広告配信目的で YouTube API 由来データを共有しません。</p>
+<h2 data-policy-item="device-cookie">6. デバイス情報・Cookie</h2><p>認証維持や操作性のため Cookie / localStorage を使用する場合があります。端末識別広告には使用しません。</p>
+<h2 data-policy-item="security">7. セキュリティ設定と削除</h2><p><a href="https://security.google.com/settings">Google セキュリティ設定</a>で連携を確認できます。本サービスの YouTube連携解除でもトークン失効と API 由来データ削除を行えます。</p>
+</section>
+<section id="privacy-en" lang="en" style="{en_style}">
+<h1>Privacy Policy</h1><p>Operator: Caruvi Star / Location: Japan</p>
+<h2 data-policy-item="location">1. Location</h2><p>This service is operated by Caruvi Star in Japan.</p>
+<h2 data-policy-item="youtube-api">2. Use of YouTube API Services</h2><p>This service uses YouTube API Services to access or update channel, video, statistics, and thumbnail data.</p>
+<h2 data-policy-item="google-privacy">3. Google Privacy Policy</h2><p>See the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
+<h2 data-policy-item="data">4. Data Collected, Stored, and Shared</h2><p>The service may store OAuth tokens, channel information, video metadata, public statistics, analysis caches, and audit logs. It does not sell this data or share it for advertising.</p>
+<h2 data-policy-item="ads">5. No Third-Party Advertising</h2><p>The service does not display third-party ads or share YouTube API-derived data for ad serving.</p>
+<h2 data-policy-item="device-cookie">6. Device Information and Cookies</h2><p>The dashboard may use cookies or localStorage for authentication and usability, not for device-targeted advertising.</p>
+<h2 data-policy-item="security">7. Security Settings and Deletion</h2><p>Manage Google access in <a href="https://security.google.com/settings">Google Security Settings</a>. The YouTube disconnect action revokes tokens and deletes API-derived data.</p>
+</section>
+</main></body></html>"""
+
+
+@app.get("/api/quota")
+def api_quota():
+    import app_quota as _quota
+    return _quota.quota_summary()
+
+
+@app.get("/api/posting-strategy/{channel_id}")
+def api_posting_strategy(channel_id: str):
+    import app_posting_strategy as _ps
+    return _ps.strategy(channel_id)
+
+
+@app.post("/api/retention/run")
+def api_retention_run(dry_run: bool = True):
+    import app_retention as _ret
+    folders = [c.get("folder") for c in get_channels() if c.get("folder")]
+    return _ret.run_retention(folders, dry_run=bool(dry_run))
+
+
+class UpdateApplyRequest(BaseModel):
+    from_zip: Optional[str] = None
+
+
+@app.post("/api/update")
+def api_update(req: Optional[UpdateApplyRequest] = None):
+    try:
+        root = _update_code_root()
+        if req and req.from_zip:
+            return app_updater.apply_from_zip(req.from_zip, root)
+        return app_updater.update(root)
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.get("/api/config/migration-status")
 def api_config_migration_status():
@@ -269,8 +443,10 @@ class DashboardConfigUpdate(BaseModel):
     psd_image_subdir: Optional[str] = None
     publish_mode: Optional[str] = None  # P3-3: unlisted / public / delayed
     publish_delay_hours: Optional[float] = None  # P2-7: upload 後 N 時間で public 化（0=即時）
+    publish_time_jst: Optional[str] = None  # Phase G: フォルダ日付に対する予約公開時刻（HH:MM / JST）
     reference_image_dir: Optional[str] = None    # step_bgimage: 参照画像フォルダ（空文字でクリア）
     reference_image: Optional[str] = None        # step_bgimage: 固定参照画像（空文字でクリア）
+    reference_image_mix_mode: Optional[str] = None  # fixed_only / identity_plus_benchmark / benchmark_only
     default_duration_sec: Optional[int] = None   # Premiere 自動配置の規定尺（秒）。0/空でクリア（10800 にフォールバック）
     export_engine: Optional[str] = None          # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(ループ連結方式)
 
@@ -304,7 +480,7 @@ def api_update_dashboard_config(update: DashboardConfigUpdate):
                 except Exception:
                     pass
         elif k == "reference_image":
-            # step_bgimage: 固定参照画像。指定時は reference_image_dir のランダム選択より優先。
+            # step_bgimage: 固定参照画像。reference_image_mix_mode により単独使用/ベンチ補完を切替。
             raw = (v or "").strip()
             if not raw:
                 config["reference_image"] = ""
@@ -316,6 +492,11 @@ def api_update_dashboard_config(update: DashboardConfigUpdate):
                         print(f"⚠ reference_image 保存: ファイルが存在しません ({expanded}) — 後から作成すれば step_bgimage で参照されます")
                 except Exception:
                     pass
+        elif k == "reference_image_mix_mode":
+            mode = str(v or "fixed_only").strip().lower()
+            if mode not in ("fixed_only", "identity_plus_benchmark", "benchmark_only"):
+                mode = "fixed_only"
+            config["reference_image_mix_mode"] = mode
         elif k == "default_duration_sec":
             # Premiere 自動配置の規定尺（秒）。
             #   - 正の整数 → そのまま保存（per-channel）
@@ -446,6 +627,7 @@ MASTER_PROMPT_KEYS = {
     "suno_from_analysis":    "app_competitor.py propose_suno_prompt の指示を上書き",
     "suno_from_persona":     "app.py /api/suno/suggest-prompt のプロンプトを上書き",
     "imitate_evolve":        "Sprint 5-A 「徹底パクリ進化」分析（imitate / avoid / evolve 3 軸）",
+    "localization_translation": "claude_proposer.py translate_metadata の翻訳指示を上書き",
 }
 
 def get_master_prompts():
@@ -845,7 +1027,6 @@ async def api_suno_generate_drafts(req: SunoDraftRequest):
 
 @app.post("/api/suno/start")
 async def api_suno_start(req: SunoRunRequest):
-    await _ensure_not_running("suno", "SUNO は既に実行中です")
     # ─── プロンプト確認ロジック ───
     # 暗黙のフォールバック（チャンネル設定 / prompts_library の暗黙選択 / 既定文字列）
     # でジャンル違いの曲が作られる事故を防ぐため、prompt は呼び出し側で必ず明示する。
@@ -952,10 +1133,20 @@ async def api_suno_start(req: SunoRunRequest):
     suno_env = {**os.environ}
     if suno_env.get("APP_KEEP_BROWSER", "").strip() not in ("0", "false", "no"):
         suno_env["APP_KEEP_BROWSER"] = "1"
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1, env=suno_env)
-    active_tasks["suno"] = proc
-    _stream_subprocess(proc, "suno")
+    reservation = await _ensure_not_running("suno", "SUNO は既に実行中です")
+    resource = None
+    try:
+        resource = _acquire_resource_or_409("suno", owner="api:suno-start")
+        suno_env = env_with_held_resource(suno_env, "suno")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, env=suno_env)
+        _register_active_task("suno", proc, reservation)
+    except Exception:
+        if resource is not None:
+            resource.release()
+        _release_task_reservation("suno", reservation)
+        raise
+    _stream_subprocess(proc, "suno", timeout=21600, resource_lock=resource)
     return {"status": "started"}
 
 class SunoDownloadRequest(BaseModel):
@@ -965,14 +1156,12 @@ class SunoDownloadRequest(BaseModel):
 
 @app.post("/api/suno/download")
 async def api_suno_download(req: SunoDownloadRequest):
-    await _ensure_not_running("suno", "SUNO 生成が実行中のためダウンロードできません")
-
     # workspace 名の解決
     workspace = req.workspace
     video_folder = None
     if req.video_name:
         config = get_dashboard_config()
-        video_folder = Path(config["channel_folder"]) / req.video_name
+        video_folder = resolve_video_folder(req.video_name)
         if not workspace:
             channel_name = (config.get("channel_name") or "orzz").strip()
             channel_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", channel_name).strip("_") or "orzz"
@@ -1002,9 +1191,20 @@ async def api_suno_download(req: SunoDownloadRequest):
         "target_dir": target_dir,
         "video_name": req.video_name or "",
     }
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    active_tasks["suno"] = proc
-    _stream_subprocess(proc, "suno")
+    reservation = await _ensure_not_running("suno", "SUNO 生成が実行中のためダウンロードできません")
+    resource = None
+    try:
+        resource = _acquire_resource_or_409("suno", owner="api:suno-download")
+        env = env_with_held_resource({**os.environ, "PYTHONUNBUFFERED": "1"}, "suno")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, env=env)
+        _register_active_task("suno", proc, reservation)
+    except Exception:
+        if resource is not None:
+            resource.release()
+        _release_task_reservation("suno", reservation)
+        raise
+    _stream_subprocess(proc, "suno", timeout=7200, resource_lock=resource)
     return {"status": "started", "workspace": workspace, "target_dir": target_dir}
 
 @app.post("/api/suno/stop")
@@ -1187,6 +1387,21 @@ def api_list_channels():
             ch["prefix"] = infer_file_prefix_from_folder(Path(ch.get("folder") or "")) or ""
     return {"channels": chs}
 
+
+@app.get("/api/routes")
+def api_routes():
+    """AI / Dashboard 用の機械可読ルーティング表を返す。"""
+    return load_routes_table()
+
+
+@app.get("/api/resolve-vol/{num}")
+def api_resolve_vol(num: str, channel_id: str = ""):
+    """vol番号を active channel または指定 channel_id の video_name に解決する。"""
+    result = resolve_vol_folder(num, channel_id=channel_id)
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error") or "vol が見つかりません")
+    return result
+
 @app.get("/api/channels/overview")
 def api_channels_overview():
     """全チャンネル一元管理ビュー用データ。各 ch の icon/url/prefix に加え、per-ch 設定
@@ -1238,6 +1453,342 @@ class ChannelCreate(BaseModel):
     youtube_url: str = ""
 
 
+ONBOARDING_STEP_ORDER = [
+    "register",
+    "oauth",
+    "benchmark_set",
+    "benchmark_fetch",
+    "analyze",
+    "concept_apply",
+    "first_vol",
+    "verify_loop",
+]
+
+ONBOARDING_STEP_DESCS = {
+    "register": "チャンネル登録(registry + フォルダ + config雛形)",
+    "oauth": "per-channel YouTube OAuth トークン取得",
+    "benchmark_set": "ベンチマーク先チャンネルの登録(URL/ID複数)",
+    "benchmark_fetch": "直近動画・サムネ・統計の取得",
+    "analyze": "伸び要素抽出(サムネ/タイトル/コンセプト分析)",
+    "concept_apply": "自チャンネルconfigへの落とし込み(参照画像dir, sunoスタイル, scene_text等)",
+    "first_vol": "vol.1 フォルダ作成+plan生成",
+    "verify_loop": "投稿後の再生数トラッキング+ベンチ比較の定期ジョブ登録",
+}
+
+_ONBOARDING_CONFIG_KEYS = {
+    "persona", "rival_channels", "reference_image_dir", "reference_image",
+    "reference_image_mix_mode",
+    "suno_prompt", "prompt", "scene_text_lines", "benchmark_pinned_names",
+}
+
+
+class ChannelOnboardingStepRequest(BaseModel):
+    urls: Optional[List[str]] = None
+    apply: Optional[bool] = True
+    force: Optional[bool] = False
+    dry_run: Optional[bool] = False
+    run_now: Optional[bool] = False
+
+
+def _channel_entry_or_404(channel_id: str) -> dict:
+    chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+    ch = next((c for c in chs if c.get("id") == channel_id), None)
+    if not ch:
+        raise HTTPException(404, "チャンネルが見つかりません")
+    out = dict(ch)
+    if out.get("folder"):
+        out["folder"] = _resolve_to_current_host(out["folder"])
+    return out
+
+
+def _channel_dir_or_400(ch: dict) -> Path:
+    folder = ch.get("folder") or ""
+    if not folder:
+        raise HTTPException(400, "channel folder が未設定です")
+    p = Path(folder)
+    if not p.exists():
+        raise HTTPException(400, f"channel folder が存在しません: {p}")
+    return p
+
+
+def _onboarding_path(channel_dir: Path) -> Path:
+    return channel_dir / "onboarding.json"
+
+
+def _blank_onboarding(channel_id: str) -> dict:
+    return {
+        "channel_id": channel_id,
+        "steps": {
+            key: {"done": False, "desc": ONBOARDING_STEP_DESCS[key]}
+            for key in ONBOARDING_STEP_ORDER
+        },
+    }
+
+
+def _has_first_vol(channel_dir: Path) -> bool:
+    try:
+        return any(p.is_dir() and parse_video_folder_name(p.name) for p in channel_dir.iterdir())
+    except Exception:
+        return False
+
+
+def _has_uploaded_video(channel_dir: Path) -> bool:
+    try:
+        for p in channel_dir.iterdir():
+            if not p.is_dir():
+                continue
+            marker = p / "youtube_upload.json"
+            if marker.exists():
+                data = load_json(marker, {})
+                if data.get("video_id") or data.get("url") or data.get("published_at"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _analysis_cache_ready(channel_id: str) -> dict:
+    key = re.sub(r"[^A-Za-z0-9_-]+", "_", (channel_id or "").strip()).strip("_")[:80] or "active"
+    base = SHARED_CONFIG_DIR / "benchmark" / "channels" / key
+    paths = {
+        "competitor": base / "competitor_analysis_cache.json",
+        "concept": base / "concept.json",
+        "title": base / "title.json",
+        "thumbnail": base / "thumbnail.json",
+    }
+    return {k: p.exists() and p.stat().st_size > 10 for k, p in paths.items()}
+
+
+def _infer_onboarding(channel_id: str, ch: dict, channel_dir: Path) -> dict:
+    state = _blank_onboarding(channel_id)
+    steps = state["steps"]
+    cfg_path = channel_dir / _CHANNEL_CONFIG_FILENAME
+    cfg = load_json(cfg_path, {}) if cfg_path.exists() else {}
+    steps["register"]["done"] = bool(channel_dir.exists() and cfg_path.exists())
+    steps["oauth"]["done"] = (channel_dir / ".youtube_token.json").exists()
+    rivals = cfg.get("rival_channels") or []
+    pins = cfg.get("benchmark_pinned_names") or []
+    steps["benchmark_set"]["done"] = bool(rivals or pins)
+    ready = _analysis_cache_ready(channel_id)
+    steps["benchmark_fetch"]["done"] = bool(ready.get("competitor"))
+    steps["analyze"]["done"] = all(ready.get(k) for k in ("concept", "title", "thumbnail"))
+    steps["concept_apply"]["done"] = any(bool(cfg.get(k)) for k in _ONBOARDING_CONFIG_KEYS)
+    steps["first_vol"]["done"] = _has_first_vol(channel_dir)
+    jobs = _scheduler_get_jobs() if "SCHEDULE_JOBS_FILE" in globals() else []
+    steps["verify_loop"]["done"] = any(
+        j.get("type") == "onboarding_verify_loop" and j.get("channel_id") == channel_id
+        for j in jobs
+    )
+    return state
+
+
+def _load_or_create_onboarding(channel_id: str) -> dict:
+    ch = _channel_entry_or_404(channel_id)
+    channel_dir = _channel_dir_or_400(ch)
+    path = _onboarding_path(channel_dir)
+    if path.exists():
+        state = load_json(path, {})
+        if not isinstance(state, dict):
+            state = {}
+        state.setdefault("channel_id", channel_id)
+        state.setdefault("steps", {})
+        inferred = _infer_onboarding(channel_id, ch, channel_dir)
+        changed = False
+        for key in ONBOARDING_STEP_ORDER:
+            cur = state["steps"].setdefault(key, {})
+            if cur.get("desc") != ONBOARDING_STEP_DESCS[key]:
+                cur["desc"] = ONBOARDING_STEP_DESCS[key]
+                changed = True
+            if "done" not in cur:
+                cur["done"] = bool(inferred["steps"][key]["done"])
+                changed = True
+        if changed:
+            save_json(path, state)
+        return state
+    state = _infer_onboarding(channel_id, ch, channel_dir)
+    save_json(path, state)
+    return state
+
+
+def _save_onboarding(channel_id: str, state: dict) -> dict:
+    ch = _channel_entry_or_404(channel_id)
+    channel_dir = _channel_dir_or_400(ch)
+    state["channel_id"] = channel_id
+    save_json(_onboarding_path(channel_dir), state)
+    return state
+
+
+def _mark_onboarding_step(channel_id: str, step: str, done: bool = True, extra: Optional[dict] = None) -> dict:
+    state = _load_or_create_onboarding(channel_id)
+    if step not in ONBOARDING_STEP_DESCS:
+        raise HTTPException(404, f"未知の onboarding step: {step}")
+    entry = state["steps"].setdefault(step, {"desc": ONBOARDING_STEP_DESCS[step]})
+    entry["done"] = bool(done)
+    entry["desc"] = ONBOARDING_STEP_DESCS[step]
+    if extra:
+        entry.update(extra)
+    entry["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    return _save_onboarding(channel_id, state)
+
+
+def _onboarding_payload(channel_id: str) -> dict:
+    ch = _channel_entry_or_404(channel_id)
+    state = _load_or_create_onboarding(channel_id)
+    steps = state.get("steps") or {}
+    remaining = [k for k in ONBOARDING_STEP_ORDER if not (steps.get(k) or {}).get("done")]
+    return {
+        "status": "ok",
+        "channel": {"id": ch.get("id"), "name": ch.get("name"), "folder": ch.get("folder")},
+        "onboarding": state,
+        "order": ONBOARDING_STEP_ORDER,
+        "remaining": remaining,
+        "next_step": remaining[0] if remaining else "",
+    }
+
+
+def _run_onboarding_analysis_worker(channel_id: str, channel_dir: Path, channel_name: str) -> None:
+    task_key = "onboarding"
+    logs = task_logs.setdefault(task_key, [])
+
+    def _log(msg: str) -> None:
+        logs.append(msg)
+        if len(logs) > 500:
+            task_logs[task_key] = logs[-500:]
+
+    try:
+        _log("競合取得を開始")
+        suno_cfg = get_suno_config()
+        cli_cmd = suno_cfg.get("claude_cli") or "claude"
+        env = _build_job_env(channel_name, channel_dir, channel_id)
+        old_env = {k: os.environ.get(k) for k in ("APP_CHANNEL_ID", "APP_CHANNEL_FOLDER", "APP_CHANNEL_NAME", "APP_NO_INTERACTIVE")}
+        os.environ.update({k: v for k, v in env.items() if k.startswith("APP_")})
+        try:
+            import app_competitor as _ac
+            cache = _ac.run_full_analysis(cli_cmd=cli_cmd)
+            _log(f"競合取得完了: {len((cache.get('competitor_data') or {}).get('channels') or [])} channels")
+            _mark_onboarding_step(channel_id, "benchmark_fetch", True)
+
+            import app_benchmark_concept as _bc
+            import app_benchmark_title as _bt
+            import app_benchmark_thumbnail as _bth
+            _bc.run_full(cli_cmd=cli_cmd)
+            _log("コンセプト分析完了")
+            _bt.run_full(cli_cmd=cli_cmd)
+            _log("タイトル分析完了")
+            _bth.run_full(cli_cmd=cli_cmd)
+            _log("サムネ分析完了")
+        finally:
+            for k, v in old_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        _mark_onboarding_step(channel_id, "analyze", True)
+        task_meta[task_key]["status"] = "done"
+        task_meta[task_key]["completed_at"] = datetime.utcnow().isoformat() + "Z"
+    except Exception as e:
+        _log(f"エラー: {e}")
+        task_meta[task_key]["status"] = "failed"
+        task_meta[task_key]["error"] = str(e)
+    finally:
+        active_tasks.pop(task_key, None)
+
+
+def _apply_benchmark_concept_to_channel(channel_id: str) -> dict:
+    ch = _channel_entry_or_404(channel_id)
+    channel_dir = _channel_dir_or_400(ch)
+    cfg_path = channel_dir / _CHANNEL_CONFIG_FILENAME
+    cfg = load_json(cfg_path, {}) if cfg_path.exists() else {}
+    updates = {}
+    old_env = {k: os.environ.get(k) for k in ("APP_CHANNEL_ID", "APP_CHANNEL_FOLDER", "APP_CHANNEL_NAME")}
+    os.environ["APP_CHANNEL_ID"] = channel_id
+    os.environ["APP_CHANNEL_FOLDER"] = str(channel_dir)
+    os.environ["APP_CHANNEL_NAME"] = ch.get("name") or ""
+    try:
+        try:
+            import app_benchmark_concept as _bc
+            concept = _bc.load_cache()
+        except Exception:
+            concept = {}
+        try:
+            import app_benchmark_title as _bt
+            title = _bt.load_cache()
+        except Exception:
+            title = {}
+        try:
+            import app_benchmark_thumbnail as _bth
+            picked_paths = _bth.get_picked_paths(limit=1)
+        except Exception:
+            picked_paths = []
+        try:
+            import app_ttp as _ttp
+            ttp_profiles = (_ttp.list_profiles().get("profiles") or [])
+            latest_ttp = ttp_profiles[0] if ttp_profiles else {}
+        except Exception:
+            latest_ttp = {}
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    rec = ((concept.get("aggregate") or {}).get("recommendation_for_self") or {})
+    vibe = (rec.get("vibe_one_line") or "").strip()
+    focus = rec.get("focus_themes") or []
+    if not cfg.get("persona") and (vibe or focus):
+        updates["persona"] = "\n".join([vibe, "重点テーマ: " + " / ".join(map(str, focus[:5]))]).strip()
+    if not updates.get("persona") and not cfg.get("persona") and latest_ttp:
+        rep = (latest_ttp.get("japanese_report") or "").strip()
+        if rep:
+            updates["persona"] = "TTP勝ちフォーマットを踏まえたチャンネル方針:\n" + rep[:900]
+    title_rec = ((title.get("aggregate") or {}).get("recommendation_for_self") or {})
+    keywords = title_rec.get("primary_keywords") or []
+    if not cfg.get("scene_text_lines") and focus:
+        updates["scene_text_lines"] = [str(x) for x in focus[:5]]
+    if not (cfg.get("suno_prompt") or cfg.get("prompt")) and (vibe or keywords):
+        updates["suno_prompt"] = ", ".join([x for x in ["lounge jazz BGM", vibe, ", ".join(map(str, keywords[:5]))] if x])
+    if not cfg.get("reference_image_dir") and picked_paths:
+        updates["reference_image_dir"] = str(Path(picked_paths[0]).parent)
+
+    if updates:
+        cfg.update(updates)
+        cfg["_onboarding_concept_applied_at"] = datetime.utcnow().isoformat() + "Z"
+        if latest_ttp:
+            cfg["_ttp_profile_id"] = latest_ttp.get("id", "")
+            cfg["_ttp_profile_applied_at"] = datetime.utcnow().isoformat() + "Z"
+        save_json(cfg_path, cfg)
+    _mark_onboarding_step(channel_id, "concept_apply", True, {"applied_keys": sorted(updates.keys())})
+    return {"status": "ok", "applied": updates, "config": str(cfg_path)}
+
+
+def _create_first_vol_plan(channel_id: str, dry_run: bool = False) -> dict:
+    ch = _channel_entry_or_404(channel_id)
+    channel_dir = _channel_dir_or_400(ch)
+    if _has_first_vol(channel_dir):
+        _mark_onboarding_step(channel_id, "first_vol", True, {"note": "既存volを検出"})
+        return {"status": "ok", "already_exists": True}
+    today = datetime.now().date()
+    publish_date = today.isoformat()
+    prefix = sanitize_file_prefix(ch.get("prefix") or infer_file_prefix_from_folder(channel_dir) or "vol", fallback="vol")
+    video_name = f"1_{prefix}_{today.strftime('%y%m%d')}"
+    folder = resolve_video_folder(video_name, channel_root=channel_dir)
+    if dry_run:
+        return {"status": "dry_run", "video_name": video_name, "folder": str(folder)}
+    folder.mkdir(parents=True, exist_ok=True)
+    plan = {
+        "vol": 1,
+        "video_name": video_name,
+        "publish_date": publish_date,
+        "created_by": "onboarding",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "next_action": "studio.py pipeline --vol 1 --channel " + channel_id + " --dry-run で実行内容を確認してください",
+    }
+    save_json(folder / "plan.json", plan)
+    _mark_onboarding_step(channel_id, "first_vol", True, {"video_name": video_name})
+    return {"status": "ok", "video_name": video_name, "folder": str(folder), "plan": plan}
+
+
 def _create_empty_channel_config(folder: Path, req: ChannelCreate) -> None:
     """新規チャンネルに旧グローバル設定が流れ込まないよう初期 config を置く。"""
     if not folder.exists():
@@ -1250,6 +1801,7 @@ def _create_empty_channel_config(folder: Path, req: ChannelCreate) -> None:
         "rival_channels": [],
         "reference_image_dir": "",
         "reference_image": "",
+        "reference_image_mix_mode": "fixed_only",
         "benchmark_pinned_names": [],
         "benchmark_filter": DEFAULT_BENCHMARK_CONFIG["filter"],
         "spreadsheet_channel_detail_url": "",
@@ -1316,9 +1868,107 @@ def api_create_channel(req: ChannelCreate):
             new_channel["icon_cache"] = {"error": e.detail}
     channels.append(new_channel)
     save_json(CHANNELS_CONFIG, channels)
+    try:
+        _mark_onboarding_step(new_channel["id"], "register", True)
+    except Exception as e:
+        print(f"[onboarding] 初期状態作成失敗（続行）: {e}")
     if req.open_in_finder and folder.exists():
         open_in_finder(folder)
     return {"status": "ok", "channel": new_channel}
+
+
+@app.get("/api/channels/{channel_id}/onboarding")
+def api_channel_onboarding(channel_id: str):
+    return _onboarding_payload(channel_id)
+
+
+@app.post("/api/channels/{channel_id}/onboarding/{step}")
+async def api_channel_onboarding_step(channel_id: str, step: str, req: ChannelOnboardingStepRequest = ChannelOnboardingStepRequest()):
+    if step not in ONBOARDING_STEP_DESCS:
+        raise HTTPException(404, f"未知の onboarding step: {step}")
+    ch = _channel_entry_or_404(channel_id)
+    channel_dir = _channel_dir_or_400(ch)
+
+    if step == "register":
+        _create_empty_channel_config(channel_dir, ChannelCreate(name=ch.get("name") or "", folder=str(channel_dir)))
+        _mark_onboarding_step(channel_id, "register", True)
+        return {**_onboarding_payload(channel_id), "action": "completed"}
+
+    if step == "oauth":
+        token_path = channel_dir / ".youtube_token.json"
+        if token_path.exists():
+            _mark_onboarding_step(channel_id, "oauth", True)
+            return {**_onboarding_payload(channel_id), "action": "completed"}
+        return {
+            **_onboarding_payload(channel_id),
+            "action": "needs_human",
+            "next_action": f"このチャンネルで OAuth を完了してください: python3 Python/app_youtube.py --auth-only --channel-folder {channel_dir}",
+        }
+
+    if step == "benchmark_set":
+        urls = [u.strip() for u in (req.urls or []) if u and u.strip()]
+        cfg_path = channel_dir / _CHANNEL_CONFIG_FILENAME
+        cfg = load_json(cfg_path, {}) if cfg_path.exists() else {}
+        if urls and req.apply:
+            existing = [u for u in (cfg.get("rival_channels") or []) if u]
+            merged = []
+            for u in existing + urls:
+                if u not in merged:
+                    merged.append(u)
+            cfg["rival_channels"] = merged
+            save_json(cfg_path, cfg)
+            try:
+                import app_benchmark_channels as _bch
+                for u in urls:
+                    _bch.fetch_channel(u, limit=30, force=False)
+                _bch.save_competitor_cache()
+            except Exception as e:
+                task_logs.setdefault("onboarding", []).append(f"benchmark URL 取込失敗: {e}")
+        if cfg.get("rival_channels") or cfg.get("benchmark_pinned_names"):
+            _mark_onboarding_step(channel_id, "benchmark_set", True, {"count": len(cfg.get("rival_channels") or [])})
+            return {**_onboarding_payload(channel_id), "action": "completed"}
+        return {
+            **_onboarding_payload(channel_id),
+            "action": "needs_human",
+            "next_action": "ベンチマーク先URLを指定してください。UIウィザードで入力するか、POST body に {\"urls\":[\"https://www.youtube.com/@...\"]} を渡してください。",
+        }
+
+    if step in {"benchmark_fetch", "analyze"}:
+        if _task_is_running("onboarding"):
+            return {**_onboarding_payload(channel_id), "action": "already_running", "task": _task_progress_summary("onboarding")}
+        task_logs["onboarding"] = []
+        task_meta["onboarding"] = {
+            "started_at": datetime.utcnow().isoformat() + "Z",
+            "channel_id": channel_id,
+            "status": "running",
+            "step": step,
+        }
+        t = threading.Thread(
+            target=_run_onboarding_analysis_worker,
+            args=(channel_id, channel_dir, ch.get("name") or ""),
+            daemon=True,
+            name=f"onboarding-{channel_id}",
+        )
+        active_tasks["onboarding"] = t
+        t.start()
+        return {**_onboarding_payload(channel_id), "action": "started", "task_key": "onboarding"}
+
+    if step == "concept_apply":
+        if req.dry_run:
+            return {**_onboarding_payload(channel_id), "action": "dry_run", "hint": "dry_run では config を変更しません"}
+        result = _apply_benchmark_concept_to_channel(channel_id)
+        return {**_onboarding_payload(channel_id), "action": "completed", "result": result}
+
+    if step == "first_vol":
+        result = _create_first_vol_plan(channel_id, dry_run=bool(req.dry_run))
+        return {**_onboarding_payload(channel_id), "action": result.get("status"), "result": result}
+
+    if step == "verify_loop":
+        result = _register_onboarding_verify_loop(channel_id, run_now=bool(req.run_now))
+        _mark_onboarding_step(channel_id, "verify_loop", True, {"job_id": result.get("job_id")})
+        return {**_onboarding_payload(channel_id), "action": "completed", "result": result}
+
+    raise HTTPException(400, f"未対応 step: {step}")
 
 @app.delete("/api/channels/{channel_id}")
 def api_delete_channel(channel_id: str):
@@ -1328,6 +1978,32 @@ def api_delete_channel(channel_id: str):
     channels = [c for c in channels if c.get("id") != channel_id]
     save_json(CHANNELS_CONFIG, channels)
     return {"status": "ok"}
+
+
+class YouTubeDisconnectRequest(BaseModel):
+    confirm: bool = False
+    dry_run: bool = False
+    revoke: bool = True
+
+
+@app.post("/api/channels/{channel_id}/youtube-disconnect")
+def api_channel_youtube_disconnect(channel_id: str, req: YouTubeDisconnectRequest):
+    if not req.confirm:
+        raise HTTPException(400, "confirm=true が必要です")
+    ch = _channel_entry_or_404(channel_id)
+    ch_dir = _channel_dir_or_400(ch)
+    import app_retention as _ret
+    result = _ret.disconnect_channel(channel_id, ch_dir, dry_run=bool(req.dry_run), revoke=bool(req.revoke))
+    if not req.dry_run:
+        channels = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+        for row in channels:
+            if row.get("id") == channel_id:
+                row["youtube_disconnected_at"] = datetime.utcnow().isoformat() + "Z"
+                row["youtube_channel_id"] = ""
+                row["handle"] = ""
+                row["icon_cache"] = {}
+        save_json(CHANNELS_CONFIG, channels)
+    return result
 
 
 class ChannelUpdate(BaseModel):
@@ -1636,6 +2312,113 @@ def api_list_videos():
     if not channel_dir.exists():
         return {"videos": [], "error": "チャンネルフォルダが見つかりません"}
     videos = []
+    # L-3b: 一覧描画だけで「6区分の進捗 / 次の操作」を決められるよう、台帳は
+    # vol ごとではなく一覧の先頭で一度だけ読む。成果物判定は orchestrator と同じ
+    # _ARTIFACT_DONE を再利用し、手動実行分も拾う。
+    try:
+        import app_orchestrator as _orch
+        import app_run_ledger as _run_ledger
+        active_channel = next((c for c in get_channels()
+                               if Path(c.get("folder") or "") == channel_dir), {})
+        channel_id = str(active_channel.get("id") or "")
+        ledger_runs = _run_ledger.list_runs(channel_id=channel_id or None, limit=500)
+    except Exception:
+        _orch, channel_id, ledger_runs = None, "", []
+
+    ledger_by_vol = {}
+    for run in ledger_runs:
+        try:
+            ledger_by_vol.setdefault(int(run.get("vol")), []).append(run)
+        except (TypeError, ValueError):
+            continue
+
+    stage_groups = (
+        ("music", "楽曲", ("suno", "rename")),
+        ("image", "画像", ("bgimage", "psd_composite")),
+        ("video", "動画", ("premiere", "export")),
+        ("qa", "検査", ("qa",)),
+        ("meta", "メタ", ("meta", "localization", "thumbnail")),
+        ("publish", "公開", ("upload",)),
+    )
+
+    def _progress_summary(folder: Path, vol: int, publish_date: str) -> dict:
+        runs = ledger_by_vol.get(vol, [])
+        ledger_done = set()
+        latest_failed = None
+        latest_terminal_seen = False
+        for run in runs:
+            status = run.get("status")
+            meta_raw = run.get("meta_json") or ""
+            if status == "done":
+                for stage in getattr(_orch._pipe, "STEPS", []) if _orch else []:
+                    if not meta_raw or f'"{stage}"' in meta_raw:
+                        ledger_done.add(stage)
+            if not latest_terminal_seen and status in ("done", "failed", "cancelled"):
+                latest_terminal_seen = True
+                # list_runs は新しい順。エラー表示には最新の終端結果だけを採用する。
+                if status == "failed":
+                    latest_failed = run
+
+        done_map = {}
+        for stage in getattr(_orch._pipe, "STEPS", []) if _orch else []:
+            fn = getattr(_orch, "_ARTIFACT_DONE", {}).get(stage)
+            try:
+                artifact_done = bool(fn and fn(folder, vol))
+            except Exception:
+                artifact_done = False
+            done_map[stage] = artifact_done or stage in ledger_done
+
+        stages = list(getattr(_orch._pipe, "STEPS", [])) if _orch else []
+        next_stage = next((s for s in stages if not done_map.get(s)), "")
+        segments = []
+        current_group = ""
+        for key, label, members in stage_groups:
+            complete = all(done_map.get(s, False) for s in members)
+            current = bool(next_stage and next_stage in members)
+            if current:
+                current_group = key
+            segments.append({"key": key, "label": label, "complete": complete,
+                             "current": current, "stages": list(members)})
+
+        upload = {}
+        marker = folder / "youtube_upload.json"
+        if marker.exists():
+            try:
+                upload = json.loads(marker.read_text(encoding="utf-8")) or {}
+            except Exception:
+                upload = {}
+        video_id = str(upload.get("video_id") or "")
+        scheduled = bool(upload.get("scheduled_publish_at") or upload.get("publishAt"))
+        published = bool(upload.get("published_at"))
+        is_complete = bool(stages) and all(done_map.get(s, False) for s in stages)
+
+        if latest_failed:
+            action = {"kind": "error", "label": "エラーを確認", "stage": next_stage}
+        elif is_complete and video_id and (published or not scheduled):
+            action = {"kind": "youtube", "label": "YouTubeで見る", "video_id": video_id}
+        elif done_map.get("upload") or scheduled:
+            action = {"kind": "schedule", "label": "予約を確認", "video_id": video_id}
+        elif next_stage == "premiere":
+            action = {"kind": "premiere", "label": "Premiereで配置", "stage": next_stage}
+        else:
+            action = {"kind": "run", "label": "続きを実行", "stage": next_stage}
+
+        today = datetime.now().date()
+        try:
+            pub_day = datetime.strptime(publish_date, "%Y-%m-%d").date()
+            is_past = pub_day < today and not done_map.get("upload")
+        except Exception:
+            is_past = False
+        return {
+            "segments": segments, "done_stages": [s for s in stages if done_map.get(s)],
+            "total_stages": len(stages), "next_stage": next_stage,
+            "current_group": current_group, "is_complete": is_complete,
+            "action": action, "publish": {"scheduled": scheduled, "published": published,
+            "video_id": video_id, "is_past_due": is_past},
+            "failure": ({"summary": latest_failed.get("summary") or "工程でエラーが発生しました",
+                         "stage": latest_failed.get("failed_stage") or next_stage}
+                        if latest_failed else None),
+        }
     # フォルダ名先頭の数値で降順ソート（文字列ソートだと "7" > "71" になる問題を回避）
     def _vol_key(p):
         info = parse_video_folder_name(p.name)
@@ -1663,8 +2446,11 @@ def api_list_videos():
         concept_file = d / "concept.txt"
         concept = concept_file.read_text(encoding="utf-8").strip() if concept_file.exists() else ""
         publish_date = info["publish_date"]
+        progress = _progress_summary(d, info["num"], publish_date)
         videos.append({
             "num": num, "name": d.name, "path": str(d),
+            "channel_id": channel_id,
+            "channel_name": config.get("channel_name") or "",
             "prefix": info["prefix"],
             "title": title,
             "concept": concept,
@@ -1675,6 +2461,7 @@ def api_list_videos():
             "has_bg_image": has_bg_image,
             "is_hidden": is_hidden,
             "publish_date": publish_date,
+            "progress": progress,
         })
     return {"videos": videos[:100]}
 
@@ -1816,14 +2603,22 @@ def api_runs_active():
         "stages": _PIPELINE_STAGES,
     }
 
+
+@app.get("/api/stock")
+def api_stock():
+    """チャンネル別の未投稿素材ストック日数を返す。"""
+    try:
+        from app_stock import compute_stock
+        return compute_stock()
+    except Exception as e:
+        raise HTTPException(500, f"stock calculation failed: {e}")
+
 @app.get("/api/videos/{video_name}/detail")
 def api_video_detail(video_name: str):
     """動画フォルダの詳細情報（書き出し状態、ファイル一覧）"""
     config = get_dashboard_config()
     channel_dir = Path(config["channel_folder"])
-    folder = channel_dir / video_name
-    if not folder.exists():
-        raise HTTPException(404, "フォルダが見つかりません")
+    folder = resolve_video_folder(video_name, channel_root=channel_dir)
 
     folder_info = parse_video_folder_name(video_name)
     m = re.match(r'^(\d+)_', video_name)
@@ -1927,9 +2722,7 @@ def api_video_mp4_candidates(video_name: str, folder: Optional[str] = None):
     folder 指定時はそのフォルダ配下も検索し、任意の書き出し済み動画を紐づけ可能にする。
     """
     config = get_dashboard_config()
-    video_folder = Path(config["channel_folder"]) / video_name
-    if not video_folder.exists():
-        raise HTTPException(404, "動画フォルダが見つかりません")
+    video_folder = resolve_video_folder(video_name)
     extra = Path(folder).expanduser() if folder else None
     current = _find_exported_mp4(video_folder, video_name)
     candidates = _collect_mp4_candidates(video_folder, video_name, extra)
@@ -1943,9 +2736,7 @@ def api_video_mp4_candidates(video_name: str, folder: Optional[str] = None):
 @app.put("/api/videos/{video_name}/mp4-reference")
 def api_put_video_mp4_reference(video_name: str, req: VideoMp4ReferenceUpdate):
     config = get_dashboard_config()
-    video_folder = Path(config["channel_folder"]) / video_name
-    if not video_folder.exists():
-        raise HTTPException(404, "動画フォルダが見つかりません")
+    video_folder = resolve_video_folder(video_name)
     payload = _write_manual_exported_mp4(video_folder, Path(req.path))
     return {"status": "ok", "video_name": video_name, "mp4": payload}
 
@@ -1953,9 +2744,7 @@ def api_put_video_mp4_reference(video_name: str, req: VideoMp4ReferenceUpdate):
 @app.delete("/api/videos/{video_name}/mp4-reference")
 def api_delete_video_mp4_reference(video_name: str):
     config = get_dashboard_config()
-    video_folder = Path(config["channel_folder"]) / video_name
-    if not video_folder.exists():
-        raise HTTPException(404, "動画フォルダが見つかりません")
+    video_folder = resolve_video_folder(video_name)
     marker = video_folder / MANUAL_EXPORTED_VIDEO_FILE
     if marker.exists():
         marker.unlink()
@@ -1969,9 +2758,7 @@ class VideoTitleUpdate(BaseModel):
 def api_update_video_title(video_name: str, req: VideoTitleUpdate):
     """動画のYouTubeタイトルを保存"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
-    if not folder.exists():
-        raise HTTPException(404)
+    folder = resolve_video_folder(video_name)
     title_file = folder / "youtube_title.txt"
     title_file.write_text(req.new_title, encoding="utf-8")
     return {"status": "ok"}
@@ -1979,7 +2766,7 @@ def api_update_video_title(video_name: str, req: VideoTitleUpdate):
 @app.get("/api/videos/{video_name}/title")
 def api_get_video_title(video_name: str):
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     title_file = folder / "youtube_title.txt"
     if title_file.exists():
         return {"title": title_file.read_text(encoding="utf-8").strip()}
@@ -1995,7 +2782,7 @@ class VideoTagsUpdate(BaseModel):
 @app.get("/api/videos/{video_name}/tags")
 def api_get_video_tags(video_name: str):
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     tags_file = folder / "youtube_tags.txt"
     if not tags_file.exists():
         return {"tags": []}
@@ -2005,7 +2792,7 @@ def api_get_video_tags(video_name: str):
 @app.put("/api/videos/{video_name}/tags")
 def api_update_video_tags(video_name: str, req: VideoTagsUpdate):
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
     tags_file = folder / "youtube_tags.txt"
@@ -2020,14 +2807,14 @@ class VideoConceptUpdate(BaseModel):
 @app.get("/api/videos/{video_name}/concept")
 def api_get_video_concept(video_name: str):
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     f = folder / "concept.txt"
     return {"concept": f.read_text(encoding="utf-8").strip() if f.exists() else ""}
 
 @app.put("/api/videos/{video_name}/concept")
 def api_update_video_concept(video_name: str, req: VideoConceptUpdate):
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
     text = (req.concept or "").strip()
@@ -2044,7 +2831,7 @@ def api_generate_video_concept(video_name: str):
     from claude_proposer import propose_concept, gather_context
     import app_competitor as _ac
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
 
@@ -2103,7 +2890,7 @@ DESCRIPTION:
 
 RULES:
 - Translate naturally; keep the BGM-channel mood.
-- Preserve Tracklist with timestamps verbatim.
+- Preserve the entire Tracklist section verbatim, including timestamps and English track titles. Do not translate, reorder, summarize, or rename any Tracklist line.
 - Title within ~80 chars.
 - zh-Hans = Simplified Chinese, zh-Hant = Traditional Chinese.
 - es = Spain Spanish, es-419 = Latin America Spanish.
@@ -2123,7 +2910,7 @@ def api_generate_localizations(video_name: str, req: GenerateLocalizationsReques
     使い所: app_youtube.py が upload 時に同 JSON を読んで snippet.localizations として送信
     """
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, f"vol_folder が存在しません: {folder}")
 
@@ -2196,7 +2983,7 @@ def api_mp4_info(video_name: str):
       - "external_ssd_flat": <export_path>/<prefix>_vol<num>*.mp4 (flat 配置)
     """
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, f"vol_folder が存在しません: {folder}")
 
@@ -2272,7 +3059,7 @@ def api_meta_status(video_name: str):
     各項目の present / ok を見て、ready_for_upload で総合判定。
     """
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, f"vol_folder が存在しません: {folder}")
 
@@ -2343,7 +3130,7 @@ def api_meta_status(video_name: str):
 def api_video_hide(video_name: str):
     """動画を一覧から非表示にする（フォルダは維持、.hidden ファイルを作成）"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
     (folder / ".hidden").write_text("", encoding="utf-8")
@@ -2353,7 +3140,7 @@ def api_video_hide(video_name: str):
 def api_video_unhide(video_name: str):
     """非表示を解除"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
     hidden_file = folder / ".hidden"
@@ -2481,7 +3268,7 @@ def _purge_stale_deleted_tracks(folder: Path, min_age_sec: int = 5) -> int:
 def api_video_tracks(video_name: str):
     """動画フォルダ直下 + music/ + original_music/ の音声ファイルを一覧"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
     _purge_stale_deleted_tracks(folder)
@@ -2520,7 +3307,7 @@ def api_video_tracks(video_name: str):
 def api_video_track_file(video_name: str, rel_path: str):
     """音声ファイル配信 (HTML audio 用)。rel_path は フォルダ相対パス"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     # 安全: "/", ".." の除去チェック
     if ".." in rel_path.split("/"):
         raise HTTPException(400, "不正なパス")
@@ -2546,7 +3333,7 @@ def api_video_track_like(video_name: str, req: TrackLikeRequest):
     """いいね/×変更 → ファイル名をリネーム。
     × は除外マークではなく削除予約として扱い、5秒後に物理削除する。"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
 
@@ -2619,7 +3406,7 @@ class BulkDeleteRequest(BaseModel):
 def api_video_tracks_bulk_delete(video_name: str, req: BulkDeleteRequest):
     """条件に合う楽曲を一括削除"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
 
@@ -2661,7 +3448,7 @@ def api_video_tracks_bulk_delete(video_name: str, req: BulkDeleteRequest):
 def api_video_track_delete(video_name: str, rel_path: str):
     """楽曲ファイルを物理削除"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
     if ".." in rel_path.split("/"):
@@ -2702,9 +3489,8 @@ async def api_video_process_tracks(video_name: str, rename_only: bool = False,
       - `genre` / `album` / `artist` は apply_tags 時の ID3。未指定は channel config
         の suno.tag_defaults → フォルダ連番由来で補完。
     """
-    await _ensure_not_running("process", "後処理が既に実行中です")
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
 
@@ -2743,11 +3529,16 @@ async def api_video_process_tracks(video_name: str, rename_only: bool = False,
         "started_at": _dt.datetime.now().isoformat(),
         "video_name": video_name,
     }
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1,
-                            env={**os.environ, "PYTHONUNBUFFERED": "1"})
-    active_tasks["process"] = proc
-    _stream_subprocess(proc, "process")
+    reservation = await _ensure_not_running("process", "後処理が既に実行中です")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1,
+                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        _register_active_task("process", proc, reservation)
+    except Exception:
+        _release_task_reservation("process", reservation)
+        raise
+    _stream_subprocess(proc, "process", timeout=7200)
     return {"status": "started"}
 
 @app.get("/api/process/status")
@@ -2765,7 +3556,7 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 def api_video_images(video_name: str):
     """動画フォルダ内の画像一覧を返す。サムネ判定＋選択状態も返却。"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
 
@@ -2811,7 +3602,7 @@ def api_video_images(video_name: str):
 def api_video_image_file(video_name: str, filename: str):
     """動画フォルダ内の画像を配信（サムネ・背景プレビュー用）"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     # パストラバーサル防止
     if "/" in filename or ".." in filename:
         raise HTTPException(400, "不正なファイル名")
@@ -2829,7 +3620,7 @@ class SelectedImagesUpdate(BaseModel):
 def api_update_selected_images(video_name: str, req: SelectedImagesUpdate):
     """選択画像を selected_images.json に保存（JSX が読み込む）"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
     data = {
@@ -2845,7 +3636,7 @@ def api_update_selected_images(video_name: str, req: SelectedImagesUpdate):
 def api_delete_selected_images(video_name: str):
     """選択状態をリセット（JSX は初期値フォールバック）"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     sel_file = folder / "selected_images.json"
     if sel_file.exists():
         sel_file.unlink()
@@ -2871,7 +3662,7 @@ def api_video_suggest(video_name: str, req: SuggestRequest):
     )
     import app_competitor as _ac
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
 
@@ -2952,9 +3743,8 @@ class PipelineRunRequest(BaseModel):
 @app.post("/api/videos/{video_name}/run-pipeline")
 async def api_run_pipeline(video_name: str, req: PipelineRunRequest):
     """チェックした工程を自動実行"""
-    await _ensure_not_running("pipeline", "パイプラインが既に実行中です")
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
     # vol 番号を取得
@@ -3005,10 +3795,15 @@ async def api_run_pipeline(video_name: str, req: PipelineRunRequest):
     _env("APP_SUNO_DIVERSITY_RETRY",     req.diversity_retry,     "suno_diversity_retry", str)
     _env("APP_SUNO_HISTORY_LIMIT",       req.history_limit,       "suno_history_limit", str)
     _env("APP_DL_WAIT_SEC",   req.dl_wait_sec,   "dl_wait_sec", str)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1, env=env)
-    active_tasks["pipeline"] = proc
-    _stream_subprocess(proc, "pipeline")
+    reservation = await _ensure_not_running("pipeline", "パイプラインが既に実行中です")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, env=env)
+        _register_active_task("pipeline", proc, reservation)
+    except Exception:
+        _release_task_reservation("pipeline", reservation)
+        raise
+    _stream_subprocess(proc, "pipeline", timeout=43200)
     return {"status": "started", "steps": req.steps, "vol": vol}
 
 class CreateFromBenchmarkRequest(BaseModel):
@@ -3025,10 +3820,9 @@ async def api_create_from_benchmark(req: CreateFromBenchmarkRequest):
 
     1. 新 vol フォルダ作成（/api/videos/create 相当）
     2. 競合分析キャッシュから SUNO プロンプト提案（未指定時）
-    3. 自動承認モードなら全工程（suno → rename → premiere → export → meta → upload）を起動
+    3. 互換フラグがONなら全工程（suno → rename → premiere → export → meta → upload）を起動
     4. OFF なら 1 の vol 情報だけ返して UI 側で個別工程を回す
     """
-    await _ensure_not_running("pipeline", "パイプラインが既に実行中です")
     config = get_dashboard_config()
     channel_dir = Path(config["channel_folder"])
     if not channel_dir.exists():
@@ -3071,7 +3865,7 @@ async def api_create_from_benchmark(req: CreateFromBenchmarkRequest):
             "auto_approval": False,
             "suno_prompt": suno_prompt,
             "suno_rationale": suno_rationale,
-            "hint": "自動承認モードが OFF のため、フォルダだけ作成しました。個別工程を手動で進めてください。",
+            "hint": "作成後、自動運転がONのチャンネルでは予約投稿まで自動で進みます。必要なら個別工程を手動で進めてください。",
         }
 
     steps = ["suno", "rename", "premiere", "export", "meta", "upload"]
@@ -3265,9 +4059,6 @@ async def api_orchestrate_create_and_run(req: OrchestrateRequest):
         return plan
 
     # ── 実走（dry_run=false）。⚠ SUNO ブラウザ・Premiere が動く。要ユーザー合意。──
-    await _ensure_not_running("pipeline", "パイプラインが既に実行中です")
-    await _ensure_not_running("suno", "SUNO が既に実行中です")
-
     # workspace 解決
     channel_name = (config.get("channel_name") or "orzz").strip()
     channel_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", channel_name).strip("_") or "orzz"
@@ -3335,7 +4126,6 @@ def api_pipeline_status():
 @app.post("/api/analysis/competitors")
 async def api_analysis_competitors():
     """ライバルチャンネルを YouTube API で取得 → Claude 分析 → キャッシュ"""
-    await _ensure_not_running("analysis", "分析が既に実行中です")
     script = SHARED_BASE / "Python" / "app_competitor.py"
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
@@ -3343,11 +4133,16 @@ async def api_analysis_competitors():
     task_logs["analysis"] = []
     import datetime as _dt
     task_meta["analysis"] = {"started_at": _dt.datetime.now().isoformat()}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1,
-                            env={**os.environ, "PYTHONUNBUFFERED": "1"})
-    active_tasks["analysis"] = proc
-    _stream_subprocess(proc, "analysis")
+    reservation = await _ensure_not_running("analysis", "分析が既に実行中です")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1,
+                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        _register_active_task("analysis", proc, reservation)
+    except Exception:
+        _release_task_reservation("analysis", reservation)
+        raise
+    _stream_subprocess(proc, "analysis", timeout=7200)
     return {"status": "started"}
 
 
@@ -3360,42 +4155,10 @@ def api_analysis_status():
 
 @app.get("/api/analysis/spreadsheet-preview")
 def api_spreadsheet_preview():
-    """スプシ接続テスト: チャンネル数 + ホットチャンネル上位 5"""
-    config = get_dashboard_config()
-    detail_url = config.get("spreadsheet_channel_detail_url", "").strip()
-    growth_url = config.get("spreadsheet_growth_tracking_url", "").strip()
-    result = {"detail": None, "growth": None}
-
-    if detail_url:
-        try:
-            from app_sheets import fetch_csv, parse_channel_detail
-            rows = fetch_csv(detail_url)
-            channels = parse_channel_detail(rows)
-            result["detail"] = {
-                "channel_count": len(channels),
-                "sample_names": [c.title for c in channels[:5]],
-            }
-        except Exception as e:
-            result["detail"] = {"error": str(e)}
-
-    if growth_url:
-        try:
-            from app_sheets import fetch_csv, parse_growth_tracking, identify_hot_channels
-            rows = fetch_csv(growth_url)
-            entries = parse_growth_tracking(rows)
-            hot = identify_hot_channels(entries, top_n=5)
-            result["growth"] = {
-                "channel_count": len(entries),
-                "hot_channels": [
-                    {"name": e.channel_name, "growth_rate": e.growth_rate,
-                     "daily_views": e.daily_view_change}
-                    for e in hot
-                ],
-            }
-        except Exception as e:
-            result["growth"] = {"error": str(e)}
-
-    return result
+    """J-0: Sheets ベンチ取込は廃止。新キャッシュの概要を返す。"""
+    import app_benchmark_channels as _bch
+    data = _bch.list_channels()
+    return {"disabled": True, "message": "Sheets ベンチ取込は廃止済みです。/api/benchmark/channels を使ってください。", "benchmark_channels": data}
 
 
 # ─── チャンネルアイコン取得（YouTube ページから og:image 系をスクレイプ） ───
@@ -3471,125 +4234,50 @@ def resolve_channel_icon(channel_url: str) -> str:
 
 @app.get("/api/analysis/hot-channels")
 def api_hot_channels(top_n: int = 10):
-    """スプシからホットチャンネルだけ取得（分析なし）。Sheet1 から最新動画サムネ等を補完。"""
-    bc = get_benchmark_config()
-    config = get_dashboard_config()
-    growth_url = (bc.get("spreadsheet_growth_tracking_url") or config.get("spreadsheet_growth_tracking_url", "")).strip()
-    detail_url = (bc.get("spreadsheet_channel_detail_url") or config.get("spreadsheet_channel_detail_url", "")).strip()
-    if not growth_url:
-        raise HTTPException(400, "成長トラッキングシート URL が未設定です")
-    try:
-        from app_sheets import (
-            fetch_csv, parse_growth_tracking, identify_hot_channels,
-            parse_channel_detail, match_channels, SheetFetchError,
-        )
-        try:
-            rows = fetch_csv(growth_url)
-        except SheetFetchError as e:
-            raise HTTPException(400, str(e))
-        entries = parse_growth_tracking(rows)
-        hot = identify_hot_channels(entries, top_n=top_n)
-        # Sheet1 で詳細補完
-        details = []
-        if detail_url:
-            try:
-                d_rows = fetch_csv(detail_url)
-                details = parse_channel_detail(d_rows)
-            except Exception:
-                details = []
-        detail_by_name = {ch.title: ch for ch in details}
-        # YouTube 動画 URL から video_id を抽出してサムネ URL を組み立てる
-        # （スプシに =IMAGE() の thumb 列が無い時のフォールバック）
-        _vid_re = re.compile(r"(?:v=|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})")
-        def _yt_thumb(video_url: str) -> str:
-            if not video_url:
-                return ""
-            m = _vid_re.search(video_url)
-            if not m:
-                return ""
-            return f"https://i.ytimg.com/vi/{m.group(1)}/maxresdefault.jpg"
-        out = []
-        for e in hot:
-            match = detail_by_name.get(e.channel_name)
-            if not match and details:
-                match = match_channels(e.channel_name, details)
-            latest = None
-            top_video = None
-            channel_url = ""
-            icon_url = ""
-            if match:
-                channel_url = match.url
-                icon_url = match.icon_url or ""
-                # スプシの =IMAGE() は CSV エクスポートで値が消えるため、
-                # icon_url が空なら YouTube ページからスクレイプ（キャッシュ付き）
-                if not icon_url and channel_url:
-                    try:
-                        icon_url = resolve_channel_icon(channel_url)
-                    except Exception:
-                        icon_url = ""
-                if match.recent_videos:
-                    v = match.recent_videos[0]
-                    latest = {"title": v.title,
-                              "thumb_url": v.thumbnail or _yt_thumb(v.url),
-                              "published_at": v.publish_date, "url": v.url, "views": v.view_count}
-                if match.top_videos:
-                    tv = match.top_videos[0]
-                    top_video = {"title": tv.title,
-                                 "thumb_url": tv.thumbnail or _yt_thumb(tv.url),
-                                 "url": tv.url, "views": tv.view_count}
-            out.append({
-                "name": e.channel_name,
-                "growth_rate": e.growth_rate,
-                "weekly_growth_pct": round(e.growth_rate * 7, 2),
-                "recent_views_7d": e.daily_view_change * 7,
-                "daily_views": e.daily_view_change,
-                "daily_subs": e.daily_sub_change,
-                "total_views": e.total_views,
-                "subscribers": e.subscribers,
-                "last_updated": e.last_updated,
-                "score": round(e.score, 3),
-                "channel_url": channel_url,
-                "icon_url": icon_url,
-                "latest_video": latest,
-                "top_video": top_video,
-            })
-        return {"hot_channels": out}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    """新ベンチキャッシュから簡易ホットチャンネルを返す。"""
+    import app_benchmark_channels as _bch
+    chans = _bch._registry().get("channels") or []
+    out = []
+    for ch in chans:
+        kpi = ch.get("kpi") or {}
+        latest = (ch.get("recent_videos") or [None])[0] or {}
+        top_video = (ch.get("top_videos") or [None])[0] or {}
+        out.append({
+            "name": ch.get("channel_name") or ch.get("channelName") or "",
+            "growth_rate": 0,
+            "weekly_growth_pct": 0,
+            "recent_views_7d": kpi.get("recent_avg_views", 0),
+            "daily_views": 0,
+            "daily_subs": 0,
+            "total_views": ch.get("total_views", 0),
+            "subscribers": ch.get("subscribers", 0),
+            "last_updated": ch.get("fetched_at", ""),
+            "score": kpi.get("top_avg_views", 0),
+            "channel_url": ch.get("url", ""),
+            "icon_url": ch.get("icon_url") or ch.get("thumbnail", ""),
+            "latest_video": {"title": latest.get("title", ""), "thumb_url": latest.get("thumbnail", ""), "published_at": latest.get("published_at") or latest.get("published", ""), "url": latest.get("url", ""), "views": latest.get("views", 0)} if latest else None,
+            "top_video": {"title": top_video.get("title", ""), "thumb_url": top_video.get("thumbnail", ""), "url": top_video.get("url", ""), "views": top_video.get("views", 0)} if top_video else None,
+        })
+    out.sort(key=lambda x: int(x.get("score") or 0), reverse=True)
+    return {"hot_channels": out[:top_n], "source": "benchmark_channel_cache"}
 
 
 @app.get("/api/analysis/overview")
 def api_analysis_overview():
     """ベンチマーク全体の重点指標サマリ。StatCard 用。"""
-    bc = get_benchmark_config()
-    config = get_dashboard_config()
-    growth_url = (bc.get("spreadsheet_growth_tracking_url") or config.get("spreadsheet_growth_tracking_url", "")).strip()
-    if not growth_url:
-        return {"total_channels": 0, "top_growth": [], "top_recent_views": [], "updated_at": "", "configured": False}
-    try:
-        from app_sheets import fetch_csv, parse_growth_tracking, SheetFetchError
-        try:
-            rows = fetch_csv(growth_url)
-        except SheetFetchError as e:
-            raise HTTPException(400, str(e))
-        entries = parse_growth_tracking(rows)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    import app_benchmark_channels as _bch
+    entries = _bch._registry().get("channels") or []
     if not entries:
-        return {"total_channels": 0, "top_growth": [], "top_recent_views": [], "updated_at": "", "configured": True}
-    top_growth = sorted(entries, key=lambda e: e.growth_rate, reverse=True)[:3]
-    top_recent = sorted(entries, key=lambda e: e.daily_view_change, reverse=True)[:3]
-    updated = max((e.last_updated for e in entries if e.last_updated), default="")
+        return {"total_channels": 0, "top_growth": [], "top_recent_views": [], "updated_at": "", "configured": False}
+    top_growth = sorted(entries, key=lambda e: int(((e.get("kpi") or {}).get("top_avg_views") or 0)), reverse=True)[:3]
+    top_recent = sorted(entries, key=lambda e: int(((e.get("kpi") or {}).get("recent_avg_views") or 0)), reverse=True)[:3]
+    updated = max((e.get("fetched_at") for e in entries if e.get("fetched_at")), default="")
     return {
         "total_channels": len(entries),
-        "top_growth": [{"name": e.channel_name, "growth_rate": e.growth_rate,
-                        "subscribers": e.subscribers} for e in top_growth],
-        "top_recent_views": [{"name": e.channel_name, "daily_views": e.daily_view_change,
-                              "subscribers": e.subscribers} for e in top_recent],
+        "top_growth": [{"name": e.get("channel_name"), "growth_rate": 0,
+                        "subscribers": e.get("subscribers", 0)} for e in top_growth],
+        "top_recent_views": [{"name": e.get("channel_name"), "daily_views": (e.get("kpi") or {}).get("recent_avg_views", 0),
+                              "subscribers": e.get("subscribers", 0)} for e in top_recent],
         "updated_at": updated,
         "configured": True,
     }
@@ -3605,44 +4293,25 @@ def _resolve_growth_url() -> str:
 
 @app.get("/api/analysis/channel-list")
 def api_channel_list():
-    """CHANNEL_TRACK マスタの全チャンネル一覧（UI ピッカー用・15列フル）。
-
-    各 entry に新着判定（is_new/days_tracked）を付与して返す。個別タブの時系列は
-    重いので含めない（必要時に channel-timeline をオンデマンドで叩く）。
-    """
-    growth_url = _resolve_growth_url()
-    if not growth_url:
-        return {"configured": False, "channels": []}
-    try:
-        from app_sheets import (
-            fetch_csv, parse_growth_tracking, detect_new_channels, SheetFetchError,
-        )
-        try:
-            rows = fetch_csv(growth_url)
-        except SheetFetchError as e:
-            raise HTTPException(400, str(e))
-        entries = parse_growth_tracking(rows)
-        detect_new_channels(entries)  # is_new / days_tracked を副作用付与
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    """ベンチ登録チャンネル一覧（旧 CHANNEL_TRACK UI 互換）。"""
+    import app_benchmark_channels as _bch
+    entries = _bch._registry().get("channels") or []
     chans = [{
-        "name": e.channel_name,
-        "subscribers": e.subscribers,
-        "total_views": e.total_views,
-        "daily_subs": e.daily_sub_change,
-        "daily_views": e.daily_view_change,
-        "growth_rate": e.growth_rate,
-        "video_count": e.video_count,
-        "last_post_date": e.last_post_date,
-        "recent5_avg_views": e.recent5_avg_views,
-        "weekly_growth_rate": e.weekly_growth_rate,
-        "monthly_growth_rate": e.monthly_growth_rate,
-        "tracking_start": e.tracking_start,
-        "last_updated": e.last_updated,
-        "is_new": e.is_new,
-        "days_tracked": e.days_tracked,
+        "name": e.get("channel_name") or e.get("channelName") or "",
+        "subscribers": e.get("subscribers", 0),
+        "total_views": e.get("total_views", 0),
+        "daily_subs": 0,
+        "daily_views": (e.get("kpi") or {}).get("recent_avg_views", 0),
+        "growth_rate": 0,
+        "video_count": e.get("video_count", 0),
+        "last_post_date": ((e.get("recent_videos") or [{}])[0].get("published_at") or "")[:10],
+        "recent5_avg_views": (e.get("kpi") or {}).get("recent_avg_views", 0),
+        "weekly_growth_rate": 0,
+        "monthly_growth_rate": 0,
+        "tracking_start": e.get("fetched_at", ""),
+        "last_updated": e.get("fetched_at", ""),
+        "is_new": False,
+        "days_tracked": None,
     } for e in entries]
     chans.sort(key=lambda c: c["subscribers"], reverse=True)
     return {"configured": True, "count": len(chans), "channels": chans}
@@ -3651,33 +4320,27 @@ def api_channel_list():
 @app.get("/api/analysis/new-channels")
 def api_new_channels(within_days: int = 14):
     """追跡開始が直近 within_days 日以内の新着チャンネル（日次登録増順）。"""
-    growth_url = _resolve_growth_url()
-    if not growth_url:
-        return {"configured": False, "new_channels": []}
-    try:
-        from app_sheets import (
-            fetch_csv, parse_growth_tracking, detect_new_channels, SheetFetchError,
-        )
+    import app_benchmark_channels as _bch
+    entries = _bch._registry().get("channels") or []
+    cutoff = datetime.utcnow() - timedelta(days=within_days)
+    new = []
+    for e in entries:
         try:
-            rows = fetch_csv(growth_url)
-        except SheetFetchError as e:
-            raise HTTPException(400, str(e))
-        entries = parse_growth_tracking(rows)
-        new = detect_new_channels(entries, new_within_days=within_days)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+            fetched = datetime.fromisoformat((e.get("fetched_at") or "").replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            fetched = None
+        if fetched and fetched >= cutoff:
+            new.append(e)
     return {"configured": True, "within_days": within_days, "count": len(new),
             "new_channels": [{
-                "name": e.channel_name,
-                "subscribers": e.subscribers,
-                "daily_subs": e.daily_sub_change,
-                "daily_views": e.daily_view_change,
-                "tracking_start": e.tracking_start,
-                "days_tracked": e.days_tracked,
-                "last_post_date": e.last_post_date,
-                "video_count": e.video_count,
+                "name": e.get("channel_name") or e.get("channelName") or "",
+                "subscribers": e.get("subscribers", 0),
+                "daily_subs": 0,
+                "daily_views": (e.get("kpi") or {}).get("recent_avg_views", 0),
+                "tracking_start": e.get("fetched_at", ""),
+                "days_tracked": 0,
+                "last_post_date": ((e.get("recent_videos") or [{}])[0].get("published_at") or "")[:10],
+                "video_count": e.get("video_count", 0),
             } for e in new]}
 
 
@@ -3688,24 +4351,7 @@ def api_channel_timeline(name: str, spreadsheet: str = ""):
     spreadsheet 省略時は設定中の成長トラッキング URL を使用。個別タブはこのブックに
     のみ存在するため、旧スプシ設定のままだと「タブが見つかりません」になる（切替後に有効）。
     """
-    from dataclasses import asdict
-    src = (spreadsheet or _resolve_growth_url()).strip()
-    if not src:
-        raise HTTPException(400, "成長トラッキングシート URL が未設定です")
-    if not name.strip():
-        raise HTTPException(400, "チャンネル名を指定してください")
-    try:
-        from app_sheets import fetch_channel_timeline
-        tl = fetch_channel_timeline(src, name.strip())
-    except Exception as e:
-        raise HTTPException(500, str(e))
-    data = asdict(tl)
-    if tl.error:
-        # 404 ではなく 200 + error フィールドで返す（UI が個別にハンドリング）
-        data["ok"] = False
-    else:
-        data["ok"] = True
-    return data
+    return {"ok": False, "error": "Sheets timeline は J-0 で廃止済みです。TTP growth_curve は /api/ttp/profiles を参照してください。", "name": name}
 
 
 @app.get("/api/analysis/tracking-events")
@@ -3715,41 +4361,7 @@ def api_tracking_events(record: int = 0):
     record=1 のとき今日のスナップショットを保存してから差分を計算（日次更新フック用）。
     record=0（既定）は保存済みスナップショットを使った読み取りのみ（最新2件の差分）。
     """
-    growth_url = _resolve_growth_url()
-    if not growth_url:
-        return {"configured": False, "events": None}
-    try:
-        from app_sheets import (
-            fetch_csv, parse_growth_tracking, record_daily_snapshot,
-            snapshot_growth, load_latest_snapshot, diff_snapshots, SheetFetchError,
-        )
-        try:
-            rows = fetch_csv(growth_url)
-        except SheetFetchError as e:
-            raise HTTPException(400, str(e))
-        entries = parse_growth_tracking(rows)
-        if record:
-            result = record_daily_snapshot(entries)
-            events = result["events"]
-            first_run = result["first_run"]
-        else:
-            # 保存せず、現在値 vs 直近保存スナップショットで差分のみ
-            curr = snapshot_growth(entries)
-            prev = load_latest_snapshot(before=curr["date"]) or load_latest_snapshot()
-            if prev:
-                events = diff_snapshots(prev, curr)
-                first_run = False
-            else:
-                events = {"prev_date": None, "curr_date": curr["date"],
-                          "new_channels": [], "dropped_channels": [],
-                          "new_videos": [], "surging": []}
-                first_run = True
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
-    return {"configured": True, "recorded": bool(record),
-            "first_run": first_run, "events": events}
+    return {"configured": True, "source": "benchmark_channel_cache", "events": {"new_channels": [], "new_videos": [], "hot_videos": []}, "recorded": bool(record), "note": "Sheets tracking events は J-0 で廃止済みです"}
 
 
 # ─── API: 動画単位の競合インテリジェンス（S1 新作ウォッチ / S2 サムネ DNA） ───
@@ -3875,19 +4487,9 @@ def _benchmark_target_channels():
         return []
 
 def _load_sheet1_channels():
-    """Sheet1（channel_detail）を読み込んで {title: ChannelDetail} の dict を返す。"""
-    bc = get_benchmark_config()
-    config = get_dashboard_config()
-    detail_url = (bc.get("spreadsheet_channel_detail_url") or config.get("spreadsheet_channel_detail_url", "")).strip()
-    if not detail_url:
-        return {}
-    from app_sheets import fetch_csv, parse_channel_detail
-    try:
-        rows = fetch_csv(detail_url)
-        details = parse_channel_detail(rows)
-        return {ch.title: ch for ch in details}
-    except Exception:
-        return {}
+    """J-0後の互換名。新ベンチキャッシュを名前キーで返す。"""
+    import app_benchmark_channels as _bch
+    return {c.get("channel_name") or c.get("channelName"): c for c in (_bch._registry().get("channels") or [])}
 
 @app.get("/api/analysis/benchmark-videos")
 def api_benchmark_videos():
@@ -3900,26 +4502,25 @@ def api_benchmark_videos():
     for name in targets:
         ch = detail_by_name.get(name)
         if not ch:
-            # fuzzy match
-            from app_sheets import match_channels
-            ch = match_channels(name, list(detail_by_name.values()))
+            lname = name.lower()
+            ch = next((v for k, v in detail_by_name.items() if lname in (k or "").lower() or (k or "").lower() in lname), None)
         if not ch:
             out.append({"name": name, "found": False})
             continue
         # TOP 動画 3 件 + 最新 3 件
-        top_v = [{"title": v.title, "thumb_url": v.thumbnail, "url": v.url,
-                  "published_at": v.publish_date, "views": v.view_count,
-                  "likes": v.like_count, "comments": v.comment_count}
-                 for v in (ch.top_videos or [])[:3]]
-        recent_v = [{"title": v.title, "thumb_url": v.thumbnail, "url": v.url,
-                     "published_at": v.publish_date, "views": v.view_count}
-                    for v in (ch.recent_videos or [])[:3]]
+        top_v = [{"title": v.get("title"), "thumb_url": v.get("thumbnail"), "url": v.get("url"),
+                  "published_at": v.get("published_at") or v.get("published"), "views": v.get("views", 0),
+                  "likes": v.get("likes", 0), "comments": v.get("comments_count", 0)}
+                 for v in (ch.get("top_videos") or [])[:3]]
+        recent_v = [{"title": v.get("title"), "thumb_url": v.get("thumbnail"), "url": v.get("url"),
+                     "published_at": v.get("published_at") or v.get("published"), "views": v.get("views", 0)}
+                    for v in (ch.get("recent_videos") or [])[:3]]
         out.append({
-            "name": ch.title,
-            "url": ch.url,
-            "subscribers": ch.subscribers,
-            "video_count": ch.video_count,
-            "description": (ch.description or "")[:300],
+            "name": ch.get("channel_name") or ch.get("channelName"),
+            "url": ch.get("url"),
+            "subscribers": ch.get("subscribers", 0),
+            "video_count": ch.get("video_count", 0),
+            "description": (ch.get("description") or "")[:300],
             "top_videos": top_v,
             "recent_videos": recent_v,
             "found": True,
@@ -3940,12 +4541,12 @@ def api_posting_times():
     for name in targets:
         ch = detail_by_name.get(name)
         if not ch:
-            from app_sheets import match_channels
-            ch = match_channels(name, list(detail_by_name.values()))
+            lname = name.lower()
+            ch = next((v for k, v in detail_by_name.items() if lname in (k or "").lower() or (k or "").lower() in lname), None)
         if not ch:
             continue
-        for v in (ch.top_videos or []) + (ch.recent_videos or []):
-            dt_str = (v.publish_datetime or v.publish_date or "").strip()
+        for v in (ch.get("top_videos") or []) + (ch.get("recent_videos") or []):
+            dt_str = (v.get("published_at") or v.get("published") or "").strip()
             if not dt_str:
                 continue
             # 想定フォーマット: "2026/04/13 20:30" or "2026-04-13T20:30" など
@@ -3980,12 +4581,12 @@ def api_tag_frequency(top_n: int = 20):
     for name in targets:
         ch = detail_by_name.get(name)
         if not ch:
-            from app_sheets import match_channels
-            ch = match_channels(name, list(detail_by_name.values()))
+            lname = name.lower()
+            ch = next((v for k, v in detail_by_name.items() if lname in (k or "").lower() or (k or "").lower() in lname), None)
         if not ch:
             continue
-        for v in (ch.top_videos or []):
-            words = re.findall(r"[A-Za-z][A-Za-z'\-]{2,}|[ぁ-んァ-ン一-龥ー]{2,}", v.title or "")
+        for v in (ch.get("top_videos") or []):
+            words = re.findall(r"[A-Za-z][A-Za-z'\-]{2,}|[ぁ-んァ-ン一-龥ー]{2,}", v.get("title") or "")
             for w in words:
                 w = w.lower() if w[0].isascii() else w
                 # 一般的すぎる語を除外
@@ -4003,6 +4604,7 @@ def api_suggest_imitate_evolve(video_name: str):
     """ベンチマーク先動画 + 自チャンネルペルソナ から「✓パクる / ✗避ける / +進化させる」3 軸を提案。
     master_prompts.imitate_evolve で上書き可能。
     """
+    validate_video_name(video_name)
     config = get_dashboard_config()
     persona = config.get("persona", "").strip()
     if not persona:
@@ -4084,7 +4686,7 @@ def _load_analysis_cache_or_409():
 def _video_context(video_name: str):
     """動画フォルダから current_title / songs / persona を取り出す共通処理"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
     songs = []
@@ -4309,13 +4911,8 @@ class SheetImportRequest(BaseModel):
 
 @app.post("/api/analysis/sheets-import")
 def api_sheets_import(req: SheetImportRequest):
-    """Google Sheets URL から全シート/全タブを読み取り、ベンチマーク候補として返す。"""
-    from app_competitor import import_benchmark_from_sheet
-    try:
-        result = import_benchmark_from_sheet(req.sheet_url)
-        return {"status": "ok", **result}
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
+    """J-0: Sheets ベンチ取込は廃止。"""
+    raise HTTPException(status_code=410, detail="Sheets ベンチ取込は廃止済みです。POST /api/benchmark/channels に channel_url を登録してください。")
 
 
 # ─── API: ベンチマーク完成パイプライン（全自動） ───
@@ -4341,14 +4938,11 @@ class BenchmarkSourcesRequest(BaseModel):
 
 @app.post("/api/benchmark/preview-sources")
 def api_benchmark_preview_sources(req: BenchmarkSourcesRequest):
-    """Sheet A/B + extra_urls のチャンネル一覧だけを取得（Claude 呼ばず軽量）。
+    """登録済み + extra_urls のチャンネル一覧だけを取得（Claude 呼ばず軽量）。
     ユーザーが分析対象を選択する前に表示するプレビュー用。"""
-    cfg = get_dashboard_config()
-    sheet_a = (req.sheet_a_url or cfg.get("spreadsheet_channel_detail_url") or "").strip()
-    sheet_b = (req.sheet_b_url or cfg.get("spreadsheet_growth_tracking_url") or "").strip()
+    sheet_a = ""
+    sheet_b = ""
     extras = [u.strip() for u in (req.extra_urls or []) if u.strip()]
-    if not sheet_a and not extras:
-        raise HTTPException(400, "Sheet A URL またはリスト外 URL が最低 1 つ必要です")
     try:
         from app_competitor import list_benchmark_sources
         result = list_benchmark_sources(sheet_a_url=sheet_a, sheet_b_url=sheet_b, extra_urls=extras)
@@ -4366,17 +4960,14 @@ def api_benchmark_preview_sources(req: BenchmarkSourcesRequest):
 @app.post("/api/benchmark/run-full")
 async def api_benchmark_run_full(req: BenchmarkRunRequest):
     """ベンチマーク完成パイプラインを起動（バックグラウンド）。
-    Sheet A/B + リスト外 URL → コメント取得 → Claude プロファイル生成 → 保存。
+    登録済みチャンネル + リスト外 URL → コメント取得 → Claude プロファイル生成 → 保存。
     channel_filter 指定時は選択チャンネルだけ分析。
     進捗は /api/benchmark/status で取得可能。
     """
-    cfg = get_dashboard_config()
-    sheet_a = (req.sheet_a_url or cfg.get("spreadsheet_channel_detail_url") or "").strip()
-    sheet_b = (req.sheet_b_url or cfg.get("spreadsheet_growth_tracking_url") or "").strip()
+    sheet_a = ""
+    sheet_b = ""
     extras = [u.strip() for u in (req.extra_urls or []) if u.strip()]
     channel_filter = [n.strip() for n in (req.channel_filter or []) if n and n.strip()]
-    if not sheet_a and not extras:
-        raise HTTPException(400, "Sheet A URL またはリスト外 URL が最低 1 つ必要です")
 
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
@@ -4395,7 +4986,7 @@ async def api_benchmark_run_full(req: BenchmarkRunRequest):
         except Exception as e:
             raise HTTPException(500, f"見積り失敗: {e}")
 
-    await _ensure_not_running("benchmark", "プロファイル生成が既に実行中です")
+    reservation = await _ensure_not_running("benchmark", "プロファイル生成が既に実行中です")
 
     task_logs["benchmark"] = []
     import datetime as _dt
@@ -4430,12 +5021,16 @@ async def api_benchmark_run_full(req: BenchmarkRunRequest):
             task_meta["benchmark"]["status"] = "failed"
             task_meta["benchmark"]["error"] = str(e)
         finally:
-            active_tasks.pop("benchmark", None)
+            _clear_active_task("benchmark", threading.current_thread())
 
     import threading
     t = threading.Thread(target=_worker, daemon=True)
-    active_tasks["benchmark"] = t
-    t.start()
+    try:
+        _register_active_task("benchmark", t, reservation)
+        t.start()
+    except Exception:
+        _release_task_reservation("benchmark", reservation)
+        raise
     return {"status": "started", "sheet_a": sheet_a, "sheet_b": sheet_b, "extras": extras}
 
 
@@ -4492,6 +5087,7 @@ _TASK_LABELS = {
     "pipeline": {"label": "パイプライン", "icon": ""},
     "analysis": {"label": "競合分析", "icon": ""},
     "benchmark": {"label": "ベンチマーク", "icon": ""},
+    "ttp": {"label": "TTP仕様書", "icon": ""},
     "youtube": {"label": "YouTube アップロード", "icon": ""},
     "flow": {"label": "Flow 画像生成", "icon": ""},
     "premiere": {"label": "Premiere 配置", "icon": ""},
@@ -4560,7 +5156,7 @@ def api_status_all():
 @app.get("/api/benchmark/profiles")
 def api_benchmark_profiles(resolve_icons: bool = False):
     """保存済のベンチマーク・プロファイルを返す。
-    Sheet A の ICON_IMAGE が空でアイコンが無いプロファイルは、
+    旧プロファイルにアイコンが無い場合は、
     既存キャッシュからフォールバック表示する。
     resolve_icons=true の時だけネットワーク取得を許可する。"""
     if not BENCHMARK_PROFILES_FILE.exists():
@@ -4637,18 +5233,296 @@ def api_benchmark_delete_profiles(req: DeleteProfilesRequest):
 
 class AddChannelRequest(BaseModel):
     url: str
+    limit: Optional[int] = 30
+    force: Optional[bool] = False
+
+
+class BenchmarkChannelRegisterRequest(BaseModel):
+    url: str
+    limit: Optional[int] = 30
+    force: Optional[bool] = False
+
+
+class TTPGenerateRequest(BaseModel):
+    channel_ids: Optional[List[str]] = None
+    channel_names: Optional[List[str]] = None
+    name: Optional[str] = ""
+    background: Optional[bool] = False
+    run_comment_mining: Optional[bool] = None
+
+
+class CommentMiningRunRequest(BaseModel):
+    channel_key: Optional[str] = ""
+    channel_ids: Optional[List[str]] = None
+    background: Optional[bool] = True
+    top_n: Optional[int] = 10
+    max_comments: Optional[int] = 100
+
+
+class GenreRadarSnapshotRequest(BaseModel):
+    regions: Optional[List[str]] = None
+    max_results: Optional[int] = 25
+
+
+class GenreRadarWeeklyRequest(BaseModel):
+    max_search_calls: Optional[int] = None
+    max_results_per_search: Optional[int] = 10
+
+
+def _comment_mining_enabled_default() -> bool:
+    try:
+        value = config_get("mining.enabled").get("value")
+        return True if value is None else bool(value)
+    except Exception:
+        return True
+
+
+def _run_comment_mining_for_keys(keys: List[str], *, cli_cmd: str, top_n: int = 10, max_comments: int = 100) -> List[dict]:
+    import app_comment_mining as _cm
+    active = get_active_channel_info()
+    folder = _resolve_to_current_host(active.get("folder") or "")
+    targets = [k for k in keys if k]
+    if not targets:
+        data = _cm._bench.competitor_data_from_cache()  # noqa: SLF001
+        targets = [(c.get("channelId") or c.get("channel_id") or "") for c in (data.get("channels") or [])[:1]]
+    results = []
+    for key in targets:
+        results.append(_cm.run(key, top_n=top_n, max_comments=max_comments, cli_cmd=cli_cmd, channel_folder=folder))
+    return results
 
 
 @app.post("/api/benchmark/add-channel")
 def api_benchmark_add_channel(req: AddChannelRequest):
-    """リスト外チャンネル URL を追加保存（次回 run-full で取り込まれる）"""
+    """互換: リスト外チャンネル URL を追加保存し、可能なら即取込。"""
     cfg = get_dashboard_config()
     extras = cfg.get("benchmark_extra_urls") or []
     if req.url not in extras:
         extras.append(req.url)
         cfg["benchmark_extra_urls"] = extras
         save_dashboard_config_smart(cfg)
-    return {"status": "ok", "extras": extras}
+    imported = None
+    try:
+        import app_benchmark_channels as _bch
+        imported = _bch.fetch_channel(req.url, limit=req.limit or 30, force=bool(req.force))
+        _bch.save_competitor_cache()
+    except Exception as e:
+        return {"status": "partial", "extras": extras, "error": str(e)}
+    return {"status": "ok", "extras": extras, "channel": {"channel_id": imported.get("channel_id"), "name": imported.get("channel_name"), "icon_url": imported.get("icon_url"), "kpi": imported.get("kpi")}}
+
+
+@app.post("/api/benchmark/channels")
+def api_benchmark_channels_post(req: BenchmarkChannelRegisterRequest):
+    """チャンネルURLを登録し、Data API で直近N本を取得してキャッシュする。"""
+    try:
+        import app_benchmark_channels as _bch
+        ch = _bch.fetch_channel(req.url, limit=req.limit or 30, force=bool(req.force))
+        _bch.save_competitor_cache()
+        return {"status": "ok", "channel": {
+            "channel_id": ch.get("channel_id"),
+            "name": ch.get("channel_name"),
+            "url": ch.get("url"),
+            "icon_url": ch.get("icon_url"),
+            "subscribers": ch.get("subscribers", 0),
+            "video_count": ch.get("video_count", 0),
+            "fetched_at": ch.get("fetched_at"),
+            "kpi": ch.get("kpi") or {},
+        }}
+    except Exception as e:
+        raise HTTPException(500, f"benchmark channel import failed: {e}")
+
+
+@app.get("/api/benchmark/channels")
+def api_benchmark_channels_get(migrate: bool = False):
+    import app_benchmark_channels as _bch
+    result = _bch.list_channels()
+    if migrate:
+        result["migration"] = _bch.migrate_existing()
+    else:
+        try:
+            result["migration"] = load_json(_bch.MIGRATION_FILE, {}) if _bch.MIGRATION_FILE.exists() else {}
+        except Exception:
+            result["migration"] = {}
+    return result
+
+
+@app.delete("/api/benchmark/channels/{channel_id}")
+def api_benchmark_channels_delete(channel_id: str):
+    import app_benchmark_channels as _bch
+    try:
+        return _bch.delete_channel(channel_id)
+    except Exception as e:
+        raise HTTPException(500, f"benchmark channel delete failed: {e}")
+
+
+@app.post("/api/benchmark/migrate")
+def api_benchmark_migrate():
+    import app_benchmark_channels as _bch
+    return _bch.migrate_existing()
+
+
+@app.post("/api/ttp/generate")
+def api_ttp_generate(req: TTPGenerateRequest = TTPGenerateRequest()):
+    try:
+        import app_ttp as _ttp
+        channel_ids = [x for x in (req.channel_ids or []) if x]
+        channel_ids += [x for x in (req.channel_names or []) if x]
+        suno_cfg = get_suno_config()
+        cli_cmd = suno_cfg.get("claude_cli") or "claude"
+        run_mining = _comment_mining_enabled_default() if req.run_comment_mining is None else bool(req.run_comment_mining)
+        if req.background:
+            if _task_is_running("ttp"):
+                return {"status": "already_running", "task_key": "ttp", "task": _task_progress_summary("ttp")}
+            import datetime as _dt
+            import threading
+            task_logs["ttp"] = ["TTP生成を開始しました"]
+            task_meta["ttp"] = {
+                "started_at": _dt.datetime.now().isoformat(),
+                "status": "running",
+                "channel_ids": channel_ids,
+                "name": req.name or "",
+            }
+
+            def _worker():
+                try:
+                    task_logs["ttp"].append("ベンチマークキャッシュを集計中...")
+                    profile = _ttp.generate(channel_ids or None, cli_cmd=cli_cmd, name=req.name or "")
+                    if run_mining:
+                        task_logs["ttp"].append("コメント需要分析を実行中...")
+                        mining_results = _run_comment_mining_for_keys(channel_ids or [], cli_cmd=cli_cmd)
+                        task_meta["ttp"]["comment_mining"] = [{
+                            "status": r.get("status"),
+                            "channel": ((r.get("memo") or {}).get("channel_name") or ""),
+                            "comment_count": ((r.get("memo") or {}).get("comment_count") or 0),
+                        } for r in mining_results]
+                        task_logs["ttp"].append(f"コメント需要分析が完了しました: {len(mining_results)}件")
+                    task_meta["ttp"]["status"] = "done"
+                    task_meta["ttp"]["profile_id"] = profile.get("id")
+                    task_meta["ttp"]["completed_at"] = _dt.datetime.now().isoformat()
+                    task_logs["ttp"].append(f"TTP生成が完了しました: {profile.get('id')}")
+                except Exception as e:
+                    task_meta["ttp"]["status"] = "failed"
+                    task_meta["ttp"]["error"] = str(e)
+                    task_logs["ttp"].append(f"❌ TTP生成失敗: {e}")
+                finally:
+                    active_tasks.pop("ttp", None)
+
+            t = threading.Thread(target=_worker, daemon=True, name="ttp-generate")
+            active_tasks["ttp"] = t
+            t.start()
+            return {"status": "started", "task_key": "ttp"}
+        profile = _ttp.generate(channel_ids or None, cli_cmd=cli_cmd, name=req.name or "")
+        mining_results = _run_comment_mining_for_keys(channel_ids or [], cli_cmd=cli_cmd) if run_mining else []
+        return {"status": "ok", "profile": profile, "comment_mining": mining_results}
+    except Exception as e:
+        raise HTTPException(500, f"TTP生成失敗: {e}")
+
+
+@app.post("/api/comment-mining/run")
+def api_comment_mining_run(req: CommentMiningRunRequest = CommentMiningRunRequest()):
+    try:
+        import app_comment_mining as _cm
+        keys = [x for x in (req.channel_ids or []) if x]
+        if req.channel_key:
+            keys.insert(0, req.channel_key)
+        suno_cfg = get_suno_config()
+        cli_cmd = suno_cfg.get("claude_cli") or "claude"
+        if req.background:
+            if _task_is_running("comment_mining"):
+                return {"status": "already_running", "task_key": "comment_mining", "task": _task_progress_summary("comment_mining")}
+            import datetime as _dt
+            task_logs["comment_mining"] = ["コメント需要分析を開始しました"]
+            task_meta["comment_mining"] = {"started_at": _dt.datetime.now().isoformat(), "status": "running", "channel_keys": keys}
+
+            def _worker():
+                try:
+                    results = _run_comment_mining_for_keys(keys, cli_cmd=cli_cmd, top_n=int(req.top_n or 10), max_comments=int(req.max_comments or 100))
+                    task_meta["comment_mining"]["status"] = "done"
+                    task_meta["comment_mining"]["completed_at"] = _dt.datetime.now().isoformat()
+                    task_meta["comment_mining"]["results"] = [{
+                        "channel_key": (r.get("memo") or {}).get("channel_key"),
+                        "channel_name": (r.get("memo") or {}).get("channel_name"),
+                        "comment_count": (r.get("memo") or {}).get("comment_count"),
+                    } for r in results]
+                    task_logs["comment_mining"].append(f"完了: {len(results)}件")
+                except Exception as e:
+                    task_meta["comment_mining"]["status"] = "failed"
+                    task_meta["comment_mining"]["error"] = str(e)
+                    task_logs["comment_mining"].append(f"❌ コメント需要分析失敗: {e}")
+                finally:
+                    active_tasks.pop("comment_mining", None)
+
+            t = threading.Thread(target=_worker, daemon=True, name="comment-mining")
+            active_tasks["comment_mining"] = t
+            t.start()
+            return {"status": "started", "task_key": "comment_mining"}
+        results = _run_comment_mining_for_keys(keys, cli_cmd=cli_cmd, top_n=int(req.top_n or 10), max_comments=int(req.max_comments or 100))
+        return {"status": "ok", "results": results}
+    except Exception as e:
+        raise HTTPException(500, f"コメント需要分析失敗: {e}")
+
+
+@app.get("/api/comment-mining/status")
+def api_comment_mining_status():
+    return {
+        "running": _task_is_running("comment_mining"),
+        "logs": task_logs.get("comment_mining", [])[-200:],
+        "meta": task_meta.get("comment_mining", {}),
+    }
+
+
+@app.get("/api/comment-mining/{channel_key}")
+def api_comment_mining_get(channel_key: str):
+    import app_comment_mining as _cm
+    return _cm.get(channel_key)
+
+
+@app.get("/api/genre-radar/top")
+def api_genre_radar_top():
+    import app_genre_radar as _gr
+    return _gr.top5()
+
+
+@app.post("/api/genre-radar/snapshot")
+def api_genre_radar_snapshot(req: GenreRadarSnapshotRequest = GenreRadarSnapshotRequest()):
+    try:
+        import app_genre_radar as _gr
+        return _gr.run_most_popular_snapshot(regions=req.regions or None, max_results=int(req.max_results or 25))
+    except Exception as e:
+        try:
+            from error_humanizer import humanize_error
+            human = humanize_error(message=str(e), stage="videos.list chart=mostPopular")
+        except Exception:
+            human = {}
+        raise HTTPException(500, {"message": f"ジャンルレーダー日次スナップショット失敗: {e}", "humanized": human})
+
+
+@app.post("/api/genre-radar/weekly")
+def api_genre_radar_weekly(req: GenreRadarWeeklyRequest = GenreRadarWeeklyRequest()):
+    try:
+        import app_genre_radar as _gr
+        return _gr.run_weekly_discovery(max_search_calls=req.max_search_calls, max_results_per_search=int(req.max_results_per_search or 10))
+    except Exception as e:
+        try:
+            from error_humanizer import humanize_error
+            human = humanize_error(message=str(e), stage="search.list")
+        except Exception:
+            human = {}
+        raise HTTPException(500, {"message": f"ジャンルレーダー週次探索失敗: {e}", "humanized": human})
+
+
+@app.get("/api/ttp/status")
+def api_ttp_status():
+    return {
+        "running": _task_is_running("ttp"),
+        "logs": task_logs.get("ttp", [])[-200:],
+        "meta": task_meta.get("ttp", {}),
+    }
+
+
+@app.get("/api/ttp/profiles")
+def api_ttp_profiles():
+    import app_ttp as _ttp
+    return _ttp.list_profiles()
 
 
 @app.delete("/api/benchmark/extra-channel")
@@ -4883,6 +5757,7 @@ def api_ab_log_create(req: ABLogCreate):
 @app.post("/api/ab-log/{video_name}/measure")
 def api_ab_log_measure(video_name: str, req: ABLogMeasure):
     """7 日後の delta を書き込む（Channel Tracker から手動転記）"""
+    validate_video_name(video_name)
     entries = _load_ab_log()
     found = False
     import datetime as _dt
@@ -4903,6 +5778,7 @@ def api_ab_log_measure(video_name: str, req: ABLogMeasure):
 
 @app.delete("/api/ab-log/{video_name}")
 def api_ab_log_delete(video_name: str):
+    validate_video_name(video_name)
     entries = _load_ab_log()
     before = len(entries)
     entries = [e for e in entries if e.get("video_name") != video_name]
@@ -5110,6 +5986,10 @@ def api_get_schedule():
 from routers.youtube import router as _youtube_router
 app.include_router(_youtube_router)
 
+# ─── analytics ドメインは routers/analytics.py へ分離 ───
+from routers.analytics import router as _analytics_router
+app.include_router(_analytics_router)
+
 
 # ─── images ドメインは routers/images.py へ分離（D9）───
 from routers.images import router as _images_router
@@ -5124,6 +6004,12 @@ app.include_router(_premiere_photoshop_router)
 # ─── live（VPS ライブ配信）ドメインは routers/live.py ───
 from routers.live import router as _live_router
 app.include_router(_live_router)
+
+# かんたん動画編集（ffmpeg 補助）
+from routers.video_edit import router as _video_edit_router
+app.include_router(_video_edit_router)
+from routers.timeline import router as _timeline_router
+app.include_router(_timeline_router)
 
 
 # ─── API: 環境セットアップ ───
@@ -5310,19 +6196,79 @@ def api_setup_status():
     checks["chromium_profile"] = (CONFIG_DIR / "chromium_profile").exists()
     return {"checks": checks}
 
+
+class InitialSetupRequest(BaseModel):
+    system_name: Optional[str] = "Automation Studio"
+    discord_webhook_url: Optional[str] = ""
+    discord_username: Optional[str] = "Automation Studio"
+
+
+def _initial_setup_state() -> dict:
+    channels = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+    dashboard = load_json(DASHBOARD_CONFIG, {}) if DASHBOARD_CONFIG.exists() else {}
+    discord = load_json(DISCORD_CONFIG, {}) if DISCORD_CONFIG.exists() else {}
+    return {
+        "needs_setup": len(channels) == 0,
+        "channels_count": len(channels),
+        "channels_path": str(CHANNELS_CONFIG),
+        "config_dir": str(CONFIG_DIR),
+        "shared_config_dir": str(SHARED_CONFIG_DIR),
+        "templates_copied": globals().get("_TEMPLATE_INIT_COPIED", []),
+        "system_name": dashboard.get("brand_full") or DEFAULT_DASHBOARD_CONFIG["brand_full"],
+        "discord_configured": bool((discord.get("webhook_url") or "").strip()),
+        "next_action": "新規チャンネル(かんたん作成) ウィザードでチャンネルを登録してください",
+    }
+
+
+@app.get("/api/setup/initial")
+def api_initial_setup_status():
+    return _initial_setup_state()
+
+
+@app.post("/api/setup/initial")
+def api_initial_setup_save(req: InitialSetupRequest):
+    """初回セットアップの最小保存。
+
+    チャンネル登録そのものは既存の /api/channels + onboarding ウィザードへ委譲する。
+    """
+    name = (req.system_name or "Automation Studio").strip() or "Automation Studio"
+    cfg = load_json(DASHBOARD_CONFIG, {}) if DASHBOARD_CONFIG.exists() else {}
+    cfg["brand_short"] = name
+    cfg["brand_full"] = name
+    DASHBOARD_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    save_json(DASHBOARD_CONFIG, cfg)
+
+    webhook = (req.discord_webhook_url or "").strip()
+    username = (req.discord_username or "Automation Studio").strip() or "Automation Studio"
+    if webhook:
+        if not (webhook.startswith("https://discord.com/api/webhooks/") or webhook.startswith("https://discordapp.com/api/webhooks/")):
+            raise HTTPException(400, "Discord Webhook URL の形式ではありません")
+        discord = load_json(DISCORD_CONFIG, {}) if DISCORD_CONFIG.exists() else {}
+        discord["webhook_url"] = webhook
+        discord["username"] = username
+        DISCORD_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        save_json(DISCORD_CONFIG, discord)
+
+    return {"status": "ok", **_initial_setup_state()}
+
 @app.post("/api/setup/run")
 async def api_setup_run():
     """環境セットアップスクリプトを実行"""
     setup_script = SHARED_BASE / "Python" / "setup.sh"
     if not setup_script.exists():
         raise HTTPException(404, "setup.sh が見つかりません")
+    reservation = await _ensure_not_running("setup", "セットアップが既に実行中です")
     task_logs["setup"] = []
-    proc = subprocess.Popen(
-        ["bash", str(setup_script)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-    )
-    active_tasks["setup"] = proc
-    _stream_subprocess(proc, "setup")
+    try:
+        proc = subprocess.Popen(
+            ["bash", str(setup_script)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+        )
+        _register_active_task("setup", proc, reservation)
+    except Exception:
+        _release_task_reservation("setup", reservation)
+        raise
+    _stream_subprocess(proc, "setup", timeout=1800)
     return {"status": "started"}
 
 @app.get("/api/setup/logs")
@@ -5345,12 +6291,32 @@ async def ws_logs(websocket: WebSocket, task_name: str):
         pass
 
 # ─── フロントエンド ───
+def _index_html_with_asset_versions(html_path: Path) -> str:
+    """Add per-file mtime query strings to first-party static CSS/JS links."""
+    text = html_path.read_text(encoding="utf-8")
+
+    def repl(match: re.Match) -> str:
+        prefix, asset_path, suffix = match.groups()
+        asset_file = WEB_DIR / asset_path.lstrip("/")
+        try:
+            version = str(int(asset_file.stat().st_mtime))
+        except OSError:
+            version = str(int(APP_STARTED_AT))
+        return f'{prefix}{asset_path}?v={version}{suffix}'
+
+    return re.sub(
+        r'((?:href|src)=["\'])(/static/(?:css|js)/[^"\']+\.(?:css|js))(?:\?v=[^"\']*)?(["\'])',
+        repl,
+        text,
+    )
+
+
 @app.get("/")
 def index():
     html = WEB_DIR / "static" / "index.html"
     if html.exists():
-        return FileResponse(str(html))
-    return HTMLResponse("<h1>orzz. Dashboard</h1><p>static/index.html が見つかりません</p>")
+        return HTMLResponse(_index_html_with_asset_versions(html))
+    return HTMLResponse("<h1>Automation Studio</h1><p>static/index.html が見つかりません</p>")
 
 @app.get("/login.html")
 def login_page():
@@ -6144,9 +7110,7 @@ class ExportQueueAddRequest(BaseModel):
 @app.post("/api/export/queue")
 def api_add_export_queue(req: ExportQueueAddRequest):
     config = get_dashboard_config()
-    folder = Path(config.get("channel_folder", "")) / req.video_name
-    if not folder.exists():
-        raise HTTPException(404, f"動画フォルダが見つかりません: {req.video_name}")
+    folder = resolve_video_folder(req.video_name)
     info = _scan_video_folder_for_export(folder)
     if not info.get("prproj_path"):
         raise HTTPException(400, "prproj が見つかりません")
@@ -6264,7 +7228,8 @@ class ExportIgnoreItem(BaseModel):
 
 @app.post("/api/export/ignore-list")
 def api_add_export_ignore(req: ExportIgnoreItem):
-    items = add_to_export_ignore_list(req.video_name.strip())
+    name = validate_video_name(req.video_name)
+    items = add_to_export_ignore_list(name)
     # 該当 video_name の pending アイテムもキューから外す
     q = get_export_queue()
     before = len(q["items"])
@@ -6277,6 +7242,7 @@ def api_add_export_ignore(req: ExportIgnoreItem):
 
 @app.delete("/api/export/ignore-list/{video_name}")
 def api_remove_export_ignore(video_name: str):
+    validate_video_name(video_name)
     items = remove_from_export_ignore_list(video_name)
     return {"status": "ok", "items": items}
 
@@ -6288,6 +7254,7 @@ class ExportIgnoreBulk(BaseModel):
 @app.put("/api/export/ignore-list")
 def api_replace_export_ignore(req: ExportIgnoreBulk):
     """無視リストを丸ごと置換（管理 UI 向け）。"""
+    req.video_names = [validate_video_name(name) for name in req.video_names]
     cc = load_channel_config()
     cleaned = sorted({n.strip() for n in (req.video_names or []) if n and n.strip()})
     cc["export_ignore_list"] = cleaned
@@ -6394,6 +7361,15 @@ def _record_history(job_id: str, status: str, detail: str = ""):
 def _send_discord_notify(message: str):
     """Discord 通知を非同期 fire-and-forget で送る。失敗は無視。"""
     try:
+        try:
+            from error_humanizer import format_for_discord
+            if re.search(r"\b(exit|code|終了コード)\s*[:= ]\s*(75|76|77|78)\b", message, re.I):
+                m = re.search(r"\b(75|76|77|78)\b", message)
+                message = format_for_discord(exit_code=int(m.group(1)), message=message)
+            elif re.search(r"invalid_grant|quotaExceeded|Premiere Link|preflight|UnattendedLoginRequired", message, re.I):
+                message = format_for_discord(message=message)
+        except Exception:
+            pass
         notify_script = SHARED_BASE / "Python" / "app_notify.sh"
         if notify_script.exists():
             subprocess.Popen(["bash", str(notify_script), message],
@@ -6404,6 +7380,230 @@ def _send_discord_notify(message: str):
 def _send_line_notify(message: str):
     """Backward-compatible alias for older scheduler code paths."""
     _send_discord_notify(message)
+
+
+def _update_code_root() -> Path:
+    """更新対象のコードルート。
+
+    launchd 常駐時は APP_SHARED_BASE がローカルミラーを指すため、更新本体は
+    Drive 側(STUDIO_DRIVE_BASE)へ適用し、その後 setup_launchd.sh --sync で再同期する。
+    """
+    drive = Path(os.environ.get("STUDIO_DRIVE_BASE") or "").expanduser() if os.environ.get("STUDIO_DRIVE_BASE") else None
+    if drive and (drive / "setup_launchd.sh").exists() and (drive / "Python").exists():
+        try:
+            (drive / "VERSION").read_text(encoding="utf-8")
+            return drive
+        except Exception as e:
+            print(f"[auto-update] Drive root is not readable from server process, fallback to runtime mirror: {e}")
+    return SHARED_BASE
+
+
+def _launchd_label() -> str:
+    return os.environ.get("APP_LAUNCHD_LABEL") or "jp.caruvistar.automation-studio"
+
+
+def _launchd_is_loaded() -> bool:
+    try:
+        r = subprocess.run(["launchctl", "list", _launchd_label()],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _run_launchd_sync(*, dry_run: bool = False) -> dict:
+    root = _update_code_root()
+    script = root / "setup_launchd.sh"
+    if not script.exists():
+        return {"ok": False, "skipped": True, "message": f"setup_launchd.sh がありません: {script}"}
+    cmd = ["bash", str(script), "--sync"]
+    if dry_run:
+        return {"ok": True, "dry_run": True, "cmd": cmd, "message": "dry-run: launchd sync skipped"}
+    r = subprocess.run(cmd, cwd=str(root), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=90)
+    return {"ok": r.returncode == 0, "returncode": r.returncode, "cmd": cmd, "output": (r.stdout or "")[-4000:]}
+
+
+LAST_BOOT_VERSION_FILE = CONFIG_DIR / "last_boot_version"
+
+
+def _current_version() -> str:
+    try:
+        return app_updater.read_version(_update_code_root()).strip()
+    except Exception:
+        return "unknown"
+
+
+def _apply_autopilot_update_guard(previous: str, version: str, *, notify: bool = True) -> dict:
+    changed = bool(previous and previous != version)
+    suspended = []
+    if changed:
+        for ch in get_channels():
+            folder = ch.get("folder") or ""
+            if not folder:
+                continue
+            p = Path(folder) / _CHANNEL_CONFIG_FILENAME
+            cc = load_json(p, {})
+            if cc.get("autopilot_enabled"):
+                cc["autopilot_suspended_by_update"] = True
+                cc["autopilot_suspended_version"] = version
+                cc["autopilot_suspended_at"] = datetime.utcnow().isoformat() + "Z"
+                save_json(p, cc)
+                suspended.append(ch.get("name") or ch.get("id") or folder)
+        if suspended and notify:
+            _send_discord_notify(
+                "Automation Studio を更新しました。autopilot ON のチャンネルを一時停止しました。\n"
+                + "\n".join(f"- {x}" for x in suspended)
+                + "\nUI または studio.py autopilot --resume-all で再開してください。"
+            )
+        if suspended:
+            print(f"[update-guard] autopilot suspended after version change {previous} -> {version}: {len(suspended)} channel(s)")
+    try:
+        LAST_BOOT_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LAST_BOOT_VERSION_FILE.write_text(version + "\n", encoding="utf-8")
+    except Exception as e:
+        print(f"[update-guard] last_boot_version write failed: {e}")
+    return {"changed": changed, "previous": previous, "version": version, "suspended": suspended, "suspended_count": len(suspended)}
+
+
+def _autopilot_update_guard_status() -> dict:
+    suspended = []
+    for ch in get_channels():
+        folder = ch.get("folder") or ""
+        if not folder:
+            continue
+        cc = load_json(Path(folder) / _CHANNEL_CONFIG_FILENAME, {})
+        if cc.get("autopilot_suspended_by_update"):
+            suspended.append({
+                "channel_id": ch.get("id", ""),
+                "channel_name": ch.get("name", ""),
+            })
+    last = ""
+    try:
+        last = LAST_BOOT_VERSION_FILE.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return {
+        "last_boot_version": last,
+        "version": _current_version(),
+        "suspended_count": len(suspended),
+        "suspended_channels": suspended,
+        "banner": "更新完了。自動運転を再開してください" if suspended else "",
+    }
+
+
+def _resume_update_suspended_autopilot(actor: str = "api") -> dict:
+    resumed = []
+    for ch in get_channels():
+        folder = ch.get("folder") or ""
+        if not folder:
+            continue
+        p = Path(folder) / _CHANNEL_CONFIG_FILENAME
+        cc = load_json(p, {})
+        if cc.get("autopilot_suspended_by_update"):
+            old = dict(cc)
+            cc.pop("autopilot_suspended_by_update", None)
+            cc.pop("autopilot_suspended_version", None)
+            cc.pop("autopilot_suspended_at", None)
+            save_json(p, cc)
+            try:
+                from settings_service import append_config_audit
+                append_config_audit(actor, "channel.autopilot_suspended_by_update",
+                                    old.get("autopilot_suspended_by_update"), None,
+                                    channel_id=ch.get("id", ""), path=str(p))
+            except Exception:
+                pass
+            resumed.append(ch.get("id", ""))
+    return {"status": "ok", "resumed": resumed, "count": len(resumed)}
+
+
+@app.on_event("startup")
+async def _autopilot_update_guard_startup():
+    """Pause only channels that were autopilot ON when the code version changed."""
+    version = _current_version()
+    previous = ""
+    try:
+        previous = LAST_BOOT_VERSION_FILE.read_text(encoding="utf-8").strip()
+    except Exception:
+        previous = ""
+    _apply_autopilot_update_guard(previous, version)
+
+
+@app.get("/api/autopilot/update-guard")
+def api_autopilot_update_guard():
+    return _autopilot_update_guard_status()
+
+
+@app.post("/api/autopilot/resume-all")
+def api_autopilot_resume_all():
+    return _resume_update_suspended_autopilot(actor="ui")
+
+
+def _job_auto_update_daily(*, dry_run_notify: bool = False, dry_run_sync: bool = False) -> dict:
+    """APScheduler 日次自動更新ジョブ。外部実行系はテスト用にdry-run化できる。"""
+    root = _update_code_root()
+    check = app_updater.check_for_update(root)
+    result = {"status": "checked", "root": str(root), "check": check}
+    if not check.get("ok"):
+        _record_history("auto_update_daily", "error", check.get("message", "check failed"))
+        return result
+    if not check.get("configured") or not check.get("source"):
+        _record_history("auto_update_daily", "skip", "source not configured")
+        return result
+    if check.get("auto_apply") is False:
+        result["status"] = "skipped"
+        result["reason"] = "auto_apply=false"
+        _record_history("auto_update_daily", "skip", "auto_apply=false")
+        return result
+    if not check.get("update_available"):
+        result["status"] = "up_to_date"
+        _record_history("auto_update_daily", "ok", "up to date")
+        return result
+
+    previous = str(check.get("current_version") or app_updater.read_version(root))
+    latest = str(check.get("latest_version") or "")
+    try:
+        if check.get("method") == "zip_url":
+            applied = app_updater.download_and_apply(check.get("manifest") or {}, root)
+        elif check.get("method") == "git":
+            applied = app_updater.apply_git(str(check.get("source") or ""), root)
+        else:
+            raise RuntimeError("未対応の更新方式です")
+    except Exception as e:
+        rollback = app_updater.rollback(root)
+        msg = f"自動更新に失敗しました: {e}"
+        if not dry_run_notify:
+            _send_discord_notify(msg + f"\nrollback: {rollback.get('message')}")
+        result.update({"status": "failed", "error": str(e), "rollback": rollback})
+        _record_history("auto_update_daily", "error", str(e)[:200])
+        return result
+
+    new_version = str(applied.get("new_version") or app_updater.read_version(root))
+    guard = _apply_autopilot_update_guard(previous, new_version, notify=False)
+    launchd_loaded = _launchd_is_loaded()
+    sync = {"skipped": True, "reason": "launchd not loaded"}
+    if launchd_loaded:
+        sync = _run_launchd_sync(dry_run=dry_run_sync)
+    message = f"Automation Studio を v{new_version} へ自動更新しました。自動運転は一時停止中です。"
+    if dry_run_notify:
+        notify = {"dry_run": True, "message": message}
+    else:
+        _send_discord_notify(message)
+        notify = {"sent": True, "message": message}
+    result.update({
+        "status": "applied",
+        "previous_version": previous,
+        "new_version": new_version,
+        "latest_version": latest,
+        "applied": applied,
+        "guard": guard,
+        "launchd_loaded": launchd_loaded,
+        "sync": sync,
+        "notify": notify,
+    })
+    _record_history("auto_update_daily", "ok", f"{previous}->{new_version} sync={bool(sync.get('ok'))}")
+    print(f"[auto-update] applied {previous} -> {new_version}; sync={sync.get('ok')} dry_run_sync={dry_run_sync}")
+    return result
+
 
 def _resolve_job_channel(job: dict) -> tuple:
     """job の channel_id をチャンネル名 + フォルダパス + id に解決。
@@ -6458,7 +7658,7 @@ def _build_job_env(ch_name: Optional[str], ch_folder: Optional[Path],
 
 
 # ─── P2-7: 公開ゲート — private upload + N 時間後に public 化 ──────
-# 完全自走の前提: per-channel `publish_delay_hours` で「アップロード後 N 時間
+# 完全自動運転の前提: per-channel `publish_delay_hours` で「アップロード後 N 時間
 # は private のまま、その後自動で public 化」を実現する。途中で運営者が
 # YouTube Studio で確認して取消したい場合は手動で削除できる猶予時間。
 
@@ -6476,7 +7676,7 @@ async def _job_publish_now(payload: dict):
     video_name = payload.get("video_name", "")
     ch_folder = payload.get("channel_folder", "")
     ch_name = payload.get("channel_name") or "(unknown)"
-    folder = Path(ch_folder) / video_name if (ch_folder and video_name) else None
+    folder = resolve_video_folder(video_name, channel_root=ch_folder) if (ch_folder and video_name) else None
     if not folder or not folder.exists():
         _record_history(job_id, "error", f"publish: folder 不在 {folder}")
         _send_line_notify(f"❌ 公開: [{ch_name}] {video_name} - フォルダ不在")
@@ -6945,6 +8145,188 @@ async def _job_token_health(job: dict):
                     f"{len(warnings)} 件の warn")
 
 
+def _job_daily_digest():
+    job_id = "daily_digest"
+    try:
+        from app_digest import digest_enabled, send_digest
+        if not digest_enabled():
+            _record_history(job_id, "skip", "digest.enabled=false")
+            return
+        result = send_digest(test=False)
+        c = result.get("counts") or {}
+        _record_history(job_id, "done", f"errors={c.get('unresolved_errors', 0)} stock_warn={c.get('stock_warnings', 0)}")
+    except Exception as e:
+        _record_history(job_id, "error", f"digest 例外: {e}")
+
+
+def _job_config_backup_daily():
+    job_id = "config_backup_daily"
+    try:
+        from app_config_backup import create_backup
+        result = create_backup(actor="daily")
+        _record_history(job_id, "done", f"{result.get('date')} channel_configs={result.get('channel_config_count')}")
+    except Exception as e:
+        _record_history(job_id, "error", f"config_backup 例外: {e}")
+
+
+def _collect_uploaded_video_ids(channel_dir: Path, limit: int = 10) -> list[dict]:
+    rows = []
+    try:
+        folders = [p for p in channel_dir.iterdir() if p.is_dir()]
+    except Exception:
+        return rows
+    folders.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    for folder in folders:
+        marker = folder / "youtube_upload.json"
+        if not marker.exists():
+            continue
+        data = load_json(marker, {})
+        vid = data.get("video_id") or data.get("id")
+        if not vid and data.get("url"):
+            m = re.search(r"(?:youtu\.be/|v=)([A-Za-z0-9_-]{11})", str(data.get("url")))
+            if m:
+                vid = m.group(1)
+        if vid:
+            rows.append({"video_id": vid, "video_name": folder.name})
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _load_benchmark_recent_view_baseline() -> dict:
+    try:
+        import app_competitor as _ac
+        cache = _ac.load_cache() or {}
+    except Exception:
+        cache = {}
+    values = []
+    channels = ((cache.get("competitor_data") or {}).get("channels") or [])
+    for ch in channels:
+        for v in (ch.get("recentUploads") or [])[:5]:
+            try:
+                values.append(int(v.get("viewCount") or 0))
+            except Exception:
+                pass
+    if not values:
+        return {"count": 0, "avg_views": 0, "median_views": 0}
+    values.sort()
+    mid = len(values) // 2
+    median = values[mid] if len(values) % 2 else int((values[mid - 1] + values[mid]) / 2)
+    return {"count": len(values), "avg_views": int(sum(values) / len(values)), "median_views": median}
+
+
+async def _job_onboarding_verify_loop(job: dict):
+    """オンボーディング検証ループ。投稿済み動画の再生数を日次で読み取り、ベンチ直近平均と比較して通知する。"""
+    job_id = job.get("id", "?")
+    ch_name, ch_dir, ch_id = _resolve_job_channel(job)
+    if not ch_dir or not ch_dir.exists():
+        _record_history(job_id, "error", f"channel_folder 不在: {ch_dir}")
+        return
+    uploaded = _collect_uploaded_video_ids(ch_dir)
+    if not uploaded:
+        _record_history(job_id, "done", "投稿済み video_id なし")
+        return
+    token_path = ch_dir / ".youtube_token.json"
+    if not token_path.exists():
+        _record_history(job_id, "error", f"OAuth token 不在: {token_path}")
+        return
+    try:
+        from googleapiclient.discovery import build
+        import app_youtube as _yt
+        creds = _yt.load_channel_credentials(token_path)
+        if creds is None:
+            _record_history(job_id, "error", "OAuth token 無効")
+            return
+        youtube = build("youtube", "v3", credentials=creds)
+        ids = [x["video_id"] for x in uploaded]
+        import app_quota as _quota
+        resp, stats_source = _quota.get_video_stats_with_fallback(
+            youtube,
+            ids,
+            channel_id=ch_id or "",
+            part="id,snippet,statistics",
+        )
+    except Exception as e:
+        _record_history(job_id, "error", f"YouTube 読み取り失敗: {e}")
+        return
+    items = resp.get("items") or []
+    by_id = {x["video_id"]: x for x in uploaded}
+    old_env = {k: os.environ.get(k) for k in ("APP_CHANNEL_ID", "APP_CHANNEL_FOLDER", "APP_CHANNEL_NAME")}
+    os.environ["APP_CHANNEL_ID"] = ch_id or ""
+    os.environ["APP_CHANNEL_FOLDER"] = str(ch_dir)
+    os.environ["APP_CHANNEL_NAME"] = ch_name or ""
+    try:
+        baseline = _load_benchmark_recent_view_baseline()
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    bench_avg = int(baseline.get("avg_views") or 0)
+    lines = [f"オンボーディング検証レポート [{ch_name or ch_id or '?'}]"]
+    if bench_avg:
+        lines.append(f"ベンチ直近平均: {bench_avg:,} views（n={baseline.get('count', 0)}）")
+    else:
+        lines.append("ベンチ直近平均: 未計算（先に benchmark_fetch/analyze を実行）")
+    total = 0
+    for item in items[:10]:
+        vid = item.get("id", "")
+        stat = item.get("statistics") or {}
+        sn = item.get("snippet") or {}
+        views = int(stat.get("viewCount") or 0)
+        total += views
+        ratio = f"{views / bench_avg:.2f}x" if bench_avg else "-"
+        name = by_id.get(vid, {}).get("video_name") or vid
+        lines.append(f"・{name}: {views:,} views / bench {ratio} / {sn.get('title','')[:48]}")
+    report = {
+        "ok": True,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "channel_id": ch_id,
+        "channel_name": ch_name,
+        "benchmark": baseline,
+        "videos": items,
+        "stats_source": stats_source,
+    }
+    try:
+        save_json(ch_dir / "onboarding_verify_report.json", report)
+    except Exception:
+        pass
+    _send_line_notify("\n".join(lines))
+    _record_history(job_id, "done", f"{len(items)} videos / total={total}")
+
+
+def _register_onboarding_verify_loop(channel_id: str, run_now: bool = False) -> dict:
+    ch = _channel_entry_or_404(channel_id)
+    _channel_dir_or_400(ch)
+    jobs = _scheduler_get_jobs()
+    job_id = f"onboarding_verify_{channel_id}"
+    job = {
+        "id": job_id,
+        "type": "onboarding_verify_loop",
+        "name": f"オンボーディング検証: {ch.get('name') or channel_id}",
+        "enabled": True,
+        "channel_id": channel_id,
+        "trigger": {"kind": "cron", "hour": 8, "minute": 20},
+    }
+    replaced = False
+    for i, existing in enumerate(jobs):
+        if existing.get("id") == job_id:
+            jobs[i] = job
+            replaced = True
+            break
+    if not replaced:
+        jobs.append(job)
+    _scheduler_save_jobs(jobs)
+    _scheduler_reload()
+    if run_now:
+        try:
+            asyncio.create_task(_job_onboarding_verify_loop(job))
+        except Exception:
+            pass
+    return {"status": "ok", "job_id": job_id, "replaced": replaced, "run_now": bool(run_now)}
+
+
 def _job_tracking_snapshot():
     """ベンチ追跡: 日次スナップショットを保存し、新着ch/新作/急伸があれば Discord 通知。
     あわせて動画単位レコード（video_intel）の収集・初速更新も行う（LLM コストゼロ）。
@@ -7088,6 +8470,7 @@ JOB_HANDLERS = {
     "spot_create": _job_spot_create,
     "publish_now": _job_publish_now,  # P2-7: 公開ゲート（DateTrigger 動的登録）
     "token_health": _job_token_health,  # P3-5: トークン期限の先回り通知
+    "onboarding_verify_loop": _job_onboarding_verify_loop,
 }
 
 # ─── P2-4: 時間帯スロット配分（slot balancing） ─────
@@ -7338,7 +8721,8 @@ def _scheduler_reload():
 # ⚠ 安全境界:
 #   - autopilot_enabled は per-channel 既定 OFF。全 ch OFF なら tick は空リストで即 return
 #     ＝dispatch ゼロ（無人稼働しない）。実際に動くのは channel の autopilot を ON にした時だけ。
-#   - WORKERS は upload/plan を含まない＝自動投稿・勝手な企画起案はしない（最終 upload は手動ゲート）。
+#   - upload は Phase B ガード（QA 成功 + per-channel token + future publish_date +
+#     private/publishAt）を通った場合だけ実行する。plan は含めない。
 #   - 連続 BREAKER_THRESHOLD(=3) 失敗の channel は is_channel_tripped で自動停止。
 #   - AsyncIOScheduler は同期関数をスレッドプールで実行＝ブロッキング dispatch がループを止めない。
 #   - env: APP_ORCH_TICK_ENABLED(既定1) / APP_ORCH_TICK_MINUTES(既定5) / APP_ORCH_AUTOPILOT_STAGES(既定=AUTOPILOT_DEFAULT_STAGES)
@@ -7357,7 +8741,7 @@ def _orchestrator_tick():
     except Exception as e:
         print(f"[orchestrator] channels 構築失敗: {e}")
         return
-    enabled = [c for c in all_chans if c.get("autopilot_enabled")]
+    enabled = [c for c in all_chans if c.get("autopilot_enabled") and not c.get("autopilot_suspended_by_update")]
     if not enabled:
         return  # dormant: autopilot ON の channel が無い（既定）→ 何もしない
     stages_env = (os.environ.get("APP_ORCH_AUTOPILOT_STAGES") or "").strip()
@@ -7365,7 +8749,9 @@ def _orchestrator_tick():
                   or list(getattr(_orch, "AUTOPILOT_DEFAULT_STAGES", [])))
     workers = {k: v for k, v in _orch.WORKERS.items() if k in stage_list} or None
     try:
-        res = _orch.tick(enabled, workers=workers, via_api=False, notify=_send_line_notify)
+        # max_dispatch はチャンネル数以下に抑え、1 tick で同一チャンネルへ過剰投入しない。
+        res = _orch.tick(enabled, workers=workers, via_api=False,
+                         notify=_send_line_notify, max_dispatch=max(1, len(enabled)))
         _record_history("orchestrator_tick", "ok",
                         f"enabled={len(enabled)} eval={res.get('evaluated')} "
                         f"dispatched={res.get('dispatched')} skipped_quota={res.get('skipped_quota')}")
@@ -7397,6 +8783,30 @@ async def _start_scheduler():
                 print(f"[orchestrator] tick 登録（{_tick_min}分間隔・autopilot ON channel のみ実投入＝既定 dormant）")
             except Exception as e:
                 print(f"[orchestrator] tick 登録失敗: {e}")
+        if (os.environ.get("APP_AUTO_UPDATE_ENABLED") or "1").strip() in ("1", "true", "yes"):
+            try:
+                from apscheduler.triggers.cron import CronTrigger as _UpdateCron
+                _scheduler.add_job(_job_auto_update_daily, trigger=_UpdateCron(hour=5, minute=15),
+                                   id="auto_update_daily", replace_existing=True,
+                                   max_instances=1, coalesce=True)
+                print("[auto-update] 日次自動更新登録（毎日 05:15 JST）")
+            except Exception as e:
+                print(f"[auto-update] 登録失敗: {e}")
+        try:
+            from apscheduler.triggers.cron import CronTrigger as _OpsCron
+            from app_digest import digest_enabled, digest_time_jst
+            if digest_enabled():
+                hh, mm = [int(x) for x in digest_time_jst().split(":", 1)]
+                _scheduler.add_job(_job_daily_digest, trigger=_OpsCron(hour=hh, minute=mm),
+                                   id="daily_digest", replace_existing=True,
+                                   max_instances=1, coalesce=True)
+                print(f"[digest] 日次ダイジェスト登録（毎日 {hh:02d}:{mm:02d} JST）")
+            _scheduler.add_job(_job_config_backup_daily, trigger=_OpsCron(hour=3, minute=30),
+                               id="config_backup_daily", replace_existing=True,
+                               max_instances=1, coalesce=True)
+            print("[config-backup] 日次バックアップ登録（毎日 03:30 JST）")
+        except Exception as e:
+            print(f"[ops] 日次ジョブ登録失敗: {e}")
         # ベンチ追跡: 日次スナップショット（tracking-events の差分検知は前回スナップ
         # ショットとの比較なので、API を叩かない日があると新着/急伸を取りこぼす）
         if (os.environ.get("APP_TRACKING_SNAPSHOT_ENABLED") or "1").strip() in ("1", "true", "yes"):
@@ -7436,7 +8846,7 @@ def _execute_render_job(job: dict) -> None:
     stage = str(job["stage"])
     ch_folder = Path(job["channel_folder"])
     video_name = job.get("video_name") or ""
-    folder = ch_folder / video_name if video_name else ch_folder
+    folder = resolve_video_folder(video_name, channel_root=ch_folder) if video_name else ch_folder
     if not folder.exists():
         _rq.mark_error(job_id, f"video folder not found: {folder}")
         _send_line_notify(
@@ -7602,6 +9012,7 @@ async def _start_render_queue_worker():
 # 6+ チャンネル並列運用時に Premiere/Export がシリアライズされる様子を可視化する。
 
 class RenderQueueEnqueueRequest(BaseModel):
+    channel_id: Optional[str] = ""
     channel_folder: str
     channel_name: Optional[str] = ""
     vol: int
@@ -7642,6 +9053,7 @@ def api_render_queue_enqueue(req: RenderQueueEnqueueRequest):
         video_name=req.video_name or "",
         stage=req.stage,
         parent_run_id=req.parent_run_id or "",
+        channel_id=req.channel_id or "",
     )
     return {"status": "ok", "id": jid}
 
@@ -7775,6 +9187,105 @@ async def api_token_health_notify():
     return {"status": "ok", "job_id": job["id"]}
 
 
+@app.post("/api/digest/send-now")
+def api_digest_send_now(test: bool = True):
+    """検証用に日次ダイジェストを即時Discord送信する。既定は【テスト】付き。"""
+    try:
+        from app_digest import send_digest
+        return send_digest(test=bool(test))
+    except Exception as e:
+        raise HTTPException(500, f"digest send failed: {e}")
+
+
+@app.get("/api/reconcile")
+def api_reconcile(limit: int = 50, refresh: bool = True):
+    """YouTube 実アップロード一覧とローカル投稿記録の整合性を返す。自動修正なし。"""
+    try:
+        import app_reconcile
+        if refresh:
+            return app_reconcile.run_reconcile_all(limit=max(1, min(int(limit), 50)), write_report=True)
+        cached = app_reconcile._load_json(app_reconcile.REPORT_PATH, {})  # noqa: SLF001
+        return cached or app_reconcile.run_reconcile_all(limit=max(1, min(int(limit), 50)), write_report=True)
+    except Exception as e:
+        raise HTTPException(500, f"reconcile failed: {e}")
+
+
+@app.get("/api/monetization")
+def api_monetization(force: bool = False):
+    """H-A: チャンネル別 YPP 進捗。公開統計は1日1回スナップショットへ集約。"""
+    try:
+        import app_learning
+        return app_learning.monetization_report(force=bool(force))
+    except Exception as e:
+        raise HTTPException(500, f"monetization failed: {e}")
+
+
+@app.post("/api/review/48h/run")
+def api_review_48h_run(writeback: bool = True, dry_run: bool = False):
+    """H-A: 公開48h±12h動画を移動平均と比較。dry_run時は学習書込なし。"""
+    try:
+        import app_learning
+        return app_learning.run_48h_reviews(writeback=(bool(writeback) and not bool(dry_run)))
+    except Exception as e:
+        raise HTTPException(500, f"48h review failed: {e}")
+
+
+@app.get("/api/alerts/rivals")
+def api_rival_alerts(dry_run: bool = True):
+    """H-A: 追跡データからライバル新作の初速アラート候補を返す。Discord単独送信なし。"""
+    try:
+        import app_learning
+        return app_learning.detect_rival_alerts(dry_run=bool(dry_run))
+    except Exception as e:
+        raise HTTPException(500, f"rival alerts failed: {e}")
+
+
+@app.get("/api/error-humanize")
+def api_error_humanize(exit_code: Optional[int] = None, message: str = "", stage: str = "",
+                       channel_name: str = "", vol: str = ""):
+    try:
+        from error_humanizer import humanize_error
+        return {"status": "ok", "error": humanize_error(exit_code=exit_code, message=message, stage=stage,
+                                                          channel_name=channel_name, vol=vol)}
+    except Exception as e:
+        raise HTTPException(500, f"humanize failed: {e}")
+
+
+@app.get("/api/config-backup")
+def api_config_backup_list():
+    try:
+        from app_config_backup import list_backups
+        return list_backups()
+    except Exception as e:
+        raise HTTPException(500, f"config backup list failed: {e}")
+
+
+@app.post("/api/config-backup/run")
+def api_config_backup_run():
+    try:
+        from app_config_backup import create_backup
+        return create_backup(actor="ui")
+    except Exception as e:
+        raise HTTPException(500, f"config backup failed: {e}")
+
+
+class ConfigBackupRestoreRequest(BaseModel):
+    date: str
+
+
+@app.post("/api/config-backup/restore")
+def api_config_backup_restore(req: ConfigBackupRestoreRequest):
+    if not re.match(r"^\d{8}$", req.date or ""):
+        raise HTTPException(400, "date は YYYYMMDD 形式で指定してください")
+    try:
+        from app_config_backup import restore_backup
+        return restore_backup(req.date, actor="ui")
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"config restore failed: {e}")
+
+
 # ─── API: YouTube 公開ゲート（P2-7） ───────────────
 # private upload 後、N 時間経過してから自動 public 化する後段ジョブを動的登録。
 
@@ -7799,9 +9310,7 @@ def api_youtube_schedule_publish(req: SchedulePublishRequest):
         ch_name = ch_name or cfg.get("channel_name") or ""
     if not ch_folder:
         raise HTTPException(400, "channel_folder が解決できません")
-    folder = Path(ch_folder) / req.video_name
-    if not folder.exists():
-        raise HTTPException(404, f"video folder not found: {folder}")
+    folder = resolve_video_folder(req.video_name, channel_root=ch_folder)
     import datetime as _dt
     run_at = _dt.datetime.now() + _dt.timedelta(hours=req.delay_hours)
     try:
@@ -7830,9 +9339,7 @@ def api_youtube_publish_now(video_name: str):
     ch_folder = cfg.get("channel_folder") or ""
     if not ch_folder:
         raise HTTPException(400, "active channel が無い")
-    folder = Path(ch_folder) / video_name
-    if not folder.exists():
-        raise HTTPException(404, f"video folder not found: {folder}")
+    folder = resolve_video_folder(video_name, channel_root=ch_folder)
     sys.path.insert(0, str(SHARED_BASE / "Python"))
     from app_youtube import publish_video_to_public
     result = publish_video_to_public(folder)
@@ -7857,9 +9364,7 @@ def api_youtube_update_snippet(video_name: str, req: UpdateSnippetRequest = Upda
     ch_folder = cfg.get("channel_folder") or ""
     if not ch_folder:
         raise HTTPException(400, "active channel が無い")
-    folder = Path(ch_folder) / video_name
-    if not folder.exists():
-        raise HTTPException(404, f"video folder not found: {folder}")
+    folder = resolve_video_folder(video_name, channel_root=ch_folder)
     sys.path.insert(0, str(SHARED_BASE / "Python"))
     from app_youtube import update_video_snippet
     result = update_video_snippet(folder, apply_localizations=req.apply_localizations)
@@ -7874,7 +9379,7 @@ def api_youtube_update_snippet(video_name: str, req: UpdateSnippetRequest = Upda
 async def _recover_scheduled_publishes():
     """サーバ再起動時に、未公開の `scheduled_publish_at` を持つ vol を再登録。
 
-    完全自走運用で「app.py を再起動 → 公開ジョブが消える」事故を防ぐ。
+    完全自動運転で「app.py を再起動 → 公開ジョブが消える」事故を防ぐ。
     過去日付の場合は now+1min で即時投入。"""
     try:
         chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
@@ -8034,12 +9539,9 @@ def api_schedule_history():
     return {"history": list(reversed(_scheduler_history))[:50]}
 
 
-# ─── U3: 自走運用パネル（読み取り + 設定保存のみ） ─────────────────────
-# ⚠ 重要な安全境界: これらの API は orchestrator.evaluate(dry_run=True) など
-#   **副作用ゼロ**の呼び出しと per-channel 設定保存だけを行う。
-#   tick()/dispatch() は呼ばない。_scheduler.add_job も一切しない。
-#   = 無人稼働（autopilot の実起動）は依然として未実装。autopilot_enabled は
-#   設定値を保存するだけで、実際の定期実行は別途 GO 後に app.py へ統合する。
+# ─── U3/D1: 自動運転パネル（dry-run 状態表示 + per-channel 設定） ─────────
+# GET /api/workers/status は副作用ゼロ。autopilot ON の channel だけが
+# APScheduler の orchestrator_tick から実投入される。既定は全 channel OFF。
 
 def _build_orchestrator_channels():
     """get_channels() から orchestrator.evaluate 用の channels を構築。
@@ -8077,10 +9579,14 @@ def _build_orchestrator_channels():
             priority = 100
         chans.append({
             "channel_id": ch.get("id", ""),
+            "name": ch.get("name", ""),
             "channel_name": ch.get("name", ""),
+            "youtube_channel_id": ch.get("youtube_channel_id", ""),
             "folder": folder,
             "priority": priority,
+            "export_engine": str(cc.get("export_engine", ch.get("export_engine", "ame")) or "ame").strip().lower(),
             "autopilot_enabled": bool(cc.get("autopilot_enabled", ch.get("autopilot_enabled", False))),
+            "autopilot_suspended_by_update": bool(cc.get("autopilot_suspended_by_update", False)),
             "vols": vols,
         })
     return chans
@@ -8088,7 +9594,7 @@ def _build_orchestrator_channels():
 
 @app.get("/api/workers/status")
 def api_workers_status():
-    """自走運用の dry-run 可視化: いま各 vol で着手可能な stage 候補 + チャンネル健全性。
+    """自動運転の dry-run 可視化: いま各 vol で着手可能な stage 候補 + チャンネル健全性。
     ⚠ evaluate(dry_run=True) のみ。run()/dispatch()/tick() は呼ばない（副作用ゼロ）。"""
     sys.path.insert(0, str(SHARED_BASE / "Python"))
     try:
@@ -8115,6 +9621,7 @@ def api_workers_status():
             "channel_id": cid, "channel_name": ch.get("channel_name", ""),
             "priority": ch.get("priority", 100),
             "autopilot_enabled": ch.get("autopilot_enabled", False),
+            "autopilot_suspended_by_update": ch.get("autopilot_suspended_by_update", False),
             "consecutive_failures": fails, "tripped": tripped,
             "candidate_count": sum(1 for c in cand_list if c["channel_id"] == cid),
         })
@@ -8128,6 +9635,8 @@ def api_workers_status():
         "scheduler_registered": bool(_scheduler is not None and any(
             getattr(j, "id", "") == "orchestrator_tick" for j in _scheduler.get_jobs())),
         "autopilot_enabled_channels": sum(1 for ch in channels if ch.get("autopilot_enabled")),
+        "autopilot_runnable_channels": sum(1 for ch in channels if ch.get("autopilot_enabled") and not ch.get("autopilot_suspended_by_update")),
+        "update_guard": _autopilot_update_guard_status(),
     }
 
 
@@ -8161,12 +9670,16 @@ def _save_channel_scalar(channel_id: str, updates: dict):
     target = next((c for c in chs if c.get("id") == channel_id), None)
     if not target:
         raise HTTPException(404, f"channel not found: {channel_id}")
-    folder = target.get("folder") or ""
+    folder = _resolve_to_current_host(target.get("folder") or "")
     if not folder or not Path(folder).exists():
         raise HTTPException(400, f"channel folder not found: {folder}")
     p = Path(folder) / _CHANNEL_CONFIG_FILENAME
     d = load_json(p, {})
-    d.update(updates)
+    for k, v in updates.items():
+        if k in {"autopilot_suspended_by_update", "autopilot_suspended_version", "autopilot_suspended_at"} and not v:
+            d.pop(k, None)
+        else:
+            d[k] = v
     save_json(p, d)
     return {"status": "ok", "channel_id": channel_id, "saved": updates}
 
@@ -8199,6 +9712,7 @@ def api_get_autopilot():
         out.append({
             "channel_id": ch.get("id", ""), "channel_name": ch.get("name", ""),
             "autopilot_enabled": bool(cc.get("autopilot_enabled", False)),
+            "autopilot_suspended_by_update": bool(cc.get("autopilot_suspended_by_update", False)),
             "priority": int(cc.get("priority", 100)) if str(cc.get("priority", "")).strip() else 100,
         })
     return {"status": "ok", "channels": out,
@@ -8210,10 +9724,21 @@ def api_get_autopilot():
 @app.put("/api/workers/autopilot")
 def api_set_autopilot(req: AutopilotRequest):
     """autopilot ON/OFF を per-channel 保存。
-    ⚠ これは設定値の保存のみ。実際の無人稼働（tick の定期実行）は未実装で、
-       別途 app.py への orchestrator 統合（GO 後）が必要。ここでは scheduler に
-       一切触れない（add_job しない）。"""
-    return _save_channel_scalar(req.channel_id, {"autopilot_enabled": bool(req.enabled)})
+    実投入は APScheduler の orchestrator_tick が autopilot_enabled=true の
+    channel だけを拾う。既定 OFF。"""
+    updates = {"autopilot_enabled": bool(req.enabled)}
+    if req.enabled:
+        updates.update({
+            "autopilot_suspended_by_update": False,
+            "autopilot_suspended_version": "",
+            "autopilot_suspended_at": "",
+        })
+    return _save_channel_scalar(req.channel_id, updates)
+
+
+@app.post("/api/workers/autopilot")
+def api_post_autopilot(req: AutopilotRequest):
+    return api_set_autopilot(req)
 
 
 class BreakerResetRequest(BaseModel):

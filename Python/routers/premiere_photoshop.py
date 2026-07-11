@@ -6,6 +6,40 @@ from app_core import *  # noqa: F401,F403  土台シンボル(stdlib/fastapi/fou
 router = APIRouter()
 
 
+def _premiere_resource_endpoint(fn):
+    """Premiere に触る同期 API を OS resource lock 下で実行。"""
+    import functools
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        resource = _acquire_resource_or_409("premiere", owner=f"api:{fn.__name__}")
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            resource.release()
+    return _wrapped
+
+
+async def _start_premiere_process(cmd, *, timeout: int, owner: str):
+    reservation = await _ensure_not_running("premiere", "Premiere 処理が既に実行中です")
+    resource = None
+    try:
+        resource = _acquire_resource_or_409("premiere", owner=owner)
+        env = env_with_held_resource({**os.environ, "PYTHONUNBUFFERED": "1"}, "premiere")
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env,
+        )
+        _register_active_task("premiere", proc, reservation)
+    except Exception:
+        if resource is not None:
+            resource.release()
+        _release_task_reservation("premiere", reservation)
+        raise
+    task_logs["premiere"] = []
+    _stream_subprocess(proc, "premiere", timeout=timeout, resource_lock=resource)
+    return proc
+
+
 # ─── API: Premiere Pro ───
 # PREMIERE_SCRIPT は app_core へ移動（premiere/render-queue 両ドメインが参照する共有定数・D9）
 
@@ -20,7 +54,6 @@ class PremiereRunRequest(BaseModel):
 
 @router.post("/api/premiere/run")
 async def api_premiere_run(req: PremiereRunRequest):
-    await _ensure_not_running("premiere", "Premiere 処理が既に実行中です")
     # duration 優先順位: duration_h/m/s explicit > duration explicit > per-channel default_duration_sec > 10800
     if req.duration_h is not None or req.duration_m is not None or req.duration_s is not None:
         duration = (req.duration_h or 0) * 3600 + (req.duration_m or 0) * 60 + (req.duration_s or 0)
@@ -38,7 +71,7 @@ async def api_premiere_run(req: PremiereRunRequest):
         folder_path = Path(req.folder)
     elif req.video_name:
         config = get_dashboard_config()
-        folder_path = Path(config["channel_folder"]) / req.video_name
+        folder_path = resolve_video_folder(req.video_name)
     if folder_path:
         if not folder_path.exists():
             raise HTTPException(404, f"動画フォルダが存在しません: {folder_path}")
@@ -49,30 +82,20 @@ async def api_premiere_run(req: PremiereRunRequest):
 
     if req.auto_export:
         cmd.append("--export")
-    task_logs["premiere"] = []
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    active_tasks["premiere"] = proc
-    _stream_subprocess(proc, "premiere")
+    await _start_premiere_process(cmd, timeout=7200, owner="api:premiere-run")
     return {"status": "started", "duration": duration}
 
 @router.post("/api/premiere/export")
 async def api_premiere_export():
     """書き出しのみ実行"""
-    await _ensure_not_running("premiere", "Premiere 処理が既に実行中です")
     cmd = [sys.executable, str(PREMIERE_SCRIPT), "--export-only"]
-    task_logs["premiere"] = []
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    active_tasks["premiere"] = proc
-    _stream_subprocess(proc, "premiere")
+    await _start_premiere_process(cmd, timeout=14400, owner="api:premiere-export")
     return {"status": "started"}
 
 @router.post("/api/premiere/regenerate-srt")
 async def api_premiere_regenerate_srt():
     cmd = [sys.executable, str(PREMIERE_SCRIPT), "--regenerate-srt"]
-    task_logs["premiere"] = []
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    active_tasks["premiere"] = proc
-    _stream_subprocess(proc, "premiere")
+    await _start_premiere_process(cmd, timeout=1800, owner="api:premiere-regenerate-srt")
     return {"status": "started"}
 
 @router.get("/api/premiere/status")
@@ -82,6 +105,7 @@ def api_premiere_status():
     return {"running": running, "logs": task_logs.get("premiere", [])[-50:]}
 
 @router.get("/api/premiere/check")
+@_premiere_resource_endpoint
 def api_premiere_check():
     """Premiere Pro 接続確認 (pymiere → AppleScript フォールバック)"""
     import subprocess as _sp
@@ -148,6 +172,7 @@ def api_premiere_panel_status():
 
 
 @router.post("/api/premiere/reopen-panel")
+@_premiere_resource_endpoint
 def api_premiere_reopen_panel():
     """「ウィンドウ > 拡張機能 > Premiere Link」を AppleScript で自動クリックして
     パネルを開き直す。アクセシビリティ権限が必要。"""
@@ -166,6 +191,7 @@ def api_premiere_reopen_panel():
 
 
 @router.post("/api/premiere/restart")
+@_premiere_resource_endpoint
 def api_premiere_restart():
     """Premiere Pro を安全に終了 → 再起動する。
     起動中のプロジェクトは保存ダイアログが出るため、あらかじめ保存済みであることを
@@ -267,7 +293,22 @@ class PhotoshopRenderForVideoRequest(BaseModel):
 def _import_photoshop():
     import importlib as _il
     sys.path.insert(0, str(SHARED_BASE / "Python"))
-    return _il.import_module("app_photoshop")
+    module = _il.import_module("app_photoshop")
+
+    class _PhotoshopProxy:
+        """ResourceBusyError を API の明確な 409 に変換する。"""
+        def __getattr__(self, name):
+            value = getattr(module, name)
+            if not callable(value):
+                return value
+            def _call(*args, **kwargs):
+                try:
+                    return value(*args, **kwargs)
+                except ResourceBusyError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+            return _call
+
+    return _PhotoshopProxy()
 
 
 @router.get("/api/photoshop/check")
@@ -284,7 +325,9 @@ def api_photoshop_check():
 def api_photoshop_panel_status():
     """Photoshop プロセス状態を返す（AppleScript 経由なのでパネル不要）。"""
     import subprocess as _sp
-    running = _sp.run(["pgrep", "-fi", "Adobe Photoshop"], capture_output=True).returncode == 0
+    running = _sp.run(
+        ["pgrep", "-fi", "Adobe Photoshop"], capture_output=True, timeout=10
+    ).returncode == 0
     return {"alive": running, "method": "applescript_do_javascript"}
 
 
@@ -379,7 +422,7 @@ def api_photoshop_render_for_video(req: PhotoshopRenderForVideoRequest):
     config = get_dashboard_config()
     folder_path = req.video_folder
     if not folder_path and req.video_name:
-        folder_path = str(Path(config["channel_folder"]) / req.video_name)
+        folder_path = str(resolve_video_folder(req.video_name))
     if not folder_path:
         raise HTTPException(400, "video_folder か video_name のいずれかが必要")
     try:
@@ -419,7 +462,7 @@ def api_photoshop_generate_scene_text(req: PhotoshopGenerateSceneTextRequest):
         config = get_dashboard_config()
         folder_path = req.video_folder
         if not folder_path and req.video_name:
-            folder_path = str(Path(config["channel_folder"]) / req.video_name)
+            folder_path = str(resolve_video_folder(req.video_name))
         if not folder_path:
             raise HTTPException(400, "image_path / video_folder / video_name のいずれかが必要")
         folder = Path(folder_path)
@@ -579,7 +622,7 @@ def api_photoshop_render_dual_thumbnail(req: PhotoshopRenderDualRequest):
     config = get_dashboard_config()
     folder_path = req.video_folder
     if not folder_path and req.video_name:
-        folder_path = str(Path(config["channel_folder"]) / req.video_name)
+        folder_path = str(resolve_video_folder(req.video_name))
     if not folder_path:
         raise HTTPException(400, "video_folder か video_name のいずれかが必要")
     folder = Path(folder_path)

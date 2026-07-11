@@ -64,6 +64,8 @@ def _check_token_scopes():
         return False, str(e)
 
 DEFAULT_CLI = "claude"
+from app_quota import execute_youtube, get_video_stats_with_fallback  # noqa: E402
+from app_retention import ensure_fetched_at  # noqa: E402
 
 # （app_image_prompt の import は D8 で propose_flow_prompt を撤去した際に孤立した死蔵 import。
 #  D6 実体移動で competitor を取得層に純化するにあたり除去。画像プロンプト生成は
@@ -177,34 +179,14 @@ def _get_youtube_service():
 
 def _extract_channel_id(youtube, url: str) -> str | None:
     """チャンネル URL から channelId を解決"""
-    # /channel/UC... 形式
-    m = re.search(r"/channel/(UC[\w-]+)", url)
-    if m:
-        return m.group(1)
-    # /@handle 形式
-    m = re.search(r"/@([\w.-]+)", url)
-    if m:
-        handle = m.group(1)
-        r = youtube.search().list(q=f"@{handle}", type="channel", part="id", maxResults=1).execute()
-        items = r.get("items", [])
-        if items:
-            return items[0]["id"]["channelId"]
-    # /c/name or /user/name
-    m = re.search(r"/(c|user)/([\w.-]+)", url)
-    if m:
-        r = youtube.search().list(q=m.group(2), type="channel", part="id", maxResults=1).execute()
-        items = r.get("items", [])
-        if items:
-            return items[0]["id"]["channelId"]
-    # watch?v=VIDEO_ID → 動画からチャンネルを逆引き
-    m = re.search(r"[?&]v=([\w-]{11})", url)
-    if m:
-        vid = m.group(1)
-        r = youtube.videos().list(part="snippet", id=vid).execute()
-        items = r.get("items", [])
-        if items:
-            return items[0]["snippet"]["channelId"]
-    return None
+    # J-0: search.list は使わない。/@handle は channels.list(forHandle)、
+    # /channel/UC は channels.list(id)、カスタムURLはページ内 channelId 抽出後に
+    # channels.list(id) で確定する。
+    try:
+        import app_benchmark_channels as _bc
+        return _bc.resolve_channel_id(url).get("channel_id")
+    except Exception:
+        return None
 
 
 def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50, desc_limit: int = 500):
@@ -213,7 +195,7 @@ def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50, desc_
     desc_limit: 説明文の切り詰め文字数（既定500=従来挙動）。投稿文軸の構成分析では
     末尾のCTA/ハッシュタグ/後半tracklistまで必要なため、軸 run 時のみ大きく渡す。"""
     # 1) uploads playlist を取得
-    ch_resp = youtube.channels().list(part="contentDetails,snippet", id=channel_id).execute()
+    ch_resp = execute_youtube(youtube.channels().list(part="contentDetails,snippet", id=channel_id), "channels.list", channel_id=channel_id)
     ch_items = ch_resp.get("items", [])
     if not ch_items:
         return [], ""
@@ -224,11 +206,11 @@ def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50, desc_
     video_ids = []
     page_token = None
     while len(video_ids) < max_results:
-        pl_resp = youtube.playlistItems().list(
+        pl_resp = execute_youtube(youtube.playlistItems().list(
             part="contentDetails", playlistId=uploads_id,
             maxResults=min(50, max_results - len(video_ids)),
             pageToken=page_token,
-        ).execute()
+        ), "playlistItems.list", channel_id=channel_id)
         for item in pl_resp.get("items", []):
             video_ids.append(item["contentDetails"]["videoId"])
         page_token = pl_resp.get("nextPageToken")
@@ -242,25 +224,28 @@ def _fetch_channel_videos(youtube, channel_id: str, max_results: int = 50, desc_
     videos = []
     for i in range(0, len(video_ids), 50):
         chunk = video_ids[i:i + 50]
-        v_resp = youtube.videos().list(
-            part="snippet,statistics,contentDetails",
-            id=",".join(chunk),
-        ).execute()
+        v_resp, stats_source = get_video_stats_with_fallback(
+            youtube,
+            chunk,
+            channel_id=channel_id,
+            part="id,snippet,statistics,contentDetails",
+        )
         for v in v_resp.get("items", []):
             stats = v.get("statistics", {})
             snip = v.get("snippet", {})
-            videos.append({
+            videos.append(ensure_fetched_at({
                 "videoId": v["id"],
                 "title": snip.get("title", ""),
                 "description": (snip.get("description") or "")[:desc_limit],
                 "tags": snip.get("tags", [])[:15],
-                "publishedAt": snip.get("publishedAt", ""),
+                "publishedAt": snip.get("publishedAt", "") or snip.get("publishTime", ""),
                 "viewCount": int(stats.get("viewCount", 0)),
                 "likeCount": int(stats.get("likeCount", 0)),
                 "commentCount": int(stats.get("commentCount", 0)),
                 "duration": v.get("contentDetails", {}).get("duration", ""),
                 "channelTitle": snip.get("channelTitle", ""),
-            })
+                "stats_source": stats_source,
+            }))
 
     return videos, ch_name
 
@@ -269,42 +254,24 @@ def fetch_competitor_data(rival_urls: list[str], desc_limit: int = 500) -> dict:
     """全ライバルチャンネルの動画を取得して分析用データにまとめる。
 
     desc_limit: 説明文切り詰め（既定500=従来）。投稿文軸の full 再取得時のみ大きく渡す。"""
-    youtube = _get_youtube_service()
-    result = {"channels": []}
-
+    import app_benchmark_channels as _bc
+    fetched_ids: list[str] = []
     for url in rival_urls:
         url = url.strip()
         if not url:
             continue
         print(f" {url}")
         try:
-            ch_id = _extract_channel_id(youtube, url)
-            if not ch_id:
-                print("    ⚠️ channelId 解決失敗")
-                continue
-            videos, ch_name = _fetch_channel_videos(youtube, ch_id, max_results=50, desc_limit=desc_limit)
-            if not videos:
-                print("    ⚠️ 動画なし")
-                continue
-
-            # 再生数 TOP10
-            by_views = sorted(videos, key=lambda v: v["viewCount"], reverse=True)[:10]
-            # 直近投稿 10 本
-            by_date = sorted(videos, key=lambda v: v["publishedAt"], reverse=True)[:10]
-
-            result["channels"].append({
-                "url": url,
-                "channelId": ch_id,
-                "channelName": ch_name,
-                "totalVideos": len(videos),
-                "topByViews": by_views,
-                "recentUploads": by_date,
-            })
-            print(f"    ✓ {ch_name}: {len(videos)} 動画取得 (TOP10 最大再生: {by_views[0]['viewCount']:,})")
+            ch = _bc.fetch_channel(url, limit=max(30, min(50, desc_limit // 100 if desc_limit else 30)), force=False)
+            print(f"    ✓ {ch.get('channel_name')}: {len(ch.get('videos') or [])} 動画取得")
+            cid = (ch.get("channel_id") or ch.get("channelId") or "").strip()
+            if cid:
+                fetched_ids.append(cid)
         except Exception as e:
             print(f"    ❌ {e}")
-
-    return result
+    # 共有キャッシュには他の自チャンネル用ベンチマークも入っているため、
+    # 今回の rival_urls で解決できたチャンネルだけに絞る（解決0件なら従来どおり全件）。
+    return _bc.competitor_data_from_cache(fetched_ids or None)
 
 
 # ─── Claude CLI 分析 ─────────────────────────────────
@@ -320,80 +287,10 @@ from app_benchmark_common import extract_json_object as _extract_json_object
 # 内部利用（run_full_analysis / __main__）は app_benchmark_analyze から局所 import する。
 
 
-def import_benchmark_from_sheet(sheet_url: str) -> dict:
-    """Google Sheets URL から全シート/全タブを取得し、ベンチマーク登録候補を抽出する。
-
-    シートの構造は任意。各タブの内容を読み取り、チャンネル名/URL/視聴数などに見える列を
-    Claude CLI 側で解釈する前提の raw データとして返す。
-
-    Args:
-        sheet_url: https://docs.google.com/spreadsheets/d/{id}/edit... 形式のURL
-
-    Returns:
-        {"sheet_id": str, "tabs": [{"name": str, "rows": [[...], ...]}]}
-    """
-    import urllib.request
-    import urllib.parse
-
-    # URL から ID 抽出
-    m = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", sheet_url)
-    if not m:
-        raise RuntimeError(f"Sheets URL から ID を抽出できません: {sheet_url}")
-    sheet_id = m.group(1)
-
-    # export?format=csv で全シートを一度に取るのは不可。gid=0 以外は個別取得が必要。
-    # 簡易対応: デフォルト1枚目のみ CSV で取得。複数タブ対応は Sheets API 認証要。
-    # dashboard_config > ~/.config/orzz/sheets_api_key.txt の順で解決
-    api_key = ""
-    try:
-        dc_path = Path.home() / ".config" / "orzz" / "dashboard_config.json"
-        if dc_path.exists():
-            dc = json.loads(dc_path.read_text(encoding="utf-8"))
-            api_key = (dc.get("sheets_api_key") or "").strip()
-    except Exception:
-        pass
-    if not api_key:
-        api_key_file = Path.home() / ".config" / "orzz" / "sheets_api_key.txt"
-        if api_key_file.exists():
-            api_key = api_key_file.read_text(encoding="utf-8").strip()
-    if api_key:
-        # メタデータ取得で全シート列挙
-        meta_url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}?key={api_key}"
-        meta = json.loads(urllib.request.urlopen(meta_url, timeout=30).read())
-        tabs = []
-        for sh in meta.get("sheets", []):
-            title = sh["properties"]["title"]
-            rng_url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{urllib.parse.quote(title)}?key={api_key}"
-            try:
-                data = json.loads(urllib.request.urlopen(rng_url, timeout=30).read())
-                tabs.append({"name": title, "rows": data.get("values", [])})
-            except Exception as e:
-                tabs.append({"name": title, "rows": [], "error": str(e)})
-        return {"sheet_id": sheet_id, "tabs": tabs, "mode": "api"}
-
-    # フォールバック: CSV export（1枚目のみ）
-    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    try:
-        raw = urllib.request.urlopen(csv_url, timeout=30).read().decode("utf-8", errors="replace")
-        import csv, io
-        rows = list(csv.reader(io.StringIO(raw)))
-        return {"sheet_id": sheet_id, "tabs": [{"name": "Sheet1", "rows": rows}], "mode": "csv_public",
-                "hint": "Sheets API キー未設定のため1枚目のみ取得。全シート取得は ~/.config/orzz/sheets_api_key.txt に API キーを保存してください"}
-    except Exception as e:
-        raise RuntimeError(f"Sheets 公開CSV取得失敗（非公開シートの可能性）: {e}")
-
-
 # ─── メイン ──────────────────────────────────────────
 
 def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
-    """ライバルチャンネル優先 → スプシフォールバック → Claude 分析 → キャッシュ保存
-
-    優先順位:
-      1) rival_channels が登録されていれば YouTube API で取得（ユーザー意図を尊重）。
-         スプシも設定済みなら growth_summary だけは別途スプシから取得して文脈に合成。
-      2) rival_channels が空なら、スプシ（適用中ベンチマーク）から取得。
-      3) どちらも空ならエラー。
-    """
+    """登録済みベンチマークURL/キャッシュ → Claude 分析 → キャッシュ保存"""
     cfg = _load_analysis_config()
 
     print("=" * 60)
@@ -402,69 +299,30 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
 
     competitor_data = None
     growth_summary = None
-    source = "unknown"
+    source = "benchmark_channel_cache"
 
-    detail_url = cfg.get("spreadsheet_channel_detail_url", "").strip()
-    growth_url = cfg.get("spreadsheet_growth_tracking_url", "").strip()
     rivals = cfg.get("rival_channels") or []
-    print(f"  設定: rivals={len(rivals)} / detail_url={'set' if detail_url else 'empty'} / growth_url={'set' if growth_url else 'empty'}")
+    print(f"  設定: rivals={len(rivals)} / source=benchmark_channel_cache")
 
-    # 1) ライバルチャンネル優先
     if rivals:
-        print(f"\n ライバルチャンネルを YouTube API で取得（{len(rivals)} 件）")
+        print(f"\n ベンチマークURLを Data API で取得（{len(rivals)} 件）")
         try:
             competitor_data = fetch_competitor_data(rivals)
             if competitor_data and competitor_data.get("channels"):
-                source = "youtube_api_rivals"
                 print(f" {len(competitor_data['channels'])} チャンネル取得成功")
             else:
                 competitor_data = None
-                print("  ⚠️ ライバル取得 0 件 → スプシフォールバック")
+                print("  ⚠️ ベンチマーク取得 0 件")
         except Exception as e:
-            print(f"  ⚠️ ライバル取得失敗: {e} → スプシフォールバック")
+            print(f"  ⚠️ ベンチマーク取得失敗: {e}")
             competitor_data = None
 
-        # growth_summary はスプシ由来のみ。rival 優先時もシグナルとして付与する。
-        if competitor_data and detail_url and growth_url:
-            try:
-                from app_sheets import fetch_from_spreadsheets
-                bench_filter = cfg.get("benchmark_filter", {}) or {}
-                _spsh, growth_summary = fetch_from_spreadsheets(
-                    detail_url, growth_url,
-                    top_n=int(bench_filter.get("top_n", 15)),
-                    pinned_names=cfg.get("benchmark_pinned_names") or None,
-                    min_subs=int(bench_filter.get("min_subs", 0)),
-                    max_subs=bench_filter.get("max_subs"),
-                    exclude_names=bench_filter.get("exclude_names") or None,
-                )
-                if growth_summary:
-                    print(f" スプシから growth_summary を補助取得（hot {len((growth_summary or {}).get('hot_channels') or [])} 件）")
-            except Exception as e:
-                print(f"  ⚠️ growth_summary 取得失敗（無視して続行）: {e}")
-                growth_summary = None
-
-    # 2) スプシフォールバック（rivals 空 or rival 取得失敗時）
     if not competitor_data:
-        if not (detail_url and growth_url):
-            raise RuntimeError("データソースが設定されていません（ライバルチャンネル または スプシ URL のどちらかが必要）")
-        print("\n スプレッドシートからデータ取得（API quota ゼロ）")
-        try:
-            from app_sheets import fetch_from_spreadsheets
-            bench_filter = cfg.get("benchmark_filter", {}) or {}
-            competitor_data, growth_summary = fetch_from_spreadsheets(
-                detail_url, growth_url,
-                top_n=int(bench_filter.get("top_n", 15)),
-                pinned_names=cfg.get("benchmark_pinned_names") or None,
-                min_subs=int(bench_filter.get("min_subs", 0)),
-                max_subs=bench_filter.get("max_subs"),
-                exclude_names=bench_filter.get("exclude_names") or None,
-            )
-        except Exception as e:
-            raise RuntimeError(f"スプシ取得失敗: {e}")
+        import app_benchmark_channels as _bc
+        competitor_data = _bc.competitor_data_from_cache()
         if not competitor_data or not competitor_data.get("channels"):
-            raise RuntimeError("競合データの取得に失敗しました（スプシも空）")
-        source = "spreadsheet"
-        print(f" {len(competitor_data['channels'])} チャンネル取得成功")
+            raise RuntimeError("ベンチマークデータが空です。POST /api/benchmark/channels でURL登録してください")
+        print(f" キャッシュから {len(competitor_data['channels'])} チャンネル読込")
 
     # Claude で分析（growth_summary があれば注入）
     # 分析関数は app_benchmark_analyze へ物理移動済み（D6）。局所 import で逆依存を持たない。
@@ -472,14 +330,14 @@ def run_full_analysis(cli_cmd: str = DEFAULT_CLI) -> dict:
     analysis = analyze_with_claude(competitor_data, cli_cmd, growth_summary=growth_summary)
 
     # キャッシュ保存
-    cache = {
+    cache = ensure_fetched_at({
         "competitor_data": competitor_data,
         "analysis": analysis,
         "source": source,
         "analyzed_at": __import__("datetime").datetime.now().isoformat(),
         "language": "ja",
         "prompt_version": 5,
-    }
+    })
     if growth_summary:
         cache["growth_summary"] = growth_summary
     try:
@@ -703,62 +561,20 @@ def _fetch_recent_uploads_by_key(channel_item: dict, api_key: str, max_results: 
 
 def fetch_channel_basic_by_key(channel_url: str, api_key: str) -> dict:
     """チャンネル URL から基本情報 + 最新/人気動画を API key で取得"""
-    import urllib.request, urllib.parse
-    if not api_key:
-        raise RuntimeError("YouTube API key が未設定")
-    cid = None
-    m = re.search(r"/channel/(UC[A-Za-z0-9_-]+)", channel_url)
-    if m:
-        cid = m.group(1)
-    else:
-        handle_m = re.search(r"/(@[\w\-.]+)", channel_url)
-        if handle_m:
-            handle = handle_m.group(1)
-            qs = urllib.parse.urlencode({"part": "id,snippet,statistics",
-                                         "forHandle": handle, "key": api_key})
-            url = f"https://www.googleapis.com/youtube/v3/channels?{qs}"
-            with urllib.request.urlopen(url, timeout=20) as r:
-                d = json.loads(r.read())
-            if d.get("items"):
-                cid = d["items"][0]["id"]
-    if not cid:
-        raise RuntimeError(f"channelId が解決できません: {channel_url}")
-
-    # 基本情報
-    qs = urllib.parse.urlencode({"part": "snippet,statistics,contentDetails",
-                                 "id": cid, "key": api_key})
-    url = f"https://www.googleapis.com/youtube/v3/channels?{qs}"
-    with urllib.request.urlopen(url, timeout=20) as r:
-        d = json.loads(r.read())
-    if not d.get("items"):
-        raise RuntimeError(f"チャンネル情報が取れません: {cid}")
-    ch = d["items"][0]
-    sn = ch.get("snippet", {})
-    stat = ch.get("statistics", {})
-
-    # 人気動画 TOP10 (search API)
-    qs = urllib.parse.urlencode({"part": "id,snippet", "channelId": cid,
-                                 "order": "viewCount", "maxResults": 10,
-                                 "type": "video", "key": api_key})
-    url = f"https://www.googleapis.com/youtube/v3/search?{qs}"
-    with urllib.request.urlopen(url, timeout=20) as r:
-        s = json.loads(r.read())
-    video_ids = [it["id"]["videoId"] for it in s.get("items", []) if it.get("id", {}).get("videoId")]
-    videos = _fetch_video_details_by_key(video_ids, api_key)
-    recent_videos = _fetch_recent_uploads_by_key(ch, api_key, max_results=10)
-
+    import app_benchmark_channels as _bc
+    ch = _bc.fetch_channel(channel_url, limit=30, force=False)
     return {
-        "channel_id": cid,
-        "channel_name": sn.get("title", ""),
-        "description": sn.get("description", ""),
-        "subscribers": int(stat.get("subscriberCount", 0)),
-        "total_views": int(stat.get("viewCount", 0)),
-        "video_count": int(stat.get("videoCount", 0)),
-        "url": f"https://www.youtube.com/channel/{cid}",
-        "thumbnail": (sn.get("thumbnails", {}).get("high") or
-                      sn.get("thumbnails", {}).get("default") or {}).get("url", ""),
-        "top_videos": videos,
-        "recent_videos": recent_videos,
+        "channel_id": ch.get("channel_id"),
+        "channel_name": ch.get("channel_name"),
+        "description": ch.get("description", ""),
+        "subscribers": ch.get("subscribers", 0),
+        "total_views": ch.get("total_views", 0),
+        "video_count": ch.get("video_count", 0),
+        "url": ch.get("url", ""),
+        "thumbnail": ch.get("thumbnail", ""),
+        "top_videos": ch.get("top_videos") or [],
+        "recent_videos": ch.get("recent_videos") or [],
+        "source": "benchmark_channel_cache",
     }
 
 
@@ -894,148 +710,17 @@ IMPORTANT: The "adaptation_hints_for_orzz" field is for translating what makes t
         return {"error": str(e)}
 
 
-def _parse_sheet_a_rows(rows: list) -> list:
-    """Sheet A（チャンネル詳細）の行から構造化チャンネル情報を抽出"""
-    if not rows or len(rows) < 2:
-        return []
-    header = [h.strip() for h in rows[0]]
-    col = {h: i for i, h in enumerate(header)}
-    channels = []
-    for row in rows[1:]:
-        if not row or len(row) < 3:
-            continue
-        def g(key, default=""):
-            i = col.get(key)
-            if i is None or i >= len(row):
-                return default
-            return row[i]
-        url = g("URL")
-        name = g("TITLE")
-        # URL が http で始まらない行はヘッダ/日本語ラベル行としてスキップ
-        if not url.startswith("http"):
-            continue
-        subs = g("SUBSCRIBERS", "0").replace(",", "")
-        try:
-            subs_i = int(subs) if subs else 0
-        except ValueError:
-            subs_i = 0
-        total = g("TOTAL_VIEWS", "0").replace(",", "")
-        try:
-            total_i = int(total) if total else 0
-        except ValueError:
-            total_i = 0
-        top_videos = []
-        for i in range(1, 6):
-            suf = "" if i == 1 else str(i)
-            v_url = g(f"TOP_VIDEO_URL{suf}")
-            v_title = g(f"TOP_VIDEO_TITLE{suf}")
-            v_thumb = g(f"TOP_VIDEO_THUMBNAIL{suf}")
-            v_views = g(f"TOP_VIDEO_VIEWS{suf}", "0").replace(",", "")
-            if not v_url and not v_title:
-                continue
-            try:
-                v_views_i = int(v_views) if v_views else 0
-            except ValueError:
-                v_views_i = 0
-            top_videos.append({
-                "url": v_url,
-                "title": v_title,
-                "thumbnail": v_thumb,
-                "views": v_views_i,
-                "video_id": _extract_video_id(v_url),
-            })
-        channels.append({
-            "channel_name": name,
-            "url": url,
-            "subscribers": subs_i,
-            "total_views": total_i,
-            "description": g("DESCRIPTION"),
-            "thumbnail": g("ICON_IMAGE"),
-            "top_videos": top_videos,
-            "source": "sheet_a",
-        })
-    return channels
-
-
-def _parse_sheet_b_rows(rows: list) -> dict:
-    """Sheet B (成長トラッキング) の行から {name: {...}} を抽出。
-    列: 0=アイコン 1=チャンネル名 2=個別シート 3=追跡開始日 4=取得日時
-         5=総再生回数 6=登録者数 7=前日比再生数 8=前日比登録者数 9=直近伸び率"""
-    if not rows or len(rows) < 3:
-        return {}
-    out = {}
-    for row in rows[2:]:
-        if not row or len(row) < 2:
-            continue
-        name = (row[1] if len(row) > 1 else "").strip()
-        if not name:
-            continue
-        def _pf(idx):
-            if idx >= len(row):
-                return 0
-            s = (row[idx] or "").replace(",", "").replace("%", "").strip()
-            try:
-                return float(s) if s else 0
-            except ValueError:
-                return 0
-        def _s(idx):
-            if idx >= len(row):
-                return ""
-            return (row[idx] or "").strip()
-        out[name] = {
-            "tracking_start": _s(3),
-            "fetched_at": _s(4),
-            "total_views": int(_pf(5)),
-            "total_subs": int(_pf(6)),
-            "views_diff": int(_pf(7)),
-            "subs_diff": int(_pf(8)),
-            "growth_rate": _pf(9),
-        }
-    return out
-
-
 def list_benchmark_sources(sheet_a_url: str = "", sheet_b_url: str = "",
                            extra_urls: list = None) -> dict:
-    """Sheet A/B + extra_urls からチャンネル一覧（名前・サブスク・成長・サムネ）のみを返す。
-    Claude は呼ばない軽量版。ユーザーが選択画面で使う。"""
+    """登録済みキャッシュ + extra_urls からチャンネル一覧を返す。Sheets は使わない。"""
+    import app_benchmark_channels as _bc
     extra_urls = [u.strip() for u in (extra_urls or []) if u.strip()]
-    all_channels = []
-
-    if sheet_a_url:
-        try:
-            sa = import_benchmark_from_sheet(sheet_a_url)
-            for tab in sa.get("tabs", []):
-                chs = _parse_sheet_a_rows(tab.get("rows", []))
-                if chs:
-                    all_channels.extend(chs)
-                    break
-        except Exception as e:
-            print(f"Sheet A 取得失敗: {e}")
-
-    growth_map = {}
-    if sheet_b_url:
-        try:
-            sb = import_benchmark_from_sheet(sheet_b_url)
-            for tab in sb.get("tabs", []):
-                m = _parse_sheet_b_rows(tab.get("rows", []))
-                if m:
-                    growth_map.update(m)
-        except Exception as e:
-            print(f"Sheet B 取得失敗: {e}")
-
-    for ch in all_channels:
-        g = growth_map.get(ch["channel_name"])
-        if g:
-            ch["growth"] = g
-
-    api_key = _resolve_youtube_api_key()
     for url in extra_urls:
         try:
-            meta = fetch_channel_basic_by_key(url, api_key) if api_key else {"channel_name": url, "url": url}
-            meta["source"] = "extra_url"
-            all_channels.append(meta)
+            _bc.fetch_channel(url, limit=30, force=False)
         except Exception as e:
-            all_channels.append({"channel_name": url, "url": url, "source": "extra_url", "error": str(e)})
+            print(f"追加URL取得失敗: {url}: {e}")
+    all_channels = _bc._registry().get("channels") or []
 
     # 既存プロファイルと突合（S2: 分析済み可視化＝再分析の温床を断つ）
     analyzed = {}  # key -> {generated_at, valid}
@@ -1111,12 +796,11 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
                       progress_cb=None, channel_filter: list = None,
                       skip_existing: bool = True, force: bool = False,
                       max_age_days: int = None, dry_run: bool = False) -> dict:
-    """ベンチマーク完成パイプライン：
-    1. Sheet A + Sheet B から既存チャンネル情報を取得
-    2. extra_urls のリスト外チャンネルを YouTube API で追加取得
-    3. 各チャンネルの TOP3 動画のコメントを API key で取得
-    4. Claude CLI で統合プロファイル生成
-    5. benchmark_profiles.json に保存（マージ＝既存を消さない）
+    """ベンチマーク完成パイプライン（J-0後）:
+    1. 登録済みチャンネル + extra_urls を Data API キャッシュへ取込
+    2. 各チャンネルの TOP3 動画コメントを可能なら取得
+    3. Claude CLI で統合プロファイル生成
+    4. benchmark_profiles.json に保存（マージ＝既存を消さない）
 
     skip_existing: 既存の有効プロファイルがあれば再生成しない（既定True）。
     force: True で既存を無視して全対象を強制再生成。
@@ -1124,6 +808,7 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
     dry_run: 生成せず {total,new_count,reanalyze_count,skip_count,est_seconds,cli_count} だけ返す。
     """
     extra_urls = [u.strip() for u in (extra_urls or []) if u.strip()]
+    import app_benchmark_channels as _bc
 
     def log(msg):
         print(msg)
@@ -1134,52 +819,27 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
                 pass
 
     api_key = _resolve_youtube_api_key()
-
-    all_channels = []
-    # 1) Sheet A
-    if sheet_a_url:
-        log(" Sheet A を取得中...")
-        try:
-            sa = import_benchmark_from_sheet(sheet_a_url)
-            for tab in sa.get("tabs", []):
-                chs = _parse_sheet_a_rows(tab.get("rows", []))
-                if chs:
-                    log(f"  ✓ タブ '{tab.get('name')}' から {len(chs)} チャンネル")
-                    all_channels.extend(chs)
-                    break  # 最初の意味のあるタブを採用
-        except Exception as e:
-            log(f"  ⚠️ Sheet A 取得失敗: {e}")
-
-    # 2) Sheet B (成長トラッキング — 既存チャンネルに merge)
-    growth_map = {}
-    if sheet_b_url:
-        log(" Sheet B を取得中...")
-        try:
-            sb = import_benchmark_from_sheet(sheet_b_url)
-            for tab in sb.get("tabs", []):
-                m = _parse_sheet_b_rows(tab.get("rows", []))
-                if m:
-                    growth_map.update(m)
-            log(f"  ✓ 成長データ {len(growth_map)} チャンネル")
-        except Exception as e:
-            log(f"  ⚠️ Sheet B 取得失敗: {e}")
-
-    # merge growth
-    for ch in all_channels:
-        g = growth_map.get(ch["channel_name"])
-        if g:
-            ch["growth"] = g
-
-    # 3) extra_urls（リスト外チャンネル）
     for url in extra_urls:
         log(f"➕ 追加チャンネル: {url}")
         try:
-            meta = fetch_channel_basic_by_key(url, api_key)
-            meta["source"] = "extra_url"
-            all_channels.append(meta)
+            meta = _bc.fetch_channel(url, limit=30, force=force)
             log(f"  ✓ {meta.get('channel_name')}")
         except Exception as e:
             log(f"  ❌ 失敗: {e}")
+    all_channels = []
+    for c in (_bc._registry().get("channels") or []):
+        all_channels.append({
+            "channel_id": c.get("channel_id") or c.get("channelId"),
+            "channel_name": c.get("channel_name") or c.get("channelName"),
+            "url": c.get("url"),
+            "subscribers": c.get("subscribers", 0),
+            "total_views": c.get("total_views", 0),
+            "thumbnail": c.get("thumbnail") or c.get("icon_url", ""),
+            "top_videos": c.get("top_videos") or [],
+            "recent_videos": c.get("recent_videos") or [],
+            "growth": c.get("kpi") or {},
+            "source": "benchmark_channel_cache",
+        })
 
     # フィルタ適用（指定があれば選択チャンネルだけ残す）
     if channel_filter:
@@ -1247,7 +907,7 @@ def run_full_benchmark(sheet_a_url: str = "", sheet_b_url: str = "",
             "est_seconds": gen_total * 50,
         }
 
-    # 4) 生成対象だけ Data API で最新化（reuse は最新化不要＝search.list quota 節約）
+    # 生成対象だけ Data API で最新化（reuse は最新化不要）
     if api_key:
         for i, (ch, action, ex) in enumerate(plan):
             if action != "generate":

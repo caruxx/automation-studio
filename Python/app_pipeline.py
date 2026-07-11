@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -38,6 +39,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from publish_schedule import resolve_publish_at_iso
 
 # ─── 設定 ───
 BASE = Path(__file__).resolve().parent
@@ -49,6 +52,11 @@ try:
     CONFIG_DIR = _resolve_config_dir()
 except Exception:
     CONFIG_DIR = HOME / ".config" / "orzz"
+try:
+    from file_stability import wait_for_file_stable
+except Exception:
+    def wait_for_file_stable(path, **kw):
+        return True
 API_BASE = "http://localhost:8888"
 
 # 子プロセスがブラウザ手動ログインを要求した場合の sentinel exit code。
@@ -238,6 +246,8 @@ def _run(cmd, label, timeout=None, env_overrides=None):
     print(f"  {label}")
     print(f"  cmd: {' '.join(str(c) for c in cmd)}")
     print(f"{'='*60}\n")
+    if timeout is None:
+        timeout = int(os.environ.get("APP_PIPELINE_SUBPROCESS_TIMEOUT_SEC") or 43200)
     run_kwargs = {"timeout": timeout}
     if env_overrides:
         run_kwargs["env"] = {**os.environ, **env_overrides}
@@ -640,7 +650,7 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
 
     ch_cfg = _load_dashboard_config()
     ch_name = re.sub(r"[^A-Za-z0-9_-]+", "_", ch_cfg.get("channel_name", "orzz")).strip("_") or "orzz"
-    workspace = f"{ch_name}_vol{vol}"
+    workspace = (os.environ.get("APP_SUNO_WORKSPACE") or "").strip() or f"{ch_name}_vol{vol}"
 
     print(f"  prompt: {prompt[:60]}{'…' if len(prompt) > 60 else ''}")
     print(f"  count={count}, interval={interval}, provider={provider}, mode={mode}, batch={batch}")
@@ -703,6 +713,10 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
         suno_env_overrides = {}
         if os.environ.get("APP_KEEP_BROWSER", "").strip() not in ("0", "false", "no"):
             suno_env_overrides["APP_KEEP_BROWSER"] = "1"
+        # SUNO はブラウザ操作中に長時間無出力になりやすい。
+        # 子プロセス側の heartbeat / status ログをリアルタイムに親へ流す。
+        suno_env_overrides["PYTHONUNBUFFERED"] = "1"
+        suno_env_overrides["APP_SUNO_STATUS_FILE"] = str(folder / "suno_status.json")
         suno_ok = _run(cmd, STEP_LABELS["suno"], timeout=suno_timeout,
                        env_overrides=suno_env_overrides or None)
 
@@ -837,10 +851,17 @@ def _enqueue_and_wait(stage: str, vol: int, folder: Path) -> bool:
     cfg = _load_dashboard_config()
     ch_folder = cfg.get("channel_folder") or str(folder.parent)
     ch_name = cfg.get("channel_name") or ""
+    ch_id = ""
+    try:
+        ch = _resolve_channel(channel_folder=ch_folder)
+        ch_id = ch.get("id", "") if ch else (os.environ.get("APP_CHANNEL_ID") or "")
+    except Exception:
+        ch_id = os.environ.get("APP_CHANNEL_ID") or ""
     try:
         jid = _rq.enqueue(
             channel_folder=ch_folder, channel_name=ch_name,
             vol=int(vol), video_name=folder.name, stage=stage,
+            channel_id=ch_id,
         )
         print(f" enqueued render queue id={jid} (stage={stage}, vol={vol})")
         timeout = 3600 if stage == "premiere" else 7200
@@ -866,7 +887,7 @@ def _resolve_ref_path(raw, channel_dir: Path) -> Path:
     """参照画像のファイル/フォルダパスを「現マシン」へ移植解決する（2台 Mac 併用対応）。
 
     Google Drive のパスはマシン毎にユーザー名が違う
-    (/Users/abe_kota/… と /Users/asobimori/…) ので、保存された絶対パスをそのまま
+    (/Users/user_a/… と /Users/user_b/…) ので、保存された絶対パスをそのまま
     使うと別マシンで死ぬ。channel_dir（現マシンで解決済みのチャンネルフォルダ）を
     アンカーに「共有ドライブ」以降を付け替えてユーザー名差を吸収する。
 
@@ -899,36 +920,77 @@ def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Pa
     """サムネ/背景生成に渡す参照画像を優先順位で収集する（step_bgimage / step_thumbnail 共用）。
 
     優先順位:
-      0. APP_BGIMAGE_REFERENCE_IMAGE（単発の「このイメージに寄せたい」指定。最優先）
+      0. APP_BGIMAGE_REFERENCE_IMAGE / per-channel `reference_image`
+         （キャラクターやブランド識別子の固定参照）
       1. per-channel `reference_image_dir`（未設定なら各チャンネルルート/「ベンチマーク」）から
-         ref_count 枚ランダム選択
-      2. Picked（サムネ分析で人間が✓を入れたもの）
-      3. rival_channels の thumbs プールからランダム（最終フォールバック）
+         残り枠をランダム選択
+      2. Picked（サムネ分析で人間が✓を入れたもの）で残り枠を補完
+      3. rival_channels の thumbs プールで残り枠を補完（最終フォールバック）
 
     すべてのパスは `_resolve_ref_path` で現マシンへ移植解決するため、2台の Mac
-    （ユーザー名 abe_kota / asobimori）どちらでも参照が「生きる」。
+    （ユーザー名 user_a / user_b）どちらでも参照が「生きる」。
     """
     import random as _random
     channel_dir = folder.parent  # vol folder の親 = チャンネルフォルダ（現マシン解決済み）
     ref_images: list[Path] = []
+    mix_mode = str(cfg.get("reference_image_mix_mode") or "fixed_only").strip().lower()
+    if mix_mode not in {"fixed_only", "identity_plus_benchmark", "benchmark_only"}:
+        mix_mode = "fixed_only"
+
+    def add_ref(path: Path) -> bool:
+        if len(ref_images) >= ref_count:
+            return False
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        for existing in ref_images:
+            try:
+                if existing.resolve() == resolved:
+                    return False
+            except Exception:
+                if existing == path:
+                    return False
+        ref_images.append(path)
+        return True
 
     # 0. 明示参照画像（単発「寄せたい」用。os.pathsep 区切りで複数可）
     fixed_refs = (os.environ.get("APP_BGIMAGE_REFERENCE_IMAGE") or "").strip()
-    if fixed_refs:
+    if fixed_refs and mix_mode != "benchmark_only":
         for raw in fixed_refs.split(os.pathsep):
             p = _resolve_ref_path(raw, channel_dir)
             if p.exists() and p.is_file():
-                ref_images.append(p)
+                add_ref(p)
             else:
                 print(f"  ⚠ APP_BGIMAGE_REFERENCE_IMAGE が存在しません: {p}")
-        ref_images = ref_images[:ref_count]
         if ref_images:
-            print(f" 固定参照画像 {len(ref_images)}/{ref_count} 枚")
+            suffix = "（残り枠はベンチマーク等で補完）" if mix_mode == "identity_plus_benchmark" else ""
+            print(f" 固定参照画像 {len(ref_images)}/{ref_count} 枚{suffix}")
             for r in ref_images:
                 print(f"     - {r.name}")
 
+    # 0b. per-channel reference_image（設定タブの固定参照画像。env 未指定時のみ）。
+    # キャラクターIPの参照として使い、残り枠にはベンチマーク画像を足す。
+    if not fixed_refs and mix_mode != "benchmark_only":
+        cfg_ref = (cfg.get("reference_image") or "").strip()
+        if cfg_ref:
+            for raw in cfg_ref.split(os.pathsep):
+                p = _resolve_ref_path(raw, channel_dir)
+                if p.exists() and p.is_file():
+                    add_ref(p)
+                else:
+                    print(f"  ⚠ reference_image が存在しません: {p}（次のソースへフォールバック）")
+            if ref_images:
+                suffix = "（残り枠はベンチマーク等で補完）" if mix_mode == "identity_plus_benchmark" else ""
+                print(f" per-channel 固定参照画像 {len(ref_images)}/{ref_count} 枚{suffix}")
+                for r in ref_images:
+                    print(f"     - {r.name}")
+
+    if ref_images and mix_mode == "fixed_only":
+        return ref_images
+
     # 1. reference_image_dir（未設定なら各チャンネルルート/「ベンチマーク」を既定採用）
-    if not ref_images:
+    if len(ref_images) < ref_count:
         ref_dir_str = (cfg.get("reference_image_dir") or "").strip() or DEFAULT_REFERENCE_DIRNAME
         ref_dir = _resolve_ref_path(ref_dir_str, channel_dir)
         if ref_dir.is_dir():
@@ -940,31 +1002,44 @@ def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Pa
             )
             if dir_pool:
                 _random.shuffle(dir_pool)
-                ref_images = dir_pool[:ref_count]
-                print(f" reference_image_dir から {len(ref_images)}/{ref_count} 枚ランダム選択 ({ref_dir})")
-                for r in ref_images:
-                    print(f"     - {r.name}")
+                before = len(ref_images)
+                for p in dir_pool:
+                    add_ref(p)
+                    if len(ref_images) >= ref_count:
+                        break
+                picked = ref_images[before:]
+                if picked:
+                    print(f" reference_image_dir から {len(picked)} 枚追加 ({ref_dir})")
+                    for r in picked:
+                        print(f"     - {r.name}")
             else:
                 print(f"  ⚠ reference_image_dir に画像なし: {ref_dir}（次のソースへフォールバック）")
         else:
             print(f"  ⚠ reference_image_dir が存在しません: {ref_dir}（次のソースへフォールバック）")
 
     # 2. Picked
-    if not ref_images:
+    if len(ref_images) < ref_count:
         try:
             from app_benchmark_thumbnail import get_picked_paths  # type: ignore
             picked = get_picked_paths(limit=ref_count) or []
             if picked:
-                ref_images = [Path(p) for p in picked if Path(p).exists()][:ref_count]
-                if ref_images:
-                    print(f" Picked 参照画像 {len(ref_images)}/{ref_count} 枚（サムネ分析で選別済）")
-                    for r in ref_images:
+                before = len(ref_images)
+                for raw in picked:
+                    p = Path(raw)
+                    if p.exists() and p.is_file():
+                        add_ref(p)
+                    if len(ref_images) >= ref_count:
+                        break
+                added = ref_images[before:]
+                if added:
+                    print(f" Picked 参照画像 {len(added)} 枚追加（サムネ分析で選別済）")
+                    for r in added:
                         print(f"     - {r.name}")
         except Exception as e:
             print(f"  ⚠ Picked 取得失敗: {e}（rival_channels プールにフォールバック）")
 
     # 3. rival_channels の thumbs プール（最終フォールバック）
-    if not ref_images:
+    if len(ref_images) < ref_count:
         pool: list[Path] = []
         rival_channels = cfg.get("rival_channels") or []
         for url in rival_channels:
@@ -977,11 +1052,16 @@ def _gather_reference_images(cfg: dict, folder: Path, ref_count: int) -> list[Pa
                 pool.extend(list(bench_dir.glob("*.jpg")) + list(bench_dir.glob("*.jpeg")) + list(bench_dir.glob("*.png")))
         if pool:
             _random.shuffle(pool)
-            ref_images = pool[:ref_count]
-            print(f" rival thumbs プール {len(pool)} 枚から {len(ref_images)}/{ref_count} 枚ランダム選択（最終フォールバック）")
-            for r in ref_images:
+            before = len(ref_images)
+            for p in pool:
+                add_ref(p)
+                if len(ref_images) >= ref_count:
+                    break
+            added = ref_images[before:]
+            print(f" rival thumbs プール {len(pool)} 枚から {len(added)} 枚追加（最終フォールバック）")
+            for r in added:
                 print(f"     - {r.parent.name}/{r.name}")
-        else:
+        elif not ref_images:
             print("  ⚠ reference_image_dir / Picked / rival thumbs どれも無し。参照無しで生成")
 
     return ref_images
@@ -1062,7 +1142,7 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
         pass
 
     # 参照画像の収集は step_thumbnail と共通の _gather_reference_images に集約。
-    #   0. APP_BGIMAGE_REFERENCE_IMAGE（単発指定）
+    #   0. APP_BGIMAGE_REFERENCE_IMAGE（単発指定）→ per-channel reference_image（固定参照画像）
     #   1. reference_image_dir（未設定なら各チャンネルルート/「ベンチマーク」）から ref_count 枚
     #   2. Picked → 3. rival thumbs（フォールバック）
     # すべて _resolve_ref_path で現マシンへ移植解決（2台 Mac のユーザー名差を吸収）。
@@ -1082,6 +1162,21 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
         base_prompt = _legacy_bgimage_prompt(persona, channel_name)
     # ::vol{N}.png は最終行に独立して置く（codex_imagegen のファイル名コンベンション）
     prompt = f"{base_prompt}\n::vol{vol}.png"
+    meta_path = folder / ".bgimage_generation_meta.json"
+    try:
+        import app_image_prompt as _ip_meta
+        generation_meta = {
+            "vol": vol,
+            "video_name": folder.name,
+            "image_kind": "bgimage",
+            **((_ip_meta.LAST_PROMPT_META or {}) if use_dynamic else {}),
+        }
+        meta_path.write_text(
+            json.dumps({f"vol{vol}": generation_meta, f"vol{vol}.png": generation_meta}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        meta_path = None
 
     cmd = [
         sys.executable, str(BASE / "codex_imagegen.py"),
@@ -1092,6 +1187,8 @@ def step_bgimage(vol: int, folder: Path, via_api: bool, **kw):
         "--n", "1",
         "--timeout", str(bg_timeout),
     ]
+    if meta_path:
+        cmd += ["--generation-meta-json", str(meta_path)]
     for ref in ref_images:
         cmd += ["--reference-image", str(ref)]
 
@@ -1463,6 +1560,14 @@ def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: in
     structure_line = (structure or "").strip() or "verb+noun or adjective+noun"
     examples_block = ("  - Style reference (match the register, do NOT copy verbatim): " + " / ".join(examples) + "\n") if examples else ""
     forbidden_block = ("  - Forbidden exact matches (never output these): " + ", ".join(forbidden) + "\n") if forbidden else ""
+    learned_block = ""
+    try:
+        import app_learning as _learning
+        hint = _learning.learned_patterns_prompt_hint(os.environ.get("APP_CHANNEL_FOLDER") or "")
+        if hint:
+            learned_block = "  - Learned winning patterns from this channel's 48h reviews (adapt, do not copy blindly): " + hint.replace("\n", " / ") + "\n"
+    except Exception:
+        pass
     prompt = (
         "You generate a short English scene caption for a long-form BGM YouTube thumbnail.\n"
         f"Channel persona: {persona or '(unspecified)'}\n"
@@ -1472,7 +1577,7 @@ def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: in
         "  - 2 to 3 words (4 words OK only if natural).\n"
         f"  - Structure: {structure_line}.\n"
         f"  - Tone: {tone_line}.\n"
-        f"{examples_block}{forbidden_block}"
+        f"{examples_block}{forbidden_block}{learned_block}"
         "  - No quotes, no surrounding punctuation, no emojis, no labels, no explanation.\n"
         "Output only the phrase, nothing else."
     )
@@ -1510,6 +1615,14 @@ def _generate_scene_copy_ja(*, cli: str, persona: str, folder_name: str, vol: in
     structure_line = (structure or "").strip() or "句点「。」で終える、自然な日本語 1 文（読点はあってよい）"
     examples_block = ("  - 文体の参考（レジスターを合わせる。そのままコピーしない）: " + " / ".join(examples) + "\n") if examples else ""
     forbidden_block = ("  - 使用禁止の語（出力に含めない）: " + "、".join(forbidden) + "\n") if forbidden else ""
+    learned_block = ""
+    try:
+        import app_learning as _learning
+        hint = _learning.learned_patterns_prompt_hint(os.environ.get("APP_CHANNEL_FOLDER") or "")
+        if hint:
+            learned_block = "  - このチャンネルの48hレビューで蓄積した勝ち要素（参考。丸写ししない）: " + hint.replace("\n", " / ") + "\n"
+    except Exception:
+        pass
     prompt = (
         "あなたは長尺 BGM YouTube サムネイル用の、日本語の短いキャッチコピーを 1 件だけ作ります。\n"
         f"チャンネルのペルソナ: {persona or '（未設定）'}\n"
@@ -1520,7 +1633,7 @@ def _generate_scene_copy_ja(*, cli: str, persona: str, folder_name: str, vol: in
         f"  - トーン: {tone_line}。\n"
         "  - 全角で 2 行以内（おおむね 9〜16 文字程度の 1 文。長くしすぎない）。\n"
         "  - 前向き・cozy・カフェの朝のような心地よさ。ノスタルジー/悲しさ/夜/孤独は避ける。\n"
-        f"{examples_block}{forbidden_block}"
+        f"{examples_block}{forbidden_block}{learned_block}"
         "  - 句点「。」で終える 1 文にする（例の文体に倣う）。\n"
         "コピー本文だけを出力してください。"
     )
@@ -1928,6 +2041,9 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
     if not mp4 or not mp4.exists():
         print(f"  ⚠ mp4 が見つからない（書き出し未完？） — QA をスキップ")
         return True  # mp4 が無い時点で upload も走らないので QA は素通し
+    if not wait_for_file_stable(mp4, checks=2, interval=3, timeout=90):
+        print(f"  ❌ mp4 サイズが安定しません（同期/書き込み途中の可能性）: {mp4}")
+        return _qa_fail_unverifiable(folder, mp4, "mp4 サイズが安定しない")
 
     import shutil as _sh
     if not _sh.which("ffprobe"):
@@ -2038,7 +2154,23 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
     return False
 
 
-def _build_thumbnail_prompt(folder: Path) -> str:
+_DEFAULT_PAINTERLY_STYLE = (
+    "oil painting / gouache illustration style, painterly textured brushwork, "
+    "soft matte sophisticated colors, chic elegant editorial illustration, "
+    "NOT photorealistic, NOT 3D render"
+)
+
+
+def _required_painterly_style(cfg: dict) -> str:
+    """チャンネル設定の絵画風スタイルを返す。
+
+    orzz は bgimage_style に油彩/グワッシュ調を持たせているため、それを背景だけでなく
+    サムネにも適用する。未設定チャンネルは従来どおりベンチ分析の style に任せる。
+    """
+    return (cfg.get("thumbnail_style") or cfg.get("bgimage_style") or "").strip()
+
+
+def _build_thumbnail_prompt(folder: Path, ref_images=None) -> str:
     """ベンチマーク concept + visual_direction + 動画 concept から英語プロンプトを構築。
 
     優先順位:
@@ -2124,21 +2256,68 @@ def _build_thumbnail_prompt(folder: Path) -> str:
             parts.append(f"proven high-traction elements among competitors: {_hint}")
     except Exception:
         pass
+    try:
+        import app_learning as _learning
+        _learned = _learning.learned_patterns_prompt_hint(folder.parent)
+        if _learned:
+            parts.append("channel-specific winning patterns from 48h reviews: " + _learned.replace("\n", " / "))
+    except Exception:
+        pass
+    # seed動画分析: サムネにもクリック前の約束/借りてよい抽象要素/コピー禁止要素を反映。
+    # seed 不在・読込失敗では従来どおり進める（bgimage 側と同一パターン）。
+    try:
+        import app_benchmark_seed as _seed
+        _seed_hint = _seed.seed_prompt_hint()
+        if _seed_hint:
+            parts.append(
+                "Seed video analysis for thumbnail direction; apply only abstract click_promise "
+                "and safe_to_borrow elements, never use do_not_copy items: " + _seed_hint.replace("\n", " / ")
+            )
+    except Exception:
+        pass
+    cfg = _load_dashboard_config()
     body = ". ".join(parts) if parts else "cinematic atmospheric scene for a BGM YouTube channel"
     try:
         from app_image_prompt import build_gpt_image2_prompt, normalize_visual_direction
         visual = normalize_visual_direction(analysis, thumbnail_axis)
+        required_style = _required_painterly_style(cfg)
+        if required_style:
+            visual["style"] = required_style
+            body = f"{body}. Required rendering style: {required_style}."
+        if ref_images:
+            try:
+                from app_llm_runner import run_llm_vision
+                common = run_llm_vision(
+                    "Analyze these benchmark thumbnail images and describe ONLY their shared "
+                    "visual elements for a new YouTube thumbnail: subject, composition, time of day, "
+                    "lighting, color palette and mood. Output requirements: ONE single line of plain "
+                    "English, 1 to 2 sentences, 45 words maximum, no preamble, no Japanese, no markdown. "
+                    "Ignore all text, captions, logos and proper nouns.",
+                    [str(p) for p in ref_images],
+                    label="thumbnail:参照3枚の共通要素抽出",
+                )
+                clean = _sanitize_vision_background(common)
+                if clean:
+                    visual["background_context"] = clean
+                    print(" 参照3枚のVision共通要素をサムネ構成に採用")
+                elif (common or "").strip():
+                    print("  ⚠ サムネ参照3枚のVision共通要素が不正 → ベンチ分析の構成を維持")
+            except Exception as e:
+                print(f"  ⚠ サムネ参照3枚のVision分析失敗（ベンチ分析にフォールバック）: {e}")
         return build_gpt_image2_prompt(
             concept=body,
             visual_direction=visual,
             for_flow=False,
             include_text_overlay=False,
+            channel_folder=str(folder.parent),
+            channel_id=(cfg.get("channel_id") or cfg.get("channel_name") or ""),
         )
     except Exception:
         # 1920x1080 / 16:9 制約と「テキスト無し」を末尾に明示
+        style = _required_painterly_style(cfg) or _DEFAULT_PAINTERLY_STYLE
         return (
-            f"{body}. Cinematic photorealistic 16:9 thumbnail, "
-            "moody lighting, shallow depth of field, no text overlay, no logo, no watermark."
+            f"{body}. {style}. Cinematic 16:9 thumbnail, moody lighting, "
+            "shallow depth of field, no text overlay, no logo, no watermark."
         )
 
 
@@ -2309,6 +2488,18 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
         pass
     if visual_hint:
         parts.append(visual_hint)
+    # seed動画分析: 背景画像にもクリック前の約束/借りてよい抽象要素/コピー禁止要素を反映。
+    # seed 不在・読込失敗では従来どおり進める。
+    try:
+        import app_benchmark_seed as _seed
+        _seed_hint = _seed.seed_prompt_hint()
+        if _seed_hint:
+            parts.append(
+                "Seed video analysis for background visual direction; apply only abstract click_promise "
+                "and safe_to_borrow elements, never use do_not_copy items: " + _seed_hint.replace("\n", " / ")
+            )
+    except Exception:
+        pass
     # ペルソナ fallback
     cfg = _load_dashboard_config()
     persona = (cfg.get("persona") or "").strip()
@@ -2324,7 +2515,7 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
         body = f"{_BGIMAGE_SCENE} Channel mood context, do not depict literally: {context}. {_BGIMAGE_DIRECTIVE}"
         avoid_const = _BGIMAGE_AVOID
     else:
-        # per-ch `bgimage_style` で画風を上書き可能（未設定は写実）。例: 油彩/グワッシュ調のおしゃれイラスト。
+        # per-ch `bgimage_style` で画風を上書き可能。orzz は油彩/グワッシュ調を必須にする。
         style = custom_style or "photorealistic, cinematic"
         body = (
             f"Primary scene: {context}. "
@@ -2378,11 +2569,14 @@ def _build_bgimage_prompt(folder: Path, ref_images=None) -> str:
             visual_direction=visual,
             for_flow=False,
             include_text_overlay=False,
+            channel_folder=str(folder.parent),
+            channel_id=(cfg.get("channel_id") or cfg.get("channel_name") or ""),
         )
     except Exception:
         # ビルダー import 失敗時は body + 背景禁止語 + 16:9/no text の固定文を返す
+        fallback_style = custom_style or "cinematic"
         return (
-            f"{body}. Cinematic photorealistic 16:9 background, looping-friendly, "
+            f"{body}. {fallback_style} 16:9 background, looping-friendly, "
             f"no text overlay, no logo, no watermark. Avoid: {avoid_const}."
         )
 
@@ -2404,7 +2598,8 @@ def _eval_loop_env_float(name: str, default: float) -> float:
 
 
 def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
-                             final_path: Path, prompt_base: str):
+                             final_path: Path, prompt_base: str,
+                             gen_refs: list | None = None):
     """D5: 自己評価付き反復サムネ生成ループ（APP_THUMB_EVAL_LOOP=1 時のみ）。
 
     既存の codex 生成を generate_fn、score_thumbnails を score_fn に包んで
@@ -2452,7 +2647,7 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
     #   （Picked 1 枚固定をやめ、フォルダ指定＋複数枚＋2台 Mac 移植解決に統一）。
     # 採点用の競合参照（ref_paths）とサムネ軸は従来どおり Picked / キャッシュから。
     ref_paths: list = []
-    gen_refs: list = []
+    gen_refs = list(gen_refs or [])
     thumbnail_axis: dict = {}
     try:
         _eval_cfg = _load_dashboard_config()
@@ -2461,7 +2656,8 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
                                  or os.environ.get("APP_BGIMAGE_REFCOUNT", "3"))
         except ValueError:
             _eval_refcount = 3
-        gen_refs = _gather_reference_images(_eval_cfg, folder, _eval_refcount)
+        if not gen_refs:
+            gen_refs = _gather_reference_images(_eval_cfg, folder, _eval_refcount)
     except Exception as e:
         print(f"  ⚠ eval-loop 生成参照（ベンチマーク3枚）の収集失敗: {e}")
     try:
@@ -2640,7 +2836,19 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
             print(f"  ⚠ APP_THUMBNAIL_PROVIDERS={providers_raw!r} が無効 → step スキップ")
             return True
 
-    prompt = _build_thumbnail_prompt(folder)
+    thumb_refs: list[Path] = []
+    try:
+        thumb_cfg = _load_dashboard_config()
+        try:
+            thumb_refcount = int(os.environ.get("APP_THUMBNAIL_REFCOUNT")
+                                 or os.environ.get("APP_BGIMAGE_REFCOUNT", "3"))
+        except ValueError:
+            thumb_refcount = 3
+        thumb_refs = _gather_reference_images(thumb_cfg, folder, thumb_refcount)
+    except Exception as e:
+        print(f"  ⚠ サムネ参照画像の収集失敗: {e}")
+
+    prompt = _build_thumbnail_prompt(folder, ref_images=thumb_refs)
     print(f" prompt: {prompt[:180]}{'…' if len(prompt) > 180 else ''}")
     out_dir = folder / "thumbnail_candidates"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2648,7 +2856,7 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
     # D5: 自己評価付き反復生成ループ（既定OFF・APP_THUMB_EVAL_LOOP=1 でオプトイン）。
     # ON 時は生成→Vision採点→合格まで再生成＋弱点還流。OFF 時は従来の単発生成（下記）と完全一致。
     if (os.environ.get("APP_THUMB_EVAL_LOOP") or "").strip() in ("1", "true", "yes"):
-        looped = _run_thumbnail_eval_loop(vol, folder, out_dir, final_path, prompt)
+        looped = _run_thumbnail_eval_loop(vol, folder, out_dir, final_path, prompt, thumb_refs)
         if looped is not None:
             # ループが走った（昇格できなくても upload は止めない＝従来の non-fatal 方針）
             return True
@@ -2667,23 +2875,10 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
             "--quality", os.environ.get("APP_THUMBNAIL_IMAGE_QUALITY", "medium"),
             "--prompt", f"{prompt}::vol{vol}_thumb",
         ]
-        # 参照画像: 各チャンネルルート/「ベンチマーク」フォルダから 3 枚（既定）。
-        # step_bgimage と同じ _gather_reference_images に集約（Picked 1 枚固定をやめ、
-        # フォルダ指定＋複数枚＋2台 Mac 移植解決に統一）。
-        try:
-            thumb_cfg = _load_dashboard_config()
-            try:
-                thumb_refcount = int(os.environ.get("APP_THUMBNAIL_REFCOUNT")
-                                     or os.environ.get("APP_BGIMAGE_REFCOUNT", "3"))
-            except ValueError:
-                thumb_refcount = 3
-            thumb_refs = _gather_reference_images(thumb_cfg, folder, thumb_refcount)
-            for r in thumb_refs:
-                codex_cmd += ["--reference-image", str(r)]
-            if thumb_refs:
-                print(f" codex reference: {len(thumb_refs)} 枚 ({', '.join(p.name for p in thumb_refs)})")
-        except Exception as e:
-            print(f"  ⚠ codex 参照画像の収集失敗: {e}")
+        for r in thumb_refs:
+            codex_cmd += ["--reference-image", str(r)]
+        if thumb_refs:
+            print(f" codex reference: {len(thumb_refs)} 枚 ({', '.join(p.name for p in thumb_refs)})")
         try:
             p = subprocess.Popen(codex_cmd, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -2725,61 +2920,104 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
     return True
 
 
-def step_upload(vol: int, folder: Path, via_api: bool, **kw):
-    privacy = kw.get("privacy", "unlisted")
-    # P3-3: per-channel `publish_mode`（公開方式＝予約投稿イメージ）で upload privacy と
-    # 公開ゲートを決める。
-    #   - "unlisted" : 限定公開で upload、公開ゲート無し（既定・現行動作）
-    #   - "public"   : 即時 public で upload
-    #   - "delayed"  : private で upload → `publish_delay_hours` 時間後に自動 public 化
-    # 後方互換: publish_mode 未設定なら publish_delay_hours>0 → "delayed"、それ以外 "unlisted"。
-    cfg = _load_dashboard_config()
-    try:
-        delay_h = float(cfg.get("publish_delay_hours") or 0)
-    except (TypeError, ValueError):
-        delay_h = 0.0
-    mode = (cfg.get("publish_mode") or "").strip().lower()
-    if mode not in ("unlisted", "public", "delayed"):
-        mode = "delayed" if delay_h > 0 else "unlisted"
+def _force_reupload_enabled() -> bool:
+    return os.environ.get("APP_FORCE_REUPLOAD", "").strip().casefold() in ("1", "true", "yes")
 
-    schedule_gate = False
-    if mode == "public":
-        privacy = "public"
-        print(" publish_mode=public → 即時公開で upload")
-    elif mode == "delayed" and delay_h > 0:
-        privacy = "private"
-        schedule_gate = True
-        print(f" publish_mode=delayed → upload は private、{delay_h}h 後に自動 public 化")
-    elif mode == "delayed" and delay_h <= 0:
-        # delayed なのに遅延時間が無い → 即時 public とみなす（設定の取りこぼし救済）
-        privacy = "public"
-        print(" publish_mode=delayed だが publish_delay_hours=0 → 即時公開で upload")
+
+def _read_upload_title(folder: Path) -> str:
+    try:
+        return (folder / "youtube_title.txt").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _parse_uploaded_at(value: str) -> dt.datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.datetime.now().astimezone().tzinfo)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _local_upload_marker_allows_skip(folder: Path) -> tuple[bool, dict]:
+    marker_path = folder / "youtube_upload.json"
+    if not marker_path.exists():
+        return False, {}
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False, {}
+    if not isinstance(marker, dict):
+        return False, {}
+    video_id = (marker.get("video_id") or marker.get("id") or "").strip()
+    if not video_id:
+        return False, marker
+
+    marker_title = (marker.get("title") or "").strip()
+    current_title = _read_upload_title(folder)
+    title_matches = False
+    if marker_title and current_title:
+        from app_reconcile import _norm_title
+        title_matches = _norm_title(marker_title) == _norm_title(current_title)
+
+    uploaded_at = _parse_uploaded_at(marker.get("uploaded_at") or marker.get("published_at") or "")
+    recent_upload = False
+    if uploaded_at:
+        recent_upload = dt.datetime.now(dt.timezone.utc) - uploaded_at <= dt.timedelta(hours=72)
+    return bool(title_matches or recent_upload), marker
+
+
+def step_upload(vol: int, folder: Path, via_api: bool, **kw):
+    cfg = _load_dashboard_config()
+    schedule = resolve_publish_at_iso(folder, cfg)
+    privacy = "private" if schedule else kw.get("privacy", "private")
+    if schedule:
+        print(f" publish_time_jst={cfg.get('publish_time_jst') or '12:00'} → private / publishAt={schedule}")
     else:
-        print(f" publish_mode=unlisted → 限定公開で upload（公開ゲート無し）")
+        print(" publish_date を解決できないため publishAt なしで upload")
+
+    if not _force_reupload_enabled():
+        skip, marker = _local_upload_marker_allows_skip(folder)
+        if skip:
+            video_id = marker.get("video_id") or marker.get("id") or ""
+            uploaded_at = marker.get("uploaded_at") or marker.get("published_at") or ""
+            msg = (
+                f"[UPLOAD_SKIP_EXISTING] vol{vol} は既にアップロード済み "
+                f"(video_id={video_id}, uploaded_at={uploaded_at})。"
+                "再アップロードする場合は環境変数 APP_FORCE_REUPLOAD=1 を付けて再実行"
+            )
+            print(msg)
+            _notify_discord(msg)
+            return True
 
     if via_api:
         r = _api_post("/api/youtube/upload", {
-            "video_name": folder.name, "privacy": privacy,
+            "video_name": folder.name, "privacy": privacy, "schedule": schedule,
         }, "YouTube アップロード")
         if not r:
             return False
         ok = _api_poll("/api/youtube/status", "YouTube アップロード", timeout=7200)
-        if ok and schedule_gate:
-            _schedule_publish_after_upload(folder, delay_h)
         return ok
     else:
         cmd = [
             sys.executable, str(BASE / "app_youtube.py"),
             str(folder), "--privacy", privacy,
         ]
+        if schedule:
+            cmd += ["--schedule", schedule]
         if not any(folder.glob("*.mp4")):
             ext_mp4 = _resolve_external_output_path(vol, folder)
             if ext_mp4 and ext_mp4.exists():
                 cmd += ["--video-path", str(ext_mp4)]
                 print(f" 外部出力MP4をupload対象に使用: {ext_mp4}")
         ok = _run(cmd, STEP_LABELS["upload"], timeout=7200)
-        if ok is True and schedule_gate:
-            _schedule_publish_after_upload(folder, delay_h)
         return ok
 
 

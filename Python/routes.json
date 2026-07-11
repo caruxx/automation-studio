@@ -1,0 +1,569 @@
+{
+  "version": 1,
+  "intents": {
+    "create": {
+      "aliases": ["vol作成", "フォルダ作成", "volを作って"],
+      "description": "指定公開日の動画フォルダを作成",
+      "api": {"method": "POST", "path": "/api/videos/create", "body": {"publish_date": "{publish_date}"}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "video-edit": {
+      "aliases": ["かんたん動画編集", "ffmpeg編集", "動画をトリミング"],
+      "description": "ffmpeg補助による非破壊動画編集",
+      "cli": {"cmd": ["python3", "app_video_edit.py", "{operation}", "--params", "{params}"]},
+      "api": {"method": "POST", "path": "/api/video-edit/run", "body": {"operation": "{operation}", "input_path": "{input_path}", "video_name": "{video_name}", "params": {}}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "suno": {
+      "aliases": ["楽曲生成", "SUNO生成", "volの楽曲を作って"],
+      "description": "SUNO 楽曲生成",
+      "cli": {"cmd": ["python3", "suno_auto_create.py", "--prompt", "{prompt}", "--count", "{count}", "--interval", "{interval}", "--provider", "claude", "--batch", "--workspace", "vol_vol{vol}"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "Playwright ブラウザ単一運用。CLI 直実行で workspace を明示する。",
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "suno-auto": {
+      "aliases": ["楽曲生成から後処理まで", "SUNO自動生成", "生成DL後処理"],
+      "description": "SUNO 楽曲生成 → レンダ待ち → ダウンロード → 後処理",
+      "cli": {"cmd": ["python3", "suno_auto_create.py", "--prompt", "{prompt}", "--count", "{count}", "--provider", "claude", "--batch", "--workspace", "rw_vol{vol}", "--mode", "instrumental_filler", "--auto-download", "{folder}", "--process-vol", "{vol}"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "Playwright ブラウザ単一運用。CLI 直実行で workspace と出力先を明示する。",
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "suno-download": {
+      "aliases": ["楽曲をダウンロード", "SUNOダウンロード", "DL"],
+      "description": "SUNO 楽曲ダウンロード",
+      "cli": {"cmd": ["python3", "suno_auto_create.py", "--download-workspace", "vol_vol{vol}", "--download-dir", "{folder}"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "Playwright ブラウザ単一運用。CLI 直実行で workspace と出力先を明示する。",
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "rename": {
+      "aliases": ["リネーム", "タイトルのみリネーム"],
+      "description": "楽曲リネーム(タイトルのみ、ffmpegなし)",
+      "cli": {"cmd": ["python3", "app_process_tracks.py", "{folder}", "--rename-only"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "process": {
+      "aliases": ["後処理", "音声後処理", "ffmpeg"],
+      "description": "楽曲後処理(リネーム + フェードアウト + ゲイン正規化)",
+      "cli": {"cmd": ["python3", "app_process_tracks.py", "{folder}"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "bgimage": {
+      "aliases": ["背景画像", "背景", "bg", "背景画像を作って"],
+      "description": "背景画像生成(ベンチマーク参照 + チャンネルコンセプト)",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "bgimage"]},
+      "api": {"method": "POST", "path": "/api/bgimage/run", "body": {"video_name": "{video_name}", "ref_count": 3, "force": false}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 2}
+    },
+    "psd": {
+      "aliases": ["PSD合成", "Photoshop", "サムネをPhotoshopで作って"],
+      "description": "PSD 合成(vol画像 + サムネイル画像)",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "psd_composite"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "premiere": {
+      "aliases": ["Premiereで配置", "プレミア配置", "自動配置"],
+      "description": "Premiere 自動配置",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "premiere"]},
+      "api": {"method": "POST", "path": "/api/premiere/run", "body": {"video_name": "{video_name}", "duration_h": 3, "duration_m": 0, "duration_s": 0}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "place-images": {
+      "aliases": ["画像のみ後から配置", "画像だけ配置"],
+      "description": "Premiere に画像のみ後から配置",
+      "api": {"method": "POST", "path": "/api/premiere/place-images", "body": {"video_name": "{video_name}"}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "export": {
+      "aliases": ["書き出し", "エクスポート"],
+      "description": "Media Encoder / Premiere 書き出し",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "export"]},
+      "api": {"method": "POST", "path": "/api/premiere/export", "body": {}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "qa": {
+      "aliases": ["QA", "確認", "品質確認"],
+      "description": "QA チェック(解像度 / アスペクト / 尺 / コーデック)",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "qa"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "meta": {
+      "aliases": ["メタ", "タイトル提案", "タイトル生成", "説明文", "タグ"],
+      "description": "動画メタデータ生成(タイトル・説明・タグ)",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "meta"]},
+      "api": {"method": "POST", "path": "/api/videos/{video_name}/suggest-all", "body": {}},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "LLM長時間ステップ。--via-api の10秒timeoutで失敗するため CLI 直実行のみ。",
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 3}
+    },
+    "localization": {
+      "aliases": ["多言語", "翻訳", "localizations"],
+      "description": "多言語メタデータ生成",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "localization"]},
+      "api": {"method": "POST", "path": "/api/videos/{video_name}/generate-localizations", "body": {}},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "LLM長時間ステップ。--via-api の10秒timeoutで失敗するため CLI 直実行のみ。",
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 3}
+    },
+    "thumbnail": {
+      "aliases": ["AIサムネ", "サムネをAIで作って", "サムネを自動生成"],
+      "description": "AI サムネイル生成",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "thumbnail"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 2}
+    },
+    "image-modules": {
+      "aliases": ["画像プロンプトモジュール", "画像モジュール", "プロンプト構造"],
+      "description": "チャンネル別の画像生成プロンプトをセクション×モジュール方式で一覧/変更",
+      "cli": {"cmd": ["python3", "studio.py", "image-modules", "--channel", "{channel_id}", "--dry-run"]},
+      "api": {"method": "GET", "path": "/api/image-modules/{channel_id}", "body": {}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "upload": {
+      "aliases": ["アップロード", "YouTubeアップロード", "限定公開アップロード"],
+      "description": "YouTube アップロード",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--only", "upload"]},
+      "api": {"method": "POST", "path": "/api/youtube/upload", "body": {"video_name": "{video_name}", "privacy": "{privacy}"}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "pipeline": {
+      "aliases": ["全部やって", "全工程", "一括パイプライン"],
+      "description": "全工程パイプライン",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "LLM 長時間 step を含む可能性があるため studio.py では CLI 直実行を原則にする。",
+      "requires_vol": true,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "pipeline-from-premiere": {
+      "aliases": ["Premiereからやり直して", "Premiere以降だけ再実行"],
+      "description": "Premiere 以降のパイプライン再実行",
+      "cli": {"cmd": ["python3", "app_pipeline.py", "{vol}", "--from", "premiere"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "analyze": {
+      "aliases": ["競合を分析して", "競合分析"],
+      "description": "競合分析",
+      "cli": {"cmd": ["python3", "app_competitor.py", "--analyze"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "seed-analyze": {
+      "aliases": ["seed動画を分析して", "この動画を分析して", "seed分析"],
+      "description": "ベンチマークseed動画分析(1本の動画を突出度・確度ラベル・代替説明つきで分析)",
+      "cli": {"cmd": ["python3", "app_benchmark_seed.py", "{url}"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "LLM実行で数分かかるためAPI同期呼び出し不可。CLIかPOST /api/benchmark/seed/runを使う",
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "seed-audio": {
+      "aliases": ["seed動画の音源を分析して", "音源分析", "ベンチマーク曲を分析して"],
+      "description": "seed動画の音源分析(ローカルmp3のDSP+AI実聴。--fetch-audioでmp3取得)",
+      "cli": {"cmd": ["python3", "app_benchmark_seed.py", "{url}", "--audio"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "Gemini API実聴分析で数分かかるためAPI同期呼び出し不可。CLIかPOST /api/benchmark/seed/audio-runを使う",
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "propose": {
+      "aliases": ["競合分析から提案して", "AI提案", "ベンチマーク連動提案"],
+      "description": "競合分析を反映した提案",
+      "api": {"method": "POST", "path": "/api/videos/{video_name}/suggest-all", "body": {}},
+      "prefer": "api",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "LLM長時間ステップ。CLI 側の meta 実行を優先する。",
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 3}
+    },
+    "hot-channels": {
+      "aliases": ["今伸びてるチャンネルは", "ホットチャンネル"],
+      "description": "ホットチャンネル TOP10 取得",
+      "api": {"method": "GET", "path": "/api/analysis/hot-channels?top_n=10", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "benchmark-add": {
+      "aliases": ["ベンチ追加", "ベンチマークURL登録", "ライバル登録"],
+      "description": "チャンネルURLをベンチマークへ登録して直近動画を取得",
+      "api": {"method": "POST", "path": "/api/benchmark/channels", "body": {"url": "{url}", "limit": 30, "force": false}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "ttp": {
+      "aliases": ["TTP生成", "勝ちフォーマット", "TTP分析"],
+      "description": "登録済みベンチマークからTTPプロファイルを生成",
+      "api": {"method": "POST", "path": "/api/ttp/generate", "body": {}},
+      "prefer": "api",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "LLM長時間ステップのため、サーバー起動後にAPIまたはCLI dry-runで確認してから実行してください。",
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "comment-mining": {
+      "aliases": ["コメント需要分析", "需要ギャップ分析", "コメントマイニング"],
+      "description": "登録済みベンチマーク上位動画のコメントから需要メモを生成",
+      "api": {"method": "POST", "path": "/api/comment-mining/run", "body": {"channel_key": "{channel}", "background": true, "top_n": 10, "max_comments": 100}},
+      "prefer": "api",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "YouTube API と LLM を使う長時間ステップのため、サーバー起動後に dry-run で確認してから実行してください。",
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "status": {
+      "aliases": ["状態", "稼働状況", "ライブ配信の調子は", "VPSの負荷は"],
+      "description": "ライブ配信 / Studio 状態確認",
+      "api": {"method": "GET", "path": "/api/live/status", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "channels": {
+      "aliases": ["チャンネル一覧", "チャンネル状態"],
+      "description": "登録チャンネル一覧",
+      "api": {"method": "GET", "path": "/api/channels", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "digest": {
+      "aliases": ["ダイジェスト送信", "毎朝ダイジェスト", "日次ダイジェスト"],
+      "description": "Discord日次ダイジェストを検証送信",
+      "api": {"method": "POST", "path": "/api/digest/send-now", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "monetization": {
+      "aliases": ["収益化進捗", "YPP進捗", "登録者予測"],
+      "description": "チャンネル別の収益化進捗と登録者達成予測",
+      "api": {"method": "GET", "path": "/api/monetization", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "channel-auth": {
+      "aliases": ["チャンネル別再認証", "ブランドチャンネル再認証", "Analytics再認証"],
+      "description": "対象チャンネルの .youtube_token.json を upload + youtube + yt-analytics.readonly スコープで再発行",
+      "cli": {"cmd": ["python3", "studio.py", "channel-auth", "--channel", "{channel_id}", "--dry-run"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "OAuth ブラウザ認証を伴うため CLI で実行してください。",
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "review-48h": {
+      "aliases": ["48時間レビュー", "投稿48hレビュー", "初速レビュー"],
+      "description": "公開48時間前後の動画をチャンネル移動平均と比較",
+      "api": {"method": "POST", "path": "/api/review/48h/run?dry_run=true", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "posting-strategy": {
+      "aliases": ["投稿戦略", "投稿時刻提案", "投稿頻度提案"],
+      "description": "蓄積済み48hレビューとベンチ動画から投稿時刻・週次本数を提案（quota追加消費なし）",
+      "api": {"method": "GET", "path": "/api/posting-strategy/{channel_id}", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "rival-alerts": {
+      "aliases": ["ライバル新作アラート", "競合初速アラート"],
+      "description": "追跡データから初速が強いライバル新作候補を取得",
+      "api": {"method": "GET", "path": "/api/alerts/rivals?dry_run=true", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "config-backup": {
+      "aliases": ["設定バックアップ", "設定復元", "バックアップ一覧"],
+      "description": "config/ とチャンネル設定のバックアップ作成・一覧・復元",
+      "cli": {"cmd": ["python3", "app_config_backup.py"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "channel-onboard": {
+      "aliases": ["新規チャンネルかんたん作成", "オンボーディング", "チャンネル立ち上げ"],
+      "description": "新チャンネル立ち上げチェックリストを案内・実行",
+      "api": {"method": "GET", "path": "/api/channels/{channel}/onboarding", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "setup": {
+      "aliases": ["初回セットアップ", "セットアップ", "友人向け初期設定"],
+      "description": "初回セットアップ状態の確認と最小設定保存",
+      "api": {"method": "GET", "path": "/api/setup/initial", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "update": {
+      "aliases": ["アップデート", "更新確認", "アップデート確認"],
+      "description": "Automation Studio の更新確認・適用・ロールバック",
+      "cli": {"cmd": ["python3", "app_updater.py", "--check"]},
+      "api": {"method": "GET", "path": "/api/version", "body": {}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "config": {
+      "aliases": ["設定を保存", "好みを保存", "config set", "設定検索"],
+      "description": "settings_catalog.json を参照して設定を検索・取得・保存",
+      "cli": {"cmd": ["python3", "studio.py", "config", "search", "{title}"]},
+      "api": {"method": "GET", "path": "/api/settings-catalog", "body": {}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "autopilot": {
+      "aliases": ["自動運転を再開", "autopilot resume", "自走運用を再開"],
+      "description": "autopilot 状態確認、更新後の一時停止を resume-all で解除",
+      "cli": {"cmd": ["python3", "studio.py", "autopilot", "--resume-all"]},
+      "api": {"method": "POST", "path": "/api/autopilot/resume-all", "body": {}},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "resolve": {
+      "aliases": ["vol解決", "フォルダ名確認", "video_name確認"],
+      "description": "vol番号から video_name を解決",
+      "api": {"method": "GET", "path": "/api/resolve-vol/{vol}", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 8}
+    },
+    "reference-image-dir": {
+      "aliases": ["参照画像フォルダを変更して", "参照画像フォルダ"],
+      "description": "参照画像フォルダ設定は Web UI 設定タブで変更",
+      "api": {"method": "GET", "path": "/api/config", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "title-save": {
+      "aliases": ["タイトル保存"],
+      "description": "動画タイトル保存",
+      "api": {"method": "PUT", "path": "/api/videos/{video_name}/title", "body": {"video_name": "{video_name}", "new_title": "{title}"}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 3}
+    },
+    "tags-save": {
+      "aliases": ["タグ保存"],
+      "description": "動画タグ保存",
+      "api": {"method": "PUT", "path": "/api/videos/{video_name}/tags", "body": {"tags": "{tags}"}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {"scope": "global", "max_parallel": 3}
+    },
+    "web-start": {
+      "aliases": ["WEBを起動して", "Webサーバー起動"],
+      "description": "Web サーバー起動",
+      "cli": {"cmd": ["bash", "start.sh"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "web-restart": {
+      "aliases": ["WEBを再起動して", "Webサーバー再起動"],
+      "description": "Web サーバー再起動",
+      "cli": {"cmd": ["bash", "start.sh"]},
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    },
+    "quota": {
+      "aliases": ["quota確認", "クォータ使用量", "YouTube API 使用量"],
+      "description": "YouTube API quota の本日消費量とメソッド別内訳を表示",
+      "api": {"method": "GET", "path": "/api/quota", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "genre-radar-top": {
+      "aliases": ["参入候補ジャンル", "ジャンルレーダー", "ジャンルTOP5"],
+      "description": "ジャンルレーダーの参入候補TOP5を表示",
+      "api": {"method": "GET", "path": "/api/genre-radar/top", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "genre-radar-snapshot": {
+      "aliases": ["ジャンルレーダー日次", "mostPopular取得"],
+      "description": "JP/USなどの音楽カテゴリmostPopularを日次スナップショット保存",
+      "api": {"method": "POST", "path": "/api/genre-radar/snapshot", "body": {"regions": ["JP", "US"], "max_results": 25}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "genre-radar-weekly": {
+      "aliases": ["ジャンルレーダー週次", "新興チャンネル探索"],
+      "description": "search予算制でBGM隣接キーワードから新興チャンネル候補を探索",
+      "api": {"method": "POST", "path": "/api/genre-radar/weekly", "body": {"max_search_calls": 2, "max_results_per_search": 10}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "retention": {
+      "aliases": ["保持ジョブ", "APIデータ保持", "保持ルール確認"],
+      "description": "YouTube API 由来データの30日保持ジョブを dry-run で確認",
+      "api": {"method": "POST", "path": "/api/retention/run?dry_run=true", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 1}
+    },
+    "youtube-disconnect": {
+      "aliases": ["YouTube連携解除", "チャンネル連携解除", "OAuth解除"],
+      "description": "チャンネルのYouTube連携解除。トークン失効+API由来データ削除。実行には --channel <id> が必須で、本実行は --confirm も必要。確認だけなら --dry-run。",
+      "cli": {"cmd": ["python3", "studio.py", "youtube-disconnect", "--channel", "{channel_id}", "--dry-run"]},
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "削除系操作のため studio.py youtube-disconnect --channel <id> --confirm を明示する。",
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "live-start": {
+      "aliases": ["ライブ配信を開始して"],
+      "description": "ライブ配信開始",
+      "api": {"method": "POST", "path": "/api/live/streams/{stream_id}/start", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "live-stop": {
+      "aliases": ["ライブ配信を止めて"],
+      "description": "ライブ配信停止",
+      "api": {"method": "POST", "path": "/api/live/streams/{stream_id}/stop", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "live-swap": {
+      "aliases": ["ライブの動画を差し替えて"],
+      "description": "ライブ配信動画差し替え",
+      "api": {"method": "POST", "path": "/api/live/streams/{stream_id}/swap", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "live-viewers": {
+      "aliases": ["何人見てる", "同時視聴者数"],
+      "description": "ライブ同時視聴者数取得",
+      "api": {"method": "GET", "path": "/api/live/viewers?force=1", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "global", "max_parallel": 4}
+    },
+    "live-broadcasts": {
+      "aliases": ["ライブのタイトルを変えて", "ライブのサムネを変えて"],
+      "description": "ライブ broadcast 情報取得・更新",
+      "api": {"method": "GET", "path": "/api/live/broadcasts?stream_id={stream_id}", "body": {}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-channel", "max_parallel": 1}
+    },
+    "live-setup": {
+      "aliases": ["VPSを初期設定して", "ライブ初期設定"],
+      "description": "ライブ配信 VPS 初期設定",
+      "api": {"method": "POST", "path": "/api/live/setup", "body": {"host": "{host}"}},
+      "prefer": "api",
+      "via_api_safe": true,
+      "requires_vol": false,
+      "parallelism": {"scope": "per-machine", "max_parallel": 1}
+    }
+  }
+}

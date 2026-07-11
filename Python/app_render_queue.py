@@ -24,7 +24,8 @@ P2-1（6+ チャンネル並列運用）の中核モジュール。
     finished_at     TEXT,
     error_message   TEXT,
     duration_sec    INTEGER,                 -- finished - started
-    parent_run_id   TEXT                     -- 上位 pipeline 実行を識別する任意キー
+    parent_run_id   TEXT,                    -- 上位 pipeline 実行を識別する任意キー
+    channel_id      TEXT                     -- channels.json の id（旧レコードは空）
   );
 
 stale running の自動回収:
@@ -129,20 +130,25 @@ def init_db() -> None:
             finished_at     TEXT,
             error_message   TEXT,
             duration_sec    INTEGER,
-            parent_run_id   TEXT
+            parent_run_id   TEXT,
+            channel_id      TEXT DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_jobs_status_enqueued
             ON jobs(status, enqueued_at);
         CREATE INDEX IF NOT EXISTS idx_jobs_finished
             ON jobs(finished_at);
         """)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "channel_id" not in cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN channel_id TEXT DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_channel ON jobs(channel_id)")
 
 
 # ─── 公開 API ──────────────────────────────────────
 
 def enqueue(*, channel_folder: str, channel_name: str,
             vol: int, stage: str, video_name: str = "",
-            parent_run_id: str = "") -> int:
+            parent_run_id: str = "", channel_id: str = "") -> int:
     """ジョブを pending で投入。worker がいずれ拾う。"""
     if stage not in ALLOWED_STAGES:
         raise ValueError(f"stage は {ALLOWED_STAGES} のいずれか: {stage}")
@@ -152,10 +158,10 @@ def enqueue(*, channel_folder: str, channel_name: str,
         cur = conn.execute(
             """INSERT INTO jobs
                (channel_folder, channel_name, vol, video_name, stage,
-                status, enqueued_at, parent_run_id)
-               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                status, enqueued_at, parent_run_id, channel_id)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
             (channel_folder, channel_name or "", int(vol), video_name or "",
-             stage, _now_iso(), parent_run_id or ""),
+             stage, _now_iso(), parent_run_id or "", channel_id or ""),
         )
         return cur.lastrowid
 

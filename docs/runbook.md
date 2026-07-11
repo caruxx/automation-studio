@@ -53,7 +53,7 @@ SUNO / Flow / YouTube OAuth のいずれかで Playwright プロファイル (`~
 ## 📊 YouTube クオータ枯渇
 
 ### 何が起きているか
-`<channel_folder>/.youtube_quota.json` の累積コストが 24h ウィンドウで上限（デフォルト 9600 unit ≈ 6 upload）に到達。さらに upload を試みると **API 側で 403 quotaExceeded が返る前に**ローカル側で stop している。
+`<channel_folder>/.youtube_quota.json` の累積コストが 24h ウィンドウで上限（デフォルト 10000 unit）に到達。さらに upload を試みると **API 側で 403 quotaExceeded が返る前に**ローカル側で stop している。
 
 ### 復旧手順
 
@@ -74,8 +74,8 @@ SUNO / Flow / YouTube OAuth のいずれかで Playwright プロファイル (`~
    ```
 
 ### 環境変数で閾値を調整
-- `APP_YT_DAILY_QUOTA_CAP` (デフォルト `9600`)
-- `APP_YT_QUOTA_PER_UPLOAD` (デフォルト `1600`)
+- `APP_YT_DAILY_QUOTA_CAP` (デフォルト `10000`)
+- `APP_YT_QUOTA_PER_UPLOAD` (デフォルト `100`)
 - `APP_YT_QUOTA_WINDOW_HOURS` (デフォルト `24`)
 
 ---

@@ -1,0 +1,1228 @@
+{
+  "version": 1,
+  "settings": [
+    {
+      "key": "dashboard.brand_full",
+      "label_ja": "システム名",
+      "description_ja": "画面タイトルやセットアップ表示に使う名前",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "brand_full"
+      },
+      "type": "string",
+      "validation": {
+        "non_empty": true,
+        "max_length": 80
+      },
+      "category": "advanced"
+    },
+    {
+      "key": "dashboard.brand_short",
+      "label_ja": "短いシステム名",
+      "description_ja": "サイドバーなど短い表示名",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "brand_short"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 40
+      },
+      "category": "advanced"
+    },
+    {
+      "key": "dashboard.file_prefix",
+      "label_ja": "ファイル接頭辞",
+      "description_ja": "volフォルダや書き出しファイル名のprefix",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "file_prefix"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 32
+      },
+      "category": "channel"
+    },
+    {
+      "key": "dashboard.channel_name",
+      "label_ja": "アクティブチャンネル名",
+      "description_ja": "現在表示中チャンネルの名前",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "channel_name"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 120
+      },
+      "category": "channel"
+    },
+    {
+      "key": "dashboard.channel_folder",
+      "label_ja": "アクティブチャンネルフォルダ",
+      "description_ja": "現在表示中チャンネルのフォルダ",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "channel_folder"
+      },
+      "type": "string",
+      "category": "channel"
+    },
+    {
+      "key": "youtube.api_key",
+      "label_ja": "YouTube Data APIキー",
+      "description_ja": "公開データ取得用。Google Cloud ConsoleのAPIキーを貼り付け",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "youtube_api_key"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 200
+      },
+      "category": "integration",
+      "secret": true
+    },
+    {
+      "key": "suno.api_key",
+      "label_ja": "SUNO/APIキー",
+      "description_ja": "ローカル環境のAPIキー",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "suno_config.json",
+        "path": "api_key"
+      },
+      "type": "string",
+      "category": "integration",
+      "secret": true
+    },
+    {
+      "key": "sheets.api_key",
+      "label_ja": "Google Sheets APIキー",
+      "description_ja": "スプレッドシート連携のAPIキー。任意設定",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "sheets_api_key"
+      },
+      "type": "string",
+      "category": "integration",
+      "secret": true
+    },
+    {
+      "key": "discord.webhook_url",
+      "label_ja": "Discord Webhook URL",
+      "description_ja": "完了・失敗・運営ダイジェスト通知の送信先",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "discord_config.json",
+        "path": "webhook_url"
+      },
+      "type": "string",
+      "category": "integration",
+      "secret": true
+    },
+    {
+      "key": "discord.username",
+      "label_ja": "Discord表示名",
+      "description_ja": "Discord通知に表示する送信者名",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "discord_config.json",
+        "path": "username"
+      },
+      "type": "string",
+      "category": "integration"
+    },
+    {
+      "key": "suno.claude_cli",
+      "label_ja": "Claude CLI",
+      "description_ja": "Claude CLIコマンド名",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "suno_config.json",
+        "path": "claude_cli"
+      },
+      "type": "string",
+      "category": "integration"
+    },
+    {
+      "key": "suno.codex_cli",
+      "label_ja": "Codex CLI",
+      "description_ja": "Codex CLIコマンド名",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "suno_config.json",
+        "path": "codex_cli"
+      },
+      "type": "string",
+      "category": "integration"
+    },
+    {
+      "key": "channel.autopilot_enabled",
+      "label_ja": "自動運転",
+      "description_ja": "チャンネル単位の自動運転 ON/OFF",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "autopilot_enabled"
+      },
+      "type": "boolean",
+      "category": "advanced"
+    },
+    {
+      "key": "channel.priority",
+      "label_ja": "自動運転優先度",
+      "description_ja": "自動運転候補の優先度",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "priority"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 9999
+      },
+      "category": "advanced"
+    },
+    {
+      "key": "channel.persona",
+      "label_ja": "チャンネル方針",
+      "description_ja": "タイトル・説明・生成方針に使うペルソナ",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "persona"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 4000
+      },
+      "category": "channel"
+    },
+    {
+      "key": "channel.rival_channels",
+      "label_ja": "ベンチマーク先",
+      "description_ja": "競合・参考チャンネルURLや名前",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "rival_channels"
+      },
+      "type": "array",
+      "category": "production"
+    },
+    {
+      "key": "channel.spreadsheet_channel_detail_url",
+      "label_ja": "詳細スプレッドシートURL",
+      "description_ja": "競合チャンネル詳細シートのURL",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "spreadsheet_channel_detail_url"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.spreadsheet_growth_tracking_url",
+      "label_ja": "成長トラッキングURL",
+      "description_ja": "伸び率追跡スプレッドシートのURL",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "spreadsheet_growth_tracking_url"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.publish_time_jst",
+      "label_ja": "公開時刻(日本時間)",
+      "description_ja": "フォルダ日付のこの時刻に予約公開します。HH:MM 形式",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "publish_time_jst"
+      },
+      "type": "string",
+      "validation": {
+        "pattern": "^\\d{2}:\\d{2}$",
+        "time_hhmm": true
+      },
+      "category": "posting"
+    },
+    {
+      "key": "channel.weekly_publish_count",
+      "label_ja": "週あたり投稿本数",
+      "description_ja": "投稿戦略の目安。自動運転の状態は変更しません",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "weekly_publish_count"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 28
+      },
+      "category": "posting"
+    },
+    {
+      "key": "channel.publish_mode",
+      "label_ja": "投稿方式",
+      "description_ja": "後方互換用。通常は公開時刻(日本時間)を使います",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "publish_mode"
+      },
+      "type": "string",
+      "choices": [
+        "unlisted",
+        "public",
+        "delayed"
+      ],
+      "category": "advanced"
+    },
+    {
+      "key": "channel.publish_delay_hours",
+      "label_ja": "公開待機時間",
+      "description_ja": "後方互換用。通常は公開時刻(日本時間)を使います",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "publish_delay_hours"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 168
+      },
+      "category": "advanced"
+    },
+    {
+      "key": "channel.reference_image_dir",
+      "label_ja": "参照画像フォルダ",
+      "description_ja": "背景画像生成で優先参照する画像フォルダ",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "reference_image_dir"
+      },
+      "type": "string",
+      "category": "channel"
+    },
+    {
+      "key": "channel.reference_image",
+      "label_ja": "固定参照画像",
+      "description_ja": "背景画像生成で使うキャラクターやブランド識別子の固定参照画像",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "reference_image"
+      },
+      "type": "string",
+      "category": "channel"
+    },
+    {
+      "key": "channel.reference_image_mix_mode",
+      "label_ja": "参照画像の混ぜ方",
+      "description_ja": "固定参照画像とベンチマーク画像をどう組み合わせるか。キャラクターIP系は identity_plus_benchmark が向いています",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "reference_image_mix_mode"
+      },
+      "type": "string",
+      "choices": [
+        "fixed_only",
+        "identity_plus_benchmark",
+        "benchmark_only"
+      ],
+      "category": "channel"
+    },
+    {
+      "key": "channel.export_path",
+      "label_ja": "書き出し先",
+      "description_ja": "MP4の外部書き出し先",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "export_path"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.psd_image_subdir",
+      "label_ja": "PSD差し替え画像フォルダ",
+      "description_ja": "PSD合成で背景画像を探す動画フォルダ内サブディレクトリ",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "psd_image_subdir"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.export_engine",
+      "label_ja": "書き出しエンジン",
+      "description_ja": "Premiere/AMEまたはffmpegの選択",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "export_engine"
+      },
+      "type": "string",
+      "choices": [
+        "ame",
+        "ffmpeg"
+      ],
+      "category": "production"
+    },
+    {
+      "key": "channel.default_duration_sec",
+      "label_ja": "既定動画尺",
+      "description_ja": "Premiere配置・書き出しの既定秒数",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "default_duration_sec"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 60,
+        "max": 14400
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.scene_text_enabled",
+      "label_ja": "シーンテキスト",
+      "description_ja": "画像内テキスト生成のON/OFF",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "scene_text_enabled"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.scene_text_tone",
+      "label_ja": "シーンテキスト文体",
+      "description_ja": "画像内コピーの文体",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "scene_text_tone"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.scene_text_examples",
+      "label_ja": "シーンテキスト例文",
+      "description_ja": "画像内テキスト生成で参考にする例文。1行1件",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "scene_text_examples"
+      },
+      "type": "array",
+      "category": "production"
+    },
+    {
+      "key": "channel.scene_text_forbidden",
+      "label_ja": "シーンテキスト禁止語",
+      "description_ja": "画像内テキストで避ける語句。1行1件",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "scene_text_forbidden"
+      },
+      "type": "array",
+      "category": "production"
+    },
+    {
+      "key": "channel.scene_text_structure",
+      "label_ja": "シーンテキスト構成",
+      "description_ja": "画像内テキストの構成ルール",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "scene_text_structure"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.template_prproj",
+      "label_ja": "Premiereテンプレート",
+      "description_ja": "自動配置で使うprprojテンプレート",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "template_prproj"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.template_psd",
+      "label_ja": "PSDテンプレート",
+      "description_ja": "PSD合成で使うテンプレート",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "template_psd"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.psd_base_layer",
+      "label_ja": "PSD背景レイヤー",
+      "description_ja": "背景差し替え対象レイヤー名",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "psd_base_layer"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.psd_toggle_layer",
+      "label_ja": "PSD切替レイヤー",
+      "description_ja": "サムネ出力時に切り替えるレイヤー名",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "psd_toggle_layer"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.prompt",
+      "label_ja": "SUNOスタイル",
+      "description_ja": "楽曲生成プロンプト・好み",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.prompt"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 8000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.provider",
+      "label_ja": "LLMプロバイダ",
+      "description_ja": "SUNO補助生成に使うプロバイダ",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.provider"
+      },
+      "type": "string",
+      "choices": [
+        "claude",
+        "codex",
+        "chatgpt"
+      ],
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.model",
+      "label_ja": "LLMモデル",
+      "description_ja": "SUNO補助生成に使うモデル名",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.model"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.generation_mode",
+      "label_ja": "SUNO生成モード",
+      "description_ja": "lyrics/stylesなどの生成モード",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.generation_mode"
+      },
+      "type": "string",
+      "choices": [
+        "styles_title_only",
+        "lyrics_styles",
+        "lyrics",
+        "instrumental_filler"
+      ],
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.loop_count",
+      "label_ja": "SUNO曲数",
+      "description_ja": "自動生成する曲数",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.loop_count"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 1,
+        "max": 100
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.loop_interval_sec",
+      "label_ja": "SUNO生成間隔",
+      "description_ja": "連続生成時の待機秒数",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.loop_interval_sec"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 1,
+        "max": 3600
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.loop_batch",
+      "label_ja": "SUNO一括生成",
+      "description_ja": "複数曲を一括投入する",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.loop_batch"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.suno.keep_both_takes",
+      "label_ja": "SUNO 2テイク両採用",
+      "description_ja": "2テイク両方をmusicに採用しユニークタイトル付与",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "suno.keep_both_takes"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.master_prompts.title_generation",
+      "label_ja": "タイトル生成プロンプト",
+      "description_ja": "タイトル候補生成のAI指示を上書き。空欄なら内蔵プロンプトに戻る",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "master_prompts.title_generation"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 20000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.master_prompts.description_generation",
+      "label_ja": "説明文生成プロンプト",
+      "description_ja": "YouTube説明文生成のAI指示を上書き。空欄なら内蔵プロンプトに戻る",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "master_prompts.description_generation"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 20000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.master_prompts.tags_generation",
+      "label_ja": "タグ生成プロンプト",
+      "description_ja": "YouTubeタグ生成のAI指示を上書き。空欄なら内蔵プロンプトに戻る",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "master_prompts.tags_generation"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 20000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.master_prompts.competitor_analysis",
+      "label_ja": "競合分析プロンプト",
+      "description_ja": "競合分析のAI指示を上書き。空欄なら内蔵プロンプトに戻る",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "master_prompts.competitor_analysis"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 20000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.master_prompts.suno_from_analysis",
+      "label_ja": "分析連動SUNOプロンプト",
+      "description_ja": "競合分析からSUNOプロンプトを作るAI指示を上書き。空欄なら内蔵プロンプトに戻る",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "master_prompts.suno_from_analysis"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 20000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.master_prompts.suno_from_persona",
+      "label_ja": "ペルソナ起点SUNOプロンプト",
+      "description_ja": "ペルソナからSUNOプロンプトを作るAI指示を上書き。空欄なら内蔵プロンプトに戻る",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "master_prompts.suno_from_persona"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 20000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.master_prompts.imitate_evolve",
+      "label_ja": "徹底パクリ進化プロンプト",
+      "description_ja": "imitate / avoid / evolve分析のAI指示を上書き。空欄なら内蔵プロンプトに戻る",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "master_prompts.imitate_evolve"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 20000
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.youtube.category_id",
+      "label_ja": "YouTubeカテゴリ",
+      "description_ja": "アップロード時のカテゴリID",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.category_id"
+      },
+      "type": "string",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.default_language",
+      "label_ja": "既定言語",
+      "description_ja": "タイトル・説明文の既定言語",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.default_language"
+      },
+      "type": "string",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.synthetic_media",
+      "label_ja": "AI生成開示",
+      "description_ja": "YouTubeのAI生成開示フラグ",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.synthetic_media"
+      },
+      "type": "boolean",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.default_audio_language",
+      "label_ja": "音声の言語",
+      "description_ja": "YouTubeアップロード時の音声言語",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.default_audio_language"
+      },
+      "type": "string",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.made_for_kids",
+      "label_ja": "子供向け",
+      "description_ja": "YouTubeの子供向け設定",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.made_for_kids"
+      },
+      "type": "boolean",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.license",
+      "label_ja": "ライセンス",
+      "description_ja": "YouTube標準ライセンスまたはクリエイティブ・コモンズ",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.license"
+      },
+      "type": "string",
+      "choices": [
+        "youtube",
+        "creativeCommon"
+      ],
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.embeddable",
+      "label_ja": "埋め込み許可",
+      "description_ja": "外部サイトへの動画埋め込みを許可する",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.embeddable"
+      },
+      "type": "boolean",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.public_stats_viewable",
+      "label_ja": "公開統計表示",
+      "description_ja": "動画ページで統計情報を公開する",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.public_stats_viewable"
+      },
+      "type": "boolean",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.notify_subscribers",
+      "label_ja": "登録者に通知",
+      "description_ja": "アップロード時に登録者へ通知する",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.notify_subscribers"
+      },
+      "type": "boolean",
+      "category": "posting"
+    },
+    {
+      "key": "channel.youtube.localization_languages",
+      "label_ja": "翻訳ターゲット言語",
+      "description_ja": "多言語メタデータ生成の対象言語",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "youtube_upload_defaults.localization_languages"
+      },
+      "type": "multiselect",
+      "choices": [
+        "ja",
+        "zh-Hans",
+        "zh-Hant",
+        "ko",
+        "es",
+        "pt",
+        "fr",
+        "de",
+        "it",
+        "id",
+        "th",
+        "vi"
+      ],
+      "category": "posting"
+    },
+    {
+      "key": "benchmark.filter.top_n",
+      "label_ja": "分析件数",
+      "description_ja": "ベンチマーク分析で見る上位件数",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "benchmark_config.json",
+        "path": "filter.top_n"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 1,
+        "max": 100
+      },
+      "category": "production"
+    },
+    {
+      "key": "update.auto_apply",
+      "label_ja": "アップデート自動適用",
+      "description_ja": "更新元が設定済みで新バージョンがある時に日次ジョブで自動適用する",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "update_config.json",
+        "path": "auto_apply"
+      },
+      "type": "boolean",
+      "category": "integration"
+    },
+    {
+      "key": "dashboard.tunnel_url",
+      "label_ja": "リモートアクセスURL",
+      "description_ja": "setup_tunnel.shで取得したtrycloudflare等の公開URL",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "dashboard_config.json",
+        "path": "tunnel_url"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 500
+      },
+      "category": "integration"
+    },
+    {
+      "key": "prompts.library",
+      "label_ja": "プロンプトライブラリ",
+      "description_ja": "config/prompts.jsonの共有プロンプト一覧",
+      "tier": "advanced",
+      "scope": "global",
+      "storage": {
+        "file": "prompts.json",
+        "path": "items"
+      },
+      "type": "array",
+      "category": "advanced"
+    },
+    {
+      "key": "digest.enabled",
+      "label_ja": "毎朝ダイジェスト",
+      "description_ja": "毎朝のDiscord運営ダイジェストを送信する",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "digest.enabled"
+      },
+      "type": "boolean",
+      "category": "integration"
+    },
+    {
+      "key": "digest.time_jst",
+      "label_ja": "ダイジェスト時刻(JST)",
+      "description_ja": "毎朝ダイジェストを送る日本時間。HH:MM 形式",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "digest.time_jst"
+      },
+      "type": "string",
+      "validation": {
+        "pattern": "^\\d{2}:\\d{2}$",
+        "time_hhmm": true
+      },
+      "category": "integration"
+    },
+    {
+      "key": "reconcile.enabled",
+      "label_ja": "YouTube整合性チェック",
+      "description_ja": "YouTube実アップロード一覧とローカル投稿記録の整合性を毎朝確認する",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "reconcile.enabled"
+      },
+      "type": "boolean",
+      "category": "integration"
+    },
+    {
+      "key": "review.enabled",
+      "label_ja": "48時間レビュー",
+      "description_ja": "公開48時間前後の動画を毎朝レビューする",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "review.enabled"
+      },
+      "type": "boolean",
+      "category": "integration"
+    },
+    {
+      "key": "review.learn_writeback",
+      "label_ja": "勝ち要素を学習",
+      "description_ja": "48時間レビューで勝ち要素をチャンネル別 learned_patterns に保存する",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "review.learn_writeback"
+      },
+      "type": "boolean",
+      "category": "integration"
+    },
+    {
+      "key": "mining.enabled",
+      "label_ja": "コメント需要分析",
+      "description_ja": "TTP生成時にベンチ上位動画のコメントから需要メモを作成する",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "mining.enabled"
+      },
+      "type": "boolean",
+      "category": "integration"
+    },
+    {
+      "key": "research.genre_radar_regions",
+      "label_ja": "ジャンルレーダー対象地域",
+      "description_ja": "mostPopularで日次取得する地域コード。未設定時はJP/US",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "genre_radar.regions"
+      },
+      "type": "array",
+      "category": "integration"
+    },
+    {
+      "key": "research.search_budget_week",
+      "label_ja": "ジャンルレーダー週次search予算",
+      "description_ja": "週次search.listの最大回数。既定10回。1回=100unit",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "research.search_budget_week"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 50
+      },
+      "category": "integration"
+    },
+    {
+      "key": "alerts.rival_enabled",
+      "label_ja": "ライバル新作アラート",
+      "description_ja": "追跡データから初速が強いライバル新作をダイジェストに載せる",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "alerts.rival_enabled"
+      },
+      "type": "boolean",
+      "category": "integration"
+    },
+    {
+      "key": "retention.enabled",
+      "label_ja": "APIデータ30日保持",
+      "description_ja": "YouTube API由来データの30日保持・削除ジョブを有効にする",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "retention.enabled"
+      },
+      "type": "boolean",
+      "category": "advanced"
+    },
+    {
+      "key": "channel.now_playing.enabled", "label_ja": "楽曲名表示", "description_ja": "動画内に再生中の曲名を表示", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.enabled"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.now_playing.mode", "label_ja": "楽曲名の表示モード", "description_ja": "各曲の冒頭のみ、または常時表示", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.mode"}, "type": "string", "choices": ["intro", "always"], "category": "production"
+    },
+    {
+      "key": "channel.now_playing.intro_seconds", "label_ja": "冒頭表示秒数", "description_ja": "冒頭モードで曲名を表示する秒数", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.intro_seconds"}, "type": "number", "validation": {"min": 0.5, "max": 60}, "category": "production"
+    },
+    {
+      "key": "channel.now_playing.position", "label_ja": "楽曲名の位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+    },
+    {
+      "key": "channel.now_playing.size", "label_ja": "楽曲名のサイズ", "description_ja": "書き出し文字サイズ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.size"}, "type": "integer", "validation": {"min": 12, "max": 180}, "category": "production"
+    },
+    {
+      "key": "channel.now_playing.font_name", "label_ja": "楽曲名フォント", "description_ja": "システムフォント名", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.font_name"}, "type": "string", "category": "production"
+    },
+    {
+      "key": "channel.now_playing.font_path", "label_ja": "任意フォントパス", "description_ja": "ttf/otf/ttcファイルの絶対パス", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.font_path"}, "type": "string", "category": "production"
+    },
+    {
+      "key": "channel.now_playing.color", "label_ja": "楽曲名の色", "description_ja": "16進数の文字色", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.color"}, "type": "string", "category": "production"
+    },
+    {
+      "key": "channel.now_playing.border_color", "label_ja": "楽曲名の縁取り色", "description_ja": "16進数の縁取り色", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.border_color"}, "type": "string", "category": "production"
+    },
+    {
+      "key": "channel.now_playing.border_width", "label_ja": "楽曲名の縁取り幅", "description_ja": "縁取りの太さ", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.border_width"}, "type": "integer", "validation": {"min": 0, "max": 12}, "category": "production"
+    },
+    {
+      "key": "channel.now_playing.opacity", "label_ja": "楽曲名の不透明度", "description_ja": "0から1の不透明度", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
+    },
+    {
+      "key": "channel.now_playing.fade_in", "label_ja": "楽曲名フェードイン", "description_ja": "フェードイン秒数", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.fade_in"}, "type": "number", "validation": {"min": 0, "max": 10}, "category": "production"
+    },
+    {
+      "key": "channel.now_playing.fade_out", "label_ja": "楽曲名フェードアウト", "description_ja": "フェードアウト秒数", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.fade_out"}, "type": "number", "validation": {"min": 0, "max": 10}, "category": "production"
+    },
+    {
+      "key": "channel.now_playing.margin", "label_ja": "楽曲名の余白", "description_ja": "画面端からの余白", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.margin"}, "type": "integer", "validation": {"min": 0, "max": 400}, "category": "production"
+    },
+    {
+      "key": "channel.visualizer.enabled", "label_ja": "オーディオビジュアライザー", "description_ja": "音声に連動する演出を動画へ透過合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.enabled"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.visualizer.pattern", "label_ja": "ビジュアライザーのパターン", "description_ja": "バー、ミラーバー、波形ライン、円形から選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.pattern"}, "type": "string", "choices": ["bars", "mirror", "wave", "circle"], "category": "production"
+    },
+    {
+      "key": "channel.visualizer.position", "label_ja": "ビジュアライザーの位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+    },
+    {
+      "key": "channel.visualizer.margin", "label_ja": "ビジュアライザーの余白", "description_ja": "画面端からの余白（px）", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.margin"}, "type": "integer", "validation": {"min": 0, "max": 800}, "category": "production"
+    },
+    {
+      "key": "channel.visualizer.width_percent", "label_ja": "ビジュアライザーの幅", "description_ja": "動画幅に対する表示幅（%）", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.width_percent"}, "type": "number", "validation": {"min": 5, "max": 100}, "category": "production"
+    },
+    {
+      "key": "channel.visualizer.height_px", "label_ja": "ビジュアライザーの高さ", "description_ja": "表示領域の高さ（px）", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.height_px"}, "type": "integer", "validation": {"min": 16, "max": 1080}, "category": "production"
+    },
+    {
+      "key": "channel.visualizer.color_mode", "label_ja": "ビジュアライザーの配色", "description_ja": "単色または2色グラデーション", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.color_mode"}, "type": "string", "choices": ["single", "gradient"], "category": "production"
+    },
+    {
+      "key": "channel.visualizer.color1", "label_ja": "ビジュアライザー色1", "description_ja": "単色またはグラデーションの開始色", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.color1"}, "type": "string", "validation": {"pattern": "^#[0-9A-Fa-f]{6}$"}, "category": "production"
+    },
+    {
+      "key": "channel.visualizer.color2", "label_ja": "ビジュアライザー色2", "description_ja": "グラデーションの終了色", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.color2"}, "type": "string", "validation": {"pattern": "^#[0-9A-Fa-f]{6}$"}, "category": "production"
+    },
+    {
+      "key": "channel.visualizer.opacity", "label_ja": "ビジュアライザーの不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
+    },
+    {
+      "key": "stock.warn_days",
+      "label_ja": "素材在庫警告日数",
+      "description_ja": "未投稿素材の在庫がこの日数未満なら警告する",
+      "tier": "easy",
+      "scope": "global",
+      "storage": {
+        "file": "ops_config.json",
+        "path": "stock.warn_days"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 365
+      },
+      "category": "advanced"
+    }
+  ]
+}

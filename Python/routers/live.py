@@ -23,6 +23,7 @@
 実体は app_live.py（SSH 制御）と app_youtube.py（YouTube Data API）。
 """
 import time as _time
+import tempfile as _tempfile
 
 from fastapi import APIRouter
 from app_core import *  # noqa: F401,F403  土台シンボル(stdlib/fastapi/foundation)を全取り込み
@@ -546,6 +547,57 @@ def api_live_upload(req: LiveUploadRequest):
     if not r.get("ok"):
         raise HTTPException(400, r.get("error", "アップロード開始失敗"))
     return {"status": "ok", "job_id": r["job_id"], "remote": r["remote"]}
+
+
+@router.post("/api/live/upload-file")
+async def api_live_upload_file(group: str, file: UploadFile = File(...)):
+    """ブラウザで選択したローカル動画を一時保存し、既存の VPS 転送ジョブへ渡す。
+
+    `/api/live/upload` はサーバー Mac 上のファイルパス指定用。この endpoint は
+    ブラウザ標準のファイル選択から直接アップロードする用途。
+    """
+    if not app_live.CH_ID_RE.match(group or ""):
+        raise HTTPException(400, f"不正なグループID: {group}")
+    original = Path(file.filename or "video.mp4").name
+    if Path(original).suffix.lower() not in (".mp4", ".mov", ".m4v"):
+        raise HTTPException(400, f"対応していない拡張子です（.mp4 / .mov / .m4v）: {original}")
+
+    tmp_dir = Path(_tempfile.gettempdir()) / "automation_studio_live_uploads"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = app_live.sanitize_dest_name(original)
+    tmp = Path(_tempfile.NamedTemporaryFile(prefix="live_", suffix="_" + safe_name, dir=tmp_dir, delete=False).name)
+    total = 0
+    try:
+        with tmp.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                out.write(chunk)
+        if total < 10 * 2**20:
+            raise HTTPException(400, "10MB 未満の動画はアップロード対象外です")
+        cfg = app_live.load_live_config()
+        r = app_live.start_upload(
+            cfg["vps"], group, str(tmp), dest_name=original,
+            cleanup_local=True, display_name=original,
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error", "アップロード開始失敗"))
+        if r.get("dedup"):
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return {"status": "ok", "job_id": r["job_id"], "remote": r["remote"]}
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    finally:
+        await file.close()
 
 
 @router.get("/api/live/upload/{job_id}")

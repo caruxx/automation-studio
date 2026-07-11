@@ -1,18 +1,37 @@
 #!/bin/bash
-# orzz. Dashboard 起動スクリプト
+# Automation Studio 起動スクリプト
 # 任意のPCから実行可能（共有ドライブ版）
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG_DIR="${APP_LOG_DIR:-$HOME/Library/Logs/AutomationStudio}"
+TODAY="$(date +%Y-%m-%d)"
+LOG_FILE="$LOG_DIR/server-$TODAY.log"
 
 echo "=================================="
-echo "  orzz. Dashboard"
+echo "  Automation Studio"
 echo "=================================="
 echo "  Server : $SCRIPT_DIR/app.py"
 echo "  Web    : $SCRIPT_DIR/../web/static/"
 echo "  Config : ${HOME}/.config/orzz/"
 echo "=================================="
 echo ""
+
+rotate_logs() {
+    mkdir -p "$LOG_DIR"
+    # 日付ローテ7世代: 新しい7ファイルだけ残す
+    find "$LOG_DIR" -name 'server-*.log' -type f -print0 2>/dev/null \
+      | xargs -0 ls -t 2>/dev/null \
+      | awk 'NR>7' \
+      | xargs rm -f 2>/dev/null || true
+}
+
+if [[ "${1:-}" == "--rotate-logs-only" ]]; then
+    rotate_logs
+    echo "rotated: $LOG_DIR"
+    exit 0
+fi
 
 # 依存パッケージチェック
 # pip 名と import 名は一致しないことが多いので、明示的なマッピング表を持つ。
@@ -27,6 +46,7 @@ DEPS=(
     "google-auth-httplib2|google_auth_httplib2"
     "google-api-python-client|googleapiclient"
     "playwright|playwright"
+    "python-multipart|python_multipart"
     "apscheduler|apscheduler"
 )
 
@@ -54,4 +74,9 @@ fi
 
 # 起動（必ず共有ドライブの app.py を使用）
 cd "$SCRIPT_DIR"
-exec python3 "$SCRIPT_DIR/app.py"
+rotate_logs
+if [[ "${APP_LOG_TO_STDOUT:-0}" == "1" ]]; then
+    exec python3 "$SCRIPT_DIR/app.py"
+fi
+echo "Log    : $LOG_FILE"
+exec python3 "$SCRIPT_DIR/app.py" >> "$LOG_FILE" 2>&1

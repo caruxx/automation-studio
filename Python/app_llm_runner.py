@@ -7,8 +7,9 @@
 
 Claude:  `claude -p <prompt> [--allowedTools Read] [--add-dir <dir> ...]`
 Codex :  `codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox
-          [-i <image> ...] -o <final_msg_file> <prompt>`
+          [-i <image> ...] -o <final_msg_file>` （プロンプトは stdin で渡す）
          → -o の最終メッセージファイルを最優先で読む（無ければ stdout）。
+         ⚠ -i は可変長のため位置引数プロンプトを画像として飲み込む → stdin 渡し必須。
 
 ⚠ Codex を実際に動かすには `codex login` 済みである必要がある（未認証なら 401）。
    未認証時は Claude 失敗 → Codex も失敗 となり、その旨を含む LLMError を送出する。
@@ -51,7 +52,9 @@ def _resolve_clis(cli_cmd: str | None) -> tuple[str, str]:
         codex_cli = (d.get("codex_cli") or DEFAULT_CODEX)
     except Exception:
         pass
-    if cli_cmd:
+    # 既定値の文字列 "claude" は「未指定」とみなし、suno_config の claude_cli
+    # （フルパス設定）を潰さない。明示的に別パスが渡された時だけ優先する。
+    if cli_cmd and cli_cmd != DEFAULT_CLAUDE:
         claude_cli = cli_cmd
     return claude_cli, codex_cli
 
@@ -82,10 +85,12 @@ def _run_codex_cli(cli: str, prompt: str, timeout: int, image_paths=None):
             "--dangerously-bypass-approvals-and-sandbox", "-o", out_path]
     for img in (image_paths or []):
         args += ["-i", str(img)]
-    args += [prompt]
+    # ⚠ -i/--image は可変長オプションのため、直後に置いた位置引数プロンプトを
+    #   画像パスとして飲み込む。プロンプトは stdin 経由で渡す（codex exec は
+    #   位置引数が無いとき stdin から読む仕様）。
     try:
         proc = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            args, capture_output=True, text=True, timeout=timeout, input=prompt,
         )
         final = ""
         try:

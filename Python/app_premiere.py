@@ -15,8 +15,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import atexit
 from pathlib import Path
 from typing import Optional
+
+from resource_lock import ResourceBusyError, ResourceLock
 
 # ─── ファイルポーリング方式 (JSX-based) ──────────────────────────────────────
 # Premiere Pro 2026 は AppleScript の do javascript を持たないため、
@@ -48,14 +51,14 @@ def _cleanup_stale_ipc_files(max_age=300):
 def _is_premiere_running():
     """pgrep で Premiere Pro プロセスを確認"""
     return subprocess.run(['pgrep', '-fi', 'Adobe Premiere Pro'],
-                          capture_output=True).returncode == 0
+                          capture_output=True, timeout=10).returncode == 0
 
 
 def _get_premiere_app_name():
     """実行中の Premiere Pro アプリ名を動的に取得"""
     r = subprocess.run(['osascript', '-e',
                         'tell application "System Events" to get name of every process'],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=10)
     for part in r.stdout.split(','):
         name = part.strip()
         if 'Adobe Premiere Pro' in name:
@@ -873,6 +876,13 @@ if __name__ == "__main__":
     parser.add_argument("--check", action="store_true",
                         help="接続確認のみ")
     args = parser.parse_args()
+
+    try:
+        _resource_lock = ResourceLock("premiere", owner="cli:app_premiere").acquire(blocking=False)
+    except ResourceBusyError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(75)
+    atexit.register(_resource_lock.release)
 
     _cleanup_stale_ipc_files()
 

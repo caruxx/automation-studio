@@ -1,0 +1,53 @@
+# Personal/shared config with secrets or channel-specific data
+config/discord_config.json
+config/dashboard_config.json
+config/channels.json
+config/channels.json*
+config/competitor_analysis_cache.json
+config/benchmark_config.json
+config/benchmark_profiles.json
+config/prompts.json
+config/live_config.json
+config/.suno_history.json
+config/benchmark/
+config/benchmark*
+
+# OAuth / API credentials
+*.youtube_token.json
+youtube_token.json
+youtube_client_secret.json
+client_secret*.json
+client_secret*
+auth_token.txt
+youtube_api_key.txt
+
+# Generated media / analysis output
+generated_product_images/
+competitor_analysis/
+benchmark/
+dist/
+backup/
+Python/scripts/sukima_upload_22_26_once.sh
+scripts/sukima_upload_22_26_once.sh
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.prproj
+*.psd
+
+# Internal plans and local assistant state
+AI_ROUTING_PLAN.md
+IMAGE_EVAL_LOOP_PLAN.md
+AGENTS_WORKPLAN.md
+.claude/
+.codex/
+
+# Development/runtime noise
+.git/
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+.venv/
+venv/

@@ -351,6 +351,21 @@ def analyze_channels(channels: list[dict], cli_cmd: str = DEFAULT_CLI,
             print(f"  ⚠ {ch_name}: {e}")
             if ch_id in existing:
                 per_channel[ch_id] = existing[ch_id]
+                continue
+            obj = {
+                "channel": ch_name,
+                "dominant_visual_elements": ["thumbnail set downloaded", "visual analysis fallback"],
+                "palette": [],
+                "composition_patterns": ["LLM Vision unavailable; preserve downloaded thumbnails for reference"],
+                "text_usage": "unknown",
+                "viewer_promise": "タイトルとサムネ集合から後続生成で抽象化する",
+                "copy_risk": ["既存サムネの構図・文字・固有モチーフを直接コピーしない"],
+                "fallback": True,
+                "fallback_reason": str(e)[:240],
+            }
+            per_channel[ch_id] = stamp_meta(obj, fp)
+            n_run += 1
+            print(f"  ✓ {ch_name}: fallback 分析完了")
             continue
         obj = _extract_json(raw)
         if not obj:

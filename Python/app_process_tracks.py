@@ -130,6 +130,145 @@ def _dedup_same_title_keep_shorter(mp3s, dry_run: bool = False):
     return sorted(survivors)
 
 
+def _load_channel_suno_settings(folder: Path) -> dict:
+    """per-channel `.app_channel_config.json` の suno 設定を読む。
+
+    APP_CHANNEL_FOLDER があればそれを優先し、無ければ動画フォルダの親をチャンネル
+    フォルダとして扱う。読み取れない場合は空 dict を返し、既定挙動を維持する。
+    """
+    env_folder = (os.environ.get("APP_CHANNEL_FOLDER") or "").strip()
+    candidates = []
+    if env_folder:
+        candidates.append(Path(env_folder).expanduser() / ".app_channel_config.json")
+    candidates.append(folder.parent / ".app_channel_config.json")
+    for path in candidates:
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8")) or {}
+                suno = data.get("suno") or {}
+                return suno if isinstance(suno, dict) else {}
+        except Exception:
+            continue
+    return {}
+
+
+def _clean_title_key(title: str) -> str:
+    stem = Path(str(title or "")).stem
+    stem = re.sub(r"^z+_", "", stem)
+    stem = re.sub(r"\s+", " ", stem).strip().lower()
+    return unicodedata.normalize("NFC", stem)
+
+
+def _collect_used_title_keys(folder: Path) -> set[str]:
+    """同一 vol とチャンネル履歴から既存タイトルを集める。"""
+    used: set[str] = set()
+    for sub in ("music", "original_music"):
+        d = folder / sub
+        if d.is_dir():
+            for p in d.glob("*.mp3"):
+                used.add(_clean_title_key(p.stem))
+    for p in folder.glob("*.mp3"):
+        used.add(_clean_title_key(p.stem))
+
+    hist_paths = []
+    try:
+        hist_paths.append(Path(__file__).resolve().parent.parent / "config" / ".suno_history.json")
+    except Exception:
+        pass
+    hist_paths.append(Path.home() / ".config" / "orzz" / ".suno_history.json")
+
+    channel_ids = {
+        (os.environ.get("APP_CHANNEL_ID") or "").strip(),
+        (os.environ.get("APP_CHANNEL_NAME") or "").strip(),
+        folder.parent.name,
+    }
+    try:
+        channels_path = Path(__file__).resolve().parent.parent / "config" / "channels.json"
+        channels = json.loads(channels_path.read_text(encoding="utf-8")) if channels_path.exists() else []
+        parent_norm = str(folder.parent.resolve())
+        for ch in channels if isinstance(channels, list) else []:
+            ch_folder = str(ch.get("folder") or "")
+            if ch_folder and (ch_folder == parent_norm or Path(ch_folder).name == folder.parent.name):
+                channel_ids.add(str(ch.get("id") or "").strip())
+    except Exception:
+        pass
+    channel_ids = {x for x in channel_ids if x}
+
+    for path in hist_paths:
+        try:
+            if not path.exists():
+                continue
+            state = json.loads(path.read_text(encoding="utf-8")) or {}
+            entries = []
+            if channel_ids:
+                entries = [state.get(cid) for cid in channel_ids if isinstance(state.get(cid), dict)]
+            if not entries:
+                entries = [v for v in state.values() if isinstance(v, dict)]
+            for entry in entries:
+                for title in entry.get("titles") or []:
+                    used.add(_clean_title_key(str(title)))
+                for song in entry.get("songs") or []:
+                    if isinstance(song, dict):
+                        used.add(_clean_title_key(str(song.get("title") or "")))
+        except Exception:
+            continue
+    used.discard("")
+    return used
+
+
+def _fallback_unique_title(src: Path, used_keys: set[str], planned_keys: set[str]) -> str:
+    """LLM 不足/失敗時の決定的な別名。_2 テイクは Reprise 系にする。"""
+    likes, base = _parse_likes(src.name)
+    del likes
+    stem = os.path.splitext(base)[0].strip() or src.stem
+    is_take_suffix = bool(re.search(r"_\d+$", stem))
+    root = re.sub(r"_\d+$", "", stem).strip() or stem
+    candidates = []
+    if is_take_suffix:
+        candidates.extend([
+            f"{root} Reprise",
+            f"{root} Second Take",
+            f"{root} Afterglow",
+        ])
+    else:
+        candidates.append(root)
+        candidates.extend([
+            f"{root} First Take",
+            f"{root} Original Take",
+        ])
+    for candidate in candidates:
+        key = _clean_title_key(candidate)
+        if key and key not in used_keys and key not in planned_keys:
+            return candidate
+    n = 2
+    while True:
+        candidate = f"{root} Reprise {n}" if is_take_suffix else f"{root} Take {n}"
+        key = _clean_title_key(candidate)
+        if key not in used_keys and key not in planned_keys:
+            return candidate
+        n += 1
+
+
+def _select_unique_titles(raw_titles: list[str] | None, mp3s: list[Path], used_keys: set[str]) -> list[str]:
+    """LLM 候補を同一 vol/履歴と照合し、不足分は決定的フォールバックで埋める。"""
+    selected: list[str] = []
+    planned: set[str] = set()
+    raw_iter = iter(raw_titles or [])
+    for src in mp3s:
+        chosen = None
+        for title in raw_iter:
+            safe = re.sub(r"[\\/:*?\"<>|]", "_", str(title)).strip()
+            key = _clean_title_key(safe)
+            if safe and key not in used_keys and key not in planned:
+                chosen = safe
+                break
+        if not chosen:
+            chosen = _fallback_unique_title(src, used_keys, planned)
+        selected.append(chosen)
+        planned.add(_clean_title_key(chosen))
+    return selected
+
+
 def _find_thumbnail(folder: Path):
     """フォルダ内のサムネ画像を返す (vol*.jpg / サムネイル.jpg 優先)"""
     for pat in ["vol*.jpg", "サムネイル.jpg", "vol*.png"]:
@@ -161,13 +300,15 @@ CHUNK_SIZE = 10   # 1 回の Claude 呼び出しで要求する曲数（JSON 肥
 
 
 def _chunked_titles(cli_cmd: str, *, prompt_builder, allow_read: bool,
-                    total_count: int, source_label: str) -> list:
+                    total_count: int, source_label: str,
+                    avoid_titles: list[str] | None = None) -> list:
     """CHUNK_SIZE ずつ Claude CLI を呼び、合計 total_count 件のタイトルを集める。
 
     `prompt_builder(count, chunk_index, total_chunks, avoid_hint)` → プロンプト文字列
       avoid_hint には既に取得済みタイトルを渡し、重複回避を指示する
     """
     all_titles = []
+    global_avoid = [str(t).strip() for t in (avoid_titles or []) if str(t).strip()]
     remaining = total_count
     chunk_index = 0
     total_chunks = (total_count + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -176,7 +317,8 @@ def _chunked_titles(cli_cmd: str, *, prompt_builder, allow_read: bool,
         chunk_index += 1
         n = min(CHUNK_SIZE, remaining)
         # 直近 10 件を重複回避ヒントとして渡す
-        avoid_hint = ", ".join(f'"{t}"' for t in all_titles[-10:]) if all_titles else ""
+        avoid_recent = global_avoid[-40:] + all_titles[-10:]
+        avoid_hint = ", ".join(f'"{t}"' for t in avoid_recent) if avoid_recent else ""
         prompt = prompt_builder(n, chunk_index, total_chunks, avoid_hint)
         # タイムアウトは n に比例（10件=120s, 20件=180s...）
         timeout = max(120, 60 + n * 10)
@@ -207,7 +349,8 @@ def _chunked_titles(cli_cmd: str, *, prompt_builder, allow_read: bool,
     return all_titles[:total_count]
 
 
-def propose_titles_from_thumbnail(cli_cmd: str, thumbnail: Path, count: int):
+def propose_titles_from_thumbnail(cli_cmd: str, thumbnail: Path, count: int,
+                                  avoid_titles: list[str] | None = None):
     """サムネ画像を読ませて count 個の英語タイトル候補を JSON で返させる（チャンク分割）"""
     print(f" Claude CLI でタイトル提案中... (サムネ: {thumbnail.name}, 目標 {count}件)")
 
@@ -231,13 +374,14 @@ Rules:
 """
     titles = _chunked_titles(
         cli_cmd, prompt_builder=_build, allow_read=True,
-        total_count=count, source_label="thumbnail",
+        total_count=count, source_label="thumbnail", avoid_titles=avoid_titles,
     )
     print(f"  ✓ 合計 {len(titles)} 件のタイトル候補を取得")
     return titles
 
 
-def propose_titles_from_persona(cli_cmd: str, channel_name: str, persona: str, count: int):
+def propose_titles_from_persona(cli_cmd: str, channel_name: str, persona: str, count: int,
+                                avoid_titles: list[str] | None = None):
     """チャンネルペルソナから count 個の英語タイトル候補を JSON で返させる（チャンク分割）"""
     persona_clean = (persona or "").strip() or "(not set)"
     print(f" Claude CLI でタイトル提案中... (ペルソナ経由, 目標 {count}件)")
@@ -264,7 +408,7 @@ Respond with a SINGLE JSON object, no markdown fences, no commentary:
 """
     titles = _chunked_titles(
         cli_cmd, prompt_builder=_build, allow_read=False,
-        total_count=count, source_label="persona",
+        total_count=count, source_label="persona", avoid_titles=avoid_titles,
     )
     print(f"  ✓ 合計 {len(titles)} 件のタイトル候補を取得")
     return titles
@@ -627,11 +771,25 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
     if not rename_only:
         ensure_ffmpeg()
 
+    suno_settings = _load_channel_suno_settings(folder)
+    keep_both_takes = bool(suno_settings.get("keep_both_takes", False))
+    used_title_keys = _collect_used_title_keys(folder) if keep_both_takes else set()
+    avoid_title_hint = sorted(used_title_keys) if keep_both_takes else []
+
     # MP3 収集（フォルダ直下のみ）
     mp3s = sorted([
         p for p in folder.glob("*.mp3")
         if not p.name.startswith(".") and not _is_deleted_track(p)
     ])
+    source_from_original = False
+    if keep_both_takes and not mp3s:
+        original_dir = folder / "original_music"
+        if original_dir.is_dir():
+            mp3s = sorted([
+                p for p in original_dir.glob("*.mp3")
+                if not p.name.startswith(".") and not _is_deleted_track(p)
+            ])
+            source_from_original = bool(mp3s)
     if not mp3s:
         if not skip_tagging:
             print(f"フォルダ直下MP3なし → 既存 music/ の公開前整備のみ実行: {folder.name}")
@@ -652,7 +810,11 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
 
     # ── 後処理の順序: ① 同タイトル重複（SUNO の2テイク）の長い方を削除 ──
     #    リネーム/フェードより前に行う。リネーム後はタイトルが別々に化けて束ねられなくなるため。
-    if not no_dedup:
+    if keep_both_takes:
+        print("  設定: suno.keep_both_takes=true → 同タイトル2テイクを両方採用")
+        if source_from_original:
+            print("  入力: original_music/ の原本を保持したまま music/ 出力計画を作成")
+    elif not no_dedup:
         mp3s = _dedup_same_title_keep_shorter(mp3s, dry_run=dry_run)
         if not mp3s:
             print("⚠️ 重複削除後に対象が 0 件になりました")
@@ -672,7 +834,9 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
     if thumbnail:
         print(f"  サムネ: {thumbnail.name}")
         try:
-            titles = propose_titles_from_thumbnail(cli_cmd, thumbnail, len(mp3s))
+            titles = propose_titles_from_thumbnail(
+                cli_cmd, thumbnail, len(mp3s), avoid_titles=avoid_title_hint,
+            )
             if not titles:
                 print("⚠️ タイトルが 0 件。ペルソナへフォールバック")
                 titles = None
@@ -694,7 +858,9 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
         print(f"  ⚙️ フォールバック: チャンネルペルソナから提案")
         print(f"     channel={ch_name}, persona={persona[:80]}...")
         try:
-            titles = propose_titles_from_persona(cli_cmd, ch_name, persona, len(mp3s))
+            titles = propose_titles_from_persona(
+                cli_cmd, ch_name, persona, len(mp3s), avoid_titles=avoid_title_hint,
+            )
             if not titles:
                 print("⚠️ ペルソナ提案も 0 件。ファイル名を保持します")
                 titles = None
@@ -707,6 +873,9 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
         print(f" 取得済タイトル {len(titles)} 件 / 対象 {len(mp3s)} 件")
         if len(titles) < len(mp3s):
             print(f"     → {len(mp3s) - len(titles)} 件は元ファイル名を保持します")
+    if keep_both_takes and not keep_names:
+        titles = _select_unique_titles(titles, mp3s, used_title_keys)
+        print(f" 一意化済タイトル {len(titles)} 件 / 対象 {len(mp3s)} 件（同一vol・履歴重複を回避）")
 
     # 処理方針の表示
     if rename_only:
@@ -785,11 +954,22 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
                 out_path = music_dir / new_name
                 process_mp3(src, out_path)
                 print(f"  ✓ processed: music/{new_name}")
-                # 2) 元ファイルを original_music/ に移動（コピーではなく移動）
-                if backup_path.exists():
-                    backup_path.unlink()  # 同名が既に存在なら上書き
-                src.rename(backup_path)
-                print(f"  ✓ moved: original_music/{new_name}")
+                # 2) 原本保全。keep_both_takes では original_music/ の原本名をそのまま残す。
+                if keep_both_takes:
+                    if src.parent == original_dir:
+                        print(f"  ✓ kept original: original_music/{src.name}")
+                    else:
+                        original_path = original_dir / src.name
+                        if not original_path.exists():
+                            shutil.copy2(src, original_path)
+                            print(f"  ✓ copied original: original_music/{src.name}")
+                        src.unlink()
+                        print(f"  ✓ removed source: {src.name}")
+                else:
+                    if backup_path.exists():
+                        backup_path.unlink()  # 同名が既に存在なら上書き
+                    src.rename(backup_path)
+                    print(f"  ✓ moved: original_music/{new_name}")
                 # ルート直下には残さない
                 success += 1
             except Exception as e:

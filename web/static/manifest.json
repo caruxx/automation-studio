@@ -1,7 +1,7 @@
 {
-  "name": "orzz. Automation Studio",
-  "short_name": "orzz.",
-  "description": "BGM チャンネル運営自動化ダッシュボード",
+  "name": "Automation Studio",
+  "short_name": "Studio",
+  "description": "クリエイター向け制作パイプライン自動化ダッシュボード",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -16,6 +16,100 @@ from app_core import get_suno_config, get_dashboard_config
 router = APIRouter()
 
 
+# ─── API: ベンチマーク seed 動画分析 ───
+# チャンネル単位ではなく、伸びた 1 本の動画を seed として分析する。
+
+class BenchSeedRunRequest(BaseModel):
+    video_url: str
+    context_hint: Optional[str] = ""
+
+_bseed_status: dict = {"running": False, "phase": "", "msg": "", "started_at": "", "finished_at": ""}
+
+def _bseed_set_status(**kw):
+    _bseed_status.update(kw)
+
+@router.get("/api/benchmark/seed")
+def api_benchmark_seed_get():
+    import app_benchmark_seed as _bs
+    data = _bs.list_seed_analyses()
+    return {
+        "status": "ok",
+        "running": _bseed_status.get("running", False),
+        "phase": _bseed_status.get("phase", ""),
+        "msg": _bseed_status.get("msg", ""),
+        "started_at": _bseed_status.get("started_at", ""),
+        "finished_at": _bseed_status.get("finished_at", ""),
+        "updated_at": data.get("updated_at", ""),
+        "analyses": data.get("analyses", {}),
+    }
+
+@router.get("/api/benchmark/seed/{video_id}")
+def api_benchmark_seed_detail(video_id: str):
+    import app_benchmark_seed as _bs
+    analysis = _bs.get_seed_analysis(video_id)
+    if not analysis:
+        raise HTTPException(404, "seed analysis not found")
+    return {"status": "ok", "analysis": analysis}
+
+@router.post("/api/benchmark/seed/run")
+def api_benchmark_seed_run(req: BenchSeedRunRequest):
+    if _bseed_status.get("running"):
+        return {"status": "already_running", **_bseed_status}
+    if not (req.video_url or "").strip():
+        raise HTTPException(400, "video_url is required")
+
+    import app_benchmark_seed as _bs
+    suno_cfg = get_suno_config()
+    cli_cmd = suno_cfg.get("claude_cli") or "claude"
+
+    def _worker():
+        _bseed_set_status(running=True, phase="analyzing",
+                          msg="seed 動画を分析中...",
+                          started_at=_bt_now_iso(), finished_at="")
+        try:
+            result = _bs.analyze_seed_video(req.video_url, context_hint=req.context_hint or "", cli_cmd=cli_cmd)
+            _bseed_set_status(running=False, phase="done",
+                              msg=f"分析完了: {result.get('video_title') or result.get('video_id') or ''}",
+                              finished_at=_bt_now_iso())
+        except Exception as e:
+            _bseed_set_status(running=False, phase="error",
+                              msg=str(e)[:300], finished_at=_bt_now_iso())
+
+    t = _bt_threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+@router.post("/api/benchmark/seed/audio-run")
+def api_benchmark_seed_audio_run(req: BenchSeedRunRequest):
+    if _bseed_status.get("running"):
+        return {"status": "already_running", **_bseed_status}
+    if not (req.video_url or "").strip():
+        raise HTTPException(400, "video_url is required")
+
+    import app_benchmark_seed as _bs
+    suno_cfg = get_suno_config()
+    cli_cmd = suno_cfg.get("claude_cli") or "claude"
+
+    def _worker():
+        _bseed_set_status(running=True, phase="audio_analyzing",
+                          msg="seed 動画の音源を Gemini で分析中...",
+                          started_at=_bt_now_iso(), finished_at="")
+        try:
+            result = _bs.analyze_seed_audio(req.video_url, cli_cmd=cli_cmd)
+            bpm = ((result.get("bpm_estimate") or {}).get("value") if isinstance(result.get("bpm_estimate"), dict) else "")
+            _bseed_set_status(running=False, phase="done",
+                              msg=f"音源分析完了: BPM {bpm}" if bpm else "音源分析完了",
+                              finished_at=_bt_now_iso())
+        except Exception as e:
+            _bseed_set_status(running=False, phase="error",
+                              msg=str(e)[:300], finished_at=_bt_now_iso())
+
+    t = _bt_threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
 # ─── API: ベンチマーク・サムネイル軸（Phase 1） ───
 # 既存 competitor_analysis_cache.json を入力に、サムネ画像を DL → Vision 分析 →
 # picked リストを Flow / Image2 への参照画像として再利用する。

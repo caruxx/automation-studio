@@ -33,7 +33,7 @@ FFPID=""
 STREAM_KEY=""
 VIDEO=""
 CUR_VIDEO=""
-MODE="copy"
+MODE="reencode"
 MAX_SECONDS=0
 ROTATE_SECONDS=0
 PLAYLIST=""
@@ -96,7 +96,7 @@ while :; do
   # shellcheck disable=SC1090
   STREAM_KEY="" VIDEO="" PLAYLIST="" MAX_SECONDS=0 ROTATE_SECONDS=0
   source "$ENVF"
-  MODE="${MODE:-copy}"
+  MODE="${MODE:-reencode}"
   RTMP_URL="${RTMP_URL:-rtmp://a.rtmp.youtube.com/live2}"
   case "${MAX_SECONDS:-0}" in (*[!0-9]*|"") MAX_SECONDS=0;; esac
   case "${ROTATE_SECONDS:-0}" in (*[!0-9]*|"") ROTATE_SECONDS=0;; esac
@@ -126,10 +126,13 @@ while :; do
   if [ "$MODE" = "reencode" ]; then
     FPS="${FPS:-30}"
     VB="${VBITRATE:-4500k}"
+    GOP=$((FPS * 2))
     ARGS=(-re -stream_loop -1 -i "$CUR_VIDEO"
       -c:v libx264 -preset "${PRESET:-veryfast}"
       -b:v "$VB" -maxrate "$VB" -bufsize "${BUFSIZE:-9000k}"
-      -pix_fmt yuv420p -g $((FPS * 2)) -r "$FPS")
+      -pix_fmt yuv420p -r "$FPS" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0
+      -x264-params "keyint=${GOP}:min-keyint=${GOP}:scenecut=0"
+      -force_key_frames "expr:gte(t,n_forced*2)")
     [ -n "${SCALE:-}" ] && ARGS+=(-vf "scale=${SCALE}")
     ARGS+=(-c:a aac -b:a "${ABITRATE:-160k}" -ar 48000)
   else

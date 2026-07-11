@@ -1,1 +1,1 @@
-"""orzz. Dashboard ドメイン別 APIRouter 群（D9 段階分割）。"""
+"""Automation Studio ドメイン別 APIRouter 群（D9 段階分割）。"""

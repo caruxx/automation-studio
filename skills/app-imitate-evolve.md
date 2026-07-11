@@ -108,7 +108,7 @@ Sheet1 の TOP 動画タイトルから英単語 + 日本語 2文字以上を集
 | ファイル | 役割 |
 |---------|------|
 | [Python/app.py](../Python/app.py) | 3 つの集計 API + `/suggest-imitate-evolve` |
-| [Python/app_sheets.py](../Python/app_sheets.py) | Sheet1 の `recent_videos` / `top_videos` を利用 |
+| [Python/app_benchmark_channels.py](../Python/app_benchmark_channels.py) | 登録済みチャンネルキャッシュの `recent_videos` / `top_videos` を利用 |
 | [web/static/index.html](../web/static/index.html) | `loadBenchmarkSidePanel`, `suggestImitateEvolve` |
 
 ### 対象チャンネルの選定
@@ -150,6 +150,6 @@ Sheet1 の `channel.title` と Sheet2 の `channel_name` で突き合わせ:
 | 現象 | 原因 | 対処 |
 |------|------|------|
 | 「ペルソナ未設定」エラー | `dashboard_config.persona` が空 | 基本設定 → ペルソナを入力 |
-| 「ベンチマーク対象が空」 | ピン留めも hot ranking も取れない | スプレッドシート URL を設定タブで入力 → 「日本語で再分析」 |
+| 「ベンチマーク対象が空」 | 登録済みチャンネルキャッシュが空 | `/api/benchmark/channels` にチャンネル URL を登録 → 「日本語で再分析」 |
 | 結果が英語 | 旧プロンプトのキャッシュ | マスター設定の `imitate_evolve` プロンプトは日本語固定なので発生しないはず。他の analysis が英語なら [app-competitor-spreadsheet.md](./app-competitor-spreadsheet.md) 参照 |
 | 投稿時刻ヒートマップが全部 0 | Sheet1 の `publish_datetime` 列（E列相当）が空 | Sheet1 側のデータ整備が必要 |

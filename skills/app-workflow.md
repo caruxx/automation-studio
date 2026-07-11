@@ -51,7 +51,7 @@ bash Python/start.sh       # http://localhost:8888/
 - **リネームのみ**: 「✏️ タイトルのみリネーム」で ffmpeg スキップの軽量リネーム。サムネ無しなら**チャンネルペルソナ**から提案
 - **後処理**: 「🎛 後処理を実行」で Claude CLI タイトル提案 + FFmpeg（無音トリム + 8 秒フェード + -16 LUFS 正規化）→ `music/` に出力、オリジナルは `original_music/` にバックアップ
 - **ブラウザ内ステータス**: Playwright 操作中のブラウザ右下に現在処理を可視化（[app-web-dashboard.md](./app-web-dashboard.md) 参照）
-- **スプレッドシート競合分析**: 195ch の詳細データ + 54ch の日次成長データからホットチャンネルを特定 → Claude で分析 → 提案。YouTube API quota ゼロ（[app-competitor-spreadsheet.md](./app-competitor-spreadsheet.md) 参照）
+- **Data API ベンチマーク分析**: チャンネル URL を `/api/benchmark/channels` に登録 → 直近動画をキャッシュ → Claude で分析 → 提案。Sheets ベンチ取込は廃止（[app-competitor-spreadsheet.md](./app-competitor-spreadsheet.md) 参照）
 - **Claude CLI 経由**: API未使用、`claude -p "..."` が JSON 単一オブジェクトを逐次返す（[app-ai-propose.md](./app-ai-propose.md)）
 - **Tampermonkey**: 従来の「Ghost Writer by LLM」も併用可
 - 完了条件: `music/*.mp3` が 1 本以上存在 → ステッパー 1/11 ✓
@@ -217,5 +217,5 @@ Web UI から手動で実行する代わりに、以下を組み合わせれば*
 | [app-export.md](./app-export.md) | Media Encoder 書き出し |
 | [app-youtube-desc.md](./app-youtube-desc.md) | 説明文生成 |
 | [app-youtube-upload.md](./app-youtube-upload.md) | YouTube アップロード |
-| [app-competitor-spreadsheet.md](./app-competitor-spreadsheet.md) | スプシ競合分析（195ch + 成長データ → Claude 分析）|
+| [app-competitor-spreadsheet.md](./app-competitor-spreadsheet.md) | J-0後のData APIベンチマーク分析（旧スプシ経路の廃止メモ）|
 | [app-notify.md](./app-notify.md) | Discord 通知 |

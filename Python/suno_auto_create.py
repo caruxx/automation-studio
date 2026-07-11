@@ -16,7 +16,15 @@ import re
 import sys
 import random
 import time
+import atexit
 from pathlib import Path
+
+from resource_lock import ResourceBusyError, ResourceLock
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 # ─── 設定 ──────────────────────────────────────────────
 
@@ -28,6 +36,133 @@ try:
 except Exception:
     CONFIG_DIR = Path.home() / ".config" / "orzz"
 DEFAULT_CONFIG = CONFIG_DIR / "suno_config.json"
+HTTP_TIMEOUT_SEC = int(os.environ.get("APP_SUNO_HTTP_TIMEOUT_SEC") or 120)
+
+
+class SunoProgress:
+    """SUNO生成中の進捗をブラウザ/CLI/JSONへ同時に流す軽量レポーター。"""
+
+    def __init__(self, settings):
+        workspace = (settings.get("workspace") or "default").strip() or "default"
+        safe_workspace = re.sub(r"[^A-Za-z0-9_.-]+", "_", workspace)
+        explicit = os.environ.get("APP_SUNO_STATUS_FILE", "").strip()
+        self.status_path = Path(explicit) if explicit else CONFIG_DIR / f"suno_status_{safe_workspace}.json"
+        self.latest_path = CONFIG_DIR / "suno_status_latest.json"
+        self.workspace = workspace
+        self.target = int(settings.get("loop_count") or 0)
+        self.phase = "starting"
+        self.submitted = 0
+        self.detected_tracks = 0
+        self.audio_ready = 0
+        self.page_url = ""
+        self.last_action = "starting"
+        self.last_change_at = time.time()
+        self.last_emit_at = 0.0
+
+    def _probe_page(self, page):
+        if page is None:
+            return
+        try:
+            data = page.evaluate(r"""() => {
+                const cache = window.__sunoAudioUrlCache || {};
+                const audioReady = Object.values(cache).filter(v => v && v.audioUrl).length;
+                return {url: location.href, audioReady};
+            }""")
+            if isinstance(data, dict):
+                self.page_url = str(data.get("url") or self.page_url)
+                audio_ready = int(data.get("audioReady") or 0)
+                self.audio_ready = max(self.audio_ready, audio_ready)
+                self.detected_tracks = max(self.detected_tracks, audio_ready)
+        except Exception:
+            try:
+                self.page_url = page.url
+            except Exception:
+                pass
+
+    def update(self, page=None, *, phase=None, submitted=None, detected_tracks=None,
+               audio_ready=None, last_action=None, emit=False):
+        changed = False
+        if phase and phase != self.phase:
+            self.phase = phase
+            changed = True
+        if submitted is not None and submitted != self.submitted:
+            self.submitted = int(submitted)
+            changed = True
+        if detected_tracks is not None and detected_tracks != self.detected_tracks:
+            self.detected_tracks = int(detected_tracks)
+            changed = True
+        if audio_ready is not None and audio_ready != self.audio_ready:
+            self.audio_ready = int(audio_ready)
+            changed = True
+        if last_action and last_action != self.last_action:
+            self.last_action = last_action
+            changed = True
+        self._probe_page(page)
+        if changed:
+            self.last_change_at = time.time()
+        self.write()
+        now = time.time()
+        if emit or now - self.last_emit_at >= 30:
+            self.emit()
+            self.last_emit_at = now
+
+    def snapshot(self):
+        now = time.time()
+        return {
+            "workspace": self.workspace,
+            "phase": self.phase,
+            "submitted": self.submitted,
+            "target": self.target,
+            "detected_tracks": self.detected_tracks,
+            "audio_ready": self.audio_ready,
+            "page_url": self.page_url,
+            "last_action": self.last_action,
+            "idle_sec": int(max(0, now - self.last_change_at)),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+
+    def write(self):
+        data = self.snapshot()
+        for path in (self.status_path, self.latest_path):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(path)
+            except Exception:
+                pass
+
+    def emit(self):
+        data = self.snapshot()
+        print(
+            "SUNO heartbeat: "
+            f"ws={data['workspace']} phase={data['phase']} "
+            f"submitted={data['submitted']}/{data['target']} "
+            f"detected={data['detected_tracks']} audio_ready={data['audio_ready']} "
+            f"idle={data['idle_sec']}s url={data['page_url']} "
+            f"action={data['last_action']}",
+            flush=True,
+        )
+
+    def overlay(self, page, variant="info"):
+        data = self.snapshot()
+        msg = (
+            f"SUNO {data['phase']} | {data['submitted']}/{data['target']} submitted | "
+            f"detected {data['detected_tracks']} / audio {data['audio_ready']} | "
+            f"idle {data['idle_sec']}s"
+        )
+        _set_status(page, msg, variant)
+
+    def reset_observed_counts(self, page=None):
+        self.detected_tracks = 0
+        self.audio_ready = 0
+        if page is not None:
+            try:
+                page.evaluate("() => { window.__sunoAudioUrlCache = {}; }")
+            except Exception:
+                pass
+        self.last_change_at = time.time()
+        self.write()
 
 
 class UnattendedLoginRequired(RuntimeError):
@@ -276,7 +411,7 @@ def call_gemini(api_key, model, prompt):
         "generationConfig": {"temperature": 1.0, "maxOutputTokens": 4096}
     }).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
         result = json.loads(resp.read())
     if "error" in result:
         raise Exception(f"Gemini API エラー: {result['error'].get('message', '')}")
@@ -302,7 +437,7 @@ def call_chatgpt(api_key, model, prompt):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
     })
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
         result = json.loads(resp.read())
     if "error" in result:
         raise Exception(f"ChatGPT API エラー: {result['error'].get('message', '')}")
@@ -582,6 +717,42 @@ def _is_vocal_mode(mode):
     return mode in ("lyrics", "lyrics_styles")
 
 
+def _seed_context_suffix(mode) -> str:
+    """seed 音源分析と視聴者心理を楽曲ドラフト用プロンプトへ付加する。"""
+    try:
+        import app_benchmark_seed as _seed
+        music = (_seed.seed_music_profile_hint() or "").strip()
+        seed = (_seed.seed_prompt_hint(max_seeds=1) or "").strip()
+    except Exception:
+        return ""
+    if not music and not seed:
+        return ""
+
+    parts = ["\n\n【Benchmark Seed Context — use as grounding, not for copying】"]
+    if music:
+        parts.append(music)
+    if seed:
+        parts.append(seed)
+    parts.extend([
+        "Styles rules (ALL modes, instrumental included):",
+        "- Write `styles` as short comma-separated English phrases (2-5 words each) that SUNO parses as style tags. No sentences, no Japanese, no marketing words — only things you can HEAR.",
+        "- Cover these 5 slots in every song's `styles`:",
+        "  1. genre anchor (e.g. `celtic folk instrumental`)",
+        "  2. tempo with BPM from the MEASURED profile above. If the measured BPM feels double-time for the viewer scene (housework / sleep / relax), use half and keep the feel word (e.g. `gentle 65 BPM lilt`).",
+        "  3. 2-3 instrument phrases consistent with the measured density and brightness.",
+        "  4. emotion slot — translate the viewer's emotional benefit (viewer_emotion / click_promise above) into how the music FEELS (e.g. `uplifting yet calm`, `fresh motivated mood`).",
+        "  5. scene slot — translate viewer_use_case into a sonic scene (e.g. `sunny morning kitchen atmosphere`, `spring cleaning energy`).",
+        "- Do NOT imitate any specific existing melody or artist. Borrow only abstract features (tempo feel, instrumentation, density, texture).",
+    ])
+    if _is_vocal_mode(mode):
+        parts.extend([
+            "Lyrics rules (vocal mode):",
+            "- Ground the lyrics in the viewer's scene and emotion from the seed analysis above (viewer_use_case / viewer_emotion / click_promise): write ABOUT that moment of daily life (例: 朝の家事を始める瞬間、雨の日の部屋) — the listener should feel \"this song is about my time\".",
+            "- Keep wording original. Never reuse benchmark titles or phrases (do_not_copy 厳守).",
+        ])
+    return "\n".join(parts)
+
+
 # ── チャンネル別履歴の永続化（.suno_history.json）──
 
 def _channel_id_from_settings(settings):
@@ -697,7 +868,7 @@ def generate_content_batch(settings, count):
     )
     meta_suffix = APPEND_META_TAG_INSTRUCTION if _is_vocal_mode(mode) else ""
 
-    full_prompt = base_prompt + diversity_suffix + meta_suffix + APPEND_PROMPT_JSON_BATCH.format(
+    full_prompt = base_prompt + _seed_context_suffix(mode) + diversity_suffix + meta_suffix + APPEND_PROMPT_JSON_BATCH.format(
         count=count, mode_hint=mode_hint, mode_rule=mode_rule,
     )
     if provider == "codex":
@@ -920,7 +1091,7 @@ def _generate_content_once(settings, avoid_songs=None, strong=False, recent_titl
         else:
             append = APPEND_PROMPT_WITHOUT_STYLES + meta
 
-    full_prompt = base_prompt + diversity_suffix + append
+    full_prompt = base_prompt + _seed_context_suffix(mode) + diversity_suffix + append
 
     api_key = settings.get("api_key", "")
     model = settings.get("model", "")
@@ -1047,6 +1218,76 @@ SET_REACT_VALUE_JS = """
 """
 
 
+def _click_workspace_card(page, workspace_name):
+    """/me/workspaces 上で同名ワークスペースのカードを探してクリックする。
+
+    現UI (2026-07 確認) のカード textContent は "rw_vol110 Songs · 1h ago" のように
+    名前と曲数が空白なしで連結されるため、「名前の直後が空白か終端」の境界 regex は使えない。
+    名前の完全一致アンカーはカード内に2つある:
+      1. <img alt="Cover image for <名前>">
+      2. 名前だけを持つ <span>（曲数・日時は別 span）
+    1→2→曖昧一致(startsWith+残余が曲数表記)→非カード exact text の順で検出する。
+
+    Returns: クリックできたら検出方法の説明文字列、見つからなければ None。
+    """
+    if not workspace_name:
+        return None
+    try:
+        esc = workspace_name.replace('"', '\\"')
+        card = page.locator(
+            f'div[role="button"]:has(img[alt="Cover image for {esc}"])'
+        ).first
+        if card.count() == 0:
+            card = page.locator(
+                'div[role="button"]', has=page.locator(f'span:text-is("{esc}")')
+            ).first
+        if card.count() > 0 and card.is_visible():
+            card.click(timeout=3000)
+            return "exact"
+    except Exception:
+        pass
+
+    # 曖昧一致フォールバック: カード text が名前で始まり、残余が空/空白始まり/曲数表記
+    # ("10 Songs · ..." 等) ならそのカードとみなしてクリック。
+    # UI がまた変わって img alt / span 構造が崩れても名前連結パターンなら拾える保険。
+    # ⚠ ただし text 連結は prefix 衝突と本質的に区別不能（"SUKIMA_vol4" 930曲 と
+    #   "SUKIMA_vol49" 30曲 は同一 text）。完全一致アンカーがページに残っている
+    #   （= 上の exact 判定が信頼できる）間は曖昧一致を発動させない。
+    try:
+        if page.locator('img[alt^="Cover image for"]').count() > 0:
+            return None
+    except Exception:
+        pass
+    try:
+        clicked = page.evaluate("""(name) => {
+            for (const el of document.querySelectorAll('div[role="button"]')) {
+                const t = (el.textContent || '').trim();
+                if (!t.startsWith(name)) continue;
+                const rest = t.slice(name.length);
+                if (rest === '' || /^\\s/.test(rest) || /^\\d+\\s*Songs?\\b/.test(rest)) {
+                    el.click();
+                    return t.slice(0, 60);
+                }
+            }
+            return null;
+        }""", workspace_name)
+        if clicked:
+            return f"曖昧一致: {clicked}"
+    except Exception:
+        pass
+
+    # 最終フォールバック: カードが div[role=button] でなくなった場合に備え、
+    # ページ内の名前 exact text をそのままクリック（旧実装互換）。
+    try:
+        el = page.get_by_text(workspace_name, exact=True).first
+        if el.count() > 0 and el.is_visible():
+            el.click(timeout=3000)
+            return "exact-text (非カード)"
+    except Exception:
+        pass
+    return None
+
+
 def ensure_workspace(page, workspace_name):
     """SUNO /me/workspaces 経由で Workspace を作成（参考コード準拠）。
 
@@ -1075,29 +1316,19 @@ def ensure_workspace(page, workspace_name):
         return False
 
     # 既に同名のワークスペースがあればクリックして選択（重複作成を避ける）
-    # DOM 上の workspace カードは <div role="button"> で text に "orzz_vol77 80 Songs · 1d ago" のような形。
-    # 部分一致 (has_text=workspace_name) は prefix 衝突を起こす（例: "Harbor_Notes_vol1" を検索すると
-    # "Harbor_Notes_vol13" にもマッチし、DOM 順次第で誤った workspace を選んでしまう）。
-    # 解決: 「ワークスペース名で始まり、その直後がスペースか終端」の境界判定 regex で exact match に近づける。
-    try:
-        # re.escape で workspace_name 内のメタ文字をエスケープし、(?:\s|$) で名前の後ろを境界化。
-        ws_pattern = re.compile(rf"^{re.escape(workspace_name)}(?:\s|$)", re.MULTILINE)
-        existing = page.locator('div[role="button"]').filter(has_text=ws_pattern).first
-        if existing.count() > 0 and existing.is_visible():
-            existing.click(timeout=3000)
-            time.sleep(2)
-            print(f"  ✓ 既存 Workspace '{workspace_name}' を選択しました")
-            _set_status(page, f"既存 Workspace '{workspace_name}' を選択", "ok")
-            # /create?wid= にリダイレクトされるのを待機
-            try:
-                page.wait_for_url("**/create?wid=*", timeout=8000)
-            except Exception:
-                if "/create" not in page.url:
-                    page.goto("https://suno.com/create", wait_until="domcontentloaded", timeout=15000)
-                    time.sleep(2)
-            return True
-    except Exception:
-        pass
+    found = _click_workspace_card(page, workspace_name)
+    if found:
+        time.sleep(2)
+        print(f"  ✓ 既存 Workspace '{workspace_name}' を選択しました ({found})")
+        _set_status(page, f"既存 Workspace '{workspace_name}' を選択", "ok")
+        # /create?wid= にリダイレクトされるのを待機
+        try:
+            page.wait_for_url("**/create?wid=*", timeout=8000)
+        except Exception:
+            if "/create" not in page.url:
+                page.goto("https://suno.com/create", wait_until="domcontentloaded", timeout=15000)
+                time.sleep(2)
+        return True
 
     # 「New Workspace」ボタンをクリック (DOM確認済: <BUTTON> text="New Workspace")
     print("  ↳ 既存 WS なし。新規作成します")
@@ -1183,6 +1414,17 @@ def ensure_workspace(page, workspace_name):
         return True
 
 
+_SUNO_WID_RE = re.compile(r"(?:[?&]wid=)?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", re.I)
+
+
+def _workspace_direct_url(workspace_name):
+    """UUID or /create?wid=... input -> direct SUNO workspace URL."""
+    m = _SUNO_WID_RE.search(workspace_name or "")
+    if not m:
+        return ""
+    return f"https://suno.com/create?wid={m.group(1)}"
+
+
 def download_workspace_tracks(page, workspace_name, target_dir):
     """指定 Workspace の全楽曲を MP3 ダウンロード → target_dir に保存。
 
@@ -1199,23 +1441,31 @@ def download_workspace_tracks(page, workspace_name, target_dir):
     print(f"\n▶ Workspace '{workspace_name}' の楽曲を {target} にダウンロード...")
     _set_status(page, f"Workspace '{workspace_name}' を開いています...", "info")
 
-    # 1) /me/workspaces へ遷移 → 対象 Workspace を開く
-    try:
-        page.goto("https://suno.com/me/workspaces", wait_until="domcontentloaded", timeout=30000)
-        time.sleep(3)
-    except Exception as e:
-        print(f"  ⚠️ /me/workspaces アクセス失敗: {e}")
-        return 0
+    # 1) UUID/URL 指定なら直接開く。同名 Workspace が複数ある場合の取り違えを防ぐ。
+    direct_url = _workspace_direct_url(workspace_name)
+    if direct_url:
+        try:
+            page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+            time.sleep(5)
+            print(f"  ✓ Workspace wid を直接開く: {page.url}")
+        except Exception as e:
+            print(f"  ⚠️ Workspace wid アクセス失敗: {e}")
+            return 0
+    else:
+        # /me/workspaces へ遷移 → 対象 Workspace を開く
+        try:
+            page.goto("https://suno.com/me/workspaces", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(3)
+        except Exception as e:
+            print(f"  ⚠️ /me/workspaces アクセス失敗: {e}")
+            return 0
 
-    try:
-        target_ws = page.get_by_text(workspace_name, exact=True).first
-        target_ws.wait_for(state="visible", timeout=5000)
-        target_ws.click(timeout=3000)
+        found = _click_workspace_card(page, workspace_name)
+        if not found:
+            print(f"  ⚠️ Workspace '{workspace_name}' が見つかりません")
+            return 0
         time.sleep(3)
-        print(f"  ✓ Workspace 開く: {page.url}")
-    except Exception as e:
-        print(f"  ⚠️ Workspace '{workspace_name}' が見つかりません: {e}")
-        return 0
+        print(f"  ✓ Workspace 開く ({found}): {page.url}")
 
     # 2) インターセプタが既に install されているか確認（add_init_script 経由）
     #    されていない場合はこの時点で evaluate 注入する（既存タブで呼ばれた場合の救済）
@@ -1231,7 +1481,7 @@ def download_workspace_tracks(page, workspace_name, target_dir):
     print(f" 検出楽曲数: {len(uuids)}")
     _set_status(page, f"楽曲検出: {len(uuids)}曲 / audio_url 収集中...", "info")
     if not uuids:
-        print("  ⚠️ clip-row が見つかりません。DOM 構造が変わっている可能性")
+        print("  ⚠️ 楽曲行が見つかりません。DOM 構造が変わっている可能性")
         return 0
 
     # 4) audio_url キャッシュが UUID をほぼ充足するまでポーリング（レンダリング/JSON パース待ち）
@@ -1318,7 +1568,7 @@ def download_workspace_tracks(page, workspace_name, target_dir):
             base = safe_title or f"track_{idx}"
             fname = f"{base}.mp3"
             counter = 2
-            while fname in used_names:
+            while fname in used_names or (target / fname).exists():
                 fname = f"{base}_{counter}.mp3"
                 counter += 1
             used_names.add(fname)
@@ -1353,15 +1603,129 @@ def download_workspace_tracks(page, workspace_name, target_dir):
     return success
 
 
+def _workspace_ready_count(page):
+    """現在ページの SUNO audio_url cache から ready 件数を読む。失敗時は 0。"""
+    try:
+        data = page.evaluate("""() => {
+            const cache = window.__sunoAudioUrlCache || {};
+            return Object.values(cache).filter(v => v && v.audioUrl).length;
+        }""")
+        return int(data or 0)
+    except Exception:
+        return 0
+
+
+def _open_workspace_for_poll(page, workspace_name):
+    """ポーリング用に対象 Workspace を開く。失敗しても呼び出し側で再試行する。"""
+    if not workspace_name:
+        return True
+    direct_url = _workspace_direct_url(workspace_name)
+    if direct_url:
+        page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(5)
+        return True
+
+    page.goto("https://suno.com/me/workspaces", wait_until="domcontentloaded", timeout=30000)
+    time.sleep(3)
+    if not _click_workspace_card(page, workspace_name):
+        raise RuntimeError(f"Workspace '{workspace_name}' のカードが見つかりません")
+    time.sleep(5)
+    return True
+
+
+def _poll_until_auto_download_ready(page, workspace_name, expected_ready, timeout_sec, progress):
+    """生成後に同一セッションでレンダ完了を待つ。例外は次周期で再試行する。"""
+    deadline = time.time() + max(0, int(timeout_sec))
+    opened = False
+    last_ready = 0
+    print("\n" + "=" * 50)
+    print("  SUNO auto-download: レンダ完了待機")
+    print("=" * 50)
+    print(f"  Workspace: {workspace_name or '(current)'}")
+    print(f"  目標 ready: {expected_ready}")
+    print(f"  タイムアウト: {int(timeout_sec)}秒")
+    print("=" * 50)
+    progress.update(page, phase="auto_download_wait", last_action=f"waiting for audio_ready {expected_ready}", emit=True)
+
+    while time.time() < deadline:
+        try:
+            if workspace_name and not opened:
+                _open_workspace_for_poll(page, workspace_name)
+                opened = True
+            try:
+                installed = page.evaluate("() => !!window.__sunoAudioInterceptorInstalled")
+                if not installed:
+                    page.evaluate(_SUNO_AUDIO_URL_INTERCEPTOR)
+            except Exception:
+                pass
+            _collect_all_song_uuids(page, from_top=True)
+            ready = _workspace_ready_count(page)
+            last_ready = max(last_ready, ready)
+            progress.update(page, phase="auto_download_wait", audio_ready=last_ready,
+                            detected_tracks=last_ready,
+                            last_action=f"audio_ready {last_ready}/{expected_ready}", emit=True)
+            _set_status(page, f"レンダ完了待ち: {last_ready}/{expected_ready}", "info")
+            if last_ready >= expected_ready:
+                print(f"  ✓ audio_ready {last_ready}/{expected_ready}: ダウンロードへ進みます")
+                return True, last_ready
+            remaining = int(max(0, deadline - time.time()))
+            wait_sec = min(random.randint(60, 90), remaining)
+            if wait_sec <= 0:
+                break
+            print(f"  ⏳ audio_ready {last_ready}/{expected_ready}。次回確認まで {wait_sec}秒 (残り {remaining}秒)")
+            time.sleep(wait_sec)
+        except Exception as e:
+            remaining = int(max(0, deadline - time.time()))
+            wait_sec = min(random.randint(60, 90), remaining)
+            print(f"  ⚠️ ポーリング失敗（次周期で再試行）: {e}")
+            progress.update(page, phase="auto_download_wait",
+                            last_action=f"poll retry after error: {e}", emit=True)
+            if wait_sec <= 0:
+                break
+            time.sleep(wait_sec)
+
+    print(f"  ⚠️ auto-download timeout: ready {last_ready}/{expected_ready}")
+    progress.update(page, phase="auto_download_timeout", audio_ready=last_ready,
+                    detected_tracks=last_ready,
+                    last_action=f"timeout ready {last_ready}/{expected_ready}", emit=True)
+    return False, last_ready
+
+
+def _run_auto_postprocess(process_vol, download_dir=None):
+    """DL 後の後処理を本実行する。download_dir があれば直接処理、なければ studio.py で vol 解決。"""
+    if not process_vol:
+        return 0
+    print("\n" + "=" * 50)
+    print("  SUNO auto-download: 後処理")
+    print("=" * 50)
+    print(f"  vol: {process_vol}")
+    if download_dir:
+        print(f"  folder: {download_dir}")
+    print("=" * 50)
+    if download_dir:
+        from app_process_tracks import process_folder
+        return int(process_folder(Path(download_dir)) or 0)
+
+    import subprocess
+    cmd = [sys.executable, str(Path(__file__).parent / "studio.py"), "process", "--vol", str(process_vol)]
+    try:
+        return subprocess.run(
+            cmd, cwd=str(Path(__file__).parent), timeout=7200
+        ).returncode
+    except subprocess.TimeoutExpired:
+        print("❌ SUNO 後処理が 7200 秒でタイムアウトしました")
+        return 1
+
+
 def _collect_all_song_uuids(page, from_top: bool = False):
-    """ページをスクロールしながら全ての [data-testid='clip-row'] から song UUID を収集
+    """ページをスクロールしながら song UUID を収集
 
     from_top=True の場合はスクロールコンテナを先頭に戻してから走査（再補充用）
     """
     if from_top:
         try:
             page.evaluate("""() => {
-                const rows = document.querySelectorAll('[data-testid="clip-row"]');
+                const rows = document.querySelectorAll('[data-testid="clip-row"], div[draggable="true"]');
                 if (rows.length === 0) return;
                 let el = rows[0].parentElement;
                 while (el) {
@@ -1382,23 +1746,39 @@ def _collect_all_song_uuids(page, from_top: bool = False):
     uuids_seen = []
     uuids_set = set()
 
-    def _scan():
-        result = page.evaluate("""() => {
-            const rows = document.querySelectorAll('[data-testid="clip-row"]');
-            const out = [];
-            rows.forEach(r => {
-                const a = r.querySelector('a[href*="/song/"]');
-                if (!a) return;
-                const href = a.getAttribute('href') || '';
-                const m = href.match(/\\/song\\/([a-f0-9-]{8,})/i);
-                if (m) out.push(m[1]);
-            });
-            return out;
-        }""")
-        for u in result:
+    def _add_many(values):
+        for u in values or []:
+            if not u:
+                continue
             if u not in uuids_set:
                 uuids_set.add(u)
                 uuids_seen.append(u)
+
+    def _scan():
+        result = page.evaluate("""() => {
+            const out = [];
+            const pushId = (value) => {
+                if (!value) return;
+                const m = String(value).match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+                if (m) out.push(m[0]);
+            };
+            Object.keys(window.__sunoAudioUrlCache || {}).forEach(pushId);
+            const rows = document.querySelectorAll('[data-testid="clip-row"], div[draggable="true"]');
+            rows.forEach(r => {
+                const a = r.querySelector('a[href*="/song/"]');
+                if (a) {
+                    const href = a.getAttribute('href') || '';
+                    const m = href.match(/\\/song\\/([a-f0-9-]{8,})/i);
+                    if (m) pushId(m[1]);
+                }
+                r.querySelectorAll('img[src]').forEach(img => pushId(img.getAttribute('src') || ''));
+                r.querySelectorAll('[data-clip-id], [data-id]').forEach(el => {
+                    pushId(el.getAttribute('data-clip-id') || el.getAttribute('data-id') || '');
+                });
+            });
+            return [...new Set(out)];
+        }""")
+        _add_many(result)
 
     # 初期スキャン
     time.sleep(2)
@@ -1411,7 +1791,7 @@ def _collect_all_song_uuids(page, from_top: bool = False):
         before = len(uuids_seen)
         # スクロール実行
         moved = page.evaluate("""() => {
-            const rows = document.querySelectorAll('[data-testid="clip-row"]');
+            const rows = document.querySelectorAll('[data-testid="clip-row"], div[draggable="true"]');
             if (rows.length === 0) return false;
             // 親を辿ってスクロール可能コンテナを探す
             let el = rows[0].parentElement;
@@ -1455,6 +1835,8 @@ def run_browser_automation(settings):
     loop_count = settings.get("loop_count", 1)
     loop_interval = settings.get("loop_interval_sec", 180)
     headless = settings.get("headless", False)
+    progress = SunoProgress(settings)
+    progress.update(phase="launching", last_action="launching browser", emit=True)
 
     profile_dir = str(Path.home() / ".config/orzz/chromium_profile")
 
@@ -1516,6 +1898,7 @@ def run_browser_automation(settings):
         print("suno.com/create にアクセス中...")
         page.goto("https://suno.com/create", wait_until="domcontentloaded", timeout=30000)
         _set_status(page, "SUNO /create にアクセス中...", "info")
+        progress.update(page, phase="opening", last_action="opened /create", emit=True)
         time.sleep(5)
 
         current_url = page.url
@@ -1548,12 +1931,14 @@ def run_browser_automation(settings):
             print("ブラウザでログインしてください。")
             print("ログイン後、suno.com/create ページに自動で移動します。")
             print("待機中... (最大5分)")
+            progress.update(page, phase="login_wait", last_action="waiting for login", emit=True)
 
             # ログイン完了を自動検知（最大5分待機）
             for tick in range(300):
                 time.sleep(1)
                 if tick % 10 == 0 and tick > 0:
                     print(f"  ... 待機中 ({tick}秒経過) URL: {page.url}")
+                    progress.update(page, phase="login_wait", last_action=f"waiting for login {tick}s", emit=(tick % 30 == 0))
                 try:
                     # suno.com のどこかにいればリダイレクト試行
                     if "suno.com" in page.url and "sign" not in page.url.lower() and "login" not in page.url.lower() and "clerk" not in page.url.lower():
@@ -1596,9 +1981,12 @@ def run_browser_automation(settings):
         # ワークスペース確保（/create 上で名前を設定）
         workspace_name = settings.get("workspace") or ""
         if workspace_name:
+            progress.update(page, phase="workspace", last_action=f"ensuring workspace {workspace_name}", emit=True)
             ensure_workspace(page, workspace_name)
+            progress.reset_observed_counts(page)
 
         print(f"ページ読み込み完了: {page.url}\n")
+        progress.update(page, phase="ready", last_action="create page ready", emit=True)
 
         # ─── バッチモード: Claude CLI を 1 回だけ呼んで N 曲分を事前生成 ───
         # 事前生成済み（--songs-file / settings["pregenerated_songs"]）があれば LLM 生成をスキップしてそのまま投入
@@ -1610,6 +1998,7 @@ def run_browser_automation(settings):
         elif settings.get("batch_mode") and settings.get("provider") in ("claude", "codex"):
             try:
                 print(f" バッチモード: {settings.get('provider')} CLI でまとめて生成します")
+                progress.update(page, phase="drafting", last_action=f"generating {loop_count} drafts", emit=True)
                 batch_songs = generate_content_batch(settings, loop_count)
                 if len(batch_songs) < loop_count:
                     print(f"  ⚠️ 要求 {loop_count}曲 / 取得 {len(batch_songs)}曲。不足分はスキップ")
@@ -1618,11 +2007,15 @@ def run_browser_automation(settings):
                 batch_songs = None
 
         # ─── ループ生成 ───
+        submit_ok_count = 0
         for i in range(1, loop_count + 1):
             print(f"{'='*50}")
             print(f"  曲 {i}/{loop_count}")
             print(f"{'='*50}")
             _set_status(page, f"楽曲 {i}/{loop_count} を生成中...", "info")
+            progress.update(page, phase="preparing", submitted=i - 1,
+                            last_action=f"preparing song {i}/{loop_count}", emit=True)
+            progress.overlay(page)
 
             # 1. コンテンツ決定: バッチ生成済みがあれば使う、なければ都度生成
             if batch_songs is not None:
@@ -1646,9 +2039,17 @@ def run_browser_automation(settings):
 
             # 2. SUNO フォームに入力
             try:
-                inject_into_suno(page, content)
+                if not inject_into_suno(page, content):
+                    progress.update(page, phase="form_validation_error",
+                                    last_action=f"form validation stopped song {i}/{loop_count}", emit=True)
+                    continue
+                progress.update(page, phase="form_ready", submitted=i - 1,
+                                last_action=f"form filled for song {i}/{loop_count}", emit=True)
+                progress.overlay(page)
             except Exception as e:
                 print(f"  ❌ フォーム入力エラー: {e}")
+                progress.update(page, phase="form_error",
+                                last_action=f"form input error: {e}", emit=True)
                 continue
 
             # 3. Create ボタンをクリック（著作権エラー時は歌詞をサニタイズして最大2回リトライ）
@@ -1685,9 +2086,13 @@ def run_browser_automation(settings):
                             print(f" Bot 判定が解除されました。続行します")
                             _set_status(page, "Bot 判定解除を確認、続行します", "ok")
                             try:
-                                inject_into_suno(page, content)
+                                if not inject_into_suno(page, content):
+                                    progress.update(page, phase="form_validation_error",
+                                                    last_action=f"form validation stopped song {i}/{loop_count}", emit=True)
+                                    break
                             except Exception as e:
                                 print(f"  ⚠️ 再注入エラー: {e}")
+                                break
                             continue
                         print(f"  ❌ 10分以内に解除されませんでした")
 
@@ -1696,6 +2101,9 @@ def run_browser_automation(settings):
                 if not detect_copyright_error(page):
                     print(f" Create ボタンをクリックしました")
                     create_ok = True
+                    progress.update(page, phase="submitted", submitted=i,
+                                    last_action=f"clicked Create for song {i}/{loop_count}", emit=True)
+                    progress.overlay(page, "ok")
                     break
 
                 print(f"  ⚠️ SUNO 著作権フィルタに拒否されました (attempt {attempt+1}/3)")
@@ -1707,19 +2115,28 @@ def run_browser_automation(settings):
                     if sanitized != content["lyrics"]:
                         print(f" 歌詞をブラケット構造のみにサニタイズして再投入")
                         content["lyrics"] = sanitized
-                        inject_into_suno(page, content)
+                        if not inject_into_suno(page, content):
+                            progress.update(page, phase="form_validation_error",
+                                            last_action=f"form validation stopped song {i}/{loop_count}", emit=True)
+                            break
                         continue
                 if attempt == 1:
                     print(f" フォールバック歌詞で再投入")
                     content["lyrics"] = _FALLBACK_BRACKET_LYRICS
-                    inject_into_suno(page, content)
+                    if not inject_into_suno(page, content):
+                        progress.update(page, phase="form_validation_error",
+                                        last_action=f"form validation stopped song {i}/{loop_count}", emit=True)
+                        break
                     continue
                 # 3回目で諦める
                 break
 
             if not create_ok:
                 print(f"  ❌ 楽曲 {i} の生成をスキップします")
+                progress.update(page, phase="skipped", submitted=i - 1,
+                                last_action=f"skipped song {i}/{loop_count}", emit=True)
                 continue
+            submit_ok_count += 1
 
             # 4. 次のループまで待機（±30% のゆらぎを加えて自動化検知を回避）
             if i < loop_count:
@@ -1743,11 +2160,63 @@ def run_browser_automation(settings):
                 print(f"\n  ⏳ 次の生成まで {wait_sec} 秒待機中... (base={base_wait}s, jitter={jitter:+.0%}, min={min_wait}s)")
                 for remaining in range(wait_sec, 0, -30):
                     print(f"    残り {remaining} 秒...")
+                    progress.update(page, phase="waiting", submitted=i,
+                                    last_action=f"waiting {remaining}s before next song", emit=True)
+                    progress.overlay(page)
                     time.sleep(min(30, remaining))
 
         print(f"\n{'='*50}")
-        print(f"  完了: {loop_count} 曲の生成リクエストを送信しました")
+        if submit_ok_count == loop_count:
+            print(f"  完了: {loop_count} 曲の生成リクエストを送信しました")
+        else:
+            print(f"  完了: 送信成功 {submit_ok_count} / 失敗・スキップ {loop_count - submit_ok_count} / 総数 {loop_count}")
         print(f"{'='*50}")
+        progress.update(page, phase="submitted_all", submitted=submit_ok_count,
+                        last_action=f"create requests submitted ({submit_ok_count}/{loop_count})", emit=True)
+        progress.overlay(page, "ok")
+
+        auto_download_dir = (settings.get("auto_download_dir") or "").strip()
+        if auto_download_dir:
+            expected_ready = int(submit_ok_count) * 2
+            if expected_ready <= 0:
+                print("\n⚠️ auto-download は指定されていますが、送信成功が 0 件のため DL をスキップします")
+            else:
+                timeout_sec = int(settings.get("auto_download_timeout_sec") or 2700)
+                ready_complete, ready_count = _poll_until_auto_download_ready(
+                    page, workspace_name, expected_ready, timeout_sec, progress
+                )
+                old_render_wait = os.environ.get("APP_SUNO_RENDER_WAIT_SEC")
+                if not ready_complete:
+                    # タイムアウト時は download_workspace_tracks 内の追加待機を省き、
+                    # その時点で audio_url が取れる曲だけを回収する。
+                    os.environ["APP_SUNO_RENDER_WAIT_SEC"] = "0"
+                try:
+                    progress.update(page, phase="auto_downloading",
+                                    last_action=f"downloading to {auto_download_dir}", emit=True)
+                    downloaded = download_workspace_tracks(page, workspace_name, auto_download_dir)
+                finally:
+                    if old_render_wait is None:
+                        os.environ.pop("APP_SUNO_RENDER_WAIT_SEC", None)
+                    else:
+                        os.environ["APP_SUNO_RENDER_WAIT_SEC"] = old_render_wait
+                unrecovered = max(0, expected_ready - int(downloaded or 0))
+                if ready_complete:
+                    print(f"\n auto-download 完了: DL {downloaded}/{expected_ready} / 未回収 {unrecovered}")
+                else:
+                    print(
+                        f"\n auto-download タイムアウト回収: ready {ready_count}/{expected_ready} / "
+                        f"DL {downloaded}/{expected_ready} / 未回収 {unrecovered}"
+                    )
+                progress.update(page, phase="auto_download_done", audio_ready=max(ready_count, downloaded or 0),
+                                detected_tracks=max(ready_count, downloaded or 0),
+                                last_action=f"downloaded {downloaded}/{expected_ready}", emit=True)
+                process_vol = (settings.get("process_vol") or "").strip()
+                if process_vol:
+                    code = _run_auto_postprocess(process_vol, auto_download_dir)
+                    if code:
+                        print(f"  ⚠️ 後処理が失敗しました (exit={code})")
+                    else:
+                        print("  ✓ 後処理完了")
 
         # ブラウザを閉じるか確認
         # 無人モード（pipeline 経由・stdin 非 TTY）→ 即時 close
@@ -1756,6 +2225,7 @@ def run_browser_automation(settings):
         try:
             if _is_unattended():
                 print("\n無人モード: ブラウザを閉じます...")
+                progress.update(page, phase="closing", last_action="closing browser", emit=True)
             elif os.environ.get("APP_KEEP_BROWSER", "").strip() in ("1", "true", "yes"):
                 print("\nAPP_KEEP_BROWSER=1: Ctrl+C まで開いたまま保持します。")
                 try:
@@ -1799,7 +2269,18 @@ def _ensure_custom_mode(page):
         return True
 
     print("  ⚙️ Custom モードへ切り替えを試行（title/styles/lyrics 欄が未検出）")
-    # 1) Playwright のテキスト完全一致でトグルをクリック
+    # 1) Playwright の role/text/aria 系でトグルをクリック
+    for role in ("switch", "button", "tab"):
+        try:
+            el = page.get_by_role(role, name=re.compile(r"custom|カスタム", re.I)).first
+            if el.count() > 0 and el.is_visible():
+                el.click(timeout=2000)
+                time.sleep(1.2)
+                if _fields_present():
+                    print(f"  ✓ Custom モードに切り替えました ({role})")
+                    return True
+        except Exception:
+            pass
     for label in ("Custom", "カスタム"):
         try:
             el = page.get_by_text(label, exact=True).first
@@ -1814,13 +2295,22 @@ def _ensure_custom_mode(page):
     # 2) JS で "Custom" 要素/トグルを走査クリック（aria-selected 済みは除外）
     try:
         clicked = page.evaluate("""() => {
-            const cand = Array.from(document.querySelectorAll('button, [role="tab"], [role="switch"], div, span, label'))
+            const cand = Array.from(document.querySelectorAll(
+                'button, [role="button"], [role="tab"], [role="switch"], div, span, label, input'
+            ))
                 .filter(e => {
                     const t = (e.textContent || '').trim();
-                    return t === 'Custom' || t === 'カスタム';
+                    const aria = (e.getAttribute && (
+                        e.getAttribute('aria-label') || e.getAttribute('aria-labelledby') || e.getAttribute('title') || ''
+                    )) || '';
+                    const value = e.value || '';
+                    return /^(custom|カスタム)$/i.test(t)
+                        || /custom|カスタム/i.test(aria)
+                        || /custom|カスタム/i.test(value);
                 });
             for (const e of cand) {
                 if (e.getAttribute && e.getAttribute('aria-selected') === 'true') continue;
+                if (e.getAttribute && e.getAttribute('aria-checked') === 'true') continue;
                 e.click();
                 return true;
             }
@@ -1837,6 +2327,61 @@ def _ensure_custom_mode(page):
     return _fields_present()
 
 
+def set_instrumental_toggle(page, desired: bool) -> bool:
+    """SUNO の歌詞セクション切替(Lyrics / Instrumental)を desired に合わせる。
+
+    実測 DOM(2026-07 現UI): 歌詞セクションは button[role=radio] の
+    「Lyrics」「Instrumental」ラジオ選択で、Instrumental 選択時は歌詞 textarea が消える。
+    見つからなければ False(呼び出し側が旧UI fallback を使う)。
+    """
+    target = "Instrumental" if desired else "Lyrics"
+    js = """(target) => {
+        const norm = (t) => (t || '').trim().toLowerCase();
+        const visible = (el) => {
+            const r = el.getBoundingClientRect();
+            const st = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden';
+        };
+        const buttons = Array.from(document.querySelectorAll('button')).filter(visible);
+        const cands = buttons.filter(b => norm(b.textContent) === target.toLowerCase());
+        if (!cands.length) return { found: false };
+        // role=radio(歌詞セクションの切替グループ)を最優先
+        const radio = cands.find(b => b.getAttribute('role') === 'radio') || cands[0];
+        const before = radio.getAttribute('aria-checked') || radio.getAttribute('data-state') || '';
+        if (before === 'true' || before === 'checked' || before === 'on') {
+            return { found: true, clicked: false, state: before };
+        }
+        radio.click();
+        return { found: true, clicked: true, state_before: before };
+    }"""
+    try:
+        res = page.evaluate(js, target) or {}
+    except Exception as e:
+        print(f"  ⚠️ 歌詞セクション切替の evaluate 失敗: {e}")
+        return False
+    if not res.get("found"):
+        return False
+    if res.get("clicked"):
+        time.sleep(1.0)
+        print(f"  ⚙️ 歌詞セクションを {target} に切り替えました")
+    # 読み戻し: aria-checked が付く UI なら state を確認。付かない UI では
+    # 後段の読み戻し検証(歌詞欄の有無)が最終防衛線になるため found=True で返す。
+    try:
+        state = page.evaluate("""(target) => {
+            const norm = (t) => (t || '').trim().toLowerCase();
+            const b = Array.from(document.querySelectorAll('button[role="radio"]'))
+                .find(x => norm(x.textContent) === target.toLowerCase());
+            return b ? (b.getAttribute('aria-checked') || b.getAttribute('data-state') || '') : '';
+        }""", target)
+        if state in ("false", "unchecked", "off"):
+            print(f"  ⚠️ {target} への切替が反映されていない可能性 (state={state})")
+            return False
+    except Exception:
+        pass
+    return True
+
+
+
 def inject_into_suno(page, content):
     """SUNO のフォームに値を注入 — Ghost Writer (Tampermonkey) と完全同一のロジック。
 
@@ -1851,10 +2396,65 @@ def inject_into_suno(page, content):
 
     # Simple モード対策: 入力欄が存在しなければ Custom へ切り替える
     _ensure_custom_mode(page)
+    # 2026-07-05 方針:
+    # SUNO の Lyrics / Instrumental トグルは使わない。
+    # Instrumental は More Options 側ではなく、prompt/lyrics 欄へ入れる。
+    # トグル操作で歌詞入力欄が消えるため、全モードでフォーム状態を温存する。
+    instrumental_mode = False
+    if lyrics and mode != "styles_title_only":
+        # 2026-07 現UI: Lyrics セクションに Prompt(お題からSunoが作詞) /
+        # Write(手動歌詞) / Instrumental の radio がある。
+        # lyrics を入れるモードは必ず Write を選んでから歌詞欄へ投入する。
+        # More Options / Instrumental トグルは一切触らない。
+        try:
+            clicked_write = page.evaluate("""() => {
+                const norm = t => (t || '').trim().toLowerCase();
+                const isVisible = el => {
+                    const r = el.getBoundingClientRect();
+                    const st = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden';
+                };
+                const b = Array.from(document.querySelectorAll('button[role="radio"], [role="radio"], button'))
+                    .find(x => norm(x.textContent) === 'write');
+                if (!b) return false;
+                if (!isVisible(b)) return false;
+                const st = b.getAttribute('aria-checked') || b.getAttribute('aria-selected') || b.getAttribute('data-state') || '';
+                if (st === 'true' || st === 'checked' || st === 'on') return true;
+                b.click();
+                return true;
+            }""")
+            if clicked_write:
+                time.sleep(1.0)
+                print("  ⚙️ 歌詞タブを Write(手動歌詞) に切り替えました")
+            else:
+                print("  ⚠️ Write(手動歌詞) radio が見つかりません。現在の表示状態のまま歌詞入力を試行します")
+        except Exception:
+            pass
+    instrumental_toggle_ok = False
+    if instrumental_mode and not instrumental_toggle_ok:
+        # トグルUIが検出できなくても、歌詞 textarea が最初から無い場合は
+        # Instrumental が既に ON(歌詞欄非表示)とみなして歌詞入力をスキップする。
+        # (アカウントに前回の Instrumental 選択が残存すると radio を検出できないケースがある)
+        try:
+            visible_textareas = page.evaluate(
+                """() => Array.from(document.querySelectorAll('textarea')).filter(t => {
+                    const r = t.getBoundingClientRect();
+                    const st = window.getComputedStyle(t);
+                    return r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden';
+                }).length"""
+            )
+        except Exception:
+            visible_textareas = None
+        if visible_textareas == 1:
+            print("  🎵 インストモード: 歌詞欄が非表示のため Instrumental 済みと判断（歌詞入力スキップ）")
+            instrumental_toggle_ok = True
+    skip_lyrics = instrumental_mode and instrumental_toggle_ok
+    if skip_lyrics:
+        print("  🎵 インストモード: Instrumental トグル使用（歌詞入力スキップ）")
 
     # Ghost Writer と完全同一の JS を page.evaluate で実行
     results = page.evaluate("""(args) => {
-        const { title, styles, lyrics, mode } = args;
+        const { title, styles, lyrics, mode, skipLyrics } = args;
 
         // ── Ghost Writer の setReactValue（そのまま移植）──
         function setReactValue(el, value, isTextarea) {
@@ -1873,7 +2473,14 @@ def inject_into_suno(page, content):
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }
 
-        const results = { title: false, styles: false, lyrics: false, debug: {} };
+        const results = {
+            title: false,
+            styles: false,
+            lyrics: false,
+            validation_ok: true,
+            validation_errors: [],
+            debug: {}
+        };
 
         // ── タイトル: Ghost Writer と同一セレクタ ──
         if (title) {
@@ -1891,7 +2498,8 @@ def inject_into_suno(page, content):
             }
         }
 
-        // ── スタイル: Ghost Writer と同一セレクタ ──
+        // ── スタイル: 歌詞欄との取り違えを防ぐため先に textarea を同定する ──
+        let stylesTextarea = null;
         if (styles) {
             // Ghost Writer: "Styles" div → 4階層上 → textarea
             const divs = Array.from(document.querySelectorAll('div'));
@@ -1905,8 +2513,12 @@ def inject_into_suno(page, content):
                 for (let i = 0; i < 6 && el; i++) {
                     el = el.parentElement;
                     if (!el) break;
-                    const ta = el.querySelector('textarea');
+                    const textareas = Array.from(el.querySelectorAll('textarea'));
+                    const ta = textareas.find(t =>
+                        ((t.placeholder || '') + ' ' + (t.getAttribute('aria-label') || '')).toLowerCase().includes('style')
+                    ) || textareas[0];
                     if (ta) {
+                        stylesTextarea = ta;
                         setReactValue(ta, styles, true);
                         results.styles = true;
                         found = true;
@@ -1916,9 +2528,18 @@ def inject_into_suno(page, content):
                 if (!found) results.debug.styles_div_found_but_no_textarea = true;
             } else {
                 // フォールバック: placeholder で探す
-                const fb = document.querySelector('textarea[placeholder*="style" i]')
-                        || document.querySelector('textarea[placeholder*="Describe" i]');
+                const customSignals =
+                    !!document.querySelector('input[placeholder*="Title" i]') ||
+                    !!document.querySelector('textarea[placeholder*="lyrics" i]') ||
+                    Array.from(document.querySelectorAll('div, span, label'))
+                        .some(e => (e.textContent || '').trim() === 'Styles' || (e.textContent || '').trim() === 'Lyrics');
+                const stylePlaceholder = document.querySelector('textarea[placeholder*="style" i]');
+                const describePlaceholder = customSignals
+                    ? document.querySelector('textarea[placeholder*="Describe" i]')
+                    : null;
+                const fb = stylePlaceholder || describePlaceholder;
                 if (fb) {
+                    stylesTextarea = fb;
                     setReactValue(fb, styles, true);
                     results.styles = true;
                 }
@@ -1931,8 +2552,21 @@ def inject_into_suno(page, content):
         }
 
         // ── 歌詞: 複数戦略で textarea を探索（Ghost Writer findLyricsTextarea 移植）──
-        if (lyrics && mode !== "styles_title_only") {
-            let textarea = null;
+        let lyricsTextarea = null;
+        let lyricsEditable = null;
+        if (lyrics && mode !== "styles_title_only" && !skipLyrics) {
+            // 0) 2026-07 現UI: Write タブの歌詞エディタは contenteditable(aria-label="Lyrics editor")。
+            //    textarea ではないため focus + execCommand で挿入する。
+            lyricsEditable = document.querySelector(
+                '[contenteditable="true"][aria-label*="lyrics" i], [role="textbox"][aria-label*="lyrics" i]'
+            );
+            if (lyricsEditable) {
+                lyricsEditable.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('insertText', false, lyrics);
+                results.lyrics = true;
+                results.debug.lyrics_found_by = 'contenteditable';
+            }
             // 1) placeholder ベース（文言バリエーション対応・大小無視・後方互換）
             const lyricSelectors = [
                 'textarea[placeholder*="Write some lyrics" i]',
@@ -1941,30 +2575,109 @@ def inject_into_suno(page, content):
                 'textarea[placeholder*="lyrics" i]',
                 'textarea[placeholder*="歌詞"]'
             ];
-            for (const sel of lyricSelectors) {
+            for (const sel of (lyricsEditable ? [] : lyricSelectors)) {
                 const el = document.querySelector(sel);
-                if (el) { textarea = el; break; }
+                if (el && el !== stylesTextarea) { lyricsTextarea = el; break; }
             }
             // 2) "Lyrics" ラベルから祖先方向（最大8階層）の textarea を辿る
-            if (!textarea) {
-                const labelEl = Array.from(document.querySelectorAll('div, span, label'))
-                    .find(d => d.children.length === 0 && d.textContent.trim() === "Lyrics");
+            //    (2026-07 現UI: セクション切替が button[role=radio] の "Lyrics" になったため button も対象に含める)
+            if (!lyricsTextarea && !lyricsEditable) {
+                const labelEl = Array.from(document.querySelectorAll('div, span, label, button'))
+                    .find(d => (d.textContent || '').trim() === "Lyrics");
                 if (labelEl) {
                     let p = labelEl;
                     for (let i = 0; i < 8 && p; i++) {
                         p = p.parentElement;
-                        const ta = p && p.querySelector('textarea');
-                        if (ta) { textarea = ta; break; }
+                        if (!p) break;
+                        const textareas = Array.from(p.querySelectorAll('textarea'))
+                            .filter(ta => ta !== stylesTextarea);
+                        const afterLabel = textareas.find(ta =>
+                            !!(labelEl.compareDocumentPosition(ta) & Node.DOCUMENT_POSITION_FOLLOWING)
+                        );
+                        const ta = afterLabel || textareas[0];
+                        if (ta) { lyricsTextarea = ta; break; }
                     }
                 }
             }
-            if (textarea) {
-                setReactValue(textarea, lyrics, true);
-                results.lyrics = true;
-            } else {
-                results.debug.lyrics_textareas = Array.from(document.querySelectorAll('textarea'))
-                    .map(t => (t.placeholder || '').slice(0, 40)).filter(Boolean).slice(0, 10);
+            // 3) 消去法フォールバック: styles でも "Describe"(Simpleモード欄) でもない可視 textarea を歌詞欄とみなす。
+            //    (2026-07 現UI: 歌詞欄 placeholder が "Melodious hymn song..." のような例文になり "lyrics" を含まない)
+            if (!lyricsTextarea && !lyricsEditable) {
+                const visible = (el) => {
+                    const r = el.getBoundingClientRect();
+                    const st = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden';
+                };
+                const cands = Array.from(document.querySelectorAll('textarea'))
+                    .filter(visible)
+                    .filter(ta => ta !== stylesTextarea)
+                    .filter(ta => (ta.placeholder || '') !== '')  // placeholder 空はチャット欄の遅延ロードの可能性があるため除外
+                    .filter(ta => !/style|describe the sound|ask anything/i.test(ta.placeholder || ''));
+                if (cands.length === 1) {
+                    lyricsTextarea = cands[0];
+                    results.debug.lyrics_found_by = 'elimination';
+                }
             }
+            if (!lyricsEditable) {
+                if (lyricsTextarea) {
+                    setReactValue(lyricsTextarea, lyrics, true);
+                    results.lyrics = true;
+                } else {
+                    results.debug.lyrics_textareas = Array.from(document.querySelectorAll('textarea'))
+                        .map(t => (t.placeholder || '').slice(0, 40)).filter(Boolean).slice(0, 10);
+                }
+            }
+        }
+
+        // ── 投入前フェイルセーフ: 実値を読み戻し、欄取り違えを検知したら両欄をクリア ──
+        function fieldDebug(el, kind) {
+            if (!el) return { kind, found: false, placeholder: '', value_head: '' };
+            return {
+                kind,
+                found: true,
+                placeholder: (el.placeholder || el.getAttribute('aria-label') || '').slice(0, 80),
+                value_head: (el.value || '').slice(0, 50),
+                length: (el.value || '').length
+            };
+        }
+        const shouldValidateLyrics = !!lyrics && mode !== "styles_title_only" && !skipLyrics;
+        const styleValue = stylesTextarea ? (stylesTextarea.value || '') : '';
+        const lyricsValue = lyricsEditable ? (lyricsEditable.textContent || '')
+            : (lyricsTextarea ? (lyricsTextarea.value || '') : '');
+        if (styles) {
+            if (!stylesTextarea) {
+                results.validation_errors.push('styles textarea missing');
+            } else if (styleValue.length > 1500) {
+                results.validation_errors.push(`styles too long: ${styleValue.length}`);
+            } else if (!styleValue.startsWith(styles)) {
+                results.validation_errors.push('styles value mismatch');
+            }
+        }
+        if (shouldValidateLyrics) {
+            if (!lyricsTextarea && !lyricsEditable) {
+                results.validation_errors.push('lyrics textarea missing');
+            } else if (lyricsEditable) {
+                // contenteditable(Lexical系)は insertText 反映が非同期のため、
+                // ここでは検証せず Python 側で待機後に読み戻し検証する(results.lyrics_editable)。
+                results.lyrics_editable = true;
+            } else if (lyricsTextarea === stylesTextarea) {
+                results.validation_errors.push('lyrics textarea equals styles textarea');
+            } else {
+                // 改行コード(\\r\\n)や自動トリム等の無害な正規化差で誤検知しないよう、
+                // 空白を除去した先頭200文字のプレフィックス一致で比較する。
+                const normWs = (s) => (s || '').replace(/\\s+/g, '');
+                if (!normWs(lyricsValue).startsWith(normWs(lyrics).slice(0, 200))) {
+                    results.validation_errors.push('lyrics value mismatch');
+                }
+            }
+        }
+        results.debug.field_values = [
+            fieldDebug(stylesTextarea, 'styles'),
+            fieldDebug(lyricsTextarea, 'lyrics')
+        ];
+        if (results.validation_errors.length) {
+            results.validation_ok = false;
+            if (stylesTextarea) setReactValue(stylesTextarea, '', true);
+            if (lyricsTextarea && lyricsTextarea !== stylesTextarea) setReactValue(lyricsTextarea, '', true);
         }
 
         return results;
@@ -1973,7 +2686,26 @@ def inject_into_suno(page, content):
         "styles": styles,
         "lyrics": lyrics,
         "mode": mode,
+        "skipLyrics": skip_lyrics,
     })
+
+    # contenteditable 歌詞エディタは insertText の反映が非同期のため、待機後に読み戻して検証する
+    if results.get("lyrics_editable"):
+        time.sleep(1.5)
+        try:
+            ed_ok = page.evaluate("""(lyr) => {
+                const ed = document.querySelector(
+                    '[contenteditable="true"][aria-label*="lyrics" i], [role="textbox"][aria-label*="lyrics" i]'
+                );
+                const normWs = (s) => (s || '').replace(/\\s+/g, '');
+                return !!ed && normWs(ed.textContent).startsWith(normWs(lyr).slice(0, 200));
+            }""", lyrics)
+        except Exception:
+            ed_ok = False
+        if not ed_ok:
+            print("  ❌ 歌詞エディタへの反映を確認できませんでした")
+            results["validation_ok"] = False
+            results.setdefault("validation_errors", []).append("lyrics editable not persisted")
 
     if title:
         print(f" タイトル: {'' if results.get('title') else '❌'} {title}")
@@ -1987,10 +2719,22 @@ def inject_into_suno(page, content):
                 print(f"     ⚠️ 'Styles' div は見つかったが textarea が見つかりません")
             elif dbg.get('styles_divs'):
                 print(f"     ⚠️ 'Styles' div が見つかりません。空div一覧: {dbg['styles_divs'][:10]}")
-    if lyrics and mode != "styles_title_only":
+    if lyrics and mode != "styles_title_only" and not skip_lyrics:
         print(f" 歌詞: {'' if results.get('lyrics') else '❌'} {lyrics[:50]}...")
         if not results.get('lyrics') and results.get('debug', {}).get('lyrics_textareas'):
             print(f"     ⚠️ 歌詞 textarea が見つかりません。textarea placeholder 一覧: {results['debug']['lyrics_textareas']}")
+    if not results.get("validation_ok", True):
+        print("  ❌ フォーム欄取り違えを検知したため投入中止")
+        errors = results.get("validation_errors") or []
+        if errors:
+            print(f"     reason: {errors}")
+        for field in results.get("debug", {}).get("field_values", []):
+            print(
+                f"     {field.get('kind')}: placeholder={field.get('placeholder', '')!r} "
+                f"value_head={field.get('value_head', '')!r}"
+            )
+        return False
+    return True
 
 
 _BRACKET_LINE_RE = re.compile(r'^\s*\[[^\]]+\]\s*$')
@@ -2265,6 +3009,7 @@ _SUNO_AUDIO_URL_INTERCEPTOR = r"""
         try {
             const clips = Array.isArray(data) ? data
                 : Array.isArray(data && data.clips) ? data.clips
+                : Array.isArray(data && data.project_clips) ? data.project_clips.map(x => x && (x.clip || x)).filter(Boolean)
                 : Array.isArray(data && data.data) ? data.data
                 : (data && data.id) ? [data]
                 : [];
@@ -2280,7 +3025,7 @@ _SUNO_AUDIO_URL_INTERCEPTOR = r"""
             });
         } catch (e) { /* noop */ }
     }
-    const isApiUrl = (url) => typeof url === 'string' && /\/api\/(feed|clips|v2\/(feed|clips))/.test(url);
+    const isApiUrl = (url) => typeof url === 'string' && /\/api\/(feed|clips|project|v2\/(feed|clips))/.test(url);
 
     // fetch をラップ
     const origFetch = window.fetch;
@@ -2352,6 +3097,12 @@ def main():
     parser.add_argument("--workspace", "-w", help="SUNO Workspace 名（例: orzz_vol74）。指定時は確保してから生成")
     parser.add_argument("--download-workspace", help="指定 Workspace の楽曲を一括ダウンロード（生成せず）")
     parser.add_argument("--download-dir", help="ダウンロード先フォルダ（--download-workspace と併用）")
+    parser.add_argument("--auto-download", metavar="DIR",
+                        help="生成送信後に同一ブラウザセッションでレンダ完了を待ち、DIR に自動ダウンロード")
+    parser.add_argument("--auto-download-timeout", type=int, default=2700,
+                        help="--auto-download の待機タイムアウト秒（既定 2700 = 45分）")
+    parser.add_argument("--process-vol",
+                        help="--auto-download の DL 完了後に指定 vol の楽曲後処理を本実行")
     parser.add_argument("--batch", action="store_true", help="CLI 一括生成モード（N曲分を1回で生成）")
     parser.add_argument("--diversity-threshold", type=float, default=None,
                         help="類似度しきい値 0.0〜1.0（既定 0.6、1.0で実質無効）")
@@ -2385,6 +3136,11 @@ def main():
         settings["headless"] = True
     if args.workspace:
         settings["workspace"] = args.workspace
+    if args.auto_download:
+        settings["auto_download_dir"] = args.auto_download
+        settings["auto_download_timeout_sec"] = args.auto_download_timeout
+    if args.process_vol:
+        settings["process_vol"] = str(args.process_vol)
     if args.batch:
         settings["batch_mode"] = True
     if args.diversity_threshold is not None:
@@ -2400,6 +3156,10 @@ def main():
         if not isinstance(_pre, list) or not _pre:
             print(f"❌ --songs-file の中身が空か不正です: {args.songs_file}")
             sys.exit(1)
+        # 各曲に mode を補完（フォーム入力側は content["mode"] を必須参照する）
+        for _s in _pre:
+            if isinstance(_s, dict) and not _s.get("mode"):
+                _s["mode"] = settings.get("generation_mode") or "styles_title_only"
         settings["pregenerated_songs"] = _pre
         settings["loop_count"] = len(_pre)
 
@@ -2407,6 +3167,13 @@ def main():
     if args.save_config:
         save_config(settings, args.config)
         return
+
+    try:
+        _resource_lock = ResourceLock("suno", owner="cli:suno_auto_create").acquire(blocking=False)
+    except ResourceBusyError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(75)
+    atexit.register(_resource_lock.release)
 
     # ダウンロードモード（生成はせず、指定 Workspace の楽曲を一括DL）
     if args.download_workspace:

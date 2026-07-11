@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>orzz. ログイン</title>
+<title>Automation Studio ログイン</title>
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#0a0a0a">
 <style>
@@ -41,13 +41,13 @@
 </head>
 <body>
   <form class="card" onsubmit="return doLogin(event)">
-    <h1>🔐 orzz. ログイン</h1>
+    <h1>Automation Studio ログイン</h1>
     <div class="sub">外出先からアクセスする場合は認証トークンを入力してください。</div>
     <label for="tok">アクセストークン</label>
     <input id="tok" type="password" autocomplete="current-password" required>
     <div class="err" id="err"></div>
     <button id="btn" type="submit">ログイン</button>
-    <div class="hint">トークンは <code>~/.config/orzz/auth_token.txt</code> または マスター設定 → リモートアクセスで確認・再生成できます。</div>
+    <div class="hint">トークンは設定ディレクトリの <code>auth_token.txt</code> または マスター設定 → リモートアクセスで確認・再生成できます。</div>
   </form>
 <script>
 async function doLogin(e){

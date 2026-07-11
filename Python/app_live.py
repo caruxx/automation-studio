@@ -64,7 +64,7 @@ DEFAULT_STREAM = {
     "playlist": [],       # ローテーション動画リスト（VPS 上のパス配列）
     "rotate_hours": 0.0,  # >0 なら N 時間ごとに playlist の次の動画へ差し替え（配信は継続）
     "max_hours": 0.0,     # >0 なら配信開始から N 時間で自動打ち切り
-    "mode": "copy",       # copy | reencode
+    "mode": "reencode",   # copy | reencode（YouTube Live は keyframe <=4s 必須のため reencode 既定）
     "vbitrate": "4500k",
     "abitrate": "160k",
     "scale": "",          # 例 1280:720（reencode 時のみ）
@@ -474,52 +474,59 @@ def _stable_remote_size(vps: dict, path: str) -> int:
 def _upload_worker(vps: dict, job: dict):
     src, dest, total = job["local"], job["remote"], job["local_size"]
     stall = 0
-    while not job.get("cancel"):
-        size = _stable_remote_size(vps, dest)
-        if size > total:
-            # 同名の別ファイルが居る等 → 作り直し
-            run_remote(vps, f"rm -f {shlex.quote(dest)}", timeout=15)
-            size = 0
-        job["last_remote_size"] = size
-        if size == total:
-            job.update(state="done", rc=0, stderr="")
-            return
-        if stall >= _UPLOAD_MAX_STALL_ATTEMPTS:
-            job.update(state="failed", rc=1)
-            if not job["stderr"]:
-                job["stderr"] = f"転送が進まないため中断（{size}/{total} bytes・{stall} 回連続で進捗なし）"
-            return
-        job["attempts"] += 1
-        # 続きから転送（tail -c +N は 1 オリジン）。リモートは dd の絶対位置書き込みなので
-        # 前試行の残りバイトが遅れて届いても重複破損しない。成功判定はサイズ一致のみ
-        local_sh = f"tail -c +{size + 1} {shlex.quote(src)}"
-        remote_sh = (f"dd of={shlex.quote(dest)} bs=64k seek={size} "
-                     f"oflag=seek_bytes conv=notrunc status=none")
-        ssh_sh = " ".join(shlex.quote(a) for a in _ssh_base(vps)) + " " + shlex.quote(remote_sh)
-        if job.get("cancel"):  # stat 中に中止された場合に次の試行を始めない（kill 空振り対策）
-            break
-        try:
-            proc = subprocess.Popen(["/bin/sh", "-c", f"{local_sh} | {ssh_sh}"],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-            job["proc"] = proc
-            if job.get("cancel"):  # Popen 直前に中止 → kill が proc=None で空振りした穴を塞ぐ
-                proc.kill()
-            _, err = proc.communicate()
-        except Exception as e:
-            err = str(e)
-        finally:
-            job["proc"] = None
-        if job.get("cancel"):
-            break
-        new_size = _remote_file_size(vps, dest)
-        job["last_remote_size"] = new_size
-        if new_size == total:
-            job.update(state="done", rc=0, stderr="")
-            return
-        job["stderr"] = ((err or "").strip() or f"転送が途中で終了（{new_size}/{total} bytes）")[-500:]
-        stall = 0 if new_size > size else stall + 1  # 進捗があれば仕切り直し
-        time.sleep(min(30, 3 * stall + 2))
-    job.update(state="cancelled", rc=130)
+    try:
+        while not job.get("cancel"):
+            size = _stable_remote_size(vps, dest)
+            if size > total:
+                # 同名の別ファイルが居る等 → 作り直し
+                run_remote(vps, f"rm -f {shlex.quote(dest)}", timeout=15)
+                size = 0
+            job["last_remote_size"] = size
+            if size == total:
+                job.update(state="done", rc=0, stderr="")
+                return
+            if stall >= _UPLOAD_MAX_STALL_ATTEMPTS:
+                job.update(state="failed", rc=1)
+                if not job["stderr"]:
+                    job["stderr"] = f"転送が進まないため中断（{size}/{total} bytes・{stall} 回連続で進捗なし）"
+                return
+            job["attempts"] += 1
+            # 続きから転送（tail -c +N は 1 オリジン）。リモートは dd の絶対位置書き込みなので
+            # 前試行の残りバイトが遅れて届いても重複破損しない。成功判定はサイズ一致のみ
+            local_sh = f"tail -c +{size + 1} {shlex.quote(src)}"
+            remote_sh = (f"dd of={shlex.quote(dest)} bs=64k seek={size} "
+                         f"oflag=seek_bytes conv=notrunc status=none")
+            ssh_sh = " ".join(shlex.quote(a) for a in _ssh_base(vps)) + " " + shlex.quote(remote_sh)
+            if job.get("cancel"):  # stat 中に中止された場合に次の試行を始めない（kill 空振り対策）
+                break
+            try:
+                proc = subprocess.Popen(["/bin/sh", "-c", f"{local_sh} | {ssh_sh}"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                job["proc"] = proc
+                if job.get("cancel"):  # Popen 直前に中止 → kill が proc=None で空振りした穴を塞ぐ
+                    proc.kill()
+                _, err = proc.communicate()
+            except Exception as e:
+                err = str(e)
+            finally:
+                job["proc"] = None
+            if job.get("cancel"):
+                break
+            new_size = _remote_file_size(vps, dest)
+            job["last_remote_size"] = new_size
+            if new_size == total:
+                job.update(state="done", rc=0, stderr="")
+                return
+            job["stderr"] = ((err or "").strip() or f"転送が途中で終了（{new_size}/{total} bytes）")[-500:]
+            stall = 0 if new_size > size else stall + 1  # 進捗があれば仕切り直し
+            time.sleep(min(30, 3 * stall + 2))
+        job.update(state="cancelled", rc=130)
+    finally:
+        if job.get("cleanup_local"):
+            try:
+                Path(src).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _prune_jobs():
@@ -530,7 +537,8 @@ def _prune_jobs():
             _UPLOAD_JOBS.pop(jid, None)
 
 
-def start_upload(vps: dict, group: str, local_path: str, dest_name: str = "") -> dict:
+def start_upload(vps: dict, group: str, local_path: str, dest_name: str = "",
+                 *, cleanup_local: bool = False, display_name: str = "") -> dict:
     if not CH_ID_RE.match(group or ""):
         return {"ok": False, "error": f"不正なグループID: {group}"}
     src = Path(local_path).expanduser()
@@ -551,9 +559,11 @@ def start_upload(vps: dict, group: str, local_path: str, dest_name: str = "") ->
     job = {
         "id": job_id, "group": group,
         "local": str(src), "remote": dest,
+        "display_name": display_name or sanitize_dest_name(dest_name or src.name),
         "local_size": src.stat().st_size, "last_remote_size": 0,
         "state": "running", "rc": None, "attempts": 0,
         "proc": None, "cancel": False,
+        "cleanup_local": bool(cleanup_local),
         "started": time.time(), "stderr": "",
     }
     with _UPLOAD_LOCK:
@@ -569,7 +579,7 @@ def _job_view(job: dict, remote_size: int = None) -> dict:
         remote_size if remote_size is not None else job.get("last_remote_size", 0))
     return {
         "job_id": job["id"], "group": job["group"],
-        "name": Path(job["local"]).name, "remote": job["remote"], "local": job["local"],
+        "name": job.get("display_name") or Path(job["local"]).name, "remote": job["remote"], "local": job["local"],
         "state": job["state"], "running": job["state"] == "running", "rc": job["rc"],
         "pct": min(round(rs / total * 100, 1), 100.0),
         "remote_size": rs, "local_size": job["local_size"],

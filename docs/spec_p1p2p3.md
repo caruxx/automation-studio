@@ -90,8 +90,8 @@ app_pipeline.py (subprocess, 子プロセス)
 | `APP_QA_LOUDNESS` | ラウドネス測定を有効化（重い） | unset |
 | `APP_PLAN_AUTO_ADOPT_THRESHOLD` | 採択スコア閾値 | `7.0` |
 | `APP_PLAN_MAX_ATTEMPTS` | plan 再生成上限 | `3` |
-| `APP_YT_DAILY_QUOTA_CAP` | YouTube 日次クオータ上限 | `9600` |
-| `APP_YT_QUOTA_PER_UPLOAD` | upload 1 件あたりコスト | `1600` |
+| `APP_YT_DAILY_QUOTA_CAP` | YouTube 日次クオータ上限 | `10000` |
+| `APP_YT_QUOTA_PER_UPLOAD` | upload 1 件あたりコスト | `100` |
 | `APP_YT_QUOTA_WINDOW_HOURS` | quota 集計ウィンドウ | `24` |
 | `APP_TOKEN_HEALTH_WARN_DAYS` | token 警告閾値 | `7` |
 | `APP_RUN_LEDGER_STALE_SEC` | ledger stale 判定 | `21600`（6h） |

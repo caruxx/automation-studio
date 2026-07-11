@@ -41,14 +41,12 @@ def api_desc_video_info(video_name: str):
     """動画フォルダの情報を取得（サムネイル、タイムコード、曲リスト）"""
     config = get_dashboard_config()
     channel_dir = Path(config["channel_folder"])
-    folder = channel_dir / video_name
-    if not folder.exists():
-        raise HTTPException(404, "フォルダが見つかりません")
+    folder = resolve_video_folder(video_name, channel_root=channel_dir)
 
     m = re.match(r'^(\d+)_', video_name)
     num = m.group(1) if m else "00"
 
-    # タイムコード読み込み（対応ファイルから LOOP 直前まで）
+    # タイムコード読み込み（LOOP マーカーだけ除外し、2周目以降も含める）
     timecodes, tc_file = _read_matching_timecodes_until_loop(folder, num)
 
     # サムネイル情報
@@ -59,11 +57,9 @@ def api_desc_video_info(video_name: str):
             thumb = {"name": t.name, "path": str(t)}
             break
 
-    # 曲リスト（LOOPまで）
+    # 曲リスト（LOOP マーカーは共通ヘルパで除外済み）
     songs = []
     for line in timecodes.split("\n"):
-        if "LOOP" in line:
-            break
         if " - " in line:
             songs.append(line.strip())
 
@@ -81,7 +77,7 @@ def api_desc_video_info(video_name: str):
 def api_desc_thumbnail(video_name: str):
     """サムネイル画像を返す"""
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / video_name
+    folder = resolve_video_folder(video_name)
     m = re.match(r'^(\d+)_', video_name)
     num = m.group(1) if m else "00"
     for pattern in ["サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png", f"vol{num}.jpg", f"vol{num}.png"]:
@@ -97,9 +93,7 @@ class DescriptionSaveRequest(BaseModel):
 @router.post("/api/youtube-desc/save")
 def api_desc_save(req: DescriptionSaveRequest):
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / req.video_name
-    if not folder.exists():
-        raise HTTPException(404, "フォルダが見つかりません")
+    folder = resolve_video_folder(req.video_name)
     desc_file = folder / "youtube_description.txt"
     desc_file.write_text(req.text, encoding="utf-8")
     return {"status": "ok"}
@@ -210,19 +204,11 @@ YT_LANGUAGE_CATALOG = [
 # YouTube アップロード詳細設定（チャンネル横断テンプレート）
 def _resolve_video_folder(video_name: str) -> Path:
     """video_name から動画フォルダの絶対パスを返す。"""
-    config = get_dashboard_config()
-    base = config.get("channel_folder")
-    if not base:
-        raise HTTPException(400, "channel_folder が未設定です")
-    p = Path(base) / video_name
-    if not p.exists():
-        raise HTTPException(404, f"動画フォルダが見つかりません: {video_name}")
-    return p
+    return resolve_video_folder(video_name)
 
 
 def _write_json_dict(p: Path, data: dict):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_json(p, data)
 
 
 class YouTubeUploadDefaults(BaseModel):
@@ -527,6 +513,12 @@ def _read_youtube_history() -> List[dict]:
 class YouTubeHistoryEntry(BaseModel):
     video_name: str
     vol: Optional[str] = None
+    channel_id: Optional[str] = None
+    channel_name: Optional[str] = None
+    youtube_channel_id: Optional[str] = None
+    status: Optional[str] = None
+    video_id: Optional[str] = None
+    uploaded_at: Optional[str] = None
     youtube_url: Optional[str] = None
     title: Optional[str] = None
     privacy: Optional[str] = None

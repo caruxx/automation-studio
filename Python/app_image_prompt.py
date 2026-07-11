@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+LAST_PROMPT_META: dict | None = None
 
 def _clean_text(value: Any, max_len: int = 240) -> str:
     if value is None:
@@ -107,6 +108,9 @@ def build_gpt_image2_prompt(
     context_hint: str = "",
     for_flow: bool = False,
     include_text_overlay: bool = False,
+    channel_folder: str | None = None,
+    channel_id: str = "",
+    return_meta: bool = False,
 ) -> str:
     """Build a production-oriented prompt for GPT Image 2 or Flow.
 
@@ -165,30 +169,72 @@ def build_gpt_image2_prompt(
     avoid = _clean_text(visual_direction.get("avoid"), 220)
     transform = _clean_text(visual_direction.get("transform"), 220)
 
-    parts = [
-        f"Subject: {subject}",
-        f"Background/context: {background}",
-        f"Lighting: {lighting}",
-        f"Style/rendering: {style}",
-        f"Camera/composition: {camera}",
-    ]
+    sections = {
+        "composition": camera,
+        "subject": subject,
+        "background": background,
+        "color_tone": lighting,
+        "mood": "",
+        "text_overlay": "",
+        "style": style,
+    }
     if hooks:
-        parts.append(f"Viewer resonance: {hooks}")
+        sections["mood"] = hooks
     if transform:
-        parts.append(f"Benchmark translation: reinterpret these abstract elements, do not copy them: {transform}")
+        sections["mood"] = (sections["mood"] + " " if sections["mood"] else "") + (
+            f"Benchmark translation: reinterpret these abstract elements, do not copy them: {transform}"
+        )
     if avoid:
-        parts.append(f"Avoid: {avoid}")
-    parts.append("Constraints: " + "; ".join(constraints) + ".")
+        sections["text_overlay"] = f"Avoid: {avoid}"
     if not include_text_overlay:
         # 偽テキスト焼き込み対策: 参照画像内の文字を絶対に再現させない最終ダメ押し。
         # Subject/Background は _first_nonempty で 320 字切りされ directive 末尾が消えるため、
         # ここ（末尾・非トランケート）に置いて codex の参照分析経路へ確実に効かせる。
-        parts.append(
+        sections["text_overlay"] = ((sections["text_overlay"] + " ") if sections["text_overlay"] else "") + (
             "Reference handling: IGNORE all text, captions, subtitles, letters, words and logos "
             "visible in any reference image; reuse ONLY their color palette, lighting, mood and "
             "composition. Render zero readable text in the output."
         )
-    return "\n".join(parts)
+    global LAST_PROMPT_META
+    prompt_meta = None
+    try:
+        from app_image_modules import apply_modules_to_sections, compose_prompt
+        legacy_prompt = "\n".join([
+            f"Subject: {subject}",
+            f"Background/context: {background}",
+            f"Lighting: {lighting}",
+            f"Style/rendering: {style}",
+            f"Camera/composition: {camera}",
+        ])
+        sections, prompt_meta = apply_modules_to_sections(
+            channel_folder,
+            sections,
+            legacy_prompt=legacy_prompt,
+            channel_id=channel_id,
+        )
+        prompt = compose_prompt(sections, extra_constraints=constraints)
+    except Exception:
+        parts = [
+            f"Subject: {subject}",
+            f"Background/context: {background}",
+            f"Lighting: {lighting}",
+            f"Style/rendering: {style}",
+            f"Camera/composition: {camera}",
+        ]
+        if hooks:
+            parts.append(f"Viewer resonance: {hooks}")
+        if transform:
+            parts.append(f"Benchmark translation: reinterpret these abstract elements, do not copy them: {transform}")
+        if avoid:
+            parts.append(f"Avoid: {avoid}")
+        parts.append("Constraints: " + "; ".join(constraints) + ".")
+        if not include_text_overlay:
+            parts.append(sections["text_overlay"])
+        prompt = "\n".join(parts)
+    if return_meta:
+        return {"prompt": prompt, "prompt_meta": prompt_meta}
+    LAST_PROMPT_META = prompt_meta
+    return prompt
 
 
 # ─── 5要素ベンチマーク駆動プロンプト生成 ─────────────
@@ -238,6 +284,8 @@ def build_5element_prompts(
     include_text_overlay: bool = False,
     filename_prefix: str = "",
     start_index: int = 1,
+    channel_folder: str | None = None,
+    channel_id: str = "",
 ) -> list[dict]:
     """ベンチマークの 5要素抽出から N 件のバリエーション付き構造化プロンプトを生成。
 
@@ -281,21 +329,56 @@ def build_5element_prompts(
         lighting = _pick(_LIGHTING_VARIANTS, v_num - 1)
         camera = _pick(_CAMERA_VARIANTS, v_num - 1)
         style = _pick(_STYLE_VARIANTS, v_num - 1)
-        parts = [
-            f"Subject: {subject}",
-            f"Background/context: {background}",
-            f"Lighting: {lighting}",
-            f"Style/rendering: {style}",
-            f"Camera/composition: {camera}",
-        ]
+        sections = {
+            "composition": camera,
+            "subject": subject,
+            "background": background,
+            "color_tone": lighting,
+            "mood": "",
+            "text_overlay": "",
+            "style": style,
+        }
         if hooks:
-            parts.append(f"Viewer resonance: {hooks}")
+            sections["mood"] = hooks
         if transform:
-            parts.append(f"Benchmark translation: reinterpret these abstract elements, do not copy them: {transform}")
+            sections["mood"] = (sections["mood"] + " " if sections["mood"] else "") + (
+                f"Benchmark translation: reinterpret these abstract elements, do not copy them: {transform}"
+            )
         if avoid:
-            parts.append(f"Avoid: {avoid}")
-        parts.append("Constraints: " + "; ".join(base_constraints) + ".")
-        prompt_text = "\n".join(parts)
+            sections["text_overlay"] = f"Avoid: {avoid}"
+        prompt_meta = None
+        try:
+            from app_image_modules import apply_modules_to_sections, compose_prompt
+            legacy_prompt = "\n".join([
+                f"Subject: {subject}",
+                f"Background/context: {background}",
+                f"Lighting: {lighting}",
+                f"Style/rendering: {style}",
+                f"Camera/composition: {camera}",
+            ])
+            sections, prompt_meta = apply_modules_to_sections(
+                channel_folder,
+                sections,
+                legacy_prompt=legacy_prompt,
+                channel_id=channel_id,
+            )
+            prompt_text = compose_prompt(sections, extra_constraints=base_constraints)
+        except Exception:
+            parts = [
+                f"Subject: {subject}",
+                f"Background/context: {background}",
+                f"Lighting: {lighting}",
+                f"Style/rendering: {style}",
+                f"Camera/composition: {camera}",
+            ]
+            if hooks:
+                parts.append(f"Viewer resonance: {hooks}")
+            if transform:
+                parts.append(f"Benchmark translation: reinterpret these abstract elements, do not copy them: {transform}")
+            if avoid:
+                parts.append(f"Avoid: {avoid}")
+            parts.append("Constraints: " + "; ".join(base_constraints) + ".")
+            prompt_text = "\n".join(parts)
         out.append({
             "prompt": prompt_text,
             "filename": f"{prefix}-v{v_num}",
@@ -306,5 +389,6 @@ def build_5element_prompts(
                 "style_rendering": style,
                 "camera_composition": camera,
             },
+            "prompt_meta": prompt_meta,
         })
     return out

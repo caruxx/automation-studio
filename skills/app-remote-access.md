@@ -98,7 +98,7 @@ brew install cloudflared
 **別ターミナル**で:
 
 ```bash
-cd "/Users/abe_kota/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "/Users/yourname/Library/CloudStorage/GoogleDrive-your_account@example.com/共有ドライブ/DEV/_claude"
 bash Python/setup_tunnel.sh
 ```
 

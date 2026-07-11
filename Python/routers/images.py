@@ -1,12 +1,469 @@
 #!/usr/bin/env python3
 """画像生成ルータ（D9）。codex画像生成/背景画像/参照フォルダ/チャンネル横断サムネ一括/サムネ承認状態/シリーズ画像案。重い処理はハンドラ内ローカルimport、app_coreの土台シンボルを全取り込み。"""
 from fastapi import APIRouter
+from typing import Any, Dict, List, Optional
 from app_core import *  # noqa: F401,F403  土台シンボル(stdlib/fastapi/foundation)を全取り込み
 
 router = APIRouter()
 
 
 # ─── 画像生成: Flow/Midjourney は D8 で撤去（codex 一本化 = codex_imagegen.py）───
+
+
+class ImageCompositorRenderRequest(BaseModel):
+    video_name: Optional[str] = None
+    video_folder: Optional[str] = None
+    scene_text: Optional[str] = None
+    scene_text_ja: Optional[str] = None
+    playlist_text: Optional[str] = None
+    image_subdir: Optional[str] = None
+    quality: int = 90
+    target_width: Optional[int] = None
+    target_height: Optional[int] = None
+    darken: Optional[float] = 0.18
+    vignette: Optional[float] = 0.28
+    toggle_always_visible: Optional[bool] = None
+    bg_base_only: Optional[bool] = None
+
+
+class ImageCompositorCanvasSaveRequest(BaseModel):
+    video_name: Optional[str] = None
+    video_folder: Optional[str] = None
+    filename: str = "サムネイル.jpg"
+    data_url: str
+
+
+class ImageCompositorTemplateRequest(BaseModel):
+    video_name: Optional[str] = None
+    video_folder: Optional[str] = None
+    template: Dict[str, Any]
+
+
+def _layout_template_path(folder: Path) -> Path:
+    return folder / "thumbnail_layout_template.json"
+
+
+def _channel_layout_template_path(folder: Path) -> Path:
+    return folder.parent / "thumbnail_layout_template.json"
+
+
+def _resolve_video_folder(video_name: Optional[str], video_folder: Optional[str]) -> Path:
+    if video_folder:
+        folder = Path(video_folder).expanduser()
+    elif video_name:
+        folder = resolve_video_folder(video_name)
+    else:
+        raise HTTPException(400, "video_folder か video_name のいずれかが必要")
+    if not folder.exists():
+        raise HTTPException(404, f"動画フォルダが存在しません: {folder}")
+    return folder
+
+
+def _video_vol_number(folder: Path) -> Optional[str]:
+    m = re.match(r"^(\d+)_", folder.name)
+    return m.group(1) if m else None
+
+
+def _find_compositor_base_image(folder: Path, image_subdir: str = "image") -> Optional[Path]:
+    vol_num = _video_vol_number(folder)
+    if vol_num:
+        for cand_name in (f"vol{vol_num}.png", f"vol{vol_num}_source.jpg"):
+            cand = folder / cand_name
+            if cand.exists():
+                return cand
+    for pat in ("vol*.png", "vol*_source.jpg"):
+        for cand in sorted(folder.glob(pat)):
+            if cand.name.endswith("_source.jpg") or cand.suffix.lower() == ".png":
+                return cand
+    for sub in (image_subdir, "Image", "image"):
+        d = folder / sub
+        if not d.exists():
+            continue
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+            found = sorted(d.glob(ext))
+            if found:
+                return found[0]
+    return None
+
+
+def _scan_local_font_families() -> List[Dict[str, Any]]:
+    """Mac/PCに入っているフォントをCanvas用のfamily名として返す。"""
+    try:
+        from PIL import ImageFont
+    except Exception:
+        ImageFont = None
+
+    roots = [
+        Path("/System/Library/Fonts"),
+        Path("/Library/Fonts"),
+        Path.home() / "Library" / "Fonts",
+    ]
+    exts = {".ttf", ".otf", ".ttc"}
+    seen: Dict[str, Dict[str, Any]] = {}
+    files = []
+    for root in roots:
+        if not root.exists():
+            continue
+        try:
+            files.extend(p for p in root.rglob("*") if p.suffix.lower() in exts)
+        except Exception:
+            continue
+    for path in sorted(files, key=lambda p: str(p).lower())[:1500]:
+        family = path.stem
+        style = ""
+        if ImageFont is not None:
+            try:
+                ft = ImageFont.truetype(str(path), 14)
+                names = ft.getname()
+                if names and names[0]:
+                    family = str(names[0]).strip() or family
+                if len(names) > 1 and names[1]:
+                    style = str(names[1]).strip()
+            except Exception:
+                pass
+        if family.startswith("."):
+            continue
+        key = family.lower()
+        if not key or key in seen:
+            continue
+        seen[key] = {
+            "family": family,
+            "label": f"{family} {style}".strip(),
+            "style": style,
+            "path": str(path),
+        }
+    fonts = sorted(seen.values(), key=lambda x: x["family"].lower())
+    preferred = [
+        {"family": "system", "label": "System Sans", "style": "", "path": ""},
+        {"family": "serif", "label": "Serif", "style": "", "path": ""},
+        {"family": "gothic", "label": "Japanese Gothic", "style": "", "path": ""},
+        {"family": "mincho", "label": "Japanese Mincho", "style": "", "path": ""},
+        {"family": "script", "label": "Script / Brand", "style": "", "path": ""},
+        {"family": "mono", "label": "Mono", "style": "", "path": ""},
+    ]
+    existing = {f["family"].lower() for f in fonts}
+    return preferred + [f for f in fonts if f["family"].lower() not in existing.intersection({p["family"].lower() for p in preferred})]
+
+
+@router.post("/api/image-compositor/render-dual-thumbnail")
+def api_image_compositor_render_dual_thumbnail(req: ImageCompositorRenderRequest):
+    """Photoshop なしで vol{N}.jpg + サムネイル.jpg を生成するテスト版。"""
+    cfg = get_dashboard_config()
+    folder = _resolve_video_folder(req.video_name, req.video_folder)
+    image_subdir = req.image_subdir or cfg.get("psd_image_subdir") or "image"
+    base_image = _find_compositor_base_image(folder, image_subdir=image_subdir)
+    if not base_image:
+        raise HTTPException(404, f"背景画像が見つかりません: {folder}")
+
+    scene_text = (req.scene_text or "").strip()
+    cache_file = folder / "scene_en.txt"
+    if not scene_text and cache_file.exists():
+        try:
+            scene_text = cache_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            scene_text = ""
+    if not scene_text:
+        try:
+            from scene_text_generator import generate_scene_text_for_image
+            scene_text = generate_scene_text_for_image(
+                str(base_image),
+                persona=(cfg.get("persona") or "").strip(),
+                tone=(cfg.get("scene_text_tone") or ""),
+                examples=cfg.get("scene_text_examples") or [],
+                forbidden_phrases=cfg.get("scene_text_forbidden") or [],
+                structure=(cfg.get("scene_text_structure") or ""),
+            )
+            if scene_text:
+                try:
+                    cache_file.write_text(scene_text + "\n", encoding="utf-8")
+                except Exception:
+                    pass
+        except Exception:
+            scene_text = ""
+
+    scene_text_ja = (req.scene_text_ja or "").strip()
+    if not scene_text_ja:
+        ja_file = folder / "scene_ja.txt"
+        if ja_file.exists():
+            try:
+                scene_text_ja = ja_file.read_text(encoding="utf-8").strip()
+            except Exception:
+                scene_text_ja = ""
+
+    vol_num = _video_vol_number(folder)
+    vol_name = f"vol{vol_num}" if vol_num else "vol"
+    width = req.target_width or cfg.get("psd_export_width") or 1920
+    height = req.target_height or cfg.get("psd_export_height") or 1080
+    toggle_always_visible = bool(cfg.get("psd_toggle_always_visible")) if req.toggle_always_visible is None else bool(req.toggle_always_visible)
+    bg_base_only = bool(cfg.get("psd_bg_base_only")) if req.bg_base_only is None else bool(req.bg_base_only)
+
+    try:
+        import app_image_compositor as comp
+        result = comp.render_dual_thumbnail(
+            psd_path=str(folder / "_non_adobe_compositor.psd"),
+            base_image=str(base_image),
+            scene_text=scene_text or "",
+            scene_text_ja=scene_text_ja or None,
+            scene_text_ja_layer=(cfg.get("scene_text_ja_layer") or None),
+            out_dir=str(folder),
+            vol_name=vol_name,
+            playlist_layer=cfg.get("psd_toggle_layer") or "PLAY LIST",
+            playlist_text=req.playlist_text,
+            quality=req.quality,
+            target_width=int(width),
+            target_height=int(height),
+            scene_text_font=cfg.get("psd_text_font") or None,
+            scene_text_ja_font=cfg.get("scene_text_ja_font") or None,
+            toggle_always_visible=toggle_always_visible,
+            bg_base_only=bg_base_only,
+            darken=float(req.darken if req.darken is not None else 0.18),
+            vignette=float(req.vignette if req.vignette is not None else 0.28),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"image-compositor 失敗: {e}")
+
+    return {
+        "ok": True,
+        "engine": "pillow",
+        "video_folder": str(folder),
+        "base_image": str(base_image),
+        "scene_text": scene_text,
+        "scene_text_ja": scene_text_ja,
+        **result,
+    }
+
+
+@router.get("/api/image-compositor/fonts")
+def api_image_compositor_fonts(refresh: bool = False):
+    """ローカルPCに入っているフォントfamily名を返す。"""
+    cache = getattr(api_image_compositor_fonts, "_cache", None)
+    if refresh or cache is None:
+        fonts = _scan_local_font_families()
+        cache = {"fonts": fonts, "count": len(fonts), "updated_at": datetime.utcnow().isoformat() + "Z"}
+        setattr(api_image_compositor_fonts, "_cache", cache)
+    return {"ok": True, **cache}
+
+
+@router.post("/api/image-compositor/save-canvas")
+def api_image_compositor_save_canvas(req: ImageCompositorCanvasSaveRequest):
+    """ブラウザ上の簡易レイヤーエディタから書き出した画像を動画フォルダへ保存。"""
+    folder = _resolve_video_folder(req.video_name, req.video_folder)
+    filename = Path(req.filename or "サムネイル.jpg").name
+    if not re.search(r"\.(jpe?g|png|webp)$", filename, re.IGNORECASE):
+        raise HTTPException(400, "filename は jpg/png/webp のみ対応です")
+    raw = req.data_url or ""
+    m = re.match(r"^data:image/(png|jpeg|jpg|webp);base64,(.+)$", raw, re.S)
+    if not m:
+        raise HTTPException(400, "data_url は image の base64 Data URL が必要です")
+    try:
+        import base64
+        import io
+        from PIL import Image
+        data = base64.b64decode(m.group(2), validate=True)
+        if len(data) > 25 * 1024 * 1024:
+            raise HTTPException(413, "画像データが大きすぎます")
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        out = folder / filename
+        out.parent.mkdir(parents=True, exist_ok=True)
+        ext = out.suffix.lower()
+        if ext in (".jpg", ".jpeg"):
+            img.convert("RGB").save(out, "JPEG", quality=92, optimize=True, progressive=True)
+        elif ext == ".png":
+            img.convert("RGBA").save(out, "PNG", optimize=True)
+        else:
+            img.convert("RGB").save(out, "WEBP", quality=92)
+        return {"ok": True, "path": str(out), "filename": out.name, "bytes": out.stat().st_size}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"canvas 保存失敗: {e}")
+
+
+@router.get("/api/image-compositor/template")
+def api_image_compositor_get_template(video_name: Optional[str] = None, video_folder: Optional[str] = None):
+    """動画フォルダのサムネレイアウトテンプレートを取得。"""
+    folder = _resolve_video_folder(video_name, video_folder)
+    path = _layout_template_path(folder)
+    if not path.exists():
+        channel_path = _channel_layout_template_path(folder)
+        if channel_path.exists():
+            path = channel_path
+    if not path.exists():
+        return {"ok": True, "exists": False, "path": str(path), "template": None}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {"ok": True, "exists": True, "path": str(path), "template": data}
+    except Exception as e:
+        raise HTTPException(500, f"テンプレート読み込み失敗: {e}")
+
+
+@router.post("/api/image-compositor/template")
+def api_image_compositor_save_template(req: ImageCompositorTemplateRequest):
+    """動画フォルダへサムネレイアウトテンプレートを保存。"""
+    folder = _resolve_video_folder(req.video_name, req.video_folder)
+    payload = req.template or {}
+    layers = payload.get("layers")
+    if not isinstance(layers, list):
+        raise HTTPException(400, "template.layers が必要です")
+    safe_layers = []
+    for layer in layers[:50]:
+        if not isinstance(layer, dict):
+            continue
+        typ = str(layer.get("type") or "")
+        if typ not in ("text", "image"):
+            continue
+        item = {
+            "type": typ,
+            "name": str(layer.get("name") or typ)[:120],
+            "x": float(layer.get("x") or 0),
+            "y": float(layer.get("y") or 0),
+            "scale": float(layer.get("scale") or 1),
+            "opacity": float(layer.get("opacity") if layer.get("opacity") is not None else 1),
+            "visible": bool(layer.get("visible", True)),
+            "locked": bool(layer.get("locked", False)),
+        }
+        if typ == "text":
+            item.update({
+                "text": str(layer.get("text") or "")[:300],
+                "size": float(layer.get("size") or 76),
+                "color": str(layer.get("color") or "#ffffff")[:32],
+                "font": str(layer.get("font") or "system")[:120],
+            })
+        else:
+            item.update({
+                "src": str(layer.get("src") or "")[:500000],
+                "source_name": str(layer.get("source_name") or layer.get("name") or "")[:180],
+            })
+        safe_layers.append(item)
+    out = {
+        "version": 1,
+        "canvas": payload.get("canvas") if isinstance(payload.get("canvas"), dict) else {"width": 1280, "height": 720},
+        "background": payload.get("background") if isinstance(payload.get("background"), dict) else {},
+        "layers": safe_layers,
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    path = _layout_template_path(folder)
+    channel_path = _channel_layout_template_path(folder)
+    try:
+        path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        channel_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"ok": True, "path": str(path), "channel_path": str(channel_path), "template": out}
+    except Exception as e:
+        raise HTTPException(500, f"テンプレート保存失敗: {e}")
+
+
+class ImageModulesUpdateRequest(BaseModel):
+    modules: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    selection: Optional[Dict[str, str]] = None
+    overrides: Optional[Dict[str, str]] = None
+    add_module: Optional[Dict[str, Any]] = None
+    legacy_prompt: Optional[str] = None
+
+
+def _channel_folder_by_id(channel_id: str) -> Path:
+    cid = (channel_id or "").strip()
+    for ch in get_channels():
+        if cid in (ch.get("id"), ch.get("name"), ch.get("channel_name")):
+            p = Path(ch.get("folder") or "").expanduser()
+            if p.exists():
+                return p
+    cfg = get_dashboard_config()
+    if not cid or cid in (cfg.get("channel_name"), "active"):
+        p = Path(cfg.get("channel_folder") or "").expanduser()
+        if p.exists():
+            return p
+    raise HTTPException(404, f"channel_id が見つかりません: {channel_id}")
+
+
+@router.get("/api/image-modules/{channel_id}")
+def api_image_modules_get(channel_id: str, migrate: bool = True):
+    import app_image_modules as _im
+    folder = _channel_folder_by_id(channel_id)
+    legacy = ""
+    if migrate:
+        cfg = get_dashboard_config()
+        legacy = (
+            (cfg.get("bgimage_prompt") or cfg.get("thumbnail_prompt") or cfg.get("image_prompt") or "")
+            if Path(cfg.get("channel_folder") or "").expanduser() == folder else ""
+        )
+        if not legacy:
+            for p in (
+                SHARED_CONFIG_DIR / "benchmark" / "channels" / channel_id / "thumbnail.json",
+                SHARED_CONFIG_DIR / "benchmark" / "thumbnail.json",
+                SHARED_BASE / "config" / "benchmark" / "channels" / channel_id / "thumbnail.json",
+                SHARED_BASE / "config" / "benchmark" / "thumbnail.json",
+            ):
+                try:
+                    d = json.loads(p.read_text(encoding="utf-8"))
+                    agg = ((d.get("analysis") or {}).get("aggregate") or {})
+                    rec = agg.get("recommendation_for_self") or {}
+                    legacy = (agg.get("gpt_image2_prompt_seed") or rec.get("gpt_image2_prompt_seed") or "").strip()
+                    if not legacy:
+                        notes = agg.get("gpt_image2_prompt_notes") or rec.get("gpt_image2_prompt_notes") or {}
+                        if isinstance(notes, dict):
+                            legacy = " / ".join(
+                                f"{k}: {v}" for k, v in notes.items()
+                                if isinstance(v, str) and v.strip()
+                            )
+                    if legacy:
+                        break
+                except Exception:
+                    pass
+    payload = _im.ensure_modules(folder, legacy_prompt=legacy, channel_id=channel_id) if migrate else _im.load_modules(folder)
+    sections, meta = _im.selected_sections(payload)
+    return {
+        "status": "ok",
+        "channel_id": channel_id,
+        "channel_folder": str(folder),
+        "path": str(_im.module_path(folder)),
+        "schema": list(_im.SECTIONS),
+        "modules": payload.get("modules") or {},
+        "selection": payload.get("selection") or {},
+        "overrides": payload.get("overrides") or {},
+        "legacy_prompt_backup": payload.get("legacy_prompt_backup") or "",
+        "composed_prompt": _im.compose_prompt(sections),
+        "meta": meta,
+        "winning_modules": payload.get("winning_modules") or [],
+    }
+
+
+@router.put("/api/image-modules/{channel_id}")
+def api_image_modules_put(channel_id: str, req: ImageModulesUpdateRequest):
+    import app_image_modules as _im
+    folder = _channel_folder_by_id(channel_id)
+    payload = _im.ensure_modules(folder, legacy_prompt=req.legacy_prompt or "", channel_id=channel_id)
+    if req.modules is not None:
+        payload["modules"] = req.modules
+    if req.selection is not None:
+        payload.setdefault("selection", {}).update({k: v for k, v in req.selection.items() if k in _im.SECTIONS})
+    if req.overrides is not None:
+        payload["overrides"] = {k: v for k, v in req.overrides.items() if k in _im.SECTIONS}
+    if req.add_module:
+        sec = str(req.add_module.get("section") or "")
+        if sec not in _im.SECTIONS:
+            raise HTTPException(400, f"invalid section: {sec}")
+        name = str(req.add_module.get("name") or "custom")
+        text = str(req.add_module.get("text") or "")
+        mid = str(req.add_module.get("id") or f"{sec}:{re.sub(r'[^A-Za-z0-9_-]+', '-', name).strip('-').lower() or 'custom'}")
+        mod = {"id": mid, "section": sec, "name": name, "text": text, "source": "ui", "created_at": datetime.utcnow().isoformat() + "Z"}
+        rows = [m for m in (payload.get("modules") or {}).get(sec, []) if m.get("id") != mid]
+        rows.append(mod)
+        payload.setdefault("modules", {})[sec] = rows
+    payload = _im.save_modules(folder, payload)
+    sections, meta = _im.selected_sections(payload)
+    return {
+        "status": "ok",
+        "channel_id": channel_id,
+        "path": str(_im.module_path(folder)),
+        "modules": payload.get("modules") or {},
+        "selection": payload.get("selection") or {},
+        "overrides": payload.get("overrides") or {},
+        "composed_prompt": _im.compose_prompt(sections),
+        "meta": meta,
+    }
 
 # ─── API: ChatGPT / Codex 画像生成（並列） ───
 
@@ -96,12 +553,10 @@ def _run_codex_text_prompt(cli_cmd: str, prompt: str, timeout: int = 300) -> str
 
 @router.post("/api/codex-imagegen/generate")
 async def api_codex_imagegen_generate(req: CodexImagegenGenerateRequest):
-    await _ensure_not_running("codex_imagegen", "Codex 画像生成が既に実行中です")
-
     out_dir = req.output_dir
     if not out_dir and req.video_name:
         cfg = get_dashboard_config()
-        out_dir = str(Path(cfg["channel_folder"]) / req.video_name / "Image")
+        out_dir = str(resolve_video_folder(req.video_name) / "Image")
     if not out_dir:
         raise HTTPException(400, "output_dir または video_name が必要です")
 
@@ -212,22 +667,28 @@ async def api_codex_imagegen_generate(req: CodexImagegenGenerateRequest):
         "output_format": output_format,
         "reference_images": reference_names,
     }
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    reservation = await _ensure_not_running("codex_imagegen", "Codex 画像生成が既に実行中です")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        _register_active_task("codex_imagegen", proc, reservation)
+    except Exception:
+        _release_task_reservation("codex_imagegen", reservation)
+        raise
     # stdin に流し込んで close（codex_imagegen.py は stdin から読み取る）
     try:
         proc.stdin.write(prompts_text + "\n")
         proc.stdin.close()
     except Exception:
         pass
-    active_tasks["codex_imagegen"] = proc
-    _stream_subprocess(proc, "codex_imagegen")
+    deadline = max(120, int(req.timeout_sec or 900)) * max(1, line_count) + 120
+    _stream_subprocess(proc, "codex_imagegen", timeout=deadline)
     return {
         "status": "started",
         "output_dir": out_dir,
@@ -276,11 +737,8 @@ async def api_bgimage_run(req: BgImageRunRequest):
     内部的には app_pipeline.py を `--only bgimage` で起動し、subprocess の stdout を
     task_logs["bgimage"] に流し込む。via_api を立てずに起動するので無限ループしない。
     """
-    await _ensure_not_running("bgimage", "背景画像生成が既に実行中です")
     config = get_dashboard_config()
-    folder = Path(config["channel_folder"]) / req.video_name
-    if not folder.exists():
-        raise HTTPException(404, f"動画フォルダが見つかりません: {req.video_name}")
+    folder = resolve_video_folder(req.video_name)
 
     # vol 番号抽出
     m = re.match(r"^(\d+)_", req.video_name)
@@ -352,12 +810,17 @@ async def api_bgimage_run(req: BgImageRunRequest):
         "force": bool(req.force),
         "skipped": False,
     }
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, env=env,
-    )
-    active_tasks["bgimage"] = proc
-    _stream_subprocess(proc, "bgimage")
+    reservation = await _ensure_not_running("bgimage", "背景画像生成が既に実行中です")
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env,
+        )
+        _register_active_task("bgimage", proc, reservation)
+    except Exception:
+        _release_task_reservation("bgimage", reservation)
+        raise
+    _stream_subprocess(proc, "bgimage", timeout=int(env["APP_BGIMAGE_TIMEOUT_SEC"]) + 300)
 
     return {
         "status": "started",
@@ -395,7 +858,7 @@ DEFAULT_REFERENCE_DIRNAME = "ベンチマーク"
 def _resolve_reference_dir_portable(raw: str) -> Optional[Path]:
     """reference_image_dir(raw) を「現マシン」へ移植解決して存在する Path を返す（無ければ None）。
 
-    Google Drive のパスはマシン毎にユーザー名が違う(/Users/abe_kota… と /Users/asobimori…)
+    Google Drive のパスはマシン毎にユーザー名が違う(/Users/user_a… と /Users/user_b…)
     ので、保存値をそのまま使うと別マシンで死ぬ。以下の順で現マシンへ解決する:
       - 空なら各チャンネルルート/「ベンチマーク」を既定採用
       - 別マシンの絶対パス → 共有ドライブ marker で現マシン root へ付け替え(_resolve_to_current_host)
@@ -845,7 +1308,7 @@ def api_codex_imagegen_build_5element(req: CodexImagegenBuild5ERequest):
     if prefix_for_scan and req.video_name:
         try:
             cfg = get_dashboard_config()
-            image_dir = Path(cfg["channel_folder"]) / req.video_name / "Image"
+            image_dir = resolve_video_folder(req.video_name) / "Image"
             if image_dir.is_dir():
                 # prefix-v{NUM}.{ext} または prefix-v{NUM}-{m}.{ext} (n_per_prompt > 1 で生成された連番)
                 # prefix の末尾は app_image_prompt 側で 20 文字に切られるので、同じく切ったものでマッチ
@@ -880,6 +1343,8 @@ def api_codex_imagegen_build_5element(req: CodexImagegenBuild5ERequest):
         include_text_overlay=bool(req.include_text_overlay),
         filename_prefix=prefix_for_scan,
         start_index=start_index,
+        channel_folder=str(Path(get_dashboard_config().get("channel_folder", "")).expanduser()) if get_dashboard_config().get("channel_folder") else "",
+        channel_id=(get_dashboard_config().get("channel_name") or ""),
     )
 
     # ─── 7) 一時ファイル後始末 ───
@@ -963,12 +1428,9 @@ class ThumbnailRescoreRequest(BaseModel):
 def _ct_collect_video_context(video_name: str) -> Optional[dict]:
     """video_name から動画ディレクトリと context を集める。"""
     import app_channel_thumbnail as _ct
-    cfg = get_dashboard_config()
-    ch_folder = Path(cfg.get("channel_folder", "")).expanduser()
-    if not ch_folder.is_dir():
-        return None
-    video_dir = ch_folder / video_name
-    if not video_dir.is_dir():
+    try:
+        video_dir = resolve_video_folder(video_name)
+    except HTTPException:
         return None
     return _ct.read_video_context(video_dir)
 
@@ -1059,8 +1521,9 @@ def api_channel_thumbnail_plan(req: ChannelThumbnailPlanRequest):
         raise
     except Exception:
         pass
+    video_names = [validate_video_name(v) for v in req.video_names]
     return _ct_build_plan(
-        req.video_names,
+        video_names,
         max_competitors=req.max_competitors_per_video or 4,
         use_self_stats=bool(req.use_self_stats),
     )
@@ -1077,14 +1540,6 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
         raise HTTPException(400, "video_names が空です")
     provider = "codex"  # D8: Flow/MJ 撤去により codex 一本化
 
-    # 多重起動防止
-    busy_self = active_tasks.get("channel_thumbnail")
-    if busy_self and not getattr(busy_self, "_ct_done", False):
-        raise HTTPException(409, "channel_thumbnail バッチが既に実行中です")
-    sub_proc = active_tasks.get("codex_imagegen")
-    if sub_proc and sub_proc.returncode is None:
-        raise HTTPException(409, "codex_imagegen が既に実行中です。先に停止してください。")
-
     cfg = get_dashboard_config()
     ch_folder = Path(cfg.get("channel_folder", "")).expanduser()
     if not ch_folder.is_dir():
@@ -1096,7 +1551,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
         raise HTTPException(409, "benchmark/thumbnail.json が空です。先にベンチマーク取込み + サムネ DL を実行してください。")
 
     # 再実行モード: 直前 run のエラー動画だけに絞る
-    targets = list(req.video_names)
+    targets = [validate_video_name(v) for v in req.video_names]
     if req.retry_failed_only:
         prev_meta = task_meta.get("channel_thumbnail") or {}
         prev_errs = [e.get("video_name") for e in (prev_meta.get("errors") or [])]
@@ -1251,6 +1706,8 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                     include_text_overlay=bool(req.include_text_overlay),
                     filename_prefix=vn,
                     start_index=start_idx,
+                    channel_folder=str(ch_folder),
+                    channel_id=channel_name,
                 )
 
                 # 7) サブプロセスキック (Codex 一本化・D8 で Flow/MJ 撤去)
@@ -1271,13 +1728,41 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                         "--background", background,
                         "--output-format", output_format,
                     ]
+                    meta_path = image_dir / f".image_generation_meta_{_dt.datetime.now().strftime('%Y%m%d%H%M%S')}.json"
+                    meta_map = {
+                        it["filename"]: {
+                            **(it.get("prompt_meta") or {}),
+                            "video_name": vn,
+                            "image_kind": "channel_thumbnail",
+                            "matched_competitors": [
+                                {"channelName": m.get("channelName"),
+                                 "videoId": m.get("videoId"),
+                                 "match_score": m.get("match_score"),
+                                 "viewCount": m.get("viewCount")}
+                                for m in matched[:4]
+                            ],
+                        }
+                        for it in items
+                    }
+                    try:
+                        meta_path.write_text(json.dumps(meta_map, ensure_ascii=False, indent=2), encoding="utf-8")
+                        cmd += ["--generation-meta-json", str(meta_path)]
+                    except Exception:
+                        pass
                     for rp in ref_paths[:4]:
                         cmd += ["--reference-image", str(rp)]
-                    sub = subprocess.Popen(
-                        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT, text=True, bufsize=1,
+                    image_reservation = _reserve_task_sync(
+                        "codex_imagegen", "Codex 画像生成が既に実行中です"
                     )
-                    active_tasks["codex_imagegen"] = sub
+                    try:
+                        sub = subprocess.Popen(
+                            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                        )
+                        _register_active_task("codex_imagegen", sub, image_reservation)
+                    except Exception:
+                        _release_task_reservation("codex_imagegen", image_reservation)
+                        raise
                     task_meta["codex_imagegen"] = {
                         "started_at": _dt.datetime.now().isoformat(),
                         "video_name": vn,
@@ -1292,6 +1777,7 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                         "input_fidelity": "high",
                         "output_format": output_format,
                         "reference_images": [Path(p).name for p in ref_paths[:4]],
+                        "prompt_modules": meta_map,
                     }
                     task_logs["codex_imagegen"] = []
                     try:
@@ -1299,7 +1785,8 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
                         sub.stdin.close()
                     except Exception:
                         pass
-                    _stream_subprocess(sub, "codex_imagegen")
+                    image_deadline = max(120, int(req.timeout_sec or 900)) * max(1, len(items)) + 120
+                    _stream_subprocess(sub, "codex_imagegen", timeout=image_deadline)
                     while sub.returncode is None:
                         if meta.get("stop_requested"):
                             try: sub.terminate()
@@ -1472,13 +1959,14 @@ async def api_channel_thumbnail_start(req: ChannelThumbnailStartRequest):
         meta["current"] = ""
         logs.append(f"\n=== バッチ完了 (成功 {len(meta['succeeded'])} / 失敗 {len(meta['errors'])}) ===")
 
-    asyncio.create_task(_run_channel_thumbnail())
     # active_tasks に「実行中フラグ」専用のダミーを置く（subprocess.Popen ではないので _ct_done で判定）
     class _CTSentinel:
         _ct_done = False
         returncode = None
     sentinel = _CTSentinel()
-    active_tasks["channel_thumbnail"] = sentinel
+    reservation = await _ensure_not_running("channel_thumbnail", "channel_thumbnail バッチが既に実行中です")
+    _register_active_task("channel_thumbnail", sentinel, reservation)
+    asyncio.create_task(_run_channel_thumbnail())
 
     # ワーカー完了で sentinel._ct_done を立てる薄いラッパー
     async def _mark_done_when_finished():
@@ -1599,11 +2087,8 @@ def api_channel_thumbnail_stop():
 def _resolve_image_dir(video_name: str) -> Optional[Path]:
     if not video_name:
         return None
-    cfg = get_dashboard_config()
-    ch = Path(cfg.get("channel_folder", "")).expanduser()
-    if not ch.is_dir():
-        return None
-    d = ch / video_name / "Image"
+    video_dir = resolve_video_folder(video_name)
+    d = video_dir / "Image"
     if not d.is_dir():
         # フォルダ未生成の場合は作る
         try:
@@ -1919,11 +2404,6 @@ async def api_series_generate(req: SeriesGenerateRequest):
     if not ch_folder.is_dir():
         raise HTTPException(500, f"channel_folder が無効です: {ch_folder}")
 
-    # Codex が既に動いていたら拒否
-    proc = active_tasks.get("codex_imagegen")
-    if proc and proc.returncode is None:
-        raise HTTPException(409, "codex_imagegen が既に実行中です")
-
     # バックグラウンドで直列実行
     task_logs["series_generate"] = []
     import datetime as _dt
@@ -1980,9 +2460,16 @@ async def api_series_generate(req: SeriesGenerateRequest):
                                 )
                         except Exception as e:
                             task_logs["series_generate"].append(f"  ⚠ image2 picked 参照失敗: {e}")
-                    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT, text=True, bufsize=1)
-                    active_tasks["codex_imagegen"] = proc
+                    image_reservation = _reserve_task_sync(
+                        "codex_imagegen", "Codex 画像生成が既に実行中です"
+                    )
+                    try:
+                        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+                        _register_active_task("codex_imagegen", proc, image_reservation)
+                    except Exception:
+                        _release_task_reservation("codex_imagegen", image_reservation)
+                        raise
                     task_meta["codex_imagegen"] = {
                         "started_at": _dt.datetime.now().isoformat(),
                         "video_name": "",
@@ -1997,7 +2484,10 @@ async def api_series_generate(req: SeriesGenerateRequest):
                         proc.stdin.close()
                     except Exception:
                         pass
-                    _stream_subprocess(proc, "codex_imagegen")
+                    _stream_subprocess(
+                        proc, "codex_imagegen",
+                        timeout=max(120, int(req.timeout_sec or 900)) + 120,
+                    )
                     while proc.returncode is None:
                         await asyncio.sleep(2)
                     task_logs["series_generate"].append(f"  ✓ Codex rc={proc.returncode}")

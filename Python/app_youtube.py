@@ -17,7 +17,9 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import sys
+import time
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -26,6 +28,12 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
+from app_quota import QUOTA_COSTS, execute_youtube, record_quota
+try:
+    from file_stability import wait_for_file_stable
+except Exception:
+    def wait_for_file_stable(path, **kw):
+        return True
 
 # pipeline (app_pipeline.py) と一致させる sentinel exit code。
 # 76 = transient/retryable failure（403/429/quotaExceeded/5xx）。
@@ -41,12 +49,159 @@ EXIT_QUOTA_EXHAUSTED = 77
 # ブランドアカウント選択ミスで別チャンネルにアップロードする事故を防ぐ。
 EXIT_CHANNEL_MISMATCH = 78
 
-# YouTube Data API v3 の videos.insert は 1 回 1600 unit を消費する（公式仕様）。
-# デフォルト日次クオータは 10,000 unit / プロジェクト。安全マージンを取って 9600 でガード。
-QUOTA_PER_UPLOAD = int(os.environ.get("APP_YT_QUOTA_PER_UPLOAD", "1600"))
-DEFAULT_DAILY_QUOTA_CAP = int(os.environ.get("APP_YT_DAILY_QUOTA_CAP", "9600"))
+# YouTube Data API v3 の videos.insert は 2025-12-04 以降 1 回約100 unit。
+# デフォルト日次クオータは 10,000 unit / プロジェクト。
+QUOTA_PER_UPLOAD = int(os.environ.get("APP_YT_QUOTA_PER_UPLOAD", str(QUOTA_COSTS["videos.insert"])))
+DEFAULT_DAILY_QUOTA_CAP = int(os.environ.get("APP_YT_DAILY_QUOTA_CAP", "10000"))
 QUOTA_WINDOW_HOURS = int(os.environ.get("APP_YT_QUOTA_WINDOW_HOURS", "24"))
 QUOTA_FILENAME = ".youtube_quota.json"
+UPLOAD_LOCK_FILENAME = ".youtube_upload.lock"
+UPLOAD_LOCK_STALE_SECONDS = 3 * 60 * 60
+UPLOAD_LOCK_WAIT_SECONDS = 45 * 60
+UPLOAD_LOCK_POLL_SECONDS = 10
+
+
+def _atomic_write_text(path: Path, text: str, *, mode=None) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        if mode is not None:
+            tmp.chmod(mode)
+        tmp.replace(path)
+        if mode is not None:
+            path.chmod(mode)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+
+
+def _save_credentials_atomic(path: Path, creds) -> None:
+    _atomic_write_text(Path(path), creds.to_json(), mode=0o600)
+
+
+def _upload_lock_path(folder) -> Path:
+    return Path(folder) / UPLOAD_LOCK_FILENAME
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def _read_upload_lock(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _lock_is_stale(path: Path) -> bool:
+    try:
+        if time.time() - path.stat().st_mtime > UPLOAD_LOCK_STALE_SECONDS:
+            return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+    data = _read_upload_lock(path)
+    host = str(data.get("host") or "")
+    try:
+        pid = int(data.get("pid") or 0)
+    except Exception:
+        pid = 0
+    if host and host == socket.gethostname() and not _is_pid_alive(pid):
+        return True
+    return False
+
+
+def _try_create_upload_lock(path: Path) -> bool:
+    data = {
+        "pid": os.getpid(),
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "host": socket.gethostname(),
+    }
+    fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        os.write(fd, json.dumps(data, ensure_ascii=False).encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
+
+
+def _acquire_upload_lock(folder) -> bool:
+    """vol フォルダ単位の upload 排他ロックを取得する。取れない場合は待機または sentinel exit。"""
+    path = _upload_lock_path(folder)
+    deadline = time.time() + UPLOAD_LOCK_WAIT_SECONDS
+    announced = False
+    while True:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _try_create_upload_lock(path)
+            print(f"[YT_UPLOAD_LOCK] 取得: {path}", flush=True)
+            return True
+        except FileExistsError:
+            if _lock_is_stale(path):
+                data = _read_upload_lock(path)
+                print(
+                    f"[YT_UPLOAD_LOCK_STALE] stale lock を削除して再取得します "
+                    f"(pid={data.get('pid')}, host={data.get('host')})",
+                    flush=True,
+                )
+                try:
+                    if _read_upload_lock(path) != data:
+                        continue
+                    path.unlink()
+                    continue
+                except FileNotFoundError:
+                    continue
+                except Exception as e:
+                    print(f"[YT_UPLOAD_LOCKED] stale lock 削除待ち: {e}", flush=True)
+            if not announced:
+                data = _read_upload_lock(path)
+                print(
+                    f"[YT_UPLOAD_LOCKED] 別プロセスがアップロード中 "
+                    f"(pid={data.get('pid')}, host={data.get('host')})。解除を待ちます",
+                    flush=True,
+                )
+                announced = True
+            if time.time() >= deadline:
+                print(
+                    f"[YT_UPLOAD_LOCKED] 45分待っても解除されないため retryable として終了します: {path}",
+                    flush=True,
+                )
+                sys.exit(EXIT_RETRYABLE)
+            time.sleep(UPLOAD_LOCK_POLL_SECONDS)
+
+
+def _release_upload_lock(folder) -> None:
+    path = _upload_lock_path(folder)
+    try:
+        data = _read_upload_lock(path)
+        if data and data.get("pid") not in (None, os.getpid()):
+            print(
+                f"[YT_UPLOAD_LOCK] pid が異なるため削除をスキップします "
+                f"(lock_pid={data.get('pid')}, self={os.getpid()})",
+                flush=True,
+            )
+            return
+        path.unlink()
+        print(f"[YT_UPLOAD_LOCK] 解放: {path}", flush=True)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"[YT_UPLOAD_LOCK] 解放失敗: {e}", flush=True)
 
 
 def _quota_state_path(channel_folder) -> Path:
@@ -154,6 +309,7 @@ UPLOAD_DEFAULTS_FILE = CONFIG_DIR / "youtube_upload_defaults.json"
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
 # アップロード設定の既定値（ユーザーが何も設定していないとき）
@@ -283,6 +439,11 @@ def get_credentials(video_folder=None, token_override=None):
     """
     token_path = resolve_token_path(video_folder=video_folder, override=token_override)
     legacy_path = TOKEN_FILE
+    token_kind = "per-channel"
+    if token_override:
+        token_kind = "per-channel" if Path(token_override).name == CHANNEL_TOKEN_FILENAME else "override"
+    elif not video_folder:
+        token_kind = "global"
 
     # 読み込み: チャンネル別パスが解決できる場合は、そのチャンネルのトークンだけを使う。
     # 旧グローバルトークンへのフォールバックは、folder/token-file なしの旧CLI運用だけに限定する。
@@ -296,9 +457,11 @@ def get_credentials(video_folder=None, token_override=None):
     if creds is None and allow_legacy_fallback and legacy_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(legacy_path), SCOPES)
+            token_kind = "global"
             print(f" レガシーグローバルトークンを使用: {legacy_path}")
         except Exception:
             pass
+    print(f"[oauth] token_kind={token_kind} token_path={token_path}")
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -315,20 +478,40 @@ def get_credentials(video_folder=None, token_override=None):
             creds = flow.run_local_server(port=0)  # 空きポートを自動選択
         # 書き込み: 解決した token_path に保存（チャンネル別運用なら GDrive 同期される）
         try:
-            token_path.parent.mkdir(parents=True, exist_ok=True)
-            token_path.write_text(creds.to_json())
+            _save_credentials_atomic(token_path, creds)
             print(f" トークン保存: {token_path}")
         except Exception as e:
             print(f"⚠️ トークン保存失敗 ({token_path}): {e}")
             # フォールバック: グローバルへ保存
-            legacy_path.write_text(creds.to_json())
+            _save_credentials_atomic(legacy_path, creds)
             print(f"   フォールバックでグローバルに保存: {legacy_path}")
+    return creds
+
+
+def reauth_channel_credentials(channel_folder, should_save=None):
+    """channel_folder 直下の `.youtube_token.json` を OAuth 再同意で作り直す。"""
+    channel_folder = Path(channel_folder)
+    token_path = channel_folder / CHANNEL_TOKEN_FILENAME
+    if not CLIENT_SECRET.exists():
+        raise FileNotFoundError(
+            f"{CLIENT_SECRET} が見つかりません。Google Cloud Console からOAuthクライアントシークレットを配置してください"
+        )
+    print(" OAuth 同意画面を開きます。ブランドアカウントとして対象チャンネルを選択してください。")
+    print(f"   トークン保存先: {token_path}")
+    sys.stdout.flush()
+    flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET), SCOPES)
+    creds = flow.run_local_server(port=0, prompt="consent")
+    if should_save is not None and not should_save():
+        print(f" OAuth 再認証結果を破棄: current state is no longer active ({token_path})")
+        return creds
+    _save_credentials_atomic(token_path, creds)
+    print(f" トークン保存: {token_path}")
     return creds
 
 
 def get_authenticated_channel_info(youtube) -> dict:
     """現在の OAuth トークンが指している YouTube チャンネルを返す。"""
-    resp = youtube.channels().list(part="id,snippet", mine=True, maxResults=10).execute()
+    resp = execute_youtube(youtube.channels().list(part="id,snippet", mine=True, maxResults=10), "channels.list")
     items = resp.get("items") or []
     channels = []
     for it in items:
@@ -366,7 +549,7 @@ def load_channel_credentials(token_file):
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                p.write_text(creds.to_json())
+                _save_credentials_atomic(p, creds)
             except Exception:
                 return None
         else:
@@ -396,9 +579,9 @@ def list_live_broadcasts(token_file, statuses=("active", "upcoming"), max_result
     items, seen = [], set()
     try:
         for st in statuses:
-            resp = youtube.liveBroadcasts().list(
+            resp = execute_youtube(youtube.liveBroadcasts().list(
                 part="id,snippet,status,contentDetails", broadcastStatus=st, maxResults=max_results,
-            ).execute()
+            ), "liveBroadcasts.list")
             for it in resp.get("items", []):
                 bid = it.get("id")
                 if not bid or bid in seen:
@@ -426,7 +609,7 @@ def list_live_broadcasts(token_file, statuses=("active", "upcoming"), max_result
     # containsSyntheticMedia（AI生成の開示）は liveBroadcasts には無く videos.status のみ → 1 コールで補完
     if items:
         try:
-            vresp = youtube.videos().list(part="status", id=",".join(i["id"] for i in items[:50])).execute()
+            vresp = execute_youtube(youtube.videos().list(part="status", id=",".join(i["id"] for i in items[:50])), "videos.list")
             syn = {v.get("id"): bool((v.get("status") or {}).get("containsSyntheticMedia", False))
                    for v in vresp.get("items", [])}
             for i in items:
@@ -447,7 +630,7 @@ def list_my_live_streams(token_file, max_results=50) -> dict:
         return {"status": "unauthorized", "error": f"トークンが無効: {token_file}", "streams": []}
     youtube = build("youtube", "v3", credentials=creds)
     try:
-        resp = youtube.liveStreams().list(part="id,snippet,cdn", mine=True, maxResults=max_results).execute()
+        resp = execute_youtube(youtube.liveStreams().list(part="id,snippet,cdn", mine=True, maxResults=max_results), "liveStreams.list")
     except HttpError as e:
         return {"status": "error", "error": f"liveStreams.list 失敗: {e}", "streams": []}
     streams = []
@@ -475,7 +658,7 @@ def get_live_viewers(token_file, video_ids) -> dict:
         return {"status": "ok", "videos": {}}
     youtube = build("youtube", "v3", credentials=creds)
     try:
-        resp = youtube.videos().list(part="liveStreamingDetails,snippet", id=",".join(ids)).execute()
+        resp = execute_youtube(youtube.videos().list(part="liveStreamingDetails,snippet", id=",".join(ids)), "videos.list")
     except HttpError as e:
         return {"status": "error", "error": f"videos.list 失敗: {e}", "videos": {}}
     out = {}
@@ -502,10 +685,10 @@ def set_video_thumbnail(token_file, video_id, image_path) -> dict:
     youtube = build("youtube", "v3", credentials=creds)
     try:
         mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
-        youtube.thumbnails().set(
+        execute_youtube(youtube.thumbnails().set(
             videoId=video_id,
             media_body=MediaFileUpload(str(p), mimetype=mime),
-        ).execute()
+        ), "thumbnails.set")
         return {"status": "ok", "video_id": video_id, "image": str(p)}
     except HttpError as e:
         return {"status": "error", "error": f"thumbnails.set 失敗: {e}"}
@@ -527,7 +710,7 @@ def update_live_video_meta(token_file, video_id, *, title=None, description=None
     parts = "snippet,status" if want_status else "snippet"
     youtube = build("youtube", "v3", credentials=creds)
     try:
-        resp = youtube.videos().list(part=parts, id=video_id).execute()
+        resp = execute_youtube(youtube.videos().list(part=parts, id=video_id), "videos.list")
         items = resp.get("items") or []
         if not items:
             return {"status": "error", "error": f"video が見つからない: {video_id}"}
@@ -562,7 +745,7 @@ def update_live_video_meta(token_file, video_id, *, title=None, description=None
             if contains_synthetic_media is not None:
                 stt["containsSyntheticMedia"] = bool(contains_synthetic_media)
             body["status"] = stt
-        youtube.videos().update(part=parts, body=body).execute()
+        execute_youtube(youtube.videos().update(part=parts, body=body), "videos.update")
         return {"status": "ok", "video_id": video_id, "previous_title": prev_title,
                 "new_title": sn.get("title", ""),
                 "privacy": (body.get("status") or {}).get("privacyStatus", ""),
@@ -687,6 +870,9 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         if not video_file:
             print(f"エラー: {folder} 内にMP4ファイルが見つかりません")
             sys.exit(1)
+    if not wait_for_file_stable(video_file, checks=2, interval=3, timeout=90):
+        print(f"エラー: MP4サイズが安定しません（同期/書き込み途中の可能性）: {video_file}")
+        sys.exit(1)
 
     thumbnail = find_thumbnail(folder)
     description = load_description(folder)
@@ -760,127 +946,163 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         print(f"アップロード先チャンネル: {ch_info.get('channel_title') or '?'} ({ch_info.get('channel_id')})")
     sys.stdout.flush()
 
-    # YouTube制約に合わせて本文 snippet も title<=100 / description<=5000 に収める（invalidVideoMetadata 防止）
-    title = (title or "")[:100]
-    description = (description or "")[:5000]
-    snippet = {
-        "title": title,
-        "description": description,
-        "tags": tags,
-        "categoryId": str(s["category_id"]),
-        "defaultLanguage": s["default_language"],
-        "defaultAudioLanguage": s["default_audio_language"],
-    }
-    status = {
-        "privacyStatus": privacy,
-        "selfDeclaredMadeForKids": bool(s["made_for_kids"]),
-        "containsSyntheticMedia": bool(s["synthetic_media"]),
-        "license": s["license"] if s["license"] in ("youtube", "creativeCommon") else "youtube",
-        "embeddable": bool(s["embeddable"]),
-        "publicStatsViewable": bool(s["public_stats_viewable"]),
-    }
-    body = {"snippet": snippet, "status": status}
-    if localizations:
-        body["localizations"] = localizations
-
-    parts = ["snippet", "status"]
-    if localizations:
-        parts.append("localizations")
-
-    # 予約公開は privacyStatus=private + publishAt が正しい使い方
-    if schedule:
-        body["status"]["privacyStatus"] = "private"
-        body["status"]["publishAt"] = schedule
-
-    # チャンクサイズ: 10MB（進捗を細かく表示）
-    chunk_size = 10 * 1024 * 1024
-    media = MediaFileUpload(
-        str(video_file),
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=chunk_size,
-    )
-
-    print(f"\nアップロード開始... ({file_size_mb:.0f} MB / チャンク {chunk_size // 1024 // 1024}MB)")
-    sys.stdout.flush()
-
-    import time
-    start_time = time.time()
-
-    request = youtube.videos().insert(
-        part=",".join(parts),
-        body=body,
-        media_body=media,
-        notifySubscribers=bool(s["notify_subscribers"]),
-    )
-
-    response = None
+    _upload_lock_acquired = _acquire_upload_lock(folder)
     try:
-        while response is None:
-            status_obj, response = request.next_chunk()
-            if status_obj:
-                pct = int(status_obj.progress() * 100)
-                elapsed = time.time() - start_time
-                uploaded_mb = status_obj.progress() * file_size_mb
-                speed = uploaded_mb / elapsed if elapsed > 0 else 0
-                remaining = (file_size_mb - uploaded_mb) / speed if speed > 0 else 0
-                remaining_min = int(remaining // 60)
-                remaining_sec = int(remaining % 60)
-                print(f" {pct}% ({uploaded_mb:.0f}/{file_size_mb:.0f} MB) | {speed:.1f} MB/s | 残り約 {remaining_min}分{remaining_sec:02d}秒")
-                sys.stdout.flush()
-    except HttpError as e:
-        # 403 quotaExceeded / 429 / 5xx は上位 retry 層に回す
-        if _is_retryable_http_error(e):
-            status = getattr(e.resp, "status", "?") if getattr(e, "resp", None) else "?"
-            print(f"\n [RETRYABLE_UPLOAD_ERROR] HTTP {status} — pipeline retry layer へ委譲します", flush=True)
+        # 実アップロード直前の二重投稿ガード。YouTube の uploads プレイリスト直近50件と
+        # ローカル marker/title/vol を照合し、既存ならアップロードせずローカル状態だけ補正する。
+        try:
+            import app_reconcile
+            guard = app_reconcile.find_existing_upload(
+                folder,
+                title=title,
+                channel_id=ch_info.get("channel_id") or expected_channel_id or "",
+                token_path=resolve_token_path(video_folder=folder, override=token_file),
+                limit=50,
+                write_marker=True,
+            )
+            if guard.get("exists"):
+                match = guard.get("match") or {}
+                print(
+                    "\n[YT_DUPLICATE_GUARD] 既存投稿をYouTube実態で確認したためアップロードをスキップします",
+                    flush=True,
+                )
+                print(f"  reason={guard.get('reason')} video_id={match.get('video_id')} title={match.get('title')}", flush=True)
+                app_reconcile.notify_duplicate_skip(
+                    guard.get("vol") or vol_num,
+                    expected_channel_name or ch_info.get("channel_title") or "",
+                )
+                return match.get("video_id") or ""
+            print(f" 二重投稿ガード: 既存なし（uploads {guard.get('checked', {}).get('uploads', 0)}件照合）")
+        except Exception as e:
+            print(f"\n[YT_RECONCILE_GUARD_ERROR] YouTube実態照合に失敗: {e}", flush=True)
+            # 誤検知より二重投稿防止を優先。読み取り失敗時は実アップロードを止める。
             sys.exit(EXIT_RETRYABLE)
-        raise
 
-    video_id = response["id"]
-    total_time = time.time() - start_time
-    print(f"\n アップロード完了: https://youtu.be/{video_id}")
-    print(f"  所要時間: {int(total_time//60)}分{int(total_time%60):02d}秒")
-    sys.stdout.flush()
-
-    # quota 消費を per-channel に記録（次回 upload 前のガードに使う）
-    try:
-        record_upload_quota(channel_folder, cost=QUOTA_PER_UPLOAD)
-        used_after = quota_used_in_window(channel_folder)
-        print(f" quota 消費記録: 累計 {used_after} unit / 24h")
-    except Exception as e:
-        print(f"  ⚠️ quota 記録失敗: {e}")
-
-    if thumbnail:
-        print(f"サムネイル設定中: {thumbnail.name}")
-        sys.stdout.flush()
-        thumb_mime = mimetypes.guess_type(str(thumbnail))[0] or "image/jpeg"
-        youtube.thumbnails().set(
-            videoId=video_id,
-            media_body=MediaFileUpload(str(thumbnail), mimetype=thumb_mime),
-        ).execute()
-        print(" サムネイル設定完了")
-        sys.stdout.flush()
-
-    # アップロード完了マーカーを書き出し（ダッシュボード用）
-    try:
-        import datetime
-        marker = {
-            "video_id": video_id,
-            "url": f"https://youtu.be/{video_id}",
+        # YouTube制約に合わせて本文 snippet も title<=100 / description<=5000 に収める（invalidVideoMetadata 防止）
+        title = (title or "")[:100]
+        description = (description or "")[:5000]
+        snippet = {
             "title": title,
-            "privacy": privacy,
-            "schedule": schedule,
-            "uploaded_at": datetime.datetime.now().isoformat(),
-            "settings": s,
-            "localizations_applied": list(localizations.keys()),
+            "description": description,
+            "tags": tags,
+            "categoryId": str(s["category_id"]),
+            "defaultLanguage": s["default_language"],
+            "defaultAudioLanguage": s["default_audio_language"],
         }
-        (Path(folder) / "youtube_upload.json").write_text(
-            json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8"
+        status = {
+            "privacyStatus": privacy,
+            "selfDeclaredMadeForKids": bool(s["made_for_kids"]),
+            "containsSyntheticMedia": bool(s["synthetic_media"]),
+            "license": s["license"] if s["license"] in ("youtube", "creativeCommon") else "youtube",
+            "embeddable": bool(s["embeddable"]),
+            "publicStatsViewable": bool(s["public_stats_viewable"]),
+        }
+        body = {"snippet": snippet, "status": status}
+        if localizations:
+            body["localizations"] = localizations
+
+        parts = ["snippet", "status"]
+        if localizations:
+            parts.append("localizations")
+
+        # 予約公開は privacyStatus=private + publishAt が正しい使い方
+        if schedule:
+            body["status"]["privacyStatus"] = "private"
+            body["status"]["publishAt"] = schedule
+
+        # チャンクサイズ: 10MB（進捗を細かく表示）
+        chunk_size = 10 * 1024 * 1024
+        media = MediaFileUpload(
+            str(video_file),
+            mimetype="video/mp4",
+            resumable=True,
+            chunksize=chunk_size,
         )
-    except Exception as e:
-        print(f"  ⚠️ マーカー書き出し失敗: {e}")
+
+        print(f"\nアップロード開始... ({file_size_mb:.0f} MB / チャンク {chunk_size // 1024 // 1024}MB)")
         sys.stdout.flush()
 
+        import time
+        start_time = time.time()
+
+        request = youtube.videos().insert(
+            part=",".join(parts),
+            body=body,
+            media_body=media,
+            notifySubscribers=bool(s["notify_subscribers"]),
+        )
+
+        response = None
+        try:
+            while response is None:
+                status_obj, response = request.next_chunk()
+                if status_obj:
+                    pct = int(status_obj.progress() * 100)
+                    elapsed = time.time() - start_time
+                    uploaded_mb = status_obj.progress() * file_size_mb
+                    speed = uploaded_mb / elapsed if elapsed > 0 else 0
+                    remaining = (file_size_mb - uploaded_mb) / speed if speed > 0 else 0
+                    remaining_min = int(remaining // 60)
+                    remaining_sec = int(remaining % 60)
+                    print(f" {pct}% ({uploaded_mb:.0f}/{file_size_mb:.0f} MB) | {speed:.1f} MB/s | 残り約 {remaining_min}分{remaining_sec:02d}秒")
+                    sys.stdout.flush()
+        except HttpError as e:
+            # 403 quotaExceeded / 429 / 5xx は上位 retry 層に回す
+            if _is_retryable_http_error(e):
+                status = getattr(e.resp, "status", "?") if getattr(e, "resp", None) else "?"
+                print(f"\n [RETRYABLE_UPLOAD_ERROR] HTTP {status} — pipeline retry layer へ委譲します", flush=True)
+                sys.exit(EXIT_RETRYABLE)
+            raise
+
+        video_id = response["id"]
+        record_quota("videos.insert", channel_id=os.environ.get("APP_CHANNEL_ID", ""), cost=QUOTA_PER_UPLOAD)
+        total_time = time.time() - start_time
+        print(f"\n アップロード完了: https://youtu.be/{video_id}")
+        print(f"  所要時間: {int(total_time//60)}分{int(total_time%60):02d}秒")
+        sys.stdout.flush()
+
+        # quota 消費を per-channel に記録（次回 upload 前のガードに使う）
+        try:
+            record_upload_quota(channel_folder, cost=QUOTA_PER_UPLOAD)
+            used_after = quota_used_in_window(channel_folder)
+            print(f" quota 消費記録: 累計 {used_after} unit / 24h")
+        except Exception as e:
+            print(f"  ⚠️ quota 記録失敗: {e}")
+
+        if thumbnail:
+            print(f"サムネイル設定中: {thumbnail.name}")
+            sys.stdout.flush()
+            thumb_mime = mimetypes.guess_type(str(thumbnail))[0] or "image/jpeg"
+            execute_youtube(youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(str(thumbnail), mimetype=thumb_mime),
+            ), "thumbnails.set")
+            print(" サムネイル設定完了")
+            sys.stdout.flush()
+
+        # アップロード完了マーカーを書き出し（ダッシュボード用）
+        try:
+            import datetime
+            marker = {
+                "video_id": video_id,
+                "url": f"https://youtu.be/{video_id}",
+                "title": title,
+                "privacy": privacy,
+                "schedule": schedule,
+                "uploaded_at": datetime.datetime.now().isoformat(),
+                "settings": s,
+                "localizations_applied": list(localizations.keys()),
+            }
+            (Path(folder) / "youtube_upload.json").write_text(
+                json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            print(f"  ⚠️ マーカー書き出し失敗: {e}")
+            sys.stdout.flush()
+
+    finally:
+        if _upload_lock_acquired:
+            _release_upload_lock(folder)
     return video_id
 
 
@@ -912,7 +1134,7 @@ def publish_video_to_public(folder, token_override=None) -> dict:
     youtube = build("youtube", "v3", credentials=creds)
     # 現在の privacyStatus を確認（既に public なら no-op）
     try:
-        cur = youtube.videos().list(part="status", id=video_id).execute()
+        cur = execute_youtube(youtube.videos().list(part="status", id=video_id), "videos.list")
         items = cur.get("items", [])
         if not items:
             return {"status": "error", "error": f"video_id {video_id} が見つからない（削除済 or 別アカウント）"}
@@ -930,7 +1152,7 @@ def publish_video_to_public(folder, token_override=None) -> dict:
     # public へ切替
     try:
         body = {"id": video_id, "status": {"privacyStatus": "public"}}
-        resp = youtube.videos().update(part="status", body=body).execute()
+        resp = execute_youtube(youtube.videos().update(part="status", body=body), "videos.update")
         new_priv = resp.get("status", {}).get("privacyStatus", "")
     except HttpError as e:
         if _is_retryable_http_error(e):
@@ -1017,7 +1239,7 @@ def update_video_snippet(folder, *, token_override=None,
     # 現在のタイトルを取得（差分把握用）
     previous_title = ""
     try:
-        cur = youtube.videos().list(part="snippet", id=video_id).execute()
+        cur = execute_youtube(youtube.videos().list(part="snippet", id=video_id), "videos.list")
         items = cur.get("items", [])
         if items:
             previous_title = items[0].get("snippet", {}).get("title", "")
@@ -1027,7 +1249,7 @@ def update_video_snippet(folder, *, token_override=None,
         return {"status": "error", "error": f"HttpError {e}"}
 
     try:
-        resp = youtube.videos().update(part=",".join(parts), body=body).execute()
+        resp = execute_youtube(youtube.videos().update(part=",".join(parts), body=body), "videos.update")
     except HttpError as e:
         if _is_retryable_http_error(e):
             return {"status": "retryable", "error": f"HttpError {e}"}

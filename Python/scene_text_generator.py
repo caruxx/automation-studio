@@ -8,6 +8,7 @@ Photoshop の「都市名_テキスト」層等に流し込む英大文字フレ
 """
 
 from __future__ import annotations
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -63,6 +64,14 @@ def generate_scene_text_for_image(
     if forbidden:
         forbidden_block = "\n- Forbidden exact matches (never output these): " + ", ".join(forbidden)
     persona_block = f"\nChannel concept/persona: {persona}\n" if persona else ""
+    learned_block = ""
+    try:
+        import app_learning as _learning
+        hint = _learning.learned_patterns_prompt_hint(os.environ.get("APP_CHANNEL_FOLDER") or "")
+        if hint:
+            learned_block = "\n- Learned winning patterns from this channel's 48h reviews (adapt, do not copy blindly): " + hint.replace("\n", " / ")
+    except Exception:
+        pass
 
     prompt = f"""Read the image at: {img}
 
@@ -72,7 +81,7 @@ STRICT RULES:
 - Output: 2 words, ALL UPPERCASE, separated by a single space (3 words allowed only if natural)
 - Tone: {tone_line}
 - Syntax: {structure_line}
-- English only. No quotes, no punctuation, no emoji, no labels, no explanation.{examples_block}{forbidden_block}
+- English only. No quotes, no punctuation, no emoji, no labels, no explanation.{examples_block}{forbidden_block}{learned_block}
 {persona_block}Output ONLY the phrase (two or three uppercase words). Nothing else."""
 
     # Claude→Codex フォールバック共通ランナー(Vision)に委譲（全機能のバックアップ回路）。

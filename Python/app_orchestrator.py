@@ -20,8 +20,11 @@
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -29,10 +32,34 @@ from typing import Callable, Optional
 
 # 既存資産（ロジックは再利用、作り直さない）
 import app_pipeline as _pipe
+from publish_schedule import parse_publish_date_from_folder, resolve_publish_at_iso
 try:
     import app_run_ledger as _ledger
 except Exception:  # pragma: no cover - ledger 不在環境でも import は通す
     _ledger = None
+
+
+BASE = Path(__file__).resolve().parent
+ROUTES_PATH = BASE / "routes.json"
+
+
+def _load_route_parallelism() -> dict:
+    try:
+        data = json.loads(ROUTES_PATH.read_text(encoding="utf-8"))
+        intents = data.get("intents") or {}
+    except Exception:
+        intents = {}
+    out = {}
+    for name, spec in intents.items():
+        p = spec.get("parallelism") or {}
+        out[name] = {
+            "scope": p.get("scope") or "global",
+            "max_parallel": int(p.get("max_parallel") or 1),
+        }
+    return out
+
+
+_PARALLELISM = _load_route_parallelism()
 
 
 # ─── sentinel exit（app_pipeline と一致させる） ───
@@ -104,7 +131,50 @@ class StageWorker:
         # 前段が無い（=パイプライン先頭）なら、常に着手候補（空枠起点）。
         prev_done = True if prev is None else self._stage_done(vol, prev, folder, channel_id=channel_id)
         self_done = self._stage_done(vol, head, folder, channel_id=channel_id)
-        return prev_done and not self_done
+        return prev_done and not self_done and self._slot_available(channel_id=channel_id)
+
+    def parallelism(self) -> dict:
+        head = self.stages[0] if self.stages else self.domain
+        return _PARALLELISM.get(head) or _PARALLELISM.get(self.domain) or {"scope": "global", "max_parallel": 1}
+
+    def _parallel_scope_key(self, *, channel_id: str = "") -> tuple[str, str]:
+        spec = self.parallelism()
+        scope = spec.get("scope") or "global"
+        if scope == "per-channel":
+            return scope, channel_id or ""
+        if scope == "per-machine":
+            return scope, "local"
+        return "global", "global"
+
+    def _active_count(self, *, channel_id: str = "") -> int:
+        if _ledger is None:
+            return 0
+        head = self.stages[0] if self.stages else self.domain
+        scope, key = self._parallel_scope_key(channel_id=channel_id)
+        try:
+            runs = _ledger.list_runs(status="in_progress", limit=200)
+        except Exception:
+            return 0
+        n = 0
+        for r in runs:
+            try:
+                meta = json.loads(r.get("meta_json") or "{}")
+            except Exception:
+                meta = {}
+            if meta.get("stage") != head and meta.get("domain") != self.domain:
+                continue
+            if scope == "per-channel" and (r.get("channel_id") or "") != key:
+                continue
+            n += 1
+        return n
+
+    def _slot_available(self, *, channel_id: str = "") -> bool:
+        spec = self.parallelism()
+        try:
+            max_parallel = int(spec.get("max_parallel") or 1)
+        except (TypeError, ValueError):
+            max_parallel = 1
+        return self._active_count(channel_id=channel_id) < max(1, max_parallel)
 
     def _stage_done(self, vol: int, stage: str, folder: Path, *, channel_id: str = "") -> bool:
         """台帳優先で stage 完了を判定。台帳に無ければフォルダ成果物で補う。"""
@@ -163,7 +233,8 @@ class StageWorker:
             return _ledger.start_run(
                 kind="manual", channel_id=channel_id, channel_folder=channel_folder,
                 channel_name=channel_name, vol=vol, video_name=video_name,
-                meta={"orchestrator": self.domain},
+                meta={"orchestrator": self.domain, "domain": self.domain,
+                      "stage": self.stages[0] if self.stages else self.domain},
             )
         except Exception:
             return None
@@ -202,7 +273,7 @@ class QAWorker(StageWorker):
             return False
         if (folder / "qa_report.json").exists():
             return False
-        return True
+        return self._slot_available(channel_id=channel_id)
 
 
 # ─── stage 別 成果物検出（can_run の依存解決の地に足のついた根拠） ───
@@ -219,6 +290,22 @@ def _img_has(folder: Path, vol: int, *names: str) -> bool:
 
 def _bgimage_done(folder: Path, vol: int) -> bool:
     return _img_has(folder, vol, f"vol{vol}.png", f"vol{vol}.jpg")
+
+
+def _suno_done(folder: Path, vol: int) -> bool:
+    """SUNO生成/DL済み。後処理後の music だけ残る既存volも完了扱い。"""
+    for sub in ("original_music", "music"):
+        root = folder / sub
+        if root.is_dir() and any(p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".m4a")
+                                 for p in root.iterdir()):
+            return True
+    return False
+
+
+def _rename_done(folder: Path, vol: int) -> bool:
+    root = folder / "music"
+    return root.is_dir() and any(p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".m4a")
+                                 for p in root.iterdir())
 
 
 def _psd_done(folder: Path, vol: int) -> bool:
@@ -259,18 +346,30 @@ def _meta_done(folder: Path, vol: int) -> bool:
     return (folder / "youtube_title.txt").exists()
 
 
+def _localization_done(folder: Path, vol: int) -> bool:
+    return (folder / "youtube_localizations.json").exists()
+
+
 def _thumbnail_done(folder: Path, vol: int) -> bool:
     return _img_has(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
 
 
+def _upload_done(folder: Path, vol: int) -> bool:
+    return (folder / "youtube_upload.json").exists()
+
+
 _ARTIFACT_DONE = {
+    "suno": _suno_done,
+    "rename": _rename_done,
     "bgimage": _bgimage_done,
     "psd_composite": _psd_done,
     "premiere": _premiere_done,
     "export": _export_done,
     "qa": _qa_done,
     "meta": _meta_done,
+    "localization": _localization_done,
     "thumbnail": _thumbnail_done,
+    "upload": _upload_done,
 }
 
 
@@ -311,7 +410,83 @@ class StepWorker(StageWorker):
         prev = self.prev_stage(head)
         prev_done = True if prev is None else _stage_artifact_done(prev, folder, vol, channel_id=channel_id)
         self_done = _stage_artifact_done(head, folder, vol, channel_id=channel_id)
-        return prev_done and not self_done
+        return prev_done and not self_done and self._slot_available(channel_id=channel_id)
+
+
+def _publish_at_iso(folder: Path) -> Optional[str]:
+    cfg = {}
+    p = folder.parent / ".app_channel_config.json"
+    if p.exists():
+        try:
+            cfg = json.loads(p.read_text(encoding="utf-8")) or {}
+        except Exception:
+            cfg = {}
+    return resolve_publish_at_iso(folder, cfg)
+
+
+def _channel_token_path(folder: Path) -> Path:
+    return folder.parent / ".youtube_token.json"
+
+
+class UploadWorker(StageWorker):
+    """autopilot 専用 upload worker。
+
+    条件:
+    - qa_report.json の passed=true がある
+    - まだ youtube_upload.json が無い
+    - publish_date が未来日
+    - per-channel OAuth token が存在する
+    """
+    def __init__(self):
+        super().__init__(domain="upload", stages=["upload"])
+
+    def can_run(self, vol: int, folder: Path, *, channel_id: str = "") -> bool:
+        if not _qa_done(folder, vol):
+            return False
+        if _upload_done(folder, vol):
+            return False
+        return self._slot_available(channel_id=channel_id)
+
+    def run(self, vol: int, folder: Path, *, via_api: bool = False, **kw) -> Exit:
+        token = _channel_token_path(folder)
+        if not token.exists():
+            print(f"[oauth] autopilot upload blocked: per-channel token missing ({token})")
+            return Exit.PREFLIGHT_FAIL
+        schedule = _publish_at_iso(folder)
+        if not schedule:
+            print(f"[upload] publish_date をフォルダ名から解決できません: {folder.name}")
+            return Exit.PREFLIGHT_FAIL
+        pub_date = parse_publish_date_from_folder(folder)
+        today_jst = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date()
+        if pub_date and pub_date < today_jst:
+            print(f"[upload] publish_date が過去日なので autopilot upload を停止: {folder.name}")
+            return Exit.PREFLIGHT_FAIL
+        cmd = [
+            sys.executable, str(BASE / "app_youtube.py"),
+            str(folder), "--privacy", "private", "--schedule", schedule,
+            "--token-file", str(token),
+        ]
+        ch_id = (kw.get("expected_channel_id") or "").strip()
+        ch_name = (kw.get("expected_channel_name") or "").strip()
+        if ch_id:
+            cmd += ["--expected-channel-id", ch_id]
+        if ch_name:
+            cmd += ["--expected-channel-name", ch_name]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=7200)
+        if proc.stdout:
+            try:
+                print(proc.stdout.decode(errors="replace")[-2000:])
+            except Exception:
+                pass
+        if proc.returncode == 0:
+            return Exit.OK
+        if proc.returncode == int(Exit.RETRYABLE):
+            return Exit.RETRYABLE
+        if proc.returncode == int(Exit.QUOTA_EXHAUSTED):
+            return Exit.QUOTA_EXHAUSTED
+        if proc.returncode == int(Exit.UNATTENDED_LOGIN):
+            return Exit.UNATTENDED_LOGIN
+        return Exit.FAIL
 
 
 # ─── plan ワーカー（P3-2 = plan 自動採択。§9-2「空枠作成まで」） ───
@@ -337,7 +512,8 @@ class PlanWorker(StageWorker):
 
 
 # ワーカーレジストリ（stage 単位）。
-# ⚠ upload は **意図的に含めない**（最終投稿は手動ゲート。ポリシー §1）。
+# upload は Phase B で autopilot 対象化。ただし UploadWorker 側で
+# qa 成功、未来 publish_date、per-channel token、private+publishAt を強制する。
 # ⚠ suno / rename も含めない（music ドメインは人間が prompt 合意後に起動。§9-2）。
 # ⚠ plan も WORKERS には含めない（autopilot で全 vol に勝手に plan 生成しないため）。
 #    plan は ALL_WORKERS / PLAN_WORKER 経由で明示的に評価する。
@@ -350,7 +526,9 @@ WORKERS: dict[str, StageWorker] = {
     "export":        StepWorker(domain="export", stages=["export"], domain_label="video"),
     "qa":            QAWorker(),
     "meta":          StepWorker(domain="meta", stages=["meta"], domain_label="publish"),
+    "localization":  StepWorker(domain="localization", stages=["localization"], domain_label="publish"),
     "thumbnail":     StepWorker(domain="thumbnail", stages=["thumbnail"], domain_label="image"),
+    "upload":        UploadWorker(),
 }
 
 # plan を含む全ワーカー（plan 自動採択を明示的に走らせたい時に evaluate(workers=ALL_WORKERS)）。
@@ -360,7 +538,7 @@ ALL_WORKERS: dict[str, StageWorker] = {"plan": PLAN_WORKER, **WORKERS}
 # autopilot 既定範囲（app.py 統合時に tick 対象を絞るためのヒント）。
 # plan を入れると「次 vol を自動起案」になるが、§9-2 で空枠作成までは許容範囲。
 # ただし既定では含めない（明示 opt-in）。
-AUTOPILOT_DEFAULT_STAGES = ["export", "qa", "meta", "thumbnail"]
+AUTOPILOT_DEFAULT_STAGES = ["export", "qa", "meta", "localization", "thumbnail", "upload"]
 
 
 # ─── オーケストレーション tick（APScheduler 定期ジョブから呼ぶ想定） ───
@@ -384,12 +562,27 @@ def evaluate(channels: list[dict], *, dry_run: bool = True,
     candidates: list[Candidate] = []
     for ch in channels:
         ch_id = ch.get("channel_id", "")
+        export_engine = str(ch.get("export_engine") or "ame").strip().lower()
         for v in ch.get("vols", []):
             vol = int(v.get("vol", 0))
             folder = Path(v.get("folder", ""))
             for domain, worker in pool.items():
                 try:
-                    if worker.can_run(vol, folder, channel_id=ch_id):
+                    # ffmpeg チャンネルは app_ffrender が配置+書き出しを
+                    # export の1工程で行う。汎用 StepWorker の直前工程判定に
+                    # 任せると premiere 候補が残り、export は永久に候補に
+                    # ならないため、ここで経路を置換する。
+                    if export_engine == "ffmpeg" and domain == "premiere":
+                        continue
+                    if export_engine == "ffmpeg" and domain == "export":
+                        can_run = (
+                            _stage_artifact_done("psd_composite", folder, vol, channel_id=ch_id)
+                            and not _stage_artifact_done("export", folder, vol, channel_id=ch_id)
+                            and worker._slot_available(channel_id=ch_id)
+                        )
+                    else:
+                        can_run = worker.can_run(vol, folder, channel_id=ch_id)
+                    if can_run:
                         candidates.append(Candidate(domain=domain, vol=vol,
                                                     folder=str(folder), channel_id=ch_id))
                 except Exception:
@@ -474,8 +667,31 @@ def dispatch(candidate: "Candidate", channel: dict, *, via_api: bool = False,
     )
 
     # 実行
+    # app_pipeline の per-channel 設定解決は APP_CHANNEL_FOLDER/ID を最優先で見る。
+    # scheduler は複数チャンネルを1プロセスで回すため、UIの active channel に
+    # export_engine が引きずられないよう、dispatch 中だけ対象を明示する。
+    old_folder_env = os.environ.get("APP_CHANNEL_FOLDER")
+    old_id_env = os.environ.get("APP_CHANNEL_ID")
+    os.environ["APP_CHANNEL_FOLDER"] = str(channel.get("folder") or folder.parent)
+    if ch_id:
+        os.environ["APP_CHANNEL_ID"] = ch_id
     try:
-        code = worker.run(candidate.vol, folder, via_api=via_api, **kw)
+        try:
+            code = worker.run(
+                candidate.vol, folder, via_api=via_api,
+                expected_channel_id=channel.get("youtube_channel_id", ""),
+                expected_channel_name=channel.get("name", "") or ch_name,
+                **kw,
+            )
+        finally:
+            if old_folder_env is None:
+                os.environ.pop("APP_CHANNEL_FOLDER", None)
+            else:
+                os.environ["APP_CHANNEL_FOLDER"] = old_folder_env
+            if old_id_env is None:
+                os.environ.pop("APP_CHANNEL_ID", None)
+            else:
+                os.environ["APP_CHANNEL_ID"] = old_id_env
     except Exception as e:
         worker.record_finish(run_id, Exit.FAIL, failed_stage=head_stage, summary=f"例外: {e}")
         if notify:
@@ -539,7 +755,7 @@ def channel_quota_remaining(channel: dict) -> int:
     try:
         import app_youtube as _yt
         used = _yt.quota_used_in_window(folder)
-        cap = getattr(_yt, "DEFAULT_DAILY_QUOTA_CAP", 9600)
+        cap = getattr(_yt, "DEFAULT_DAILY_QUOTA_CAP", 10000)
         return max(0, cap - used)
     except Exception:
         return 10 ** 9
@@ -552,9 +768,9 @@ def _quota_ok_for(channel: dict, domain: str) -> bool:
         return True
     try:
         import app_youtube as _yt
-        per = getattr(_yt, "QUOTA_PER_UPLOAD", 1600)
+        per = getattr(_yt, "QUOTA_PER_UPLOAD", 100)
     except Exception:
-        per = 1600
+        per = 100
     return channel_quota_remaining(channel) >= per
 
 
