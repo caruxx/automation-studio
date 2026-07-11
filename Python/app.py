@@ -2708,6 +2708,7 @@ def api_video_detail(video_name: str):
         "mp4_size_mb": round(mp4_size / 1024 / 1024, 1) if mp4_size else 0,
         "description": desc_text,
         "export_path": export_path,
+        "export_engine": str(config.get("export_engine") or "ame").strip().lower(),
         "upload_info": upload_info,
     }
 

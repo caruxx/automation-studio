@@ -1240,12 +1240,19 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
                       scratch: Path, chunk_safe: bool = False) -> Path:
     """Burn free-text clips from T1+ during their authored time ranges."""
     clauses=[]
+    skipped_unedited = 0
     for ti, track in enumerate(tracks or []):
         for ci, clip in enumerate(track.get("clips") or []):
-            if clip.get("kind") != "free_text" or not str(clip.get("text") or "").strip(): continue
+            if clip.get("kind") != "free_text":
+                continue
+            raw_text = str(clip.get("text") or "")
+            text = raw_text.strip()
+            if not text or text == "テキストを入力":
+                skipped_unedited += 1
+                continue
             start=float(clip.get("start") or 0); end=float(clip.get("end") or 0)
             if end <= start: continue
-            tf=scratch/f"free_text_{ti:02d}_{ci:03d}.txt"; tf.write_text(str(clip["text"]),encoding="utf-8")
+            tf=scratch/f"free_text_{ti:02d}_{ci:03d}.txt"; tf.write_text(raw_text,encoding="utf-8")
             pos=str(clip.get("position") or "center").split("-"); vert=pos[0] if len(pos)>1 else "center"; horiz=pos[-1] if len(pos)>1 else "center"
             margin = int(_finite_float(clip.get("margin"), 64.0, minimum=0.0))
             xs={"left":str(margin),"center":"(w-text_w)/2","right":f"w-text_w-{margin}"}; ys={"top":str(margin),"center":"(h-text_h)/2","middle":"(h-text_h)/2","bottom":f"h-text_h-{margin}"}
@@ -1262,6 +1269,8 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
                 alpha=(f"{opacity}*if(lt(t,{start+fade_in:.3f}),(t-{start:.3f})/{max(fade_in,.001):.3f},"
                        f"if(gt(t,{end-fade_out:.3f}),({end:.3f}-t)/{max(fade_out,.001):.3f},1))")
             clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={font_size}:fontcolor={color}:alpha='{alpha}':borderw={border_width}:bordercolor={border}:x={xs.get(horiz,xs['center'])}:y={ys.get(vert,ys['center'])}:enable='between(t,{start:.3f},{end:.3f})'")
+    if skipped_unedited:
+        print(f"⚠ 未編集のテキストクリップ {skipped_unedited} 件をスキップ")
     if not clauses: return video
     cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an","-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p"]
     if chunk_safe:

@@ -30,6 +30,7 @@
 .pr-timeline-main .atl-lane{min-height:76px}.pr-timeline-main .atl-clip{height:60px}.pr-timeline-main .atl-visual{height:66px}.pr-timeline-main .atl-text{height:36px}
 .pr-timeline-main .atl-bottom{padding:8px;gap:8px}.pr-timeline-main .atl-chapters,.pr-timeline-main .atl-controls{padding:8px}
 .pr-track-header{gap:3px;justify-content:flex-start;padding:4px}.pr-track-header strong{width:24px}.pr-track-header button,.pr-add-track button{border:1px solid #3b4553;background:#202733;color:#dce3eb;border-radius:3px;padding:3px;font-size:9px;white-space:nowrap}.pr-track-header svg{width:12px;height:12px;fill:#aeb9c7;stroke:#aeb9c7}.pr-add-track{display:flex;gap:4px;margin-left:auto}.pr-extra-track .atl-track{position:relative}.pr-free-text{background:#31533f;border-color:#62b184}.pr-properties-body textarea{width:100%;min-height:62px;background:#0c1118;color:#fff;border:1px solid #3a4350}
+.pr-timeline-main .atl-text.is-unedited-text{border:2px dashed #f1b84b;background:#5a431f;box-shadow:0 0 0 1px #f1b84b44 inset}.pr-timeline-main .atl-text.is-unedited-text b{color:#ffe3a8}
 .pr-track-header{gap:5px;padding:4px 6px}.pr-track-header strong{display:inline-block;width:26px;flex:0 0 26px;margin-right:2px}.pr-track-header button,.pr-add-track button{display:inline-grid;place-items:center;flex:0 0 auto;min-width:20px;min-height:20px}
 
 /* Keep editor scrollbars unobtrusive on every independently scrolling panel. */

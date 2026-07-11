@@ -13,7 +13,7 @@
 <link rel="stylesheet" href="/static/css/assembly-timeline.css?v=20260711-width-fit">
 <link rel="stylesheet" href="/static/css/assembly-timeline-filmora.css?v=20260711-toolbar2">
 <link rel="stylesheet" href="/static/css/assembly-preview.css?v=20260711-editor2">
-<link rel="stylesheet" href="/static/css/assembly-premiere-layout.css?v=20260711-toolbar2">
+<link rel="stylesheet" href="/static/css/assembly-premiere-layout.css?v=20260711-unedited-text1">
 <style>
 .atl-transition{position:relative;z-index:8;align-self:flex-start;margin:2px -22px 0;min-width:88px;padding:3px 6px;border:1px solid #8ea0b8;border-radius:12px;background:#17202c;color:#edf2f7;font-size:10px;white-space:nowrap}.atl-overlap{width:34px;align-self:stretch;margin:8px -17px;z-index:6;background:repeating-linear-gradient(135deg,#5aa1d966 0 4px,#17243a99 4px 8px)}.atl-overlap-audio{background:repeating-linear-gradient(135deg,#b786e766 0 4px,#3d2b5599 4px 8px)}.atl-now-playing-chip{cursor:pointer;background:#4b3d19;border-color:#c8a23d}.atl-position-grid{display:grid;grid-template-columns:repeat(3,42px);grid-template-rows:repeat(3,28px);gap:5px}.atl-position-grid button{border:1px solid #566171;background:#202733}.atl-position-grid button.active{background:#4e8cff}.atl-style-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.atl-preview-canvas{position:relative;min-width:0}.atl-now-playing-overlay{position:absolute;pointer-events:none;max-width:85%;font-weight:600;text-align:center}.atl-pos-top-left{top:6%;left:4%}.atl-pos-top-center{top:6%;left:50%;transform:translateX(-50%)}.atl-pos-top-right{top:6%;right:4%}.atl-pos-middle-left{top:50%;left:4%;transform:translateY(-50%)}.atl-pos-center{top:50%;left:50%;transform:translate(-50%,-50%)}.atl-pos-middle-right{top:50%;right:4%;transform:translateY(-50%)}.atl-pos-bottom-left{bottom:6%;left:4%}.atl-pos-bottom-center{bottom:6%;left:50%;transform:translateX(-50%)}.atl-pos-bottom-right{bottom:6%;right:4%}
 </style>
@@ -3396,9 +3396,8 @@ const DETAIL_TABS=[
   {key:'edit',    label:'編集',       stepKey:'suno', requires:null, next:'export', auto:'構成・仕上げ'},
   {key:'meta',    label:'公開準備',   stepKey:'meta',    requires:null,      next:'suno',     auto:'タイトル・説明・タグ・公開設定'},
   {key:'suno',    label:'楽曲',       stepKey:'suno',    requires:null,      next:'images',   auto:'SUNO 生成 → DL → 後処理'},
-  {key:'images',  label:'画像',       stepKey:'images',  requires:'suno',    next:'premiere', auto:'画像生成・選択'},
-  {key:'premiere',label:'配置',       stepKey:'jsx',     requires:'suno',    next:'export',   auto:'Premiere 自動配置'},
-  {key:'export',  label:'書き出し',   stepKey:'export',  requires:'premiere',next:'meta',     auto:'MP4 書き出し'},
+  {key:'images',  label:'画像',       stepKey:'images',  requires:'suno',    next:'export',   auto:'画像生成・選択'},
+  {key:'export',  label:'書き出し',   stepKey:'export',  requires:'images',  next:'meta',     auto:'MP4 書き出し'},
 ];
 
 // ===== ワークフロー 8 工程定義（PSD合成を追加） =====
@@ -3530,22 +3529,24 @@ window.fetch = function(input, init={}){
   return _nativeFetch(input,init);
 };
 function _canonicalPage(n){return ({home:'dashboard',analysis:'benchmark',health:'ledger',autopilot:'dashboard',automation:'dashboard',notify:'settings'})[n]||n}
+function _canonicalDetailTab(tab){return ({timeline:'edit',premiere:'edit'})[tab]||tab}
 function _routeUrl(s){
   if(s.page==='dashboard')return '#home';
   if(s.page==='benchmark')return '#analysis';
-  if(s.page==='videos'&&s.video)return '#videos/'+encodeURIComponent(s.video)+(s.detailTab?'/'+(s.detailTab==='timeline'?'edit':s.detailTab):'');
+  if(s.page==='videos'&&s.video){const tab=_canonicalDetailTab(s.detailTab);return '#videos/'+encodeURIComponent(s.video)+(tab?'/'+tab:'')}
   if(s.page==='settings')return '#settings/'+(s.settingsTab||'channel');
   return '#'+s.page;
 }
 function _stateFromHash(){
   const parts=location.hash.replace(/^#/,'').split('/');
   const page=_canonicalPage(parts[0]||'home');
-  const legacyTab=page==='videos'&&parts[2]?(parts[2]==='timeline'?'edit':parts[2]):'';
+  const legacyTab=page==='videos'&&parts[2]?_canonicalDetailTab(parts[2]):'';
   return {page,video:page==='videos'&&parts[1]?decodeURIComponent(parts[1]):'',detailTab:legacyTab,settingsTab:page==='settings'&&parts[1]?parts[1]:'channel'};
 }
 function navigate(next, opts={}){
   const s={..._routeState,...next};s.page=_canonicalPage(s.page||'dashboard');
   if(s.page!=='videos')s.video='';
+  else s.detailTab=_canonicalDetailTab(s.detailTab||'');
   if(s.page!=='settings')s.settingsTab='channel';
   _pageAbortController.abort();_pageAbortController=new AbortController();
   _routeState=s;
@@ -5760,7 +5761,7 @@ async function handleVideoNextAction(name,kind,stage,videoId){
   if(kind==='schedule'){showVideoDetail(name);setTimeout(()=>setTab('meta'),100);return}
   if(kind==='error'){showVideoDetail(name);toast('詳細画面でエラー内容と実行履歴を確認してください','w');return}
   if(kind==='premiere'){
-    modal({title:'Premiereで配置',body:'Premiere Proを起動し、対象プロジェクトを開いて「配置」タブから実行してください。'});return
+    modal({title:'Premiereで配置',body:'Premiere Proを起動し、動画詳細の「編集」タブ最下部にある「Premiere 連携（自動配置）」から実行してください。'});return
   }
   if(kind==='run'&&stage){
     try{
@@ -5990,7 +5991,7 @@ async function showVideoDetail(name, fromRouter=false){
     const p=workflowProgress(v);
     // P0-C: 既定タブは「次にやる工程」。全工程完了なら公開準備（meta）を開く
     const curStep=p.steps.find(s=>s.current);
-    _curTab='timeline';
+    _curTab='edit';
 
     const el=document.getElementById('vDetail');
     el.style.display='block';
@@ -6064,6 +6065,59 @@ async function showVideoDetail(name, fromRouter=false){
 
           <div class="tab-panel on" data-t="edit">
             <div id="assemblyTimeline" class="atl" role="region" aria-label="編集タイムライン"><div class="empty">タイムラインを読み込み中...</div></div>
+            <!-- Premiere 連携は互換機能として編集画面の末尾へ統合。既定は閉じた状態。 -->
+            <details class="card" id="premiereIntegration" style="margin-top:var(--space-3)">
+              <summary style="cursor:pointer;user-select:none;font-weight:var(--font-semibold);color:var(--text-primary);display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+                <span class="product-icon adobe-pr sm">Pr</span>
+                Premiere 連携（自動配置）
+                ${d.export_engine==='ffmpeg'?'<span style="font-size:var(--text-xs);font-weight:var(--font-normal);color:var(--text-tertiary)">（このチャンネルは ffmpeg 書き出しのため通常不要）</span>':''}
+              </summary>
+              <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border-default)">
+                <section>
+                  <div class="sec-title">自動配置</div>
+                  <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3)">
+                    ${d.readiness.premiere?'✓ .prproj あり':'○ .prproj 未作成'}<br>
+                    ${d.readiness.mp4?`✓ MP4書き出し済 (${d.mp4_size_mb}MB)`:'○ MP4未書き出し'}
+                  </div>
+
+                  <div class="fr" style="margin-bottom:10px">
+                    <div class="ff"><label class="fl" for="dvPrH">目標動画尺（時）</label><input type="number" class="fi" id="dvPrH" value="3" min="0" max="12" style="text-align:center"></div>
+                    <div class="ff"><label class="fl" for="dvPrM">目標動画尺（分）</label><input type="number" class="fi" id="dvPrM" value="0" min="0" max="59" style="text-align:center"></div>
+                    <div class="ff"><label class="fl" for="dvPrS">目標動画尺（秒）</label><input type="number" class="fi" id="dvPrS" value="0" min="0" max="59" style="text-align:center"></div>
+                  </div>
+                  <div class="ff">
+                    <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer">
+                      <input type="checkbox" id="dvPrExport" style="width:16px;height:16px;accent-color:var(--accent-primary)"> 完了後に書き出し（YouTube 1080p）
+                    </label>
+                  </div>
+
+                  <div class="btns">
+                    <button class="btn btn-primary btn-sm" onclick="runPremiereForVideo('${esc(name)}')">▶ 自動配置を実行</button>
+                    ${d.mp4_file?`<button class="btn btn-secondary btn-sm" onclick="openF('${esc(d.mp4_file)}')">MP4を開く</button>`:''}
+                    <button class="btn btn-ghost btn-sm" onclick="go('premiere')" title="共通ログや過去履歴を見る">詳細ログを Premiere ページで開く</button>
+                  </div>
+                  <div class="fh" style="margin-top:10px">
+                    実行時に <code>mych_vol${d.num}.prproj</code> を自動オープンしてから JSX を送信します。Premiere Pro が起動していない場合は先に起動してください。<br>
+                    <strong>ログはこのページ上部の「実行中ログ」セクション</strong>に表示されます（折りたたみ可）。
+                  </div>
+                </section>
+
+                <!-- 画像差し替え（配置済みタイムラインに対して後から実行） -->
+                <section style="margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-default)">
+                  <div class="sec-title">画像だけ差し替え</div>
+                  <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:14px;line-height:1.7">
+                    既存の <code>.prproj</code> タイムラインに対して、画像だけを後から差し替えます。<br>
+                    音声・字幕・タイムコードは変更されません。V1 の既存画像は置き換わります。
+                  </div>
+                  <div style="font-size:12px;color:var(--text-tertiary);margin-bottom:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:var(--radius-md);border-left:3px solid var(--accent-primary)">
+                    前提: <strong>上記の自動配置が一度完了済み</strong>であること（タイムラインが存在する）。
+                  </div>
+                  <div class="btns">
+                    <button class="btn btn-secondary btn-sm" onclick="placeImagesOnly('${esc(name)}')">画像のみ差し替えを実行</button>
+                  </div>
+                </section>
+              </div>
+            </details>
           </div>
 
           <div class="tab-panel" data-t="meta">
@@ -6528,7 +6582,7 @@ async function showVideoDetail(name, fromRouter=false){
               </div>
               <div id="imgGrid" class="img-grid"><div class="empty">読み込み中...</div></div>
               <div class="tab-next">
-                <button class="btn btn-primary btn-sm" onclick="setTab('premiere')">次へ（自動配置）→</button>
+                <button class="btn btn-primary btn-sm" onclick="setTab('export')">次へ（書き出し）→</button>
               </div>
             </div>
 
@@ -6736,58 +6790,6 @@ async function showVideoDetail(name, fromRouter=false){
               <button class="btn btn-primary btn-sm" onclick="setTab('images')">次へ（画像）→</button>
             </div>
           </div><!-- /suno tab -->
-
-
-          <div class="tab-panel" data-t="premiere">
-            <div class="card">
-              <div class="sec-title">自動配置</div>
-              <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3)">
-                ${d.readiness.premiere?'✓ .prproj あり':'○ .prproj 未作成'}<br>
-                ${d.readiness.mp4?`✓ MP4書き出し済 (${d.mp4_size_mb}MB)`:'○ MP4未書き出し'}
-              </div>
-
-              <div class="fr" style="margin-bottom:10px">
-                <div class="ff"><label class="fl">時</label><input type="number" class="fi" id="dvPrH" value="3" min="0" max="12" style="text-align:center"></div>
-                <div class="ff"><label class="fl">分</label><input type="number" class="fi" id="dvPrM" value="0" min="0" max="59" style="text-align:center"></div>
-                <div class="ff"><label class="fl">秒</label><input type="number" class="fi" id="dvPrS" value="0" min="0" max="59" style="text-align:center"></div>
-              </div>
-              <div class="ff">
-                <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer">
-                  <input type="checkbox" id="dvPrExport" style="width:16px;height:16px;accent-color:var(--accent-primary)"> 完了後に書き出し（YouTube 1080p）
-                </label>
-              </div>
-
-              <div class="btns">
-                <button class="btn btn-primary btn-sm" onclick="runPremiereForVideo('${esc(name)}')">▶ 自動配置を実行</button>
-                ${d.mp4_file?`<button class="btn btn-secondary btn-sm" onclick="openF('${esc(d.mp4_file)}')">MP4を開く</button>`:''}
-                <button class="btn btn-ghost btn-sm" onclick="go('premiere')" title="共通ログや過去履歴を見る">詳細ログを Premiere ページで開く</button>
-              </div>
-              <div class="fh" style="margin-top:10px">
-                実行時に <code>mych_vol${d.num}.prproj</code> を自動オープンしてから JSX を送信します。Premiere Pro が起動していない場合は先に起動してください。<br>
-                <strong>ログはこのページ上部の「実行中ログ」セクション</strong>に表示されます（折りたたみ可）。
-              </div>
-            </div>
-
-            <!-- 画像差し替え（配置済みタイムラインに対して後から実行） -->
-            <div class="card" style="margin-top:var(--space-3)">
-              <div class="sec-title">画像だけ差し替え</div>
-              <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:14px;line-height:1.7">
-                既存の <code>.prproj</code> タイムラインに対して、画像だけを後から差し替えます。<br>
-                音声・字幕・タイムコードは変更されません。V1 の既存画像は置き換わります。
-              </div>
-              <div style="font-size:12px;color:var(--text-tertiary);margin-bottom:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:var(--radius-md);border-left:3px solid var(--accent-primary)">
-                前提: <strong>上記の自動配置が一度完了済み</strong>であること（タイムラインが存在する）。
-              </div>
-              <div class="btns">
-                <button class="btn btn-secondary btn-sm" onclick="placeImagesOnly('${esc(name)}')">画像のみ差し替えを実行</button>
-                <button class="btn btn-ghost btn-sm" onclick="setTab('images')">← 画像選択に戻る</button>
-              </div>
-            </div>
-            <div class="tab-next">
-              <button class="btn btn-primary btn-sm" onclick="setTab('export')">次へ（書き出し）→</button>
-            </div>
-          </div>
-
           <div class="tab-panel" data-t="export">
             <div class="card">
               <div class="sec-title">書き出し</div>
@@ -6823,10 +6825,10 @@ async function showVideoDetail(name, fromRouter=false){
                 <div class="fh">書き出し済みなのに未認識のときは、MP4 を選んで読み込むと公開設定とアップロードで使えるようになります。</div>
                 <div id="mp4CandidateList" style="margin-top:var(--space-2)"></div>
               </div>
-              ${!d.readiness.premiere?'<div class="fh" style="color:var(--accent-warning);margin-top:var(--space-2)">Premiere プロジェクトが未作成です。先に「配置」タブで自動配置を実行してください。</div>':''}
+              ${d.export_engine!=='ffmpeg'&&!d.readiness.premiere?'<div class="fh" style="color:var(--accent-warning);margin-top:var(--space-2)">Premiere プロジェクトが未作成です。「編集」タブ最下部の「Premiere 連携（自動配置）」を実行してください。</div>':''}
             </div>
             <div class="tab-next">
-              <button class="btn btn-ghost btn-sm" onclick="setTab('premiere')">← 配置に戻る</button>
+              <button class="btn btn-ghost btn-sm" onclick="setTab('images')">← 画像に戻る</button>
               <button class="btn btn-primary btn-sm" onclick="setTab('meta')">公開準備へ →</button>
             </div>
           </div>
@@ -7400,8 +7402,8 @@ function _startCodexPoll(name){
 
 function stepTabKey(k){
   // WORKFLOW_STEPS.key → 対応する DETAIL_TABS.key
-  // bgimage / psd_composite は「画像」タブ内のサブ工程（一覧チップから正しいタブへ飛ばす）
-  return ({suno:'suno',bgimage:'images',psd_composite:'images',images:'images',jsx:'premiere',export:'export',meta:'meta',upload:'meta',rename:'suno'})[k]||'suno';
+  // bgimage / psd_composite は「画像」、Premiere 配置は「編集」タブ内のサブ工程。
+  return ({suno:'suno',bgimage:'images',psd_composite:'images',images:'images',jsx:'edit',export:'export',meta:'meta',upload:'meta',rename:'suno'})[k]||'suno';
 }
 function _tabStatusMap(v){
   // DETAIL_TABS.key → {done,current,locked,sub}
@@ -7527,7 +7529,7 @@ function _startPipelineLogRelay(){
   },2000);
 }
 function setTab(t){
-  if(t==='timeline')t='edit';
+  t=_canonicalDetailTab(t);
   _curTab=t;
   document.querySelectorAll('#p-videos .tab').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
   document.querySelectorAll('#p-videos .tab-panel').forEach(p=>p.classList.toggle('on',p.dataset.t===t));
@@ -15912,6 +15914,6 @@ _audio.addEventListener('play',()=>{document.getElementById('bpPlayBtn').textCon
 </script>
 <script src="/static/js/video-visual-editor.js"></script>
 <script src="/static/js/assembly-timeline-filmora.js?v=20260711-toolbar2"></script>
-<script src="/static/js/assembly-premiere-layout.js?v=20260711-toolbar2"></script>
+<script src="/static/js/assembly-premiere-layout.js?v=20260711-unedited-text1"></script>
 </body>
 </html>
