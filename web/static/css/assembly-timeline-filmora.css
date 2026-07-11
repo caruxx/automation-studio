@@ -1,1 +1,91 @@
-.atl-transport{display:flex;align-items:center;gap:7px;padding:8px 12px;background:#10151d;border-bottom:1px solid #2c3340}.atl-transport button,.atl-zoom button,.atl-shortcut-head button{border:1px solid #465160;background:#202733;color:#edf2f7;border-radius:5px;padding:5px 12px}.atl-transport button:disabled{opacity:.4}.atl-transport code{margin-left:auto;font-variant-numeric:tabular-nums}.atl-scroll{overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain}.atl-canvas{min-width:100%;transform-origin:left top}.atl-canvas .atl-ruler{margin-left:100px}.atl-clip.selected{outline:2px solid #f4c45b;outline-offset:1px}.atl-zoom{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #2c3340;background:#10151d;font-size:11px}.atl-zoom input{width:180px}.atl-shortcuts{width:min(900px,92vw)}.atl-shortcut-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.atl-shortcuts table{width:100%;border-collapse:collapse}.atl-shortcuts th,.atl-shortcuts td{padding:9px;border:1px solid #384352;text-align:left}.atl-shortcuts th{width:15%;color:#f4c45b;font-family:var(--font-mono)}
+.atl-transport {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  background: #10151d;
+  border-bottom: 1px solid #2c3340;
+}
+.atl-transport button,
+.atl-zoom button,
+.atl-shortcut-head button {
+  border: 1px solid #465160;
+  background: #202733;
+  color: #edf2f7;
+  border-radius: 5px;
+  padding: 5px 12px;
+}
+.atl-transport button:disabled {
+  opacity: 0.4;
+}
+.atl-transport code {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.atl-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+}
+.atl-canvas {
+  min-width: 100%;
+  transform-origin: left top;
+}
+.atl-canvas .atl-ruler {
+  margin-left: 100px;
+}
+.atl-clip.selected {
+  outline: 2px solid #f4c45b;
+  outline-offset: 1px;
+}
+.atl-zoom {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #2c3340;
+  background: #10151d;
+  font-size: 11px;
+}
+.atl-zoom input {
+  width: 180px;
+}
+.atl-shortcuts {
+  width: min(900px, 92vw);
+}
+.atl-shortcut-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.atl-shortcuts table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.atl-shortcuts th,
+.atl-shortcuts td {
+  padding: 9px;
+  border: 1px solid #384352;
+  text-align: left;
+}
+.atl-shortcuts th {
+  width: 15%;
+  color: #f4c45b;
+  font-family: var(--font-mono);
+}
+.atl-scroll {
+  overflow-x: scroll;
+  scrollbar-width: thin;
+  scrollbar-color: #667386 #171d26;
+  scrollbar-gutter: stable;
+}
+.atl-scroll::-webkit-scrollbar { height: 9px; }
+.atl-scroll::-webkit-scrollbar-track { background: #171d26; }
+.atl-scroll::-webkit-scrollbar-thumb { border: 2px solid #171d26; border-radius: 999px; background: #667386; }
+.atl-transport .atl-icon-button { width: 28px; min-width: 28px; height: 28px; padding: 5px; }
+.atl-icon-button svg { display: block; width: 16px; height: 16px; fill: currentColor; stroke: currentColor; }
+.atl-drag-source { opacity: .32; }
+.atl-drag-ghost { position: fixed; z-index: 4000; pointer-events: none; opacity: .78; box-shadow: 0 8px 24px #000a; transform: translateY(-2px); }
+.atl-insert-guide { position: absolute; z-index: 30; top: 3px; bottom: 3px; width: 2px; background: #64a7ff; box-shadow: 0 0 8px #64a7ff; pointer-events: none; }

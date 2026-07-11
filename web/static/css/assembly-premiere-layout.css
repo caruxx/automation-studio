@@ -130,6 +130,10 @@
   transform:translateX(4px);
   white-space:nowrap;
 }
+.atl-ruler .atl-ruler-label.end{
+  /* 右端ラベルは目盛りの左側に描き、ルーラーの横あふれ（フィット時の見切れ）を防ぐ */
+  transform:translateX(calc(-100% - 4px));
+}
 .atl-scroll.atl-panning,
 .atl-scroll.atl-panning *{
   cursor:grabbing!important;
@@ -538,6 +542,7 @@
 .pr-timeline-main .atl-audio-clip,.pr-timeline-main .atl-now-playing-chip{border-width:1px;border-radius:3px}
 .pr-timeline-main .atl-audio-clip.atl-tone-a{background:#493360;border-color:#a783d0}
 .pr-timeline-main .atl-audio-clip.atl-tone-b{background:#342849;border-color:#8767b0}
+.pr-timeline-main .atl-audio-clip,.pr-timeline-main .atl-visual,.pr-timeline-main .atl-text,.pr-timeline-main .atl-now-playing-chip{border-radius:4px}.pr-timeline-main .atl-audio-clip.atl-tone-a{background:#60407e;border-color:#c4a5e5}.pr-timeline-main .atl-audio-clip.atl-tone-b{background:#30243f;border-color:#8e70ad}.pr-timeline-main .atl-audio-clip b{top:5px;color:#fff;font-weight:700}
 .pr-timeline-main .atl-now-playing-chip.atl-tone-a{background:#4d421d;border-color:#d0ad47}
 .pr-timeline-main .atl-now-playing-chip.atl-tone-b{background:#373319;border-color:#a58b38}
 .pr-timeline-main .atl-compact .atl-clip b,.pr-timeline-main .atl-audio-clip b,.pr-timeline-main .atl-now-playing-chip b{display:block;left:5px;right:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
