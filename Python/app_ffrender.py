@@ -1134,9 +1134,11 @@ def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: P
               str(cfg.get("color2") or color1).replace("#", "0x"))
     opacity = float(cfg["opacity"])
     x, y = _visualizer_xy(cfg["position"], int(cfg["margin"]))
+    # プレビュー（Canvas描画）の滑らかさに合わせるための措置
     if pattern == "wave":
-        source = (f"[1:a]aformat=channel_layouts=stereo,showwaves=s={width}x{height}:mode=line:"
-                  f"rate={FPS}:colors={color1}|{color2},format=rgba,colorchannelmixer=aa={opacity}[viz]")
+        source = (f"[1:a]aformat=channel_layouts=stereo,showwaves=s={width}x{height}:mode=p2p:"
+                  f"rate={FPS}:colors={color1}|{color2},dilation,gblur=sigma=0.6,format=rgba,"
+                  f"colorchannelmixer=aa={opacity}[viz]")
     elif pattern == "circle":
         side = min(width, height)
         source = (f"[1:a]aformat=channel_layouts=stereo,avectorscope=s={side}x{side}:r={FPS}:"
@@ -1144,12 +1146,14 @@ def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: P
                   f"colorchannelmixer=aa={opacity},scale={width}:{height}:force_original_aspect_ratio=decrease[viz]")
     elif pattern == "mirror":
         half = max(8, height // 2)
-        source = (f"[1:a]aformat=channel_layouts=stereo,showfreqs=s={width}x{half}:mode=bar:"
-                  f"ascale=sqrt:fscale=log:win_size=2048:colors={color1}|{color2},format=rgba,"
-                  f"colorchannelmixer=aa={opacity}[top];[top]split[a][b];[b]vflip[c];[a][c]vstack[viz]")
+        source = (f"[1:a]aformat=channel_layouts=stereo,showfreqs=s={width * 2}x{half * 2}:mode=bar:"
+                  f"ascale=sqrt:fscale=log:win_size=2048:colors={color1}|{color2},"
+                  f"scale={width}:{half}:flags=lanczos,format=rgba,colorchannelmixer=aa={opacity}[top];"
+                  f"[top]split[a][b];[b]vflip[c];[a][c]vstack[viz]")
     else:
-        source = (f"[1:a]aformat=channel_layouts=stereo,showfreqs=s={width}x{height}:mode=bar:"
-                  f"ascale=sqrt:fscale=log:win_size=2048:colors={color1}|{color2},format=rgba,"
+        source = (f"[1:a]aformat=channel_layouts=stereo,showfreqs=s={width * 2}x{height * 2}:mode=bar:"
+                  f"ascale=sqrt:fscale=log:win_size=2048:colors={color1}|{color2},"
+                  f"scale={width}:{height}:flags=lanczos,format=rgba,"
                   f"colorchannelmixer=aa={opacity}[viz]")
     duration = probe_duration(video)
     graph = f"{source};[0:v][viz]overlay=x={x}:y={y}:shortest=1[v]"
