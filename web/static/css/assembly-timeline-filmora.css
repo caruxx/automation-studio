@@ -40,7 +40,7 @@
 }
 .atl-zoom {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -51,6 +51,39 @@
 .atl-zoom input {
   width: 180px;
 }
+.atl-tool-mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.atl-zoom-spacer {
+  flex: 1 1 auto;
+}
+.atl-zoom .atl-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 6px;
+}
+.atl-zoom .atl-icon-button.active {
+  border-color: #5b9cff;
+  background: #234269;
+}
+.atl-zoom .atl-icon-button:focus-visible {
+  outline: 2px solid #78aef7;
+  outline-offset: 1px;
+}
+.atl-text { position: relative; }
+.atl-text-resize { position:absolute; top:0; bottom:0; width:8px; z-index:4; cursor:ew-resize; }
+.atl-text-resize.start { left:0; }
+.atl-text-resize.end { right:0; }
+.atl-range-warning { position:relative; margin-left:auto; }
+.atl-range-warning>button { color:#1d1600; background:#f3c84b; border:0; border-radius:999px; padding:4px 9px; }
+.atl-range-popover { display:none; position:absolute; z-index:200; right:0; top:calc(100% + 6px); width:360px; padding:10px; border:1px solid #806d2a; border-radius:6px; background:#211d10; box-shadow:0 8px 24px #0009; }
+.atl-range-warning.open .atl-range-popover { display:grid; gap:8px; }
+.atl-range-popover>span { display:flex; gap:8px; align-items:center; justify-content:space-between; }
 .atl-shortcuts {
   width: min(900px, 92vw);
 }

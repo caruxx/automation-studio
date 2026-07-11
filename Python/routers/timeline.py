@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib, json, subprocess, threading, time
+from typing import Optional
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
@@ -61,6 +62,7 @@ def _folder(name: str) -> Path:
 
 class TimelineUpdate(BaseModel):
     model: dict
+    base_updated_at: Optional[str] = None  # Python3.9互換のため PEP604 は使わない
 
 class NowPlayingTemplateUpdate(BaseModel):
     channel_id: str
@@ -74,7 +76,11 @@ class VisualizerTemplateUpdate(BaseModel):
 def get_timeline(video_name: str): return load(_folder(video_name))
 
 @router.put("/{video_name}")
-def put_timeline(video_name: str, req: TimelineUpdate): return save(_folder(video_name), req.model)
+def put_timeline(video_name: str, req: TimelineUpdate):
+    folder = _folder(video_name)
+    if req.base_updated_at is not None and req.base_updated_at != load(folder).get("updated_at"):
+        raise HTTPException(409, "タイムラインが他の画面で更新されています")
+    return save(folder, req.model)
 
 @router.post("/{video_name}/now-playing-template")
 def save_now_playing_template(video_name: str, req: NowPlayingTemplateUpdate):
