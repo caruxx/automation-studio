@@ -162,6 +162,34 @@
   cursor: ew-resize;
   z-index: 3;
 }
+.atl-visual-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 4;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.atl-visual-resize.start { left: 0; }
+.atl-visual-resize.end { right: 0; }
+.atl-visual-resize::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: rgba(224, 235, 249, .55);
+  opacity: 0;
+  transition: opacity .12s, background .12s;
+}
+.atl-visual:hover .atl-visual-resize::after,
+.atl-visual-resize:hover::after {
+  opacity: 1;
+}
+.atl-visual-resize:hover::after { background: #f5f7fa; }
 .atl-text {
   height: 42px;
   background: #174538;

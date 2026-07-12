@@ -200,7 +200,8 @@ def normalize(model: dict) -> dict:
     states.setdefault("T1", {"hidden": False})
     model["track_states"] = states
     model["version"] = VERSION
-    model["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    # updated_at はここでは触らない。毎回現在時刻を刻むと load() 経由の GET/PUT 検査で
+    # 値が揺れ、楽観ロックが常に 409 になる。刻印は save() の書き込み直前のみ。
     return model
 
 
@@ -252,5 +253,7 @@ def save(folder: Path, model: dict) -> dict:
         incoming["visualizer"] = visualizer
     current.update(incoming)
     current["source"] = "saved"
-    normalize(current); atomic_write(Path(folder) / TIMELINE_NAME, current)
+    normalize(current)
+    current["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    atomic_write(Path(folder) / TIMELINE_NAME, current)
     return current
