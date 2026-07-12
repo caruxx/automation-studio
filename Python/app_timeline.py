@@ -65,6 +65,27 @@ def _finite_clamped(value, default: float, minimum: float, maximum: float) -> fl
     return max(minimum, min(maximum, number))
 
 
+def _sanitize_free_xy(target: dict, incoming: dict) -> None:
+    """Keep free placement only when both coordinates are finite numbers."""
+    raw_x, raw_y = incoming.get("x"), incoming.get("y")
+    if isinstance(raw_x, (int, float)) and not isinstance(raw_x, bool) \
+            and isinstance(raw_y, (int, float)) and not isinstance(raw_y, bool) \
+            and math.isfinite(float(raw_x)) and math.isfinite(float(raw_y)):
+        target["x"] = _finite_clamped(raw_x, 0, 0, 1920)
+        target["y"] = _finite_clamped(raw_y, 0, 0, 1080)
+    else:
+        target.pop("x", None)
+        target.pop("y", None)
+
+
+def _sanitize_now_playing(value: dict | None) -> dict:
+    incoming = value if isinstance(value, dict) else {}
+    cfg = dict(NOW_PLAYING_DEFAULTS)
+    cfg.update(incoming)
+    _sanitize_free_xy(cfg, incoming)
+    return cfg
+
+
 def _sanitize_icon(value: dict | None) -> dict:
     incoming = value if isinstance(value, dict) else {}
     icon = dict(ICON_DEFAULTS)
@@ -80,6 +101,7 @@ def _sanitize_icon(value: dict | None) -> dict:
     icon["position"] = position if position in POSITIONS else "top-center"
     icon["margin"] = int(round(_finite_clamped(icon.get("margin"), 64, 0, 1080)))
     icon["opacity"] = _finite_clamped(icon.get("opacity"), 1, 0, 1)
+    _sanitize_free_xy(icon, incoming)
     return icon
 
 
@@ -109,6 +131,7 @@ def _sanitize_chroma_opening(value: dict | None) -> dict:
     cfg["height_percent"] = _finite_clamped(cfg.get("height_percent"), 100, 10, 100)
     cfg["opacity"] = _finite_clamped(cfg.get("opacity"), 1, 0, 1)
     cfg["use_audio"] = False
+    _sanitize_free_xy(cfg, incoming)
     return cfg
 
 
@@ -138,6 +161,7 @@ def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
     visualizer["pattern"] = pattern if pattern in VISUALIZER_PATTERNS else "bars"
     motion = str(visualizer.get("motion") or "normal").lower()
     visualizer["motion"] = motion if motion in VISUALIZER_MOTIONS else "normal"
+    _sanitize_free_xy(visualizer, incoming)
     return visualizer
 
 
@@ -255,7 +279,7 @@ def build_initial(folder: Path) -> dict:
     text = _scene_text(folder, cfg)
     for x in text: x["end"] = total
     channel_np = cfg.get("now_playing") if isinstance(cfg.get("now_playing"), dict) else {}
-    now_playing = dict(NOW_PLAYING_DEFAULTS); now_playing.update(channel_np)
+    now_playing = _sanitize_now_playing(channel_np)
     channel_visualizer = cfg.get("visualizer") if isinstance(cfg.get("visualizer"), dict) else {}
     visualizer = _sanitize_visualizer(channel_visualizer, legacy=bool(channel_visualizer))
     icon = _sanitize_icon(cfg.get("icon") if isinstance(cfg.get("icon"), dict) else {})
@@ -359,6 +383,8 @@ def normalize(model: dict) -> dict:
         model.get("effects") if isinstance(model.get("effects"), dict) else {})
     model["chroma_opening"] = _sanitize_chroma_opening(
         model.get("chroma_opening") if isinstance(model.get("chroma_opening"), dict) else {})
+    model["now_playing"] = _sanitize_now_playing(
+        model.get("now_playing") if isinstance(model.get("now_playing"), dict) else {})
     model["album_loop"] = _sanitize_album_loop(
         model.get("album_loop") if isinstance(model.get("album_loop"), dict) else {})
     model["version"] = VERSION
@@ -384,7 +410,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         if "now_playing" not in d:
             cfg = _channel_config(Path(folder)); np = dict(NOW_PLAYING_DEFAULTS)
             if isinstance(cfg.get("now_playing"), dict): np.update(cfg["now_playing"])
-            d["now_playing"] = np
+            d["now_playing"] = _sanitize_now_playing(np)
         # Channel settings are the template; fields authored in this vol are
         # the final override. Merge partial legacy payloads instead of making
         # every client resend the complete visualizer object.

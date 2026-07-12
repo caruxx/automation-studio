@@ -1186,6 +1186,7 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     cfg["height_px"] = int(_finite_float(cfg.get("height_px"), 180, minimum=24, maximum=1080))
     cfg["opacity"] = _finite_float(cfg.get("opacity"), .7, minimum=0, maximum=1)
     cfg["loop_seconds"] = _finite_float(cfg.get("loop_seconds"), 20, minimum=2, maximum=600)
+    _resolve_free_xy(cfg)
     # Renderer geometry is authoritative.  Keep authored settings where possible,
     # but never let an overlay escape the fixed 1920x1080 output frame.
     original = (cfg["width_percent"], cfg["height_px"], cfg["margin"])
@@ -1232,6 +1233,7 @@ def resolve_icon_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -> dict
     cfg["position"] = position if position in positions else "top-center"
     cfg["margin"] = int(_finite_float(cfg.get("margin"), 64, minimum=0, maximum=1080))
     cfg["opacity"] = _finite_float(cfg.get("opacity"), 1, minimum=0, maximum=1)
+    _resolve_free_xy(cfg)
     rotated_size = int(math.ceil(cfg["size_px"] * 1.4143)) if cfg["rotate"] else cfg["size_px"]
     edge_x = cfg["position"].endswith(("-left", "-right"))
     edge_y = cfg["position"].startswith(("top-", "bottom-"))
@@ -1278,6 +1280,7 @@ def resolve_chroma_opening_config(channel_cfg: dict, timeline_cfg: Optional[dict
     cfg["height_percent"] = _finite_float(cfg.get("height_percent"), 100, minimum=10, maximum=100)
     cfg["opacity"] = _finite_float(cfg.get("opacity"), 1, minimum=0, maximum=1)
     cfg["use_audio"] = False
+    _resolve_free_xy(cfg)
     raw = Path(cfg["video_path"]).expanduser() if cfg["video_path"] else None
     source = raw if raw and raw.is_absolute() else Path(vol_folder) / raw if raw else None
     if cfg["enabled"] and (source is None or not source.is_file()):
@@ -1300,7 +1303,7 @@ def _chroma_opening_filter(input_index: int, cfg: dict, label: str) -> tuple[str
     chain = (f"[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
              f"chromakey=0x{color}:{similarity:g}:{similarity / 3:g},format=rgba,"
              f"colorchannelmixer=aa={float(cfg['opacity']):g}[{label}]")
-    x, y = _visualizer_xy(str(cfg["position"]), 0)
+    x, y = _overlay_xy(cfg, str(cfg["position"]), 0)
     return chain, x, y
 
 
@@ -1385,7 +1388,7 @@ def _append_icon_filters(filters: list[str], current: str, input_index: int,
                   f"ow={rotated}:oh={rotated}:c=black@0")
     chain += f",colorchannelmixer=aa={float(cfg['opacity']):g}[{source}]"
     filters.append(chain)
-    x, y = _visualizer_xy(cfg["position"], int(cfg["margin"]))
+    x, y = _overlay_xy(cfg, cfg["position"], int(cfg["margin"]))
     target = f"{prefix}_overlay"
     filters.append(f"[{current}][{source}]overlay=x={x}:y={y}:shortest=1[{target}]")
     return target
@@ -1405,6 +1408,25 @@ def _visualizer_xy(position: str, margin: int) -> tuple[str, str]:
     return f"max(0\\,min(W-w\\,{x}))", f"max(0\\,min(H-h\\,{y}))"
 
 
+def _resolve_free_xy(cfg: dict) -> None:
+    raw_x, raw_y = cfg.get("x"), cfg.get("y")
+    if isinstance(raw_x, (int, float)) and not isinstance(raw_x, bool) \
+            and isinstance(raw_y, (int, float)) and not isinstance(raw_y, bool) \
+            and math.isfinite(float(raw_x)) and math.isfinite(float(raw_y)):
+        cfg["x"] = _finite_float(raw_x, 0, minimum=0, maximum=WIDTH)
+        cfg["y"] = _finite_float(raw_y, 0, minimum=0, maximum=HEIGHT)
+    else:
+        cfg.pop("x", None)
+        cfg.pop("y", None)
+
+
+def _overlay_xy(cfg: dict, position: str, margin: int) -> tuple[str, str]:
+    if "x" in cfg and "y" in cfg:
+        return (f"max(0\\,min(W-w\\,{float(cfg['x']):g}))",
+                f"max(0\\,min(H-h\\,{float(cfg['y']):g}))")
+    return _visualizer_xy(position, margin)
+
+
 def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, str, str]:
     """Return the legacy visualizer source plus its overlay geometry unchanged."""
     width = max(16, int(round(WIDTH * float(cfg["width_percent"]) / 100 / 2) * 2))
@@ -1416,7 +1438,7 @@ def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, st
     color2 = (color1 if str(cfg.get("color_mode") or "single") == "single" else
               str(cfg.get("color2") or color1).replace("#", "0x"))
     opacity = float(cfg["opacity"])
-    x, y = _visualizer_xy(cfg["position"], int(cfg["margin"]))
+    x, y = _overlay_xy(cfg, cfg["position"], int(cfg["margin"]))
     normalized = "aformat=channel_layouts=stereo,dynaudnorm=f=250:g=15:p=0.95:m=30"
     gap = max(2, int(round(width / 400)))
     prefix = f"[{audio_input}:a]{normalized}"
@@ -1689,6 +1711,7 @@ def _now_playing_font(cfg: dict) -> Path:
 def _now_playing_clauses(clips: list, cfg: dict, scratch: Path, total: float) -> list:
     if not cfg.get("enabled") or not clips:
         return []
+    _resolve_free_xy(cfg)
     margin=int(cfg.get("margin",64)); pos=str(cfg.get("position") or "bottom-center")
     xs={"left":str(margin),"center":"(w-text_w)/2","right":f"w-text_w-{margin}"}; ys={"top":str(margin),"middle":"(h-text_h)/2","center":"(h-text_h)/2","bottom":f"h-text_h-{margin}"}
     pv=pos.split("-"); vert=pv[0] if len(pv)>1 else "middle"; horiz=pv[-1] if len(pv)>1 else "center"
@@ -1708,7 +1731,8 @@ def _now_playing_clauses(clips: list, cfg: dict, scratch: Path, total: float) ->
                    f"if(gt(t,{end-fo:.3f}),({end:.3f}-t)/{max(fo,.001):.3f},1))")
         color=str(cfg.get("color") or "#ffffff").replace("#","0x")
         border=str(cfg.get("border_color") or "#000000").replace("#","0x")
-        raw_x=xs.get(horiz,xs['center']); raw_y=ys.get(vert,ys['bottom'])
+        raw_x=(f"{float(cfg['x']):g}" if "x" in cfg else xs.get(horiz,xs['center']))
+        raw_y=(f"{float(cfg['y']):g}" if "y" in cfg else ys.get(vert,ys['bottom']))
         clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={int(cfg.get('size',48))}:fontcolor={color}:alpha='{alpha}':borderw={int(cfg.get('border_width',2))}:bordercolor={border}:x=max(0\\,min(w-text_w\\,{raw_x})):y=max(0\\,min(h-text_h\\,{raw_y})):enable='between(t,{start:.3f},{end:.3f})'")
     return clauses
 

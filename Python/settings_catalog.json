@@ -1270,6 +1270,14 @@
     {
       "key": "channel.icon.opacity", "label_ja": "アイコン不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
     },
+    {"key":"channel.visualizer.x","label_ja":"ビジュアライザーX座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"visualizer.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
+    {"key":"channel.visualizer.y","label_ja":"ビジュアライザーY座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"visualizer.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
+    {"key":"channel.icon.x","label_ja":"アイコンX座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"icon.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
+    {"key":"channel.icon.y","label_ja":"アイコンY座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"icon.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
+    {"key":"channel.chroma_opening.x","label_ja":"クロマキーOP X座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"chroma_opening.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
+    {"key":"channel.chroma_opening.y","label_ja":"クロマキーOP Y座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"chroma_opening.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
+    {"key":"channel.now_playing.x","label_ja":"楽曲名X座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"now_playing.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
+    {"key":"channel.now_playing.y","label_ja":"楽曲名Y座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"now_playing.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
     {
       "key": "channel.effects.vintage", "label_ja": "ヴィンテージ", "description_ja": "色調と周辺減光を加える", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.vintage"}, "type": "boolean", "category": "production"
     },
