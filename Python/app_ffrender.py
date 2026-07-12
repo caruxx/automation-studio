@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import time
+import wave
 from pathlib import Path
 from typing import Optional
 
@@ -1298,6 +1299,22 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
             opacity=_finite_float(clip.get("opacity"),1.0,minimum=0.0,maximum=1.0)
             fade_in=_finite_float(clip.get("fade_in"),0.0,minimum=0.0); fade_out=_finite_float(clip.get("fade_out"),0.0,minimum=0.0)
             duration=end-start
+            if str(clip.get("effect") or "none") == "typewriter":
+                speed = _typewriter_speed(clip, len(raw_text), start, end)
+                steps = _typewriter_steps(raw_text, start, end, speed)
+                fixed_x, fixed_y = _fixed_text_origin(raw_text, font, font_size, horiz, vert, margin)
+                fade_in = 0.0
+                if fade_out > duration:
+                    fade_out = duration
+                for step_index, (prefix_len, step_start, step_end) in enumerate(steps):
+                    prefix_file = scratch / f"free_text_{ti:02d}_{ci:03d}_type_{step_index:03d}.txt"
+                    prefix_file.write_text(raw_text[:prefix_len], encoding="utf-8")
+                    alpha = f"{opacity}"
+                    if fade_out:
+                        alpha = (f"{opacity}*if(gt(t,{end-fade_out:.3f}),"
+                                 f"({end:.3f}-t)/{max(fade_out,.001):.3f},1)")
+                    clauses.append(f"drawtext=fontfile='{font}':textfile='{prefix_file}':fontsize={font_size}:fontcolor={color}:alpha='{alpha}':borderw={border_width}:bordercolor={border}:x={fixed_x}:y={fixed_y}:enable='between(t,{step_start:.3f},{step_end:.3f})'")
+                continue
             if fade_in+fade_out>duration and fade_in+fade_out>0:
                 scale=duration/(fade_in+fade_out); fade_in*=scale; fade_out*=scale
             alpha=f"{opacity}"
@@ -1313,6 +1330,110 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
     if chunk_safe:
         cmd += ["-bf","0","-g",str(GOP_FRAMES),"-sc_threshold","0","-video_track_timescale","30000"]
     _run_ff(cmd + [str(out)],"自由テキスト焼き込み")
+    return out
+
+
+def _typewriter_speed(clip: dict, text_length: int, start: float, end: float) -> float:
+    speed = _finite_float(clip.get("effect_speed"), 12.0, minimum=1.0, maximum=60.0)
+    available = max(0.001, end - start - 0.3)
+    required = text_length / available if text_length else speed
+    if required > speed:
+        print(f"  ⚠ タイプライター速度を {speed:.2f} → {required:.2f} 文字/秒に自動調整")
+        speed = required
+    return speed
+
+
+def _typewriter_steps(text: str, start: float, end: float, speed: float) -> list:
+    """Return at most 150 prefix windows; the first character appears at start+1/speed."""
+    length = len(text)
+    if not length:
+        return []
+    count = min(150, length)
+    prefix_lengths = [max(1, math.ceil(length * i / count)) for i in range(1, count + 1)]
+    result = []
+    for index, prefix_len in enumerate(prefix_lengths):
+        step_start = min(end, start + prefix_len / speed)
+        next_len = prefix_lengths[index + 1] if index + 1 < len(prefix_lengths) else None
+        step_end = min(end, start + next_len / speed) if next_len else end
+        if step_end > step_start:
+            result.append((prefix_len, step_start, step_end))
+    return result
+
+
+def _fixed_text_origin(text: str, font: Path, font_size: int, horiz: str,
+                       vert: str, margin: int) -> tuple[str, str]:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        pil_font = ImageFont.truetype(str(font), font_size)
+        box = ImageDraw.Draw(Image.new("L", (1, 1))).multiline_textbbox(
+            (0, 0), text, font=pil_font, spacing=0)
+        width, height = max(1, box[2] - box[0]), max(1, box[3] - box[1])
+        x = margin if horiz == "left" else (WIDTH - width) / 2 if horiz == "center" else WIDTH - width - margin
+        y = margin if vert == "top" else (HEIGHT - height) / 2 if vert in {"center", "middle"} else HEIGHT - height - margin
+        return f"{max(0, min(WIDTH-width, x)):.1f}", f"{max(0, min(HEIGHT-height, y)):.1f}"
+    except Exception as exc:
+        print(f"  ⚠ Pillowで全文サイズを取得できないため左寄せにフォールバック: {exc}")
+        return str(margin), str(margin if vert == "top" else max(margin, (HEIGHT-font_size)//2))
+
+
+def build_typewriter_sound(tracks: list, target: float, out: Path) -> Optional[Path]:
+    events = []
+    for track in tracks or []:
+        for clip in track.get("clips") or []:
+            text = str(clip.get("text") or "")
+            if (clip.get("kind") != "free_text" or str(clip.get("effect") or "none") != "typewriter"
+                    or clip.get("type_sound") is not True or not text):
+                continue
+            start = max(0.0, _finite_float(clip.get("start"), 0.0))
+            end = min(target, _finite_float(clip.get("end"), 0.0))
+            speed = _typewriter_speed(clip, len(text), start, end)
+            volume = _finite_float(clip.get("type_sound_volume"), 0.5, minimum=0.0, maximum=1.0)
+            last = -1.0
+            for index, char in enumerate(text, 1):
+                when = start + index / speed
+                if char.isspace() or when >= end or when - last < 0.05:
+                    continue
+                events.append((when, volume, index))
+                last = when
+    if not events:
+        return None
+    # A hard global 20-hit/s ceiling also covers overlapping text clips.
+    limited_events = []
+    for event in sorted(events):
+        if not limited_events or event[0] - limited_events[-1][0] >= 0.05:
+            limited_events.append(event)
+    events = limited_events
+    import numpy as np
+    sample_rate = 48000
+    audio = np.zeros(max(1, int(math.ceil(target * sample_rate))), dtype=np.float32)
+    rng = np.random.default_rng(0xA710)
+    for when, volume, seed in events:
+        duration = float(rng.uniform(0.015, 0.025)); size = int(duration * sample_rate)
+        t = np.arange(size, dtype=np.float32) / sample_rate
+        pitch = float(rng.uniform(2000.0, 4000.0)); level = volume * float(rng.uniform(0.9, 1.1))
+        noise = rng.standard_normal(size).astype(np.float32)
+        click = (0.58 * np.sin(2*np.pi*pitch*t) + 0.42 * noise) * np.exp(-t * 210.0) * level
+        offset = int(when * sample_rate); room = min(size, len(audio) - offset)
+        if room > 0: audio[offset:offset+room] += click[:room]
+    peak = float(np.max(np.abs(audio)))
+    if peak > 0.98: audio *= 0.98 / peak
+    pcm = (audio * 32767.0).astype("<i2")
+    with wave.open(str(out), "wb") as wav:
+        wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(sample_rate); wav.writeframes(pcm.tobytes())
+    print(f"  タイプ音: {len(events)}打を合成")
+    return out
+
+
+def mix_typewriter_sound(audio: Optional[Path], sound: Path, target: float,
+                         out: Path, *, bitrate: str) -> Path:
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    if audio is None:
+        cmd += ["-i", str(sound), "-t", str(target), "-af", LIMITER]
+    else:
+        cmd += ["-i", str(audio), "-i", str(sound), "-filter_complex",
+                f"[0:a][1:a]amix=inputs=2:duration=longest:normalize=0,{LIMITER}[a]", "-map", "[a]", "-t", str(target)]
+    cmd += ["-ar", "48000", "-ac", "2", "-c:a", "aac", "-b:a", bitrate, str(out)]
+    _run_ff(cmd, "タイプ音ミックス(AAC)")
     return out
 
 
@@ -1622,6 +1743,21 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                             bitrate=audio_bitrate, cache_dir=cache_dir,
                             use_cache=use_audio_cache, fade=fade,
                             intro_audio=intro_audio)
+
+    sound_tracks = []
+    if timeline_data:
+        sound_tracks = [
+            t for t in _shift_timed_tracks(timeline_data.get("text_tracks") or [], intro_sec, "clips")
+            if not (track_states.get(str(t.get("id") or "")) or {}).get("hidden")
+        ]
+    type_sound = build_typewriter_sound(sound_tracks, target, scratch / "typewriter_clicks.wav")
+    if type_sound:
+        if audio_mode == "mp3_copy" and audio is not None:
+            print("  タイプ音のミックスが必要なため mp3_copy から AAC 再エンコードへフォールバック")
+        if audio_muted:
+            print("  A1消音: タイプ音のみを音声トラックに使用")
+        audio = mix_typewriter_sound(None if audio_muted else audio, type_sound, target,
+                                     scratch / "audio_with_typewriter.m4a", bitrate=audio_bitrate)
 
     # 5+6) 映像（画像区間 → ループ連結）
     print("[3] 画像区間 + ループ連結...")

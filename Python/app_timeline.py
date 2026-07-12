@@ -182,6 +182,25 @@ def normalize(model: dict) -> dict:
         if (isinstance(track.get("clips"), list) and track["clips"])
         or track.get("user_created") is True
     ]
+    for track in text_tracks:
+        for clip in track.get("clips") or []:
+            effect = str(clip.get("effect") or "none").strip().lower()
+            clip["effect"] = effect if effect in {"none", "typewriter"} else "none"
+            try:
+                speed = float(clip.get("effect_speed", 12) or 12)
+            except (TypeError, ValueError):
+                speed = 12.0
+            if not math.isfinite(speed):
+                speed = 12.0
+            clip["effect_speed"] = max(1.0, min(60.0, speed))
+            clip["type_sound"] = clip.get("type_sound") is True
+            try:
+                volume = float(clip.get("type_sound_volume", 0.5))
+            except (TypeError, ValueError):
+                volume = 0.5
+            if not math.isfinite(volume):
+                volume = 0.5
+            clip["type_sound_volume"] = max(0.0, min(1.0, volume))
     # text_tracks is the canonical multi-track model; text_lane stays as a
     # backward-compatible alias for older UI/render consumers.
     model["text_lane"] = text_tracks[0]["clips"]
