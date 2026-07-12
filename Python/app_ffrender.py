@@ -1108,6 +1108,25 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     cfg["width_percent"] = _finite_float(cfg.get("width_percent"), 60, minimum=5, maximum=100)
     cfg["height_px"] = int(_finite_float(cfg.get("height_px"), 180, minimum=24, maximum=1080))
     cfg["opacity"] = _finite_float(cfg.get("opacity"), .7, minimum=0, maximum=1)
+    # Renderer geometry is authoritative.  Keep authored settings where possible,
+    # but never let an overlay escape the fixed 1920x1080 output frame.
+    original = (cfg["width_percent"], cfg["height_px"], cfg["margin"])
+    width = min(WIDTH, max(16, int(round(WIDTH * cfg["width_percent"] / 100 / 2) * 2)))
+    height = min(HEIGHT, max(16, int(round(cfg["height_px"] / 2) * 2)))
+    cfg["width_percent"] = width / WIDTH * 100
+    cfg["height_px"] = height
+    position = cfg["position"]
+    horizontal_edge = position.endswith(("-left", "-right"))
+    vertical_edge = position.startswith(("top-", "bottom-"))
+    max_margin_x = max(0, WIDTH - width) if horizontal_edge else cfg["margin"]
+    max_margin_y = max(0, HEIGHT - height) if vertical_edge else cfg["margin"]
+    cfg["margin"] = min(cfg["margin"], max_margin_x, max_margin_y)
+    clamped = (cfg["width_percent"], cfg["height_px"], cfg["margin"])
+    # 偶数丸め由来の±1px差は警告対象にしない（実クランプ時のみ通知）
+    if any(abs(a - b) > (WIDTH / 100 * .11 if i == 0 else 1.01)
+           for i, (a, b) in enumerate(zip(original, clamped))):
+        print("WARNING: ビジュアライザー配置を1920x1080フレーム内にクランプしました "
+              f"(width={width}, height={height}, margin={cfg['margin']})")
     return cfg
 
 
@@ -1118,7 +1137,11 @@ def _visualizer_xy(position: str, margin: int) -> tuple[str, str]:
     xs = {"left": str(margin), "center": "(W-w)/2", "right": f"W-w-{margin}"}
     ys = {"top": str(margin), "middle": "(H-h)/2", "center": "(H-h)/2",
           "bottom": f"H-h-{margin}"}
-    return xs.get(horiz, xs["center"]), ys.get(vert, ys["bottom"])
+    # The expression clamp is a final safety net for direct callers which did
+    # not pass through resolve_visualizer_config().
+    x = xs.get(horiz, xs["center"])
+    y = ys.get(vert, ys["bottom"])
+    return f"max(0\\,min(W-w\\,{x}))", f"max(0\\,min(H-h\\,{y}))"
 
 
 def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: Path,
@@ -1134,28 +1157,36 @@ def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: P
               str(cfg.get("color2") or color1).replace("#", "0x"))
     opacity = float(cfg["opacity"])
     x, y = _visualizer_xy(cfg["position"], int(cfg["margin"]))
+    duration = probe_duration(video)
+    normalized = "aformat=channel_layouts=stereo,dynaudnorm=f=250:g=15:p=0.95:m=30"
+    # Transparent grid lines at the edge of each of 48 cells create stable
+    # inter-bar gaps after nearest-neighbour expansion.  No Lanczos blur is used.
+    gap = max(2, int(round(width / 400)))
     # プレビュー（Canvas描画）の滑らかさに合わせるための措置
     if pattern == "wave":
-        source = (f"[1:a]aformat=channel_layouts=stereo,showwaves=s={width}x{height}:mode=p2p:"
+        source = (f"[1:a]{normalized},showwaves=s={width}x{height}:mode=p2p:"
                   f"rate={FPS}:colors={color1}|{color2},dilation,gblur=sigma=0.6,format=rgba,"
                   f"colorchannelmixer=aa={opacity}[viz]")
     elif pattern == "circle":
         side = min(width, height)
-        source = (f"[1:a]aformat=channel_layouts=stereo,avectorscope=s={side}x{side}:r={FPS}:"
+        source = (f"[1:a]{normalized},avectorscope=s={side}x{side}:r={FPS}:"
                   f"mode=lissajous:draw=line:scale=sqrt:rc=0:gc=200:bc=255,format=rgba,"
                   f"colorchannelmixer=aa={opacity},scale={width}:{height}:force_original_aspect_ratio=decrease[viz]")
     elif pattern == "mirror":
         half = max(8, height // 2)
-        source = (f"[1:a]aformat=channel_layouts=stereo,showfreqs=s={width * 2}x{half * 2}:mode=bar:"
-                  f"ascale=sqrt:fscale=log:win_size=2048:colors={color1}|{color2},"
-                  f"scale={width}:{half}:flags=lanczos,format=rgba,colorchannelmixer=aa={opacity}[top];"
+        half_gap = max(1, int(round(width / 400)))
+        source = (f"[1:a]{normalized},showfreqs=s=48x{half}:mode=bar:ascale=log:fscale=log:"
+                  f"win_size=2048:averaging=2:colors={color1}|{color2},"
+                  f"scale={width}:{half}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
+                  f"drawgrid=w=iw/48:h=ih:t={half_gap}:c=black@0:replace=1,"
+                  f"colorchannelmixer=aa={opacity}[top];"
                   f"[top]split[a][b];[b]vflip[c];[a][c]vstack[viz]")
     else:
-        source = (f"[1:a]aformat=channel_layouts=stereo,showfreqs=s={width * 2}x{height * 2}:mode=bar:"
-                  f"ascale=sqrt:fscale=log:win_size=2048:colors={color1}|{color2},"
-                  f"scale={width}:{height}:flags=lanczos,format=rgba,"
+        source = (f"[1:a]{normalized},showfreqs=s=48x{height}:mode=bar:ascale=log:fscale=log:"
+                  f"win_size=2048:averaging=2:colors={color1}|{color2},"
+                  f"scale={width}:{height}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
+                  f"drawgrid=w=iw/48:h=ih:t={gap}:c=black@0:replace=1,"
                   f"colorchannelmixer=aa={opacity}[viz]")
-    duration = probe_duration(video)
     graph = f"{source};[0:v][viz]overlay=x={x}:y={y}:shortest=1[v]"
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-i", str(video), "-i", str(audio), "-filter_complex", graph,
@@ -1191,13 +1222,15 @@ def apply_now_playing(video: Path, clips: list, cfg: dict, out: Path, *, crf: in
     """Burn per-song titles in one drawtext pass. Disabled configs preserve legacy output."""
     if not cfg.get("enabled") or not clips:
         return video
+    total = max(0.0, probe_duration(video))
     margin=int(cfg.get("margin",64)); pos=str(cfg.get("position") or "bottom-center")
     xs={"left":str(margin),"center":"(w-text_w)/2","right":f"w-text_w-{margin}"}; ys={"top":str(margin),"middle":"(h-text_h)/2","center":"(h-text_h)/2","bottom":f"h-text_h-{margin}"}
     pv=pos.split("-"); vert=pv[0] if len(pv)>1 else "middle"; horiz=pv[-1] if len(pv)>1 else "center"
     font=_now_playing_font(cfg); clauses=[]; mode=str(cfg.get("mode") or "intro")
     intro=max(.1,float(cfg.get("intro_seconds") or 8)); fi=max(0,float(cfg.get("fade_in") or 0)); fo=max(0,float(cfg.get("fade_out") or 0)); opacity=max(0,min(1,float(cfg.get("opacity",1))))
     for i,c in enumerate(clips):
-        start=float(c["start"]); end=float(c["end"] if mode=="always" else min(c["end"],start+intro))
+        start=max(0.0, min(total, float(c["start"])))
+        end=max(0.0, min(total, float(c["end"] if mode=="always" else min(c["end"],float(c["start"])+intro))))
         if end <= start: continue
         title=str(c.get("title") or Path(str(c.get("path") or "")).stem)
         tf=scratch/f"now_playing_{i:03d}.txt"; tf.write_text(title,encoding="utf-8")
@@ -1207,7 +1240,8 @@ def apply_now_playing(video: Path, clips: list, cfg: dict, out: Path, *, crf: in
                    f"if(gt(t,{end-fo:.3f}),({end:.3f}-t)/{max(fo,.001):.3f},1))")
         color=str(cfg.get("color") or "#ffffff").replace("#","0x")
         border=str(cfg.get("border_color") or "#000000").replace("#","0x")
-        clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={int(cfg.get('size',48))}:fontcolor={color}:alpha='{alpha}':borderw={int(cfg.get('border_width',2))}:bordercolor={border}:x={xs.get(horiz,xs['center'])}:y={ys.get(vert,ys['bottom'])}:enable='between(t,{start:.3f},{end:.3f})'")
+        raw_x=xs.get(horiz,xs['center']); raw_y=ys.get(vert,ys['bottom'])
+        clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={int(cfg.get('size',48))}:fontcolor={color}:alpha='{alpha}':borderw={int(cfg.get('border_width',2))}:bordercolor={border}:x=max(0\\,min(w-text_w\\,{raw_x})):y=max(0\\,min(h-text_h\\,{raw_y})):enable='between(t,{start:.3f},{end:.3f})'")
     if not clauses: return video
     cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an","-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p"]
     if chunk_safe:
@@ -1240,6 +1274,7 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
                       scratch: Path, chunk_safe: bool = False) -> Path:
     """Burn free-text clips from T1+ during their authored time ranges."""
     clauses=[]
+    total = max(0.0, probe_duration(video))
     skipped_unedited = 0
     for ti, track in enumerate(tracks or []):
         for ci, clip in enumerate(track.get("clips") or []):
@@ -1250,7 +1285,8 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
             if not text or text == "テキストを入力":
                 skipped_unedited += 1
                 continue
-            start=float(clip.get("start") or 0); end=float(clip.get("end") or 0)
+            start=max(0.0, min(total, float(clip.get("start") or 0)))
+            end=max(0.0, min(total, float(clip.get("end") or 0)))
             if end <= start: continue
             tf=scratch/f"free_text_{ti:02d}_{ci:03d}.txt"; tf.write_text(raw_text,encoding="utf-8")
             pos=str(clip.get("position") or "center").split("-"); vert=pos[0] if len(pos)>1 else "center"; horiz=pos[-1] if len(pos)>1 else "center"
@@ -1268,7 +1304,8 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
             if fade_in or fade_out:
                 alpha=(f"{opacity}*if(lt(t,{start+fade_in:.3f}),(t-{start:.3f})/{max(fade_in,.001):.3f},"
                        f"if(gt(t,{end-fade_out:.3f}),({end:.3f}-t)/{max(fade_out,.001):.3f},1))")
-            clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={font_size}:fontcolor={color}:alpha='{alpha}':borderw={border_width}:bordercolor={border}:x={xs.get(horiz,xs['center'])}:y={ys.get(vert,ys['center'])}:enable='between(t,{start:.3f},{end:.3f})'")
+            raw_x=xs.get(horiz,xs['center']); raw_y=ys.get(vert,ys['center'])
+            clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={font_size}:fontcolor={color}:alpha='{alpha}':borderw={border_width}:bordercolor={border}:x=max(0\\,min(w-text_w\\,{raw_x})):y=max(0\\,min(h-text_h\\,{raw_y})):enable='between(t,{start:.3f},{end:.3f})'")
     if skipped_unedited:
         print(f"⚠ 未編集のテキストクリップ {skipped_unedited} 件をスキップ")
     if not clauses: return video
