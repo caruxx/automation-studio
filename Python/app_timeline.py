@@ -47,6 +47,7 @@ CHROMA_OPENING_DEFAULTS = {
     "similarity": 0.20, "position": "center", "width_percent": 100.0,
     "height_percent": 100.0, "opacity": 1.0, "use_audio": False,
 }
+ALBUM_LOOP_DEFAULTS = {"count": 1}
 
 VISUALIZER_PATTERNS = {"bars", "mirror", "wave", "circle", "line"}
 VISUALIZER_MOTIONS = {"calm", "normal", "lively", "max"}
@@ -109,6 +110,15 @@ def _sanitize_chroma_opening(value: dict | None) -> dict:
     cfg["opacity"] = _finite_clamped(cfg.get("opacity"), 1, 0, 1)
     cfg["use_audio"] = False
     return cfg
+
+
+def _sanitize_album_loop(value: dict | None) -> dict:
+    incoming = value if isinstance(value, dict) else {}
+    try:
+        count = int(incoming.get("count", ALBUM_LOOP_DEFAULTS["count"]))
+    except (TypeError, ValueError, OverflowError):
+        count = ALBUM_LOOP_DEFAULTS["count"]
+    return {"count": max(1, min(10, count))}
 
 
 def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
@@ -259,7 +269,8 @@ def build_initial(folder: Path) -> dict:
             "audio_crossfade_curve": "equal_power", "track_states": {
                 "A1": {"muted": False}, "V1": {"hidden": False}, "T1": {"hidden": False},
             }, "now_playing": now_playing, "visualizer": visualizer, "icon": icon,
-            "effects": effects, "chroma_opening": chroma_opening, "updated_at": None}
+            "effects": effects, "chroma_opening": chroma_opening,
+            "album_loop": dict(ALBUM_LOOP_DEFAULTS), "updated_at": None}
 
 
 def normalize(model: dict) -> dict:
@@ -348,6 +359,8 @@ def normalize(model: dict) -> dict:
         model.get("effects") if isinstance(model.get("effects"), dict) else {})
     model["chroma_opening"] = _sanitize_chroma_opening(
         model.get("chroma_opening") if isinstance(model.get("chroma_opening"), dict) else {})
+    model["album_loop"] = _sanitize_album_loop(
+        model.get("album_loop") if isinstance(model.get("album_loop"), dict) else {})
     model["version"] = VERSION
     # updated_at はここでは触らない。毎回現在時刻を刻むと load() 経由の GET/PUT 検査で
     # 値が揺れ、楽観ロックが常に 409 になる。刻印は save() の書き込み直前のみ。
@@ -366,6 +379,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         before_icon = json.dumps(d.get("icon") or {}, sort_keys=True)
         before_effects = json.dumps(d.get("effects") or {}, sort_keys=True)
         before_chroma = json.dumps(d.get("chroma_opening") or {}, sort_keys=True)
+        before_album_loop = json.dumps(d.get("album_loop") or {}, sort_keys=True)
         missing_tracks = not isinstance(d.get("video_tracks"), list) or not d.get("video_tracks") or not isinstance(d.get("text_tracks"), list) or not d.get("text_tracks")
         if "now_playing" not in d:
             cfg = _channel_config(Path(folder)); np = dict(NOW_PLAYING_DEFAULTS)
@@ -398,7 +412,8 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
                 or before_visualizer != json.dumps(normalized.get("visualizer") or {}, sort_keys=True)
                 or before_icon != json.dumps(normalized.get("icon") or {}, sort_keys=True)
                 or before_effects != json.dumps(normalized.get("effects") or {}, sort_keys=True)
-                or before_chroma != json.dumps(normalized.get("chroma_opening") or {}, sort_keys=True)):
+                or before_chroma != json.dumps(normalized.get("chroma_opening") or {}, sort_keys=True)
+                or before_album_loop != json.dumps(normalized.get("album_loop") or {}, sort_keys=True)):
             atomic_write(p, normalized)
         return normalized
     d = build_initial(Path(folder))
@@ -408,7 +423,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
 
 def save(folder: Path, model: dict) -> dict:
     current = build_initial(Path(folder))
-    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "chroma_opening"}
+    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "chroma_opening", "album_loop"}
     incoming = {k: v for k, v in model.items() if k in allowed}
     # Older clients only sent text_lane.  build_initial() already has text_tracks,
     # so without this promotion normalize() would let the generated empty T1 win.

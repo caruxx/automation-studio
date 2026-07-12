@@ -676,11 +676,14 @@ def build_audio(clips: list, target: float, out: Path, *,
             f.write("file '%s'\n" % str(c["path"]).replace("'", r"'\''"))
     fade = max(0.0, min(float(fade), max(0.0, target - 0.05)))
     af = f"afade=t=out:st={max(0.0, target - fade)}:d={fade},{LIMITER}" if fade else LIMITER
+    codec_args = (["-c:a", "pcm_s16le"] if out.suffix.lower() == ".wav"
+                  else ["-c:a", "aac", "-b:a", bitrate])
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-f", "concat", "-safe", "0", "-i", str(list_txt),
              "-t", str(target), "-af", af,
-             "-ar", "48000", "-ac", "2", "-c:a", "aac", "-b:a", bitrate,
-             str(out)], "音声ビルド(concat→fade→limiter→AAC)")
+             "-ar", "48000", "-ac", "2", *codec_args,
+             str(out)], "音声ビルド(concat→fade→limiter→%s)" %
+            ("PCM WAV" if out.suffix.lower() == ".wav" else "AAC"))
     if use_cache:
         try:
             shutil.copy2(out, cached)
@@ -788,9 +791,11 @@ def build_audio_crossfades(clips: list, transitions: list, target: float, out: P
     fade = max(0.0, min(_finite_float(fade, FADE_SEC, minimum=0.0), max(0.0, target - 0.05)))
     tail = f"afade=t=out:st={max(0.0, target - fade):.3f}:d={fade:.3f},{LIMITER}" if fade else LIMITER
     filters.append(f"[{current}]{tail}[audioout]")
+    codec_args = (["-c:a", "pcm_s16le"] if out.suffix.lower() == ".wav"
+                  else ["-c:a", "aac", "-b:a", bitrate])
     cmd += ["-filter_complex", ";".join(filters), "-map", "[audioout]",
             "-t", f"{target:.3f}", "-ar", "48000", "-ac", "2",
-            "-c:a", "aac", "-b:a", bitrate, str(out)]
+            *codec_args, str(out)]
     _run_ff(cmd, "音声ビルド(個別ゲイン/クロスフェード)")
     return out
 
@@ -1011,6 +1016,42 @@ def concat_videos_lossless(parts: list, out: Path, *, scratch: Path) -> Path:
              "-c", "copy", "-video_track_timescale", "30000", str(out)],
             "冒頭映像 + 本編映像 連結")
     return out
+
+
+def concat_album_video(parts: list, out: Path, *, scratch: Path) -> Path:
+    concat_txt = scratch / "album_loop_video.txt"
+    concat_txt.write_text("".join(
+        "file '%s'\n" % str(Path(part)).replace("'", r"'\''") for part in parts),
+        encoding="utf-8")
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+             "-c", "copy", "-video_track_timescale", "30000", str(out)],
+            "アルバム周回映像 concat copy")
+    return out
+
+
+def encode_album_loop_audio(one_cycle_pcm: Path, count: int, out: Path, *, bitrate: str) -> Path:
+    concat_txt = out.parent / "album_loop_audio.txt"
+    concat_txt.write_text("".join(
+        "file '%s'\n" % str(one_cycle_pcm).replace("'", r"'\''") for _ in range(count)),
+        encoding="utf-8")
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+             "-ar", "48000", "-ac", "2", "-c:a", "aac", "-b:a", bitrate,
+             str(out)], "アルバム周回音声 PCM concat→AAC 1回エンコード")
+    return out
+
+
+def repeat_clips(clips: list, count: int, cycle_duration: float) -> list:
+    repeated = []
+    for loop_index in range(count):
+        for clip in clips:
+            row = dict(clip)
+            row["start"] = float(clip["start"]) + loop_index * cycle_duration
+            row["end"] = float(clip["end"]) + loop_index * cycle_duration
+            row["album_loop_index"] = loop_index
+            repeated.append(row)
+    return repeated
 
 
 def _shift_clips(clips: list, offset: float) -> list:
@@ -1962,8 +2003,10 @@ def mix_typewriter_sound(audio: Optional[Path], sound: Path, target: float,
     else:
         cmd += ["-i", str(audio), "-i", str(sound), "-filter_complex",
                 f"[0:a][1:a]amix=inputs=2:duration=longest:normalize=0,{LIMITER}[a]", "-map", "[a]", "-t", str(target)]
-    cmd += ["-ar", "48000", "-ac", "2", "-c:a", "aac", "-b:a", bitrate, str(out)]
-    _run_ff(cmd, "タイプ音ミックス(AAC)")
+    codec_args = (["-c:a", "pcm_s16le"] if out.suffix.lower() == ".wav"
+                  else ["-c:a", "aac", "-b:a", bitrate])
+    cmd += ["-ar", "48000", "-ac", "2", *codec_args, str(out)]
+    _run_ff(cmd, "タイプ音ミックス")
     return out
 
 
@@ -2226,6 +2269,13 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     print("[1] 配置 + 字幕/チャプター生成...")
     song_target = max(0.0, target - intro_sec)
     timeline_data = load_vol_timeline(vol_folder) if (vol_folder / TIMELINE_NAME).exists() else None
+    album_loop = timeline_data.get("album_loop") if isinstance(timeline_data, dict) else {}
+    try:
+        album_loop_count = max(1, min(10, int((album_loop or {}).get("count", 1))))
+    except (TypeError, ValueError, OverflowError):
+        album_loop_count = 1
+    if album_loop_count >= 2:
+        print(f"  アルバム周回: {album_loop_count}周（プレビューは1周）")
     visualizer_cfg = resolve_visualizer_config(
         _load_channel_visualizer(vol_folder),
         timeline_data.get("visualizer") if isinstance(timeline_data, dict) else None)
@@ -2253,21 +2303,29 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     clips = _shift_clips(song_clips, intro_sec) if intro_sec else song_clips
     for timeline_index, clip in enumerate(clips):
         clip["timeline_index"] = timeline_index
+    cycle_duration = clips[-1]["end"]
+    output_target = cycle_duration * album_loop_count
+    output_clips = repeat_clips(clips, album_loop_count, cycle_duration)
     print(f"  配置: {len(clips)}クリップ (SE {intro_sec:.2f}s / 最終 {clips[-1]['start']:.0f}-{clips[-1]['end']:.0f}s)")
     srt_path = vol_folder / f"subtitles_{num}.srt"
     tc_path = vol_folder / f"music_time_code_info_{num}.txt"
-    generate_srt(clips, str(srt_path))
+    generate_srt(output_clips, str(srt_path))
     chapter_cfg = ffr_cfg.get("chapter_display") if isinstance(ffr_cfg.get("chapter_display"), dict) else {}
     if chapter_cfg:
-        generate_display_timecode(clips, tc_path, chapter_cfg, total_songs=len(songs))
+        display_cfg = dict(chapter_cfg)
+        if album_loop_count >= 2:
+            display_cfg["include_repeated_tracks"] = True
+        generate_display_timecode(output_clips, tc_path, display_cfg,
+                                  total_songs=len(songs))
     else:
-        generate_timecode(clips, str(tc_path))
+        generate_timecode(output_clips, str(tc_path))
 
     # 4) 音声
     print("[2] 音声ビルド...")
     has_crossfade = any(_finite_float(x.get("crossfade_sec"), 0.0, minimum=0.0) > 0 for x in song_clips[1:])
     has_gain = any(abs(_finite_float(x.get("gain_db"), 0.0, minimum=-60.0, maximum=12.0)) > 1e-9 for x in song_clips)
     needs_filtered_audio = has_gain or has_crossfade or intro_audio is not None
+    audio_build_path = scratch / ("audio_cycle.wav" if album_loop_count >= 2 else "audio.m4a")
     if audio_muted:
         audio = None
         print("  A1消音: 音声ストリームを書き出しから除外")
@@ -2278,17 +2336,26 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             if has_crossfade: reasons.append("クロスフェード")
             if intro_audio: reasons.append("冒頭SE")
             print(f"  {' / '.join(reasons)} があるため mp3_copy を使わず AAC 再エンコードします")
-        audio = build_audio_crossfades(song_clips, audio_specs, target, scratch / "audio.m4a",
-                                       bitrate=audio_bitrate, fade=fade, intro_audio=intro_audio)
+        audio = build_audio_crossfades(
+            song_clips, audio_specs, target, audio_build_path,
+            bitrate=audio_bitrate, fade=0.0 if album_loop_count >= 2 else fade,
+            intro_audio=intro_audio)
     elif audio_mode == "mp3_copy":
-        audio = build_audio_mp3_copy(song_clips, target, scratch / "audio.mp3",
-                                     cache_dir=cache_dir,
-                                     use_cache=use_audio_cache,
-                                     intro_audio=intro_audio)
+        if album_loop_count >= 2:
+            print("  アルバム周回では mp3_copy を使用できないため PCM 経由のAACへフォールバック")
+            audio = build_audio(song_clips, target, audio_build_path,
+                                bitrate=audio_bitrate, cache_dir=cache_dir,
+                                use_cache=False, fade=0.0, intro_audio=intro_audio)
+        else:
+            audio = build_audio_mp3_copy(song_clips, target, scratch / "audio.mp3",
+                                         cache_dir=cache_dir,
+                                         use_cache=use_audio_cache,
+                                         intro_audio=intro_audio)
     else:
-        audio = build_audio(song_clips, target, scratch / "audio.m4a",
+        audio = build_audio(song_clips, target, audio_build_path,
                             bitrate=audio_bitrate, cache_dir=cache_dir,
-                            use_cache=use_audio_cache, fade=fade,
+                            use_cache=use_audio_cache and album_loop_count == 1,
+                            fade=0.0 if album_loop_count >= 2 else fade,
                             intro_audio=intro_audio)
 
     sound_tracks = []
@@ -2297,14 +2364,20 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             t for t in (timeline_data.get("text_tracks") or [])
             if not (track_states.get(str(t.get("id") or "")) or {}).get("hidden")
         ]
-    type_sound = build_typewriter_sound(sound_tracks, target, scratch / "typewriter_clicks.wav")
+    type_sound = None if audio_muted else build_typewriter_sound(
+        sound_tracks, output_target, scratch / "typewriter_clicks.wav")
     if type_sound:
         if audio_mode == "mp3_copy" and audio is not None:
             print("  タイプ音のミックスが必要なため mp3_copy から AAC 再エンコードへフォールバック")
-        if audio_muted:
-            print("  A1消音: タイプ音のみを音声トラックに使用")
-        audio = mix_typewriter_sound(None if audio_muted else audio, type_sound, target,
-                                     scratch / "audio_with_typewriter.m4a", bitrate=audio_bitrate)
+        audio = mix_typewriter_sound(
+            audio, type_sound, output_target if album_loop_count == 1 else target,
+            scratch / ("audio_cycle_with_typewriter.wav" if album_loop_count >= 2
+                       else "audio_with_typewriter.m4a"),
+            bitrate=audio_bitrate)
+
+    if album_loop_count >= 2 and audio is not None:
+        audio = encode_album_loop_audio(audio, album_loop_count,
+                                        scratch / "audio_album_loop.m4a", bitrate=audio_bitrate)
 
     # 5+6) 映像（画像区間 → ループ連結）
     print("[3] 画像区間 + ループ連結...")
@@ -2338,6 +2411,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
         print("  WARNING: クロマキーOPと冒頭ディゾルブが両方ONです。両方の演出を適用します")
 
     hybrid_applied = False
+    repeat_video = None
     if intro_video:
         rest_total = max(0.1, total - intro_sec)
         has_saved_v1 = bool(timeline_data and timeline_data.get("visual_segments"))
@@ -2357,6 +2431,11 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             rest_video = build_video(segments, scratch / "video_rest.mp4", crf=crf, scratch=scratch,
                                      clips=song_clips, burn=burn, loop_frames=loop_frames)
         video = concat_videos_lossless([intro_video, rest_video], scratch / "video.mp4", scratch=scratch)
+        if album_loop_count >= 2:
+            repeat_segments = compute_image_segments(main_img, subs, total)
+            repeat_video = build_video(
+                repeat_segments, scratch / "video_repeat.mp4", crf=crf,
+                scratch=scratch, clips=clips, burn=burn, loop_frames=loop_frames)
     else:
         if timeline_data and timeline_data.get("visual_segments"):
             segments = resolve_timeline_image_segments(
@@ -2408,6 +2487,12 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                     timeline_segments, clips, hybrid_now_cfg,
                     prepared_text_tracks, scratch / "video.mp4", crf=crf,
                     scratch=scratch, loop_frames=loop_frames)
+                if album_loop_count >= 2:
+                    repeat_now_cfg = {**hybrid_now_cfg, "first_title_delay_seconds": 0.0}
+                    repeat_video = build_timeline_video_hybrid(
+                        timeline_segments, clips, repeat_now_cfg, [],
+                        scratch / "video_repeat.mp4", crf=crf,
+                        scratch=scratch, loop_frames=loop_frames)
                 hybrid_applied = True
         else:
             video = build_video(segments, scratch / "video.mp4", crf=crf, scratch=scratch,
@@ -2459,6 +2544,14 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                               minimum=.1, maximum=3), total,
                 scratch / "video_visualizer_delayed.mp4", crf=crf,
                 scratch=scratch)
+        if album_loop_count >= 2:
+            repeat_video = video
+            repeat_now_cfg = {**now_playing_cfg, "first_title_delay_seconds": 0.0}
+            if repeat_now_cfg.get("enabled"):
+                repeat_video = apply_timed_overlays_hybrid(
+                    repeat_video, clips, repeat_now_cfg, [], total,
+                    scratch / "video_repeat_timed_overlays.mp4",
+                    crf=crf, scratch=scratch)
         if chroma_opening_cfg.get("enabled"):
             video = apply_chroma_opening_head(
                 video, chroma_opening_cfg, total,
@@ -2481,6 +2574,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     # final two layers in this same order and never run when a visualizer/V2+ is
     # active, so they must not be applied twice here.
     if not hybrid_applied:
+        repeat_base_video = video
         video = compose_overlays_single_pass(
             video, audio, video_tracks=video_tracks, vol_folder=vol_folder,
             visualizer_cfg=visualizer_cfg, icon_cfg=icon_cfg,
@@ -2488,6 +2582,24 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             icon_path=icon_path, clips=clips,
             now_playing_cfg=now_playing_cfg, text_tracks=text_tracks,
             out=scratch / "video_overlays.mp4", crf=crf, scratch=scratch)
+        if album_loop_count >= 2:
+            repeat_now_cfg = {**now_playing_cfg, "first_title_delay_seconds": 0.0}
+            repeat_video = compose_overlays_single_pass(
+                repeat_base_video, audio, video_tracks=video_tracks,
+                vol_folder=vol_folder, visualizer_cfg=visualizer_cfg,
+                icon_cfg=icon_cfg, effects_cfg=effects_cfg,
+                chroma_opening_cfg={**chroma_opening_cfg, "enabled": False},
+                icon_path=icon_path, clips=clips,
+                now_playing_cfg=repeat_now_cfg, text_tracks=[],
+                out=scratch / "video_repeat_overlays.mp4", crf=crf, scratch=scratch)
+
+    if album_loop_count >= 2:
+        if repeat_video is None:
+            repeat_video = video
+            print("  WARNING: 専用の2周目映像を構築できないため1周目映像を再利用")
+        video = concat_album_video(
+            [video] + [repeat_video] * (album_loop_count - 1),
+            scratch / "video_album_loop.mp4", scratch=scratch)
 
     # 7) mux
     print("[4] mux...")
@@ -2505,14 +2617,22 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
 
     # 検証
     dur = probe_duration(output_path)
-    adur = probe_duration(audio)
+    adur = probe_duration(audio) if audio is not None else dur
     size_mb = output_path.stat().st_size / 1024 / 1024
     print("=" * 60)
     print(f"  完了: {output_path.name}  {size_mb:.0f}MB  {dur:.1f}s ({dur/3600:.2f}h)")
     print(f"  A/V ズレ={abs(dur - adur):.3f}s / 総時間={time.time() - t_all:.1f}s")
     print(f"  SRT={srt_path.name} / TC={tc_path.name}")
+    if album_loop_count >= 2:
+        delta = abs(dur - output_target)
+        result = "OK" if delta <= 0.5 else "NG"
+        print(f"  周回尺検証: 1周 {cycle_duration:.3f}s x {album_loop_count} = "
+              f"{output_target:.3f}s / 出力 {dur:.3f}s / 差 {delta:.3f}s / {result}")
     print("=" * 60)
-    if abs(dur - target) > 2.0:
+    if album_loop_count >= 2 and abs(dur - output_target) > 0.5:
+        raise RuntimeError(
+            f"アルバム周回の出力尺が許容外です: expected={output_target:.3f}s actual={dur:.3f}s")
+    if album_loop_count == 1 and abs(dur - target) > 2.0:
         print(f"  WARNING: 尺が target と {abs(dur - target):.1f}s ずれています")
     return output_path
 
