@@ -169,10 +169,16 @@ def order_songs(music_dir: Path, *, seed: Optional[int] = None) -> list:
     """music/*.mp3 を JSX(listMp3s) と同じ規則で並べる。
     normal 群はシャッフル（JSX は Math.random）。順序は呼び出し側で order.json に固定する。"""
     files = [f for f in music_dir.glob("*.mp3")]
-    zf = [f for f in files if re.match(r"^z+_", f.name)]
-    nf = [f for f in files if not re.match(r"^z+_", f.name)]
-    zf.sort(key=lambda p: -len(re.match(r"^(z+)_", p.name).group(1)))
     rng = random.Random(seed)
+    priority = {}
+    nf = []
+    for path in files:
+        match = re.match(r"^(z+)_", path.name, flags=re.I)
+        (priority.setdefault(len(match.group(1)), []).append(path) if match else nf.append(path))
+    zf = []
+    for count in sorted(priority, reverse=True):
+        rng.shuffle(priority[count])
+        zf.extend(priority[count])
     rng.shuffle(nf)
     return zf + nf
 
@@ -192,7 +198,8 @@ def resolve_order(music_dir: Path, cache_dir: Path) -> list:
     if order_json.exists():
         try:
             d = json.loads(order_json.read_text(encoding="utf-8"))
-            if d.get("set_hash") == set_h and all(n in by_name for n in d.get("order", [])):
+            if (d.get("policy_version") == 2 and d.get("set_hash") == set_h
+                    and all(n in by_name for n in d.get("order", []))):
                 ordered = [by_name[n] for n in d["order"] if n in by_name]
                 if len(ordered) == len(by_name):
                     print(f"  曲順: order.json 再利用 ({len(ordered)}曲)")
@@ -202,7 +209,7 @@ def resolve_order(music_dir: Path, cache_dir: Path) -> list:
     ordered = order_songs(music_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     order_json.write_text(json.dumps(
-        {"set_hash": set_h, "order": [f.name for f in ordered]},
+        {"policy_version": 2, "set_hash": set_h, "order": [f.name for f in ordered]},
         ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  曲順: 新規生成して保存 ({len(ordered)}曲)")
     return ordered
@@ -1096,6 +1103,7 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
         "enabled": False, "pattern": "bars", "position": "bottom-center",
         "margin": 64, "width_percent": 60, "height_px": 180,
         "color1": "#ffffff", "color2": "#66ccff", "opacity": 0.7,
+        "loop_seconds": 20.0,
     }
     if isinstance(channel_cfg, dict):
         cfg.update(channel_cfg)
@@ -1109,6 +1117,7 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     cfg["width_percent"] = _finite_float(cfg.get("width_percent"), 60, minimum=5, maximum=100)
     cfg["height_px"] = int(_finite_float(cfg.get("height_px"), 180, minimum=24, maximum=1080))
     cfg["opacity"] = _finite_float(cfg.get("opacity"), .7, minimum=0, maximum=1)
+    cfg["loop_seconds"] = _finite_float(cfg.get("loop_seconds"), 20, minimum=2, maximum=600)
     # Renderer geometry is authoritative.  Keep authored settings where possible,
     # but never let an overlay escape the fixed 1920x1080 output frame.
     original = (cfg["width_percent"], cfg["height_px"], cfg["margin"])
@@ -1145,11 +1154,8 @@ def _visualizer_xy(position: str, margin: int) -> tuple[str, str]:
     return f"max(0\\,min(W-w\\,{x}))", f"max(0\\,min(H-h\\,{y}))"
 
 
-def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: Path,
-                           *, crf: int) -> Path:
-    """Render an audio-reactive transparent visualizer over the complete video."""
-    if not cfg.get("enabled") or audio is None:
-        return video
+def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, str, str]:
+    """Return the legacy visualizer source plus its overlay geometry unchanged."""
     width = max(16, int(round(WIDTH * float(cfg["width_percent"]) / 100 / 2) * 2))
     height = max(16, int(round(int(cfg["height_px"]) / 2) * 2))
     pattern = cfg["pattern"]
@@ -1158,36 +1164,43 @@ def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: P
               str(cfg.get("color2") or color1).replace("#", "0x"))
     opacity = float(cfg["opacity"])
     x, y = _visualizer_xy(cfg["position"], int(cfg["margin"]))
-    duration = probe_duration(video)
     normalized = "aformat=channel_layouts=stereo,dynaudnorm=f=250:g=15:p=0.95:m=30"
-    # Transparent grid lines at the edge of each of 48 cells create stable
-    # inter-bar gaps after nearest-neighbour expansion.  No Lanczos blur is used.
     gap = max(2, int(round(width / 400)))
-    # プレビュー（Canvas描画）の滑らかさに合わせるための措置
+    prefix = f"[{audio_input}:a]{normalized}"
     if pattern == "wave":
-        source = (f"[1:a]{normalized},showwaves=s={width}x{height}:mode=p2p:"
+        source = (f"{prefix},showwaves=s={width}x{height}:mode=p2p:"
                   f"rate={FPS}:colors={color1}|{color2},dilation,gblur=sigma=0.6,format=rgba,"
                   f"colorchannelmixer=aa={opacity}[viz]")
     elif pattern == "circle":
         side = min(width, height)
-        source = (f"[1:a]{normalized},avectorscope=s={side}x{side}:r={FPS}:"
+        source = (f"{prefix},avectorscope=s={side}x{side}:r={FPS}:"
                   f"mode=lissajous:draw=line:scale=sqrt:rc=0:gc=200:bc=255,format=rgba,"
                   f"colorchannelmixer=aa={opacity},scale={width}:{height}:force_original_aspect_ratio=decrease[viz]")
     elif pattern == "mirror":
         half = max(8, height // 2)
         half_gap = max(1, int(round(width / 400)))
-        source = (f"[1:a]{normalized},showfreqs=s=48x{half}:mode=bar:ascale=log:fscale=log:"
+        source = (f"{prefix},showfreqs=s=48x{half}:mode=bar:rate={FPS}:ascale=log:fscale=log:"
                   f"win_size=2048:averaging=2:colors={color1}|{color2},"
                   f"scale={width}:{half}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
                   f"drawgrid=w=iw/48:h=ih:t={half_gap}:c=black@0:replace=1,"
                   f"colorchannelmixer=aa={opacity}[top];"
                   f"[top]split[a][b];[b]vflip[c];[a][c]vstack[viz]")
     else:
-        source = (f"[1:a]{normalized},showfreqs=s=48x{height}:mode=bar:ascale=log:fscale=log:"
+        source = (f"{prefix},showfreqs=s=48x{height}:mode=bar:rate={FPS}:ascale=log:fscale=log:"
                   f"win_size=2048:averaging=2:colors={color1}|{color2},"
                   f"scale={width}:{height}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
                   f"drawgrid=w=iw/48:h=ih:t={gap}:c=black@0:replace=1,"
                   f"colorchannelmixer=aa={opacity}[viz]")
+    return source, x, y, pattern
+
+
+def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: Path,
+                           *, crf: int) -> Path:
+    """Render an audio-reactive transparent visualizer over the complete video."""
+    if not cfg.get("enabled") or audio is None:
+        return video
+    duration = probe_duration(video)
+    source, x, y, pattern = _visualizer_filter_source(1, cfg)
     graph = f"{source};[0:v][viz]overlay=x={x}:y={y}:shortest=1[v]"
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-i", str(video), "-i", str(audio), "-filter_complex", graph,
@@ -1195,6 +1208,152 @@ def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: P
              "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
              "-pix_fmt", "yuv420p", "-video_track_timescale", "30000", str(out)],
             f"オーディオビジュアライザー焼き込み ({pattern})")
+    return out
+
+
+def build_repeated_first_song_visualizer(video: Path, first_song: Path, cfg: dict,
+                                         total: float, out: Path, *, crf: int,
+                                         scratch: Path) -> Path:
+    """Render the visualizer once from song 1, then stream-copy loop it.
+
+    Long BGM videos do not need frame-accurate spectrum after the first song.
+    Keeping a pre-rendered loop preserves motion while avoiding a full-duration
+    audio analysis and video encode on every export.
+    """
+    loop_duration = min(
+        max(GOP_FRAMES * 1001 / 30000, float(cfg.get("loop_seconds") or 20)),
+        probe_duration(first_song), total)
+    loop = scratch / "visualizer_first_song_loop.mp4"
+    source, x, y, pattern = _visualizer_filter_source(1, cfg)
+    graph = f"{source};[0:v][viz]overlay=x={x}:y={y}:shortest=1[v]"
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-i", str(video), "-i", str(first_song), "-filter_complex", graph,
+             "-map", "[v]", "-t", f"{loop_duration:.3f}", "-an", "-r", FPS,
+             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+             "-pix_fmt", "yuv420p", "-bf", "0", "-g", str(GOP_FRAMES),
+             "-sc_threshold", "0", "-video_track_timescale", "30000", str(loop)],
+            f"1曲目Spectrumループ作成 ({pattern}, {loop_duration:.1f}s)")
+    frames = max(1, round(float(total) * 30000 / 1001))
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-stream_loop", "-1", "-i", str(loop), "-frames:v", str(frames),
+             "-c", "copy", "-video_track_timescale", "30000", str(out)],
+            "1曲目Spectrumを全尺へコピーループ")
+    return out
+
+
+def apply_delayed_visualizer(plain: Path, visualized: Path, start: float, fade: float,
+                             total: float, out: Path, *, crf: int,
+                             scratch: Path) -> Path:
+    """Keep the intro clean, then dissolve into the pre-rendered spectrum loop."""
+    start = max(0.0, min(float(total), float(start)))
+    fade = max(0.1, min(3.0, float(fade)))
+    if start >= total - .1:
+        return plain
+    gop_seconds = GOP_FRAMES * 1001 / 30000
+    head_end = min(total, max(gop_seconds,
+        math.ceil((start + fade) / gop_seconds) * gop_seconds))
+    head = scratch / "visualizer_delayed_head.mp4"
+    tail = scratch / "visualizer_delayed_tail.mp4"
+    graph = (f"[0:v]trim=0:{head_end:.6f},fps={FPS},settb=1/30000,setpts=PTS-STARTPTS[a];"
+             f"[1:v]trim=0:{head_end:.6f},fps={FPS},settb=1/30000,setpts=PTS-STARTPTS[b];"
+             f"[a][b]xfade=transition=fade:duration={fade:.3f}:offset={start:.3f},"
+             "format=yuv420p[v]")
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-i", str(plain), "-i", str(visualized),
+             "-filter_complex", graph, "-map", "[v]", "-t", f"{head_end:.6f}",
+             "-an", "-r", FPS, "-c:v", "libx264", "-preset", "medium",
+             "-crf", str(crf), "-pix_fmt", "yuv420p", "-bf", "0",
+             "-g", str(GOP_FRAMES), "-sc_threshold", "0",
+             "-video_track_timescale", "30000", str(head)],
+            f"導入後Spectrumディゾルブ ({start:.2f}s + {fade:.2f}s)")
+    if head_end >= total - .02:
+        return head
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-ss", f"{head_end:.6f}", "-i", str(visualized), "-c", "copy",
+             "-avoid_negative_ts", "make_zero", str(tail)],
+            "Spectrumディゾルブ以降をストリームコピー")
+    return concat_videos_lossless([head, tail], out, scratch=scratch)
+
+
+def apply_intro_text_hybrid(video: Path, text_tracks: list, total: float, out: Path,
+                            *, crf: int, scratch: Path) -> Path:
+    """Encode only the first GOP range containing authored text; copy the tail."""
+    ends = [float(c.get("end") or 0) for t in text_tracks for c in (t.get("clips") or [])
+            if c.get("kind") == "free_text" and str(c.get("text") or "").strip()]
+    if not ends:
+        return video
+    gop_seconds = GOP_FRAMES * 1001 / 30000
+    head_end = min(total, max(gop_seconds, math.ceil(max(ends) / gop_seconds) * gop_seconds))
+    clauses = _text_track_clauses(text_tracks, scratch, head_end)
+    if not clauses:
+        return video
+    head = scratch / "intro_text_head.mp4"
+    tail = scratch / "intro_text_tail.mp4"
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video),
+             "-t", f"{head_end:.6f}", "-vf", ",".join(clauses), "-an",
+             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+             "-pix_fmt", "yuv420p", "-bf", "0", "-g", str(GOP_FRAMES),
+             "-sc_threshold", "0", "-video_track_timescale", "30000", str(head)],
+            f"冒頭テキスト区間のみエンコード ({head_end:.2f}s)")
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-ss", f"{head_end:.6f}", "-i", str(video), "-c", "copy",
+             "-avoid_negative_ts", "make_zero", str(tail)],
+            "冒頭以降をストリームコピー")
+    return concat_videos_lossless([head, tail], out, scratch=scratch)
+
+
+def apply_timed_overlays_hybrid(video: Path, clips: list, now_cfg: dict,
+                                text_tracks: list, total: float, out: Path, *,
+                                crf: int, scratch: Path) -> Path:
+    """Encode only GOP-aligned ranges containing Now Playing or authored text."""
+    changes = _timeline_change_ranges([], clips, now_cfg, text_tracks, total)
+    if not changes:
+        return video
+    gop_seconds = GOP_FRAMES * 1001 / 30000
+    expanded = []
+    for start, end in changes:
+        start = max(0.0, math.floor(start / gop_seconds) * gop_seconds)
+        end = min(total, math.ceil(end / gop_seconds) * gop_seconds)
+        if expanded and start <= expanded[-1][1] + .001:
+            expanded[-1] = (expanded[-1][0], max(expanded[-1][1], end))
+        else:
+            expanded.append((start, end))
+    bounds = {0.0, total}
+    for start, end in expanded:
+        bounds.update((start, end))
+    bounds = sorted(bounds)
+    parts = []
+    encoded_seconds = 0.0
+    for idx, (start, end) in enumerate(zip(bounds, bounds[1:])):
+        if end - start < .02:
+            continue
+        dynamic = any(start < ce - .001 and end > cs + .001 for cs, ce in expanded)
+        base = scratch / f"timed_base_{idx:03d}.mp4"
+        _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                 "-ss", f"{start:.6f}", "-i", str(video), "-t", f"{end-start:.6f}",
+                 "-map", "0:v:0", "-an", "-c:v", "copy",
+                 "-video_track_timescale", "30000", str(base)],
+                f"時間変化チャンク抽出 {start:.2f}-{end:.2f}s")
+        part = base
+        if dynamic:
+            encoded_seconds += end - start
+            local_clips = _slice_song_clips(clips, start, end)
+            part = apply_now_playing(
+                part, local_clips, now_cfg, scratch / f"timed_title_{idx:03d}.mp4",
+                crf=crf, scratch=scratch, chunk_safe=True)
+            local_text = _slice_timed_tracks(text_tracks, start, end)
+            part = apply_text_tracks(
+                part, local_text, scratch / f"timed_text_{idx:03d}.mp4",
+                crf=crf, scratch=scratch, chunk_safe=True)
+        parts.append(part)
+    print(f"  時間変化レイヤー: {len(parts)} chunks / 再エンコード {encoded_seconds:.2f}s / 全体 {total:.2f}s")
+    concat_txt = scratch / "timed_overlay_concat.txt"
+    concat_txt.write_text("".join(f"file '{Path(p)}'\n" for p in parts), encoding="utf-8")
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+             "-map", "0:v:0", "-an", "-c:v", "copy",
+             "-video_track_timescale", "30000", str(out)],
+            "時間変化チャンク ロスレス連結")
     return out
 
 
@@ -1218,20 +1377,19 @@ def _now_playing_font(cfg: dict) -> Path:
     return Path(BURN_FONT_DEFAULT)
 
 
-def apply_now_playing(video: Path, clips: list, cfg: dict, out: Path, *, crf: int,
-                      scratch: Path, chunk_safe: bool = False) -> Path:
-    """Burn per-song titles in one drawtext pass. Disabled configs preserve legacy output."""
+def _now_playing_clauses(clips: list, cfg: dict, scratch: Path, total: float) -> list:
     if not cfg.get("enabled") or not clips:
-        return video
-    total = max(0.0, probe_duration(video))
+        return []
     margin=int(cfg.get("margin",64)); pos=str(cfg.get("position") or "bottom-center")
     xs={"left":str(margin),"center":"(w-text_w)/2","right":f"w-text_w-{margin}"}; ys={"top":str(margin),"middle":"(h-text_h)/2","center":"(h-text_h)/2","bottom":f"h-text_h-{margin}"}
     pv=pos.split("-"); vert=pv[0] if len(pv)>1 else "middle"; horiz=pv[-1] if len(pv)>1 else "center"
     font=_now_playing_font(cfg); clauses=[]; mode=str(cfg.get("mode") or "intro")
     intro=max(.1,float(cfg.get("intro_seconds") or 8)); fi=max(0,float(cfg.get("fade_in") or 0)); fo=max(0,float(cfg.get("fade_out") or 0)); opacity=max(0,min(1,float(cfg.get("opacity",1))))
+    first_delay=max(0.0,float(cfg.get("first_title_delay_seconds") or 0))
     for i,c in enumerate(clips):
-        start=max(0.0, min(total, float(c["start"])))
-        end=max(0.0, min(total, float(c["end"] if mode=="always" else min(c["end"],float(c["start"])+intro))))
+        delay=first_delay if int(c.get("timeline_index",-1)) == 0 else 0.0
+        start=max(0.0, min(total, float(c["start"])+delay))
+        end=max(0.0, min(total, float(c["end"] if mode=="always" else min(c["end"],float(c["start"])+delay+intro))))
         if end <= start: continue
         title=str(c.get("title") or Path(str(c.get("path") or "")).stem)
         tf=scratch/f"now_playing_{i:03d}.txt"; tf.write_text(title,encoding="utf-8")
@@ -1243,6 +1401,16 @@ def apply_now_playing(video: Path, clips: list, cfg: dict, out: Path, *, crf: in
         border=str(cfg.get("border_color") or "#000000").replace("#","0x")
         raw_x=xs.get(horiz,xs['center']); raw_y=ys.get(vert,ys['bottom'])
         clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={int(cfg.get('size',48))}:fontcolor={color}:alpha='{alpha}':borderw={int(cfg.get('border_width',2))}:bordercolor={border}:x=max(0\\,min(w-text_w\\,{raw_x})):y=max(0\\,min(h-text_h\\,{raw_y})):enable='between(t,{start:.3f},{end:.3f})'")
+    return clauses
+
+
+def apply_now_playing(video: Path, clips: list, cfg: dict, out: Path, *, crf: int,
+                      scratch: Path, chunk_safe: bool = False) -> Path:
+    """Burn per-song titles in one drawtext pass. Disabled configs preserve legacy output."""
+    if not cfg.get("enabled") or not clips:
+        return video
+    total = max(0.0, probe_duration(video))
+    clauses = _now_playing_clauses(clips, cfg, scratch, total)
     if not clauses: return video
     cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an","-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p"]
     if chunk_safe:
@@ -1251,14 +1419,19 @@ def apply_now_playing(video: Path, clips: list, cfg: dict, out: Path, *, crf: in
     return out
 
 
-def apply_video_tracks(video: Path, tracks: list, vol_folder: Path, out: Path, *, crf: int) -> Path:
-    """Overlay V2+ segments over V1. Higher numbered tracks are composited last."""
+def _video_track_items(tracks: list, vol_folder: Path) -> list:
     items = []
     for track in (tracks or [])[1:]:
         for seg in track.get("segments") or []:
             raw = Path(str(seg.get("image_path") or "")); path = raw if raw.is_absolute() else vol_folder / raw
             if path.is_file() and float(seg.get("end") or 0) > float(seg.get("start") or 0):
                 items.append((path, float(seg.get("start") or 0), float(seg.get("end") or 0)))
+    return items
+
+
+def apply_video_tracks(video: Path, tracks: list, vol_folder: Path, out: Path, *, crf: int) -> Path:
+    """Overlay V2+ segments over V1. Higher numbered tracks are composited last."""
+    items = _video_track_items(tracks, vol_folder)
     if not items: return video
     cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video)]
     for path, _, _ in items: cmd += ["-loop","1","-i",str(path)]
@@ -1271,11 +1444,9 @@ def apply_video_tracks(video: Path, tracks: list, vol_folder: Path, out: Path, *
     return out
 
 
-def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
-                      scratch: Path, chunk_safe: bool = False) -> Path:
-    """Burn free-text clips from T1+ during their authored time ranges."""
+def _text_track_clauses(tracks: list, scratch: Path, total: float) -> list:
+    """Build the legacy free-text drawtext clauses without changing their meaning."""
     clauses=[]
-    total = max(0.0, probe_duration(video))
     skipped_unedited = 0
     for ti, track in enumerate(tracks or []):
         for ci, clip in enumerate(track.get("clips") or []):
@@ -1325,11 +1496,79 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
             clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={font_size}:fontcolor={color}:alpha='{alpha}':borderw={border_width}:bordercolor={border}:x=max(0\\,min(w-text_w\\,{raw_x})):y=max(0\\,min(h-text_h\\,{raw_y})):enable='between(t,{start:.3f},{end:.3f})'")
     if skipped_unedited:
         print(f"⚠ 未編集のテキストクリップ {skipped_unedited} 件をスキップ")
+    return clauses
+
+
+def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
+                      scratch: Path, chunk_safe: bool = False) -> Path:
+    """Burn free-text clips from T1+ during their authored time ranges."""
+    clauses = _text_track_clauses(tracks, scratch, max(0.0, probe_duration(video)))
     if not clauses: return video
     cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an","-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p"]
     if chunk_safe:
         cmd += ["-bf","0","-g",str(GOP_FRAMES),"-sc_threshold","0","-video_track_timescale","30000"]
     _run_ff(cmd + [str(out)],"自由テキスト焼き込み")
+    return out
+
+
+def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
+                                 video_tracks: list, vol_folder: Path,
+                                 visualizer_cfg: dict, clips: list,
+                                 now_playing_cfg: dict, text_tracks: list,
+                                 out: Path, crf: int, scratch: Path,
+                                 chunk_safe: bool = False) -> Path:
+    """Composite every active overlay in one filter_complex_script encode."""
+    duration = max(0.0, probe_duration(video))
+    items = _video_track_items(video_tracks, vol_folder)
+    use_visualizer = bool(visualizer_cfg.get("enabled") and audio is not None)
+    now_clauses = _now_playing_clauses(clips, now_playing_cfg, scratch, duration)
+    text_clauses = _text_track_clauses(text_tracks, scratch, duration)
+    active = []
+    if items: active.append("video_tracks")
+    if use_visualizer: active.append("visualizer")
+    if now_clauses: active.append("now_playing")
+    if text_clauses: active.append("text")
+    if not active:
+        return video
+
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video)]
+    audio_index = None
+    if use_visualizer:
+        audio_index = 1
+        cmd += ["-i", str(audio)]
+    image_start = 2 if use_visualizer else 1
+    for path, _, _ in items:
+        cmd += ["-loop", "1", "-i", str(path)]
+
+    filters = []
+    current = "0:v"
+    for offset, (_, start, end) in enumerate(items):
+        input_index = image_start + offset
+        image_label = f"overlay_image_{offset}"
+        next_label = f"overlay_video_{offset}"
+        filters.append(f"[{input_index}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,format=rgba[{image_label}]")
+        filters.append(f"[{current}][{image_label}]overlay=(W-w)/2:(H-h)/2:enable='between(t,{start:.3f},{end:.3f})'[{next_label}]")
+        current = next_label
+    if use_visualizer:
+        source, x, y, _ = _visualizer_filter_source(audio_index, visualizer_cfg)
+        filters.append(source)
+        filters.append(f"[{current}][viz]overlay=x={x}:y={y}:shortest=1[with_visualizer]")
+        current = "with_visualizer"
+    drawtext = now_clauses + text_clauses
+    if drawtext:
+        filters.append(f"[{current}]" + ",".join(drawtext) + "[composed]")
+        current = "composed"
+
+    script = scratch / "overlay_filter_complex.txt"
+    script.write_text(";".join(filters), encoding="utf-8")
+    cmd += ["-filter_complex_script", str(script), "-map", f"[{current}]",
+            "-t", f"{duration:.3f}", "-an", "-r", FPS,
+            "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+            "-pix_fmt", "yuv420p", "-video_track_timescale", "30000"]
+    if chunk_safe:
+        cmd += ["-bf", "0", "-g", str(GOP_FRAMES), "-sc_threshold", "0"]
+    print(f"  オーバーレイ統合: {'+'.join(active)} を1パスで焼き込み")
+    _run_ff(cmd + [str(out)], "オーバーレイ統合 1パス")
     return out
 
 
@@ -1454,8 +1693,10 @@ def _timeline_change_ranges(segments: list, clips: list, now_cfg: dict,
     if now_cfg.get("enabled"):
         mode = str(now_cfg.get("mode") or "intro")
         intro = max(.1, _finite_float(now_cfg.get("intro_seconds"), 8, minimum=.1))
+        first_delay = max(0.0, _finite_float(now_cfg.get("first_title_delay_seconds"), 0))
         for clip in clips or []:
-            start = max(0.0, float(clip["start"]))
+            delay = first_delay if int(clip.get("timeline_index", -1)) == 0 else 0.0
+            start = max(0.0, float(clip["start"]) + delay)
             end = min(total, float(clip["end"]) if mode == "always" else start + intro)
             if end > start:
                 ranges.append((start, end))
@@ -1706,6 +1947,8 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
         print("❌ 配置クリップが空（曲尺取得に失敗）")
         return None
     clips = _shift_clips(song_clips, intro_sec) if intro_sec else song_clips
+    for timeline_index, clip in enumerate(clips):
+        clip["timeline_index"] = timeline_index
     print(f"  配置: {len(clips)}クリップ (SE {intro_sec:.2f}s / 最終 {clips[-1]['start']:.0f}-{clips[-1]['end']:.0f}s)")
     srt_path = vol_folder / f"subtitles_{num}.srt"
     tc_path = vol_folder / f"music_time_code_info_{num}.txt"
@@ -1747,7 +1990,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     sound_tracks = []
     if timeline_data:
         sound_tracks = [
-            t for t in _shift_timed_tracks(timeline_data.get("text_tracks") or [], intro_sec, "clips")
+            t for t in (timeline_data.get("text_tracks") or [])
             if not (track_states.get(str(t.get("id") or "")) or {}).get("hidden")
         ]
     type_sound = build_typewriter_sound(sound_tracks, target, scratch / "typewriter_clicks.wav")
@@ -1763,7 +2006,15 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     print("[3] 画像区間 + ループ連結...")
     total = clips[-1]["end"]
     intro_video = None
-    if intro_audio and intro_cfg.get("enabled", True):
+    # A saved V1 timeline is already the authored visual source of truth.  In
+    # that case keep the intro sound, but let the hybrid timeline renderer own
+    # the picture so only its short changing ranges are encoded; the static
+    # remainder can stay stream-copy.  The legacy thumbnail->main dissolve is
+    # retained only for folders without an authored V1 timeline.
+    use_separate_intro_visual = bool(
+        intro_audio and intro_cfg.get("enabled", True)
+        and not (timeline_data and timeline_data.get("visual_segments")))
+    if use_separate_intro_visual:
         from_name = str(intro_cfg.get("from") or "サムネイル.jpg")
         to_name = str(intro_cfg.get("to") or (main_img.name if main_img else f"vol{num}.jpg"))
         from_img = _resolve_channel_asset(vol_folder, from_name, num=num)
@@ -1816,7 +2067,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
         if timeline_data:
             timeline_segments = [x if len(x)==4 else [x[0],x[1],x[2],0] for x in segments]
             prepared_text_tracks = [
-                t for t in _shift_timed_tracks(timeline_data.get("text_tracks") or [], intro_sec, "clips")
+                t for t in (timeline_data.get("text_tracks") or [])
                 if not (track_states.get(str(t.get("id") or "")) or {}).get("hidden")]
             legacy_timeline = str(os.environ.get("APP_FFRENDER_LEGACY_TIMELINE") or "").lower() in {
                 "1", "true", "yes", "on"}
@@ -1853,6 +2104,9 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             video = build_video(segments, scratch / "video.mp4", crf=crf, scratch=scratch,
                                 clips=clips, burn=burn, loop_frames=loop_frames)
 
+    video_tracks = []
+    text_tracks = []
+    now_playing_cfg = {}
     if timeline_data:
         if v1_hidden:
             video = build_hidden_video(total, scratch / "video_v1_hidden.mp4", crf=crf)
@@ -1860,27 +2114,65 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
         for track in video_tracks:
             if (track_states.get(str(track.get("id") or "")) or {}).get("hidden"):
                 track["segments"] = []
-        text_tracks = [t for t in _shift_timed_tracks(timeline_data.get("text_tracks") or [], intro_sec, "clips")
+        text_tracks = [t for t in (timeline_data.get("text_tracks") or [])
                        if not (track_states.get(str(t.get("id") or "")) or {}).get("hidden")]
-        video = apply_video_tracks(video, video_tracks, vol_folder, scratch / "video_tracks.mp4", crf=crf)
+        now_playing_cfg = dict(timeline_data.get("now_playing") or {})
+        if (track_states.get("T1") or {}).get("hidden"):
+            now_playing_cfg["enabled"] = False
 
-    if visualizer_cfg.get("enabled"):
-        if audio is None:
-            print("  ⚠ ビジュアライザーONですがA1消音のため焼き込みをスキップ")
-        else:
-            video = apply_audio_visualizer(video, audio, visualizer_cfg,
-                                           scratch / "video_visualizer.mp4", crf=crf)
+    if visualizer_cfg.get("enabled") and audio is None:
+        print("  ⚠ ビジュアライザーONですがA1消音のため焼き込みをスキップ")
+
+    # Static BGM channels can reuse song 1's spectrum animation.  Once the
+    # loop exists, extending it to three hours and adding a short intro message
+    # are both copy-oriented operations instead of a full-duration encode.
+    # The loop repeats the base video's first seconds verbatim, so it is only
+    # valid when V1 is a single static image with no separate intro video.
+    static_v1 = len({str(s[0]) for s in segments}) == 1 and intro_video is None
+    if (visualizer_cfg.get("enabled") and audio is not None and song_clips
+            and not static_v1
+            and not any((t.get("segments") or []) for t in video_tracks[1:])):
+        print("  ⚠ V1が静止1枚でないためSpectrumループを使わず完全同期(1パス統合)で焼き込み")
+    if (visualizer_cfg.get("enabled") and audio is not None and song_clips
+            and static_v1
+            and not any((t.get("segments") or []) for t in video_tracks[1:])):
+        plain_video = video
+        video = build_repeated_first_song_visualizer(
+            video, Path(song_clips[0]["path"]), visualizer_cfg, total,
+            scratch / "video_visualizer_looped.mp4", crf=crf, scratch=scratch)
+        if visualizer_cfg.get("start_after_intro_text"):
+            authored_ends = [
+                float(c.get("end") or 0) for t in text_tracks
+                for c in (t.get("clips") or [])
+                if c.get("kind") == "free_text" and str(c.get("text") or "").strip()
+            ]
+            spectrum_start = max(authored_ends, default=0.0)
+            video = apply_delayed_visualizer(
+                plain_video, video, spectrum_start,
+                _finite_float(visualizer_cfg.get("fade_in_seconds"), .8,
+                              minimum=.1, maximum=3), total,
+                scratch / "video_visualizer_delayed.mp4", crf=crf,
+                scratch=scratch)
+        if text_tracks or now_playing_cfg.get("enabled"):
+            video = apply_timed_overlays_hybrid(
+                video, clips, now_playing_cfg, text_tracks, total,
+                scratch / "video_timed_overlays.mp4",
+                crf=crf, scratch=scratch)
+            text_tracks = []
+            now_playing_cfg = {**now_playing_cfg, "enabled": False}
+        visualizer_cfg = {**visualizer_cfg, "enabled": False}
+        hybrid_applied = True
 
     # Final compositing contract (back to front): V1 -> V2+ -> visualizer ->
     # Now Playing -> authored T1/T2/... text. Hybrid chunks already contain the
     # final two layers in this same order and never run when a visualizer/V2+ is
     # active, so they must not be applied twice here.
-    if timeline_data and not hybrid_applied:
-        if not (track_states.get("T1") or {}).get("hidden"):
-            video = apply_now_playing(video, clips, timeline_data.get("now_playing") or {},
-                                      scratch / "video_now_playing.mp4", crf=crf, scratch=scratch)
-        video = apply_text_tracks(video, text_tracks, scratch / "video_text_tracks.mp4",
-                                  crf=crf, scratch=scratch)
+    if not hybrid_applied:
+        video = compose_overlays_single_pass(
+            video, audio, video_tracks=video_tracks, vol_folder=vol_folder,
+            visualizer_cfg=visualizer_cfg, clips=clips,
+            now_playing_cfg=now_playing_cfg, text_tracks=text_tracks,
+            out=scratch / "video_overlays.mp4", crf=crf, scratch=scratch)
 
     # 7) mux
     print("[4] mux...")

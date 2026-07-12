@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import re
+import random
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -18,6 +19,7 @@ AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 NOW_PLAYING_DEFAULTS = {
     "enabled": False, "mode": "intro", "intro_seconds": 8.0,
+    "first_title_delay_seconds": 0.0,
     "font_path": "", "font_name": "Hiragino Sans", "position": "bottom-center",
     "size": 48, "color": "#ffffff", "border_color": "#000000", "border_width": 2,
     "opacity": 1.0, "fade_in": 0.4, "fade_out": 0.4, "margin": 64,
@@ -27,6 +29,7 @@ VISUALIZER_DEFAULTS = {
     "margin": 64, "width_percent": 60.0, "height_px": 160,
     "color_mode": "single", "color1": "#ffffff", "color2": "#7c3aed",
     "opacity": 0.75,
+    "loop_seconds": 20.0,
 }
 
 
@@ -84,7 +87,23 @@ def _audio_files(folder: Path) -> list[Path]:
     original = folder / "original_music"
     root = processed if processed.is_dir() and any(processed.glob("*.mp3")) else original
     if not root.is_dir(): return []
-    return sorted((p for p in root.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTS), key=lambda p: p.name.lower())
+    files = [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
+    cfg = _channel_config(folder)
+    ffr = cfg.get("ffrender") if isinstance(cfg.get("ffrender"), dict) else {}
+    if str(ffr.get("song_order") or "") == "z_desc_then_random":
+        rng = random.SystemRandom()
+        priority: dict[int, list[Path]] = {}
+        normal = []
+        for path in files:
+            match = re.match(r"^(z+)_", path.name, flags=re.I)
+            (priority.setdefault(len(match.group(1)), []).append(path) if match else normal.append(path))
+        ordered = []
+        for count in sorted(priority, reverse=True):
+            rng.shuffle(priority[count])
+            ordered.extend(priority[count])
+        rng.shuffle(normal)
+        return ordered + normal
+    return sorted(files, key=lambda p: p.name.lower())
 
 
 def _scene_text(folder: Path, cfg: dict) -> list[dict]:

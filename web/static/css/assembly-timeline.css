@@ -166,7 +166,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 8px;
+  width: 14px;
   z-index: 4;
   cursor: ew-resize;
   touch-action: none;

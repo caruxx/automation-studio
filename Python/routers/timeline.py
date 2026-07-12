@@ -72,15 +72,49 @@ class VisualizerTemplateUpdate(BaseModel):
     channel_id: str
     visualizer: dict
 
+def _intro_asset(folder: Path) -> Optional[Path]:
+    try:
+        cfg = json.loads((folder.parent / ".app_channel_config.json").read_text(encoding="utf-8"))
+        value = str((cfg.get("ffrender") or {}).get("intro_sound") or "").replace("{num}", folder.name.split("_", 1)[0])
+        if not value:
+            return None
+        raw = Path(value).expanduser()
+        path = (raw if raw.is_absolute() else folder.parent / raw).resolve()
+        path.relative_to(folder.parent.resolve())
+        return path if path.is_file() else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+def _media_duration(path: Path) -> float:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=10, check=True)
+        return max(0.0, float(result.stdout.strip()))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0.0
+
+def _with_preview_intro(folder: Path, model: dict) -> dict:
+    intro = _intro_asset(folder)
+    model["preview_intro"] = {
+        "enabled": bool(intro),
+        "duration": _media_duration(intro) if intro else 0.0,
+        "url": f"/api/timeline/{folder.name}/intro-audio" if intro else "",
+        "name": intro.name if intro else "",
+    }
+    return model
+
 @router.get("/{video_name}")
-def get_timeline(video_name: str): return load(_folder(video_name))
+def get_timeline(video_name: str):
+    folder = _folder(video_name)
+    return _with_preview_intro(folder, load(folder))
 
 @router.put("/{video_name}")
 def put_timeline(video_name: str, req: TimelineUpdate):
     folder = _folder(video_name)
     if req.base_updated_at is not None and req.base_updated_at != load(folder).get("updated_at"):
         raise HTTPException(409, "タイムラインが他の画面で更新されています")
-    return save(folder, req.model)
+    return _with_preview_intro(folder, save(folder, req.model))
 
 @router.post("/{video_name}/now-playing-template")
 def save_now_playing_template(video_name: str, req: NowPlayingTemplateUpdate):
@@ -132,6 +166,14 @@ def audio(video_name: str, clip_id: str):
     try:p.relative_to(folder.resolve())
     except ValueError: raise HTTPException(400,"不正なパスです")
     return FileResponse(p)
+
+@router.get("/{video_name}/intro-audio")
+def intro_audio(video_name: str):
+    folder = _folder(video_name)
+    path = _intro_asset(folder)
+    if not path:
+        raise HTTPException(404, "冒頭環境音がありません")
+    return FileResponse(path)
 
 @router.get("/{video_name}/image")
 def image(video_name: str, path: str):
