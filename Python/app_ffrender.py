@@ -1101,17 +1101,29 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     """Resolve safe renderer values; a vol timeline shallow-overrides channel defaults."""
     cfg = {
         "enabled": False, "pattern": "bars", "position": "bottom-center",
+        "bands": 48, "motion": "normal",
         "margin": 64, "width_percent": 60, "height_px": 180,
         "color1": "#ffffff", "color2": "#66ccff", "opacity": 0.7,
         "loop_seconds": 20.0,
     }
+    legacy_motion = ((isinstance(channel_cfg, dict) and bool(channel_cfg))
+                     or (isinstance(timeline_cfg, dict) and bool(timeline_cfg)))
+    has_motion = ((isinstance(channel_cfg, dict) and "motion" in channel_cfg)
+                  or (isinstance(timeline_cfg, dict) and "motion" in timeline_cfg))
     if isinstance(channel_cfg, dict):
         cfg.update(channel_cfg)
     if isinstance(timeline_cfg, dict):
         cfg.update(timeline_cfg)
     cfg["pattern"] = str(cfg.get("pattern") or "bars").lower()
-    if cfg["pattern"] not in {"bars", "mirror", "wave", "circle"}:
+    if cfg["pattern"] not in {"bars", "mirror", "wave", "circle", "line"}:
         cfg["pattern"] = "bars"
+    if legacy_motion and not has_motion:
+        cfg["motion"] = "max"
+    cfg["motion"] = str(cfg.get("motion") or "normal").lower()
+    if cfg["motion"] not in {"calm", "normal", "lively", "max"}:
+        cfg["motion"] = "normal"
+    bands = _finite_float(cfg.get("bands"), 48, minimum=16, maximum=192)
+    cfg["bands"] = max(16, min(192, int(math.floor(bands / 4 + .5)) * 4))
     cfg["position"] = str(cfg.get("position") or "bottom-center").lower()
     cfg["margin"] = int(_finite_float(cfg.get("margin"), 64, minimum=0, maximum=500))
     cfg["width_percent"] = _finite_float(cfg.get("width_percent"), 60, minimum=5, maximum=100)
@@ -1159,6 +1171,8 @@ def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, st
     width = max(16, int(round(WIDTH * float(cfg["width_percent"]) / 100 / 2) * 2))
     height = max(16, int(round(int(cfg["height_px"]) / 2) * 2))
     pattern = cfg["pattern"]
+    bands = int(cfg.get("bands", 48))
+    ascale = {"calm": "lin", "normal": "sqrt", "lively": "cbrt", "max": "log"}[cfg.get("motion", "normal")]
     color1 = str(cfg.get("color1") or "#ffffff").replace("#", "0x")
     color2 = (color1 if str(cfg.get("color_mode") or "single") == "single" else
               str(cfg.get("color2") or color1).replace("#", "0x"))
@@ -1176,20 +1190,24 @@ def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, st
         source = (f"{prefix},avectorscope=s={side}x{side}:r={FPS}:"
                   f"mode=lissajous:draw=line:scale=sqrt:rc=0:gc=200:bc=255,format=rgba,"
                   f"colorchannelmixer=aa={opacity},scale={width}:{height}:force_original_aspect_ratio=decrease[viz]")
+    elif pattern == "line":
+        source = (f"{prefix},showfreqs=s={width}x{height}:mode=line:rate={FPS}:ascale={ascale}:fscale=log:"
+                  f"win_size=2048:averaging=2:colors={color1}|{color2},format=rgba,colorkey=black:0.08:0,"
+                  f"colorchannelmixer=aa={opacity}[viz]")
     elif pattern == "mirror":
         half = max(8, height // 2)
         half_gap = max(1, int(round(width / 400)))
-        source = (f"{prefix},showfreqs=s=48x{half}:mode=bar:rate={FPS}:ascale=log:fscale=log:"
+        source = (f"{prefix},showfreqs=s={bands}x{half}:mode=bar:rate={FPS}:ascale={ascale}:fscale=log:"
                   f"win_size=2048:averaging=2:colors={color1}|{color2},"
                   f"scale={width}:{half}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
-                  f"drawgrid=w=iw/48:h=ih:t={half_gap}:c=black@0:replace=1,"
+                  f"drawgrid=w=iw/{bands}:h=ih:t={half_gap}:c=black@0:replace=1,"
                   f"colorchannelmixer=aa={opacity}[top];"
                   f"[top]split[a][b];[b]vflip[c];[a][c]vstack[viz]")
     else:
-        source = (f"{prefix},showfreqs=s=48x{height}:mode=bar:rate={FPS}:ascale=log:fscale=log:"
+        source = (f"{prefix},showfreqs=s={bands}x{height}:mode=bar:rate={FPS}:ascale={ascale}:fscale=log:"
                   f"win_size=2048:averaging=2:colors={color1}|{color2},"
                   f"scale={width}:{height}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
-                  f"drawgrid=w=iw/48:h=ih:t={gap}:c=black@0:replace=1,"
+                  f"drawgrid=w=iw/{bands}:h=ih:t={gap}:c=black@0:replace=1,"
                   f"colorchannelmixer=aa={opacity}[viz]")
     return source, x, y, pattern
 

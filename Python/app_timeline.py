@@ -26,11 +26,35 @@ NOW_PLAYING_DEFAULTS = {
 }
 VISUALIZER_DEFAULTS = {
     "enabled": False, "pattern": "bars", "position": "bottom-center",
+    "bands": 48, "motion": "normal",
     "margin": 64, "width_percent": 60.0, "height_px": 160,
     "color_mode": "single", "color1": "#ffffff", "color2": "#7c3aed",
     "opacity": 0.75,
     "loop_seconds": 20.0,
 }
+
+VISUALIZER_PATTERNS = {"bars", "mirror", "wave", "circle", "line"}
+VISUALIZER_MOTIONS = {"calm", "normal", "lively", "max"}
+
+
+def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
+    incoming = value if isinstance(value, dict) else {}
+    visualizer = dict(VISUALIZER_DEFAULTS)
+    visualizer.update(incoming)
+    if legacy and "motion" not in incoming:
+        visualizer["motion"] = "max"
+    try:
+        bands = float(visualizer.get("bands", 48))
+        if not math.isfinite(bands):
+            bands = 48
+    except (TypeError, ValueError):
+        bands = 48
+    visualizer["bands"] = max(16, min(192, int(math.floor(bands / 4 + 0.5)) * 4))
+    pattern = str(visualizer.get("pattern") or "bars").lower()
+    visualizer["pattern"] = pattern if pattern in VISUALIZER_PATTERNS else "bars"
+    motion = str(visualizer.get("motion") or "normal").lower()
+    visualizer["motion"] = motion if motion in VISUALIZER_MOTIONS else "normal"
+    return visualizer
 
 
 def display_title(filename: str) -> str:
@@ -149,7 +173,7 @@ def build_initial(folder: Path) -> dict:
     channel_np = cfg.get("now_playing") if isinstance(cfg.get("now_playing"), dict) else {}
     now_playing = dict(NOW_PLAYING_DEFAULTS); now_playing.update(channel_np)
     channel_visualizer = cfg.get("visualizer") if isinstance(cfg.get("visualizer"), dict) else {}
-    visualizer = dict(VISUALIZER_DEFAULTS); visualizer.update(channel_visualizer)
+    visualizer = _sanitize_visualizer(channel_visualizer, legacy=bool(channel_visualizer))
     return {"version": VERSION, "video_name": folder.name, "source": "derived", "total_duration": total,
             "target_duration": target, "audio_clips": audio, "excluded": [], "visual_segments": segs,
             "video_tracks": [{"id": "V1", "segments": segs}], "text_lane": text,
@@ -251,6 +275,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         before_segments = json.dumps(d.get("visual_segments") or [], sort_keys=True)
         before_text_tracks = json.dumps(d.get("text_tracks") or [], sort_keys=True)
         before_track_states = json.dumps(d.get("track_states") or {}, sort_keys=True)
+        before_visualizer = json.dumps(d.get("visualizer") or {}, sort_keys=True)
         missing_tracks = not isinstance(d.get("video_tracks"), list) or not d.get("video_tracks") or not isinstance(d.get("text_tracks"), list) or not d.get("text_tracks")
         if "now_playing" not in d:
             cfg = _channel_config(Path(folder)); np = dict(NOW_PLAYING_DEFAULTS)
@@ -259,16 +284,20 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         # Channel settings are the template; fields authored in this vol are
         # the final override. Merge partial legacy payloads instead of making
         # every client resend the complete visualizer object.
-        cfg = _channel_config(Path(folder)); visualizer = dict(VISUALIZER_DEFAULTS)
-        if isinstance(cfg.get("visualizer"), dict): visualizer.update(cfg["visualizer"])
-        if isinstance(d.get("visualizer"), dict): visualizer.update(d["visualizer"])
-        d["visualizer"] = visualizer
+        cfg = _channel_config(Path(folder))
+        channel_visualizer = cfg.get("visualizer") if isinstance(cfg.get("visualizer"), dict) else {}
+        saved_visualizer = d.get("visualizer") if isinstance(d.get("visualizer"), dict) else {}
+        visualizer = dict(channel_visualizer); visualizer.update(saved_visualizer)
+        d["visualizer"] = _sanitize_visualizer(
+            visualizer, legacy=bool(channel_visualizer or saved_visualizer)
+            and "motion" not in channel_visualizer and "motion" not in saved_visualizer)
         d["source"] = "saved"
         normalized = normalize(d)
         if (before_version != VERSION or missing_tracks
                 or before_segments != json.dumps(normalized.get("visual_segments") or [], sort_keys=True)
                 or before_text_tracks != json.dumps(normalized.get("text_tracks") or [], sort_keys=True)
-                or before_track_states != json.dumps(normalized.get("track_states") or {}, sort_keys=True)):
+                or before_track_states != json.dumps(normalized.get("track_states") or {}, sort_keys=True)
+                or before_visualizer != json.dumps(normalized.get("visualizer") or {}, sort_keys=True)):
             atomic_write(p, normalized)
         return normalized
     d = build_initial(Path(folder))
@@ -288,7 +317,7 @@ def save(folder: Path, model: dict) -> dict:
     if isinstance(incoming.get("visualizer"), dict):
         visualizer = dict(current.get("visualizer") or VISUALIZER_DEFAULTS)
         visualizer.update(incoming["visualizer"])
-        incoming["visualizer"] = visualizer
+        incoming["visualizer"] = _sanitize_visualizer(visualizer)
     current.update(incoming)
     current["source"] = "saved"
     normalize(current)

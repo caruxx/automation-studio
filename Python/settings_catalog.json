@@ -1181,7 +1181,13 @@
       "key": "channel.visualizer.enabled", "label_ja": "オーディオビジュアライザー", "description_ja": "音声に連動する演出を動画へ透過合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.enabled"}, "type": "boolean", "category": "production"
     },
     {
-      "key": "channel.visualizer.pattern", "label_ja": "ビジュアライザーのパターン", "description_ja": "バー、ミラーバー、波形ライン、円形から選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.pattern"}, "type": "string", "choices": ["bars", "mirror", "wave", "circle"], "category": "production"
+      "key": "channel.visualizer.pattern", "label_ja": "ビジュアライザーのパターン", "description_ja": "バー、ミラーバー、波形ライン、周波数ライン、円形から選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.pattern"}, "type": "string", "choices": ["bars", "mirror", "wave", "line", "circle"], "category": "production"
+    },
+    {
+      "key": "channel.visualizer.bands", "label_ja": "ビジュアライザーのバー本数", "description_ja": "周波数バーの本数", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.bands"}, "type": "integer", "validation": {"min": 16, "max": 192, "step": 4}, "category": "production"
+    },
+    {
+      "key": "channel.visualizer.motion", "label_ja": "ビジュアライザーの動き方", "description_ja": "音声に対する動きの強さ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.motion"}, "type": "string", "choices": ["calm", "normal", "lively", "max"], "category": "production"
     },
     {
       "key": "channel.visualizer.position", "label_ja": "ビジュアライザーの位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
