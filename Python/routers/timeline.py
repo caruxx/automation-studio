@@ -12,6 +12,7 @@ from settings_service import config_set
 
 router = APIRouter(prefix="/api/timeline", tags=["timeline"])
 CACHE = Path.home()/".cache/orzz/timeline"
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
 _export_tasks: dict[str, dict] = {}
 _export_lock = threading.Lock()
 
@@ -154,7 +155,7 @@ def save_visualizer_template(video_name: str, req: VisualizerTemplateUpdate):
 @router.post("/{video_name}/{kind}-template")
 def save_decoration_template(video_name: str, kind: str, req: DecorationTemplateUpdate):
     _folder(video_name)
-    if kind not in {"icon", "effects"}:
+    if kind not in {"icon", "effects", "chroma_opening"}:
         raise HTTPException(404, "未対応のテンプレートです")
     results=[]
     for key, value in req.value.items():
@@ -227,6 +228,26 @@ def image_candidates(video_name: str):
                 url=f"/api/timeline/{video_name}/image?path={path}"
                 rows.append({"path":path,"name":p.name,"url":url})
     return {"images":rows[:300]}
+
+@router.get("/{video_name}/video-candidates")
+def video_candidates(video_name: str):
+    folder = _folder(video_name)
+    rows = []
+    for p in folder.iterdir():
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+            rows.append({"path": p.name, "name": p.name, "duration": _media_duration(p),
+                         "url": f"/api/timeline/{video_name}/video?path={p.name}"})
+    return {"videos": rows[:100]}
+
+@router.get("/{video_name}/video")
+def video(video_name: str, path: str):
+    folder = _folder(video_name)
+    target = (folder / path).resolve()
+    if not _inside(target, folder.resolve()):
+        raise HTTPException(400, "不正なパスです")
+    if not target.is_file() or target.suffix.lower() not in VIDEO_EXTS:
+        raise HTTPException(404, "動画がありません")
+    return FileResponse(target)
 
 def _inside(path: Path, root: Path) -> bool:
     try:path.relative_to(root); return True

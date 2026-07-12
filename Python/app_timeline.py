@@ -42,6 +42,11 @@ EFFECTS_DEFAULTS = {
     "vintage": False, "noise_sand": False, "noise_horizontal": False,
     "noise_vertical": False, "noise_strength": 30,
 }
+CHROMA_OPENING_DEFAULTS = {
+    "enabled": False, "video_path": "", "key_color": "#00ff00",
+    "similarity": 0.20, "position": "center", "width_percent": 100.0,
+    "height_percent": 100.0, "opacity": 1.0, "use_audio": False,
+}
 
 VISUALIZER_PATTERNS = {"bars", "mirror", "wave", "circle", "line"}
 VISUALIZER_MOTIONS = {"calm", "normal", "lively", "max"}
@@ -86,6 +91,24 @@ def _sanitize_effects(value: dict | None) -> dict:
     effects["noise_strength"] = int(round(
         _finite_clamped(effects.get("noise_strength"), 30, 5, 100)))
     return effects
+
+
+def _sanitize_chroma_opening(value: dict | None) -> dict:
+    incoming = value if isinstance(value, dict) else {}
+    cfg = dict(CHROMA_OPENING_DEFAULTS)
+    cfg.update(incoming)
+    cfg["enabled"] = cfg.get("enabled") is True
+    cfg["video_path"] = str(cfg.get("video_path") or "").strip()
+    color = str(cfg.get("key_color") or "#00ff00").lower()
+    cfg["key_color"] = color if re.fullmatch(r"#[0-9a-f]{6}", color) else "#00ff00"
+    cfg["similarity"] = _finite_clamped(cfg.get("similarity"), .20, .05, .45)
+    position = str(cfg.get("position") or "center").lower()
+    cfg["position"] = position if position in POSITIONS else "center"
+    cfg["width_percent"] = _finite_clamped(cfg.get("width_percent"), 100, 10, 100)
+    cfg["height_percent"] = _finite_clamped(cfg.get("height_percent"), 100, 10, 100)
+    cfg["opacity"] = _finite_clamped(cfg.get("opacity"), 1, 0, 1)
+    cfg["use_audio"] = False
+    return cfg
 
 
 def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
@@ -227,6 +250,8 @@ def build_initial(folder: Path) -> dict:
     visualizer = _sanitize_visualizer(channel_visualizer, legacy=bool(channel_visualizer))
     icon = _sanitize_icon(cfg.get("icon") if isinstance(cfg.get("icon"), dict) else {})
     effects = _sanitize_effects(cfg.get("effects") if isinstance(cfg.get("effects"), dict) else {})
+    chroma_opening = _sanitize_chroma_opening(
+        cfg.get("chroma_opening") if isinstance(cfg.get("chroma_opening"), dict) else {})
     return {"version": VERSION, "video_name": folder.name, "source": "derived", "total_duration": total,
             "target_duration": target, "audio_clips": audio, "excluded": [], "visual_segments": segs,
             "video_tracks": [{"id": "V1", "segments": segs}], "text_lane": text,
@@ -234,7 +259,7 @@ def build_initial(folder: Path) -> dict:
             "audio_crossfade_curve": "equal_power", "track_states": {
                 "A1": {"muted": False}, "V1": {"hidden": False}, "T1": {"hidden": False},
             }, "now_playing": now_playing, "visualizer": visualizer, "icon": icon,
-            "effects": effects, "updated_at": None}
+            "effects": effects, "chroma_opening": chroma_opening, "updated_at": None}
 
 
 def normalize(model: dict) -> dict:
@@ -321,6 +346,8 @@ def normalize(model: dict) -> dict:
         model.get("icon") if isinstance(model.get("icon"), dict) else {})
     model["effects"] = _sanitize_effects(
         model.get("effects") if isinstance(model.get("effects"), dict) else {})
+    model["chroma_opening"] = _sanitize_chroma_opening(
+        model.get("chroma_opening") if isinstance(model.get("chroma_opening"), dict) else {})
     model["version"] = VERSION
     # updated_at はここでは触らない。毎回現在時刻を刻むと load() 経由の GET/PUT 検査で
     # 値が揺れ、楽観ロックが常に 409 になる。刻印は save() の書き込み直前のみ。
@@ -338,6 +365,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         before_visualizer = json.dumps(d.get("visualizer") or {}, sort_keys=True)
         before_icon = json.dumps(d.get("icon") or {}, sort_keys=True)
         before_effects = json.dumps(d.get("effects") or {}, sort_keys=True)
+        before_chroma = json.dumps(d.get("chroma_opening") or {}, sort_keys=True)
         missing_tracks = not isinstance(d.get("video_tracks"), list) or not d.get("video_tracks") or not isinstance(d.get("text_tracks"), list) or not d.get("text_tracks")
         if "now_playing" not in d:
             cfg = _channel_config(Path(folder)); np = dict(NOW_PLAYING_DEFAULTS)
@@ -358,6 +386,9 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
             saved_value = d.get(key) if isinstance(d.get(key), dict) else {}
             merged = dict(channel_value); merged.update(saved_value)
             d[key] = sanitizer(merged)
+        channel_chroma = cfg.get("chroma_opening") if isinstance(cfg.get("chroma_opening"), dict) else {}
+        saved_chroma = d.get("chroma_opening") if isinstance(d.get("chroma_opening"), dict) else {}
+        d["chroma_opening"] = _sanitize_chroma_opening({**channel_chroma, **saved_chroma})
         d["source"] = "saved"
         normalized = normalize(d)
         if (before_version != VERSION or missing_tracks
@@ -366,7 +397,8 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
                 or before_track_states != json.dumps(normalized.get("track_states") or {}, sort_keys=True)
                 or before_visualizer != json.dumps(normalized.get("visualizer") or {}, sort_keys=True)
                 or before_icon != json.dumps(normalized.get("icon") or {}, sort_keys=True)
-                or before_effects != json.dumps(normalized.get("effects") or {}, sort_keys=True)):
+                or before_effects != json.dumps(normalized.get("effects") or {}, sort_keys=True)
+                or before_chroma != json.dumps(normalized.get("chroma_opening") or {}, sort_keys=True)):
             atomic_write(p, normalized)
         return normalized
     d = build_initial(Path(folder))
@@ -376,7 +408,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
 
 def save(folder: Path, model: dict) -> dict:
     current = build_initial(Path(folder))
-    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects"}
+    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "chroma_opening"}
     incoming = {k: v for k, v in model.items() if k in allowed}
     # Older clients only sent text_lane.  build_initial() already has text_tracks,
     # so without this promotion normalize() would let the generated empty T1 win.
@@ -393,6 +425,10 @@ def save(folder: Path, model: dict) -> dict:
             merged = dict(current.get(key) or defaults)
             merged.update(incoming[key])
             incoming[key] = sanitizer(merged)
+    if isinstance(incoming.get("chroma_opening"), dict):
+        merged = dict(current.get("chroma_opening") or CHROMA_OPENING_DEFAULTS)
+        merged.update(incoming["chroma_opening"])
+        incoming["chroma_opening"] = _sanitize_chroma_opening(merged)
     current.update(incoming)
     current["source"] = "saved"
     normalize(current)

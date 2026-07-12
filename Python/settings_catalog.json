@@ -1178,6 +1178,33 @@
       "key": "channel.now_playing.margin", "label_ja": "楽曲名の余白", "description_ja": "画面端からの余白", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.margin"}, "type": "integer", "validation": {"min": 0, "max": 400}, "category": "production"
     },
     {
+      "key": "channel.chroma_opening.enabled", "label_ja": "クロマキーOP", "description_ja": "グリーンバック動画を冒頭へ合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.enabled"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.video_path", "label_ja": "クロマキーOP動画", "description_ja": "vol相対または絶対パス", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.video_path"}, "type": "string", "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.key_color", "label_ja": "クロマキー色", "description_ja": "抜き取る背景色", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.key_color"}, "type": "string", "validation": {"pattern": "^#[0-9A-Fa-f]{6}$"}, "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.similarity", "label_ja": "クロマキー透過の強さ", "description_ja": "キー色に近い色を抜く範囲", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.similarity"}, "type": "number", "validation": {"min": 0.05, "max": 0.45, "step": 0.01}, "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.position", "label_ja": "クロマキーOP位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.width_percent", "label_ja": "クロマキーOP幅", "description_ja": "動画幅に対する表示幅", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.width_percent"}, "type": "number", "validation": {"min": 10, "max": 100}, "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.height_percent", "label_ja": "クロマキーOP高さ", "description_ja": "動画高さに対する表示高さ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.height_percent"}, "type": "number", "validation": {"min": 10, "max": 100}, "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.opacity", "label_ja": "クロマキーOP不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
+    },
+    {
+      "key": "channel.chroma_opening.use_audio", "label_ja": "クロマキーOP音声", "description_ja": "現在は常に無効", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.use_audio"}, "type": "boolean", "category": "production"
+    },
+    {
       "key": "channel.visualizer.enabled", "label_ja": "オーディオビジュアライザー", "description_ja": "音声に連動する演出を動画へ透過合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.enabled"}, "type": "boolean", "category": "production"
     },
     {

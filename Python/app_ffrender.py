@@ -1215,6 +1215,54 @@ def resolve_effects_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -> d
     return cfg
 
 
+def resolve_chroma_opening_config(channel_cfg: dict, timeline_cfg: Optional[dict],
+                                  vol_folder: Path) -> dict:
+    cfg = {"enabled": False, "video_path": "", "key_color": "#00ff00",
+           "similarity": .20, "position": "center", "width_percent": 100.0,
+           "height_percent": 100.0, "opacity": 1.0, "use_audio": False}
+    if isinstance(channel_cfg, dict):
+        cfg.update(channel_cfg)
+    if isinstance(timeline_cfg, dict):
+        cfg.update(timeline_cfg)
+    cfg["enabled"] = cfg.get("enabled") is True
+    cfg["video_path"] = str(cfg.get("video_path") or "").strip()
+    color = str(cfg.get("key_color") or "#00ff00").lower()
+    cfg["key_color"] = color if re.fullmatch(r"#[0-9a-f]{6}", color) else "#00ff00"
+    cfg["similarity"] = _finite_float(cfg.get("similarity"), .20, minimum=.05, maximum=.45)
+    positions = {"top-left", "top-center", "top-right", "middle-left", "center",
+                 "middle-right", "bottom-left", "bottom-center", "bottom-right"}
+    position = str(cfg.get("position") or "center").lower()
+    cfg["position"] = position if position in positions else "center"
+    cfg["width_percent"] = _finite_float(cfg.get("width_percent"), 100, minimum=10, maximum=100)
+    cfg["height_percent"] = _finite_float(cfg.get("height_percent"), 100, minimum=10, maximum=100)
+    cfg["opacity"] = _finite_float(cfg.get("opacity"), 1, minimum=0, maximum=1)
+    cfg["use_audio"] = False
+    raw = Path(cfg["video_path"]).expanduser() if cfg["video_path"] else None
+    source = raw if raw and raw.is_absolute() else Path(vol_folder) / raw if raw else None
+    if cfg["enabled"] and (source is None or not source.is_file()):
+        print(f"  WARNING: クロマキーOP動画が見つからないため無効化: {cfg['video_path']}")
+        cfg["enabled"] = False
+        source = None
+    cfg["source"] = source
+    cfg["duration"] = probe_duration(source) if source else 0.0
+    if cfg["enabled"] and cfg["duration"] <= 0:
+        print("  WARNING: クロマキーOP動画の実尺を取得できないため無効化")
+        cfg["enabled"] = False
+    return cfg
+
+
+def _chroma_opening_filter(input_index: int, cfg: dict, label: str) -> tuple[str, str, str]:
+    width = max(2, int(round(WIDTH * float(cfg["width_percent"]) / 100 / 2) * 2))
+    height = max(2, int(round(HEIGHT * float(cfg["height_percent"]) / 100 / 2) * 2))
+    color = str(cfg["key_color"]).lstrip("#")
+    similarity = float(cfg["similarity"])
+    chain = (f"[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+             f"chromakey=0x{color}:{similarity:g}:{similarity / 3:g},format=rgba,"
+             f"colorchannelmixer=aa={float(cfg['opacity']):g}[{label}]")
+    x, y = _visualizer_xy(str(cfg["position"]), 0)
+    return chain, x, y
+
+
 def effects_enabled(cfg: dict) -> bool:
     return any(cfg.get(key) for key in
                ("vintage", "noise_sand", "noise_horizontal", "noise_vertical"))
@@ -1491,6 +1539,37 @@ def apply_intro_text_hybrid(video: Path, text_tracks: list, total: float, out: P
     return concat_videos_lossless([head, tail], out, scratch=scratch)
 
 
+def apply_chroma_opening_head(video: Path, cfg: dict, total: float, out: Path,
+                              crf: int, scratch: Path) -> Path:
+    """Encode the GOP-aligned opening only, then stream-copy the untouched tail."""
+    if not cfg.get("enabled") or not cfg.get("source"):
+        return video
+    duration = min(float(total), float(cfg.get("duration") or 0))
+    if duration <= 0:
+        return video
+    gop_seconds = GOP_FRAMES * 1001 / 30000
+    head_end = min(total, max(gop_seconds, math.ceil(duration / gop_seconds) * gop_seconds))
+    head = scratch / "chroma_opening_head.mp4"
+    tail = scratch / "chroma_opening_tail.mp4"
+    source, x, y = _chroma_opening_filter(1, cfg, "chroma_op")
+    graph = (f"{source};[0:v][chroma_op]overlay=x={x}:y={y}:eof_action=pass:"
+             f"enable='lt(t,{duration:.6f})'[v]")
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-i", str(video), "-i", str(cfg["source"]), "-filter_complex", graph,
+             "-map", "[v]", "-t", f"{head_end:.6f}", "-an", "-r", FPS,
+             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+             "-pix_fmt", "yuv420p", "-bf", "0", "-g", str(GOP_FRAMES),
+             "-sc_threshold", "0", "-video_track_timescale", "30000", str(head)],
+            f"クロマキーOP冒頭区間のみエンコード ({duration:.2f}s、head {head_end:.2f}s)")
+    if head_end >= total - .02:
+        return head
+    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-ss", f"{head_end:.6f}", "-i", str(video), "-c", "copy",
+             "-avoid_negative_ts", "make_zero", str(tail)],
+            "クロマキーOP以降をストリームコピー")
+    return concat_videos_lossless([head, tail], out, scratch=scratch)
+
+
 def apply_timed_overlays_hybrid(video: Path, clips: list, now_cfg: dict,
                                 text_tracks: list, total: float, out: Path, *,
                                 crf: int, scratch: Path) -> Path:
@@ -1703,7 +1782,8 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
 def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
                                  video_tracks: list, vol_folder: Path,
                                  visualizer_cfg: dict, icon_cfg: dict,
-                                 effects_cfg: dict, icon_path: Optional[Path], clips: list,
+                                 effects_cfg: dict, chroma_opening_cfg: dict,
+                                 icon_path: Optional[Path], clips: list,
                                  now_playing_cfg: dict, text_tracks: list,
                                  out: Path, crf: int, scratch: Path,
                                  chunk_safe: bool = False) -> Path:
@@ -1713,6 +1793,7 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     use_visualizer = bool(visualizer_cfg.get("enabled") and audio is not None)
     use_icon = bool(icon_cfg.get("enabled") and icon_path is not None)
     use_effects = effects_enabled(effects_cfg)
+    use_chroma = bool(chroma_opening_cfg.get("enabled") and chroma_opening_cfg.get("source"))
     now_clauses = _now_playing_clauses(clips, now_playing_cfg, scratch, duration)
     text_clauses = _text_track_clauses(text_tracks, scratch, duration)
     active = []
@@ -1720,6 +1801,7 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     if items: active.append("video_tracks")
     if use_icon: active.append("icon")
     if use_visualizer: active.append("visualizer")
+    if use_chroma: active.append("chroma_opening")
     if now_clauses: active.append("now_playing")
     if text_clauses: active.append("text")
     if not active:
@@ -1736,6 +1818,9 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     image_start = 1 + (1 if use_visualizer else 0) + (1 if use_icon else 0)
     for path, _, _ in items:
         cmd += ["-loop", "1", "-i", str(path)]
+    chroma_index = image_start + len(items) if use_chroma else None
+    if use_chroma:
+        cmd += ["-i", str(chroma_opening_cfg["source"])]
 
     filters = []
     current = "0:v"
@@ -1755,6 +1840,11 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
         filters.append(source)
         filters.append(f"[{current}][viz]overlay=x={x}:y={y}:shortest=1[with_visualizer]")
         current = "with_visualizer"
+    if chroma_index is not None:
+        source, x, y = _chroma_opening_filter(chroma_index, chroma_opening_cfg, "chroma_op")
+        filters.append(source)
+        filters.append(f"[{current}][chroma_op]overlay=x={x}:y={y}:eof_action=pass:enable='lt(t,{float(chroma_opening_cfg['duration']):.6f})'[with_chroma_opening]")
+        current = "with_chroma_opening"
     drawtext = now_clauses + text_clauses
     if drawtext:
         filters.append(f"[{current}]" + ",".join(drawtext) + "[composed]")
@@ -2145,6 +2235,10 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     effects_cfg = resolve_effects_config(
         _load_channel_block(vol_folder, "effects"),
         timeline_data.get("effects") if isinstance(timeline_data, dict) else None)
+    chroma_opening_cfg = resolve_chroma_opening_config(
+        _load_channel_block(vol_folder, "chroma_opening"),
+        timeline_data.get("chroma_opening") if isinstance(timeline_data, dict) else None,
+        vol_folder)
     icon_path = prepare_icon_image(vol_folder, icon_cfg, scratch)
     if icon_cfg.get("enabled") and icon_path is None:
         icon_cfg = {**icon_cfg, "enabled": False}
@@ -2240,6 +2334,8 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                 transition=str(intro_cfg.get("transition") or "fade"))
         else:
             print(f"  WARNING: 冒頭ディゾルブ画像が見つかりません: from={from_name} to={to_name}")
+    if chroma_opening_cfg.get("enabled") and intro_video:
+        print("  WARNING: クロマキーOPと冒頭ディゾルブが両方ONです。両方の演出を適用します")
 
     hybrid_applied = False
     if intro_video:
@@ -2286,7 +2382,8 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                 not (track_states.get(str(track.get("id") or "")) or {}).get("hidden")
                 for track in (timeline_data.get("video_tracks") or [])[1:])
             decorations_active = (visualizer_cfg.get("enabled") or icon_cfg.get("enabled")
-                                  or effects_enabled(effects_cfg))
+                                  or effects_enabled(effects_cfg)
+                                  or chroma_opening_cfg.get("enabled"))
             if decorations_active:
                 print("  V1装飾ONのためスタンプ無効（装飾経路で処理）")
                 video = build_video_with_crossfades(timeline_segments, scratch / "video.mp4", crf=crf)
@@ -2362,6 +2459,10 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                               minimum=.1, maximum=3), total,
                 scratch / "video_visualizer_delayed.mp4", crf=crf,
                 scratch=scratch)
+        if chroma_opening_cfg.get("enabled"):
+            video = apply_chroma_opening_head(
+                video, chroma_opening_cfg, total,
+                scratch / "video_chroma_opening.mp4", crf, scratch)
         if text_tracks or now_playing_cfg.get("enabled"):
             video = apply_timed_overlays_hybrid(
                 video, clips, now_playing_cfg, text_tracks, total,
@@ -2372,6 +2473,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
         visualizer_cfg = {**visualizer_cfg, "enabled": False}
         icon_cfg = {**icon_cfg, "enabled": False}
         effects_cfg = {key: False for key in effects_cfg}
+        chroma_opening_cfg = {**chroma_opening_cfg, "enabled": False}
         hybrid_applied = True
 
     # Final compositing contract (back to front): V1 -> effects -> V2+ -> icon -> visualizer ->
@@ -2382,7 +2484,8 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
         video = compose_overlays_single_pass(
             video, audio, video_tracks=video_tracks, vol_folder=vol_folder,
             visualizer_cfg=visualizer_cfg, icon_cfg=icon_cfg,
-            effects_cfg=effects_cfg, icon_path=icon_path, clips=clips,
+            effects_cfg=effects_cfg, chroma_opening_cfg=chroma_opening_cfg,
+            icon_path=icon_path, clips=clips,
             now_playing_cfg=now_playing_cfg, text_tracks=text_tracks,
             out=scratch / "video_overlays.mp4", crf=crf, scratch=scratch)
 

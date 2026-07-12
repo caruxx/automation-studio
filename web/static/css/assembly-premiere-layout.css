@@ -492,6 +492,12 @@
     transition:none;
   }
 }
+.atl-chroma-opening-overlay{
+  position:absolute;
+  z-index:25;
+  object-fit:contain;
+  pointer-events:none;
+}
 .premiere-editor{--top-h:clamp(500px,46vw,640px)}
 .pr-program .atl-preview{height:auto;flex:1 1 auto;min-height:0;padding:6px 10px 0}
 .pr-program .atl-preview-canvas{width:100%;max-height:none;aspect-ratio:16/9;flex:1 1 auto;background:#090c10}
