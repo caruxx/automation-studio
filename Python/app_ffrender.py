@@ -22,6 +22,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -157,6 +158,50 @@ def _load_channel_block(vol_folder: Path, key: str) -> dict:
     except Exception as exc:
         print(f"  WARNING: channel {key} 設定読み込み失敗（既定を使用）: {exc}")
         return {}
+
+
+def _export_resolution(vol_folder: Path) -> str:
+    try:
+        path = Path(vol_folder).parent / ".app_channel_config.json"
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        channel_value = data.get("export_resolution") if isinstance(data, dict) else None
+    except Exception:
+        channel_value = None
+    value = channel_value
+    timeline_path = Path(vol_folder) / TIMELINE_NAME
+    if timeline_path.exists():
+        try:
+            timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+            value = timeline.get("export_resolution", value)
+        except Exception:
+            pass
+    return "2160p" if str(value or "").strip().lower() == "2160p" else "1080p"
+
+
+def _scale_geometry(cfg: dict, keys: tuple[str, ...], scale: int) -> dict:
+    result = dict(cfg or {})
+    if scale == 1:
+        return result
+    for key in keys:
+        value = result.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            result[key] = value * scale
+    return result
+
+
+def _scale_timeline_text(timeline: Optional[dict], scale: int) -> Optional[dict]:
+    if not isinstance(timeline, dict) or scale == 1:
+        return timeline
+    result = copy.deepcopy(timeline)
+    result["now_playing"] = _scale_geometry(
+        result.get("now_playing") or {}, ("size", "margin", "border_width", "x", "y"), scale)
+    for track in result.get("text_tracks") or []:
+        for clip in track.get("clips") or []:
+            scaled = _scale_geometry(
+                clip, ("size", "margin", "border_width", "x", "y"), scale)
+            clip.clear()
+            clip.update(scaled)
+    return result
 
 
 def _resolve_channel_asset(vol_folder: Path, value: str, *, num: str = "") -> Optional[Path]:
@@ -1188,7 +1233,7 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     cfg["loop_seconds"] = _finite_float(cfg.get("loop_seconds"), 20, minimum=2, maximum=600)
     _resolve_free_xy(cfg)
     # Renderer geometry is authoritative.  Keep authored settings where possible,
-    # but never let an overlay escape the fixed 1920x1080 output frame.
+    # but never let an overlay escape the active output frame.
     original = (cfg["width_percent"], cfg["height_px"], cfg["margin"])
     width = min(WIDTH, max(16, int(round(WIDTH * cfg["width_percent"] / 100 / 2) * 2)))
     height = min(HEIGHT, max(16, int(round(cfg["height_px"] / 2) * 2)))
@@ -1204,7 +1249,7 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     # 偶数丸め由来の±1px差は警告対象にしない（実クランプ時のみ通知）
     if any(abs(a - b) > (WIDTH / 100 * .11 if i == 0 else 1.01)
            for i, (a, b) in enumerate(zip(original, clamped))):
-        print("WARNING: ビジュアライザー配置を1920x1080フレーム内にクランプしました "
+        print(f"WARNING: ビジュアライザー配置を{WIDTH}x{HEIGHT}フレーム内にクランプしました "
               f"(width={width}, height={height}, margin={cfg['margin']})")
     return cfg
 
@@ -1346,6 +1391,9 @@ def prepare_icon_image(vol_folder: Path, cfg: dict, scratch: Path) -> Optional[P
 def _append_effect_filters(filters: list[str], current: str, cfg: dict,
                            prefix: str) -> str:
     strength = int(cfg.get("noise_strength", 30))
+    geometry_scale = max(1, WIDTH // 1920)
+    grid_step = 16 * geometry_scale
+    grid_thickness = geometry_scale
     if cfg.get("vintage"):
         target = f"{prefix}_vintage"
         filters.append(f"[{current}]curves=preset=vintage,vignette[{target}]")
@@ -1359,9 +1407,9 @@ def _append_effect_filters(filters: list[str], current: str, cfg: dict,
         noise = f"{prefix}_horizontal_noise"
         target = f"{prefix}_horizontal"
         opacity = .03 + strength / 100 * .22
-        filters.append(f"[{current}]drawgrid=w=32767:h=16:t=1:c=black@0.12,format=gbrp[{base}]")
-        filters.append(f"color=black:s=4x1080:r={FPS},format=gray,noise=alls=100:allf=t+u,"
-                       f"scale=1920:1080:flags=neighbor,format=gbrp[{noise}]")
+        filters.append(f"[{current}]drawgrid=w=32767:h={grid_step}:t={grid_thickness}:c=black@0.12,format=gbrp[{base}]")
+        filters.append(f"color=black:s={4 * geometry_scale}x{HEIGHT}:r={FPS},format=gray,noise=alls=100:allf=t+u,"
+                       f"scale={WIDTH}:{HEIGHT}:flags=neighbor,format=gbrp[{noise}]")
         filters.append(f"[{base}][{noise}]blend=all_mode=screen:all_opacity={opacity:.4f}[{target}]")
         current = target
     if cfg.get("noise_vertical"):
@@ -1369,9 +1417,9 @@ def _append_effect_filters(filters: list[str], current: str, cfg: dict,
         noise = f"{prefix}_vertical_noise"
         target = f"{prefix}_vertical"
         opacity = .02 + strength / 100 * .20
-        filters.append(f"[{current}]drawgrid=w=16:h=32767:t=1:c=black@0.12,format=gbrp[{base}]")
-        filters.append(f"color=black:s=1920x4:r={FPS},format=gray,noise=alls=100:allf=t+u,"
-                       f"scale=1920:1080:flags=neighbor,format=gbrp[{noise}]")
+        filters.append(f"[{current}]drawgrid=w={grid_step}:h=32767:t={grid_thickness}:c=black@0.12,format=gbrp[{base}]")
+        filters.append(f"color=black:s={WIDTH}x{4 * geometry_scale}:r={FPS},format=gray,noise=alls=100:allf=t+u,"
+                       f"scale={WIDTH}:{HEIGHT}:flags=neighbor,format=gbrp[{noise}]")
         filters.append(f"[{base}][{noise}]blend=all_mode=screen:all_opacity={opacity:.4f}[{target}]")
         current = target
     return current
@@ -1806,7 +1854,9 @@ def _text_track_clauses(tracks: list, scratch: Path, total: float) -> list:
             if str(clip.get("effect") or "none") == "typewriter":
                 speed = _typewriter_speed(clip, len(raw_text), start, end)
                 steps = _typewriter_steps(raw_text, start, end, speed)
-                fixed_x, fixed_y = _fixed_text_origin(raw_text, font, font_size, horiz, vert, margin)
+                fixed_x, fixed_y = _fixed_text_origin(
+                    raw_text, font, font_size, horiz, vert, margin,
+                    clip.get("x"), clip.get("y"))
                 fade_in = 0.0
                 if fade_out > duration:
                     fade_out = duration
@@ -1825,7 +1875,8 @@ def _text_track_clauses(tracks: list, scratch: Path, total: float) -> list:
             if fade_in or fade_out:
                 alpha=(f"{opacity}*if(lt(t,{start+fade_in:.3f}),(t-{start:.3f})/{max(fade_in,.001):.3f},"
                        f"if(gt(t,{end-fade_out:.3f}),({end:.3f}-t)/{max(fade_out,.001):.3f},1))")
-            raw_x=xs.get(horiz,xs['center']); raw_y=ys.get(vert,ys['center'])
+            raw_x=(f"{float(clip['x']):g}" if isinstance(clip.get("x"), (int, float)) else xs.get(horiz,xs['center']))
+            raw_y=(f"{float(clip['y']):g}" if isinstance(clip.get("y"), (int, float)) else ys.get(vert,ys['center']))
             clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={font_size}:fontcolor={color}:alpha='{alpha}':borderw={border_width}:bordercolor={border}:x=max(0\\,min(w-text_w\\,{raw_x})):y=max(0\\,min(h-text_h\\,{raw_y})):enable='between(t,{start:.3f},{end:.3f})'")
     if skipped_unedited:
         print(f"WARNING: 未編集のテキストクリップ {skipped_unedited} 件をスキップ")
@@ -1956,16 +2007,16 @@ def _typewriter_steps(text: str, start: float, end: float, speed: float) -> list
 
 
 def _fixed_text_origin(text: str, font: Path, font_size: int, horiz: str,
-                       vert: str, margin: int) -> tuple[str, str]:
+                       vert: str, margin: int, x=None, y=None) -> tuple[str, str]:
     try:
         from PIL import Image, ImageDraw, ImageFont
         pil_font = ImageFont.truetype(str(font), font_size)
         box = ImageDraw.Draw(Image.new("L", (1, 1))).multiline_textbbox(
             (0, 0), text, font=pil_font, spacing=0)
         width, height = max(1, box[2] - box[0]), max(1, box[3] - box[1])
-        x = margin if horiz == "left" else (WIDTH - width) / 2 if horiz == "center" else WIDTH - width - margin
-        y = margin if vert == "top" else (HEIGHT - height) / 2 if vert in {"center", "middle"} else HEIGHT - height - margin
-        return f"{max(0, min(WIDTH-width, x)):.1f}", f"{max(0, min(HEIGHT-height, y)):.1f}"
+        origin_x = float(x) if isinstance(x, (int, float)) else margin if horiz == "left" else (WIDTH - width) / 2 if horiz == "center" else WIDTH - width - margin
+        origin_y = float(y) if isinstance(y, (int, float)) else margin if vert == "top" else (HEIGHT - height) / 2 if vert in {"center", "middle"} else HEIGHT - height - margin
+        return f"{max(0, min(WIDTH-width, origin_x)):.1f}", f"{max(0, min(HEIGHT-height, origin_y)):.1f}"
     except Exception as exc:
         print(f"  WARNING: Pillowで全文サイズを取得できないため左寄せにフォールバック: {exc}")
         return str(margin), str(margin if vert == "top" else max(margin, (HEIGHT-font_size)//2))
@@ -2201,10 +2252,10 @@ def build_timeline_video_hybrid(segments: list, clips: list, now_cfg: dict,
 
 # ── メインオーケストレーション ─────────────────────────────────────────
 
-def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Optional[Path] = None,
+def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, output_path: Optional[Path] = None,
            scratch: Optional[Path] = None, crf: int = DEFAULT_CRF,
            audio_bitrate: str = DEFAULT_AUDIO_BITRATE, use_audio_cache: bool = True,
-           burn_mode: Optional[str] = None) -> Optional[Path]:
+           burn_mode: Optional[str] = None, geometry_scale: int = 1) -> Optional[Path]:
     """target=None なら manifest 尺 → 既定 10800 の順で解決（--duration 明示時のみ上書き）。
     burn_mode: None=manifest 継承 / "none"=焼き込み無し / "always"=曲名常時焼き込み。"""
     vol_folder = Path(vol_folder)
@@ -2238,6 +2289,9 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             crf = int(ffr_cfg.get("video_crf"))
         except Exception:
             print(f"  WARNING: video_crf が不正です（既定を使用）: {ffr_cfg.get('video_crf')}")
+    if geometry_scale == 2:
+        crf += 2
+        print("  4K(3840x2160)で書き出し")
     if ffr_cfg.get("audio_bitrate"):
         audio_bitrate = str(ffr_cfg.get("audio_bitrate"))
     loop_seconds = float(ffr_cfg.get("loop_seconds") or (GOP_FRAMES * 1001 / 30000))
@@ -2293,6 +2347,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     print("[1] 配置 + 字幕/チャプター生成...")
     song_target = max(0.0, target - intro_sec)
     timeline_data = load_vol_timeline(vol_folder) if (vol_folder / TIMELINE_NAME).exists() else None
+    timeline_data = _scale_timeline_text(timeline_data, geometry_scale)
     album_loop = timeline_data.get("album_loop") if isinstance(timeline_data, dict) else {}
     try:
         album_loop_count = max(1, min(10, int((album_loop or {}).get("count", 1))))
@@ -2303,9 +2358,12 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     visualizer_cfg = resolve_visualizer_config(
         _load_channel_visualizer(vol_folder),
         timeline_data.get("visualizer") if isinstance(timeline_data, dict) else None)
+    visualizer_cfg = _scale_geometry(
+        visualizer_cfg, ("height_px", "margin", "x", "y"), geometry_scale)
     icon_cfg = resolve_icon_config(
         _load_channel_block(vol_folder, "icon"),
         timeline_data.get("icon") if isinstance(timeline_data, dict) else None)
+    icon_cfg = _scale_geometry(icon_cfg, ("size_px", "margin", "x", "y"), geometry_scale)
     effects_cfg = resolve_effects_config(
         _load_channel_block(vol_folder, "effects"),
         timeline_data.get("effects") if isinstance(timeline_data, dict) else None)
@@ -2313,6 +2371,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
         _load_channel_block(vol_folder, "chroma_opening"),
         timeline_data.get("chroma_opening") if isinstance(timeline_data, dict) else None,
         vol_folder)
+    chroma_opening_cfg = _scale_geometry(chroma_opening_cfg, ("x", "y"), geometry_scale)
     icon_path = prepare_icon_image(vol_folder, icon_cfg, scratch)
     if icon_cfg.get("enabled") and icon_path is None:
         icon_cfg = {**icon_cfg, "enabled": False}
@@ -2659,6 +2718,26 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     if album_loop_count == 1 and abs(dur - target) > 2.0:
         print(f"  WARNING: 尺が target と {abs(dur - target):.1f}s ずれています")
     return output_path
+
+
+def render(vol_folder: Path, *, target: Optional[float] = None,
+           output_path: Optional[Path] = None, scratch: Optional[Path] = None,
+           crf: int = DEFAULT_CRF, audio_bitrate: str = DEFAULT_AUDIO_BITRATE,
+           use_audio_cache: bool = True,
+           burn_mode: Optional[str] = None) -> Optional[Path]:
+    global WIDTH, HEIGHT
+    resolution = _export_resolution(Path(vol_folder))
+    scale = 2 if resolution == "2160p" else 1
+    previous = WIDTH, HEIGHT
+    WIDTH, HEIGHT = 1920 * scale, 1080 * scale
+    try:
+        return _render_at_resolution(
+            vol_folder, target=target, output_path=output_path, scratch=scratch,
+            crf=crf, audio_bitrate=audio_bitrate,
+            use_audio_cache=use_audio_cache, burn_mode=burn_mode,
+            geometry_scale=scale)
+    finally:
+        WIDTH, HEIGHT = previous
 
 
 def _parse_swap(s: str) -> tuple:

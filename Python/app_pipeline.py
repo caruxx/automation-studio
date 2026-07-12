@@ -2015,7 +2015,7 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
     """書き出し後 QA（P3-3）。アスペクト比 / 解像度 / 尺 / コーデックを ffprobe で確認。
 
     軽量チェック（数秒で完了）:
-      - 解像度: 1920x1080 ± 許容（最低 1280x720）
+      - 解像度: タイムラインまたはチャンネルの選択解像度と一致
       - アスペクト比: 16:9（許容 ±0.01）
       - 尺: 60s〜14400s（4時間）の範囲
       - コーデック: video=h264 / audio=aac
@@ -2081,6 +2081,20 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
     v = next((s for s in streams if s.get("codec_type") == "video"), None)
     a = next((s for s in streams if s.get("codec_type") == "audio"), None)
     issues = []
+    expected_resolution = "1080p"
+    try:
+        channel_path = folder.parent / ".app_channel_config.json"
+        channel_data = json.loads(channel_path.read_text(encoding="utf-8")) if channel_path.exists() else {}
+        expected_resolution = str(channel_data.get("export_resolution") or "1080p")
+        timeline_path = folder / "vol_timeline.json"
+        if timeline_path.exists():
+            timeline_data = json.loads(timeline_path.read_text(encoding="utf-8"))
+            expected_resolution = str(timeline_data.get("export_resolution") or expected_resolution)
+    except Exception:
+        expected_resolution = "1080p"
+    if expected_resolution not in {"1080p", "2160p"}:
+        expected_resolution = "1080p"
+    expected_dimensions = (3840, 2160) if expected_resolution == "2160p" else (1920, 1080)
     report = {
         "checked_at": __import__("datetime").datetime.now().isoformat(),
         "mp4": str(mp4),
@@ -2088,6 +2102,7 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
         "size_mb": round(int(fmt.get("size") or 0) / 1024 / 1024, 1),
         "video": None,
         "audio": None,
+        "expected_resolution": expected_resolution,
         "issues": [],
         "passed": True,
     }
@@ -2106,8 +2121,9 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
             ratio = w / h if h else 0
             if not (1.76 <= ratio <= 1.79):
                 issues.append(f"アスペクト比 {ratio:.3f}（16:9=1.778 から逸脱）")
-        if w < 1280 or h < 720:
-            issues.append(f"解像度 {w}x{h}（最低 1280x720）")
+        if (w, h) != expected_dimensions:
+            issues.append(
+                f"解像度 {w}x{h}（選択値 {expected_dimensions[0]}x{expected_dimensions[1]} と不一致）")
     # 音声 stream チェック
     if not a:
         issues.append("audio stream が無い")

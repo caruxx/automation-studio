@@ -22,6 +22,8 @@
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
+.atl-loop-control,.atl-resolution-control{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.atl-resolution-note{color:#d8b15a;font-size:10px;white-space:nowrap}
 .atl-scroll {
   overflow-x: auto;
   overflow-y: hidden;

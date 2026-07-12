@@ -48,6 +48,7 @@ CHROMA_OPENING_DEFAULTS = {
     "height_percent": 100.0, "opacity": 1.0, "use_audio": False,
 }
 ALBUM_LOOP_DEFAULTS = {"count": 1}
+EXPORT_RESOLUTIONS = {"1080p", "2160p"}
 
 VISUALIZER_PATTERNS = {"bars", "mirror", "wave", "circle", "line"}
 VISUALIZER_MOTIONS = {"calm", "normal", "lively", "max"}
@@ -142,6 +143,14 @@ def _sanitize_album_loop(value: dict | None) -> dict:
     except (TypeError, ValueError, OverflowError):
         count = ALBUM_LOOP_DEFAULTS["count"]
     return {"count": max(1, min(10, count))}
+
+
+def _sanitize_export_resolution(value, default: str = "1080p") -> str:
+    fallback = str(default or "1080p").strip().lower()
+    if fallback not in EXPORT_RESOLUTIONS:
+        fallback = "1080p"
+    resolution = str(value or "").strip().lower()
+    return resolution if resolution in EXPORT_RESOLUTIONS else fallback
 
 
 def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
@@ -286,6 +295,7 @@ def build_initial(folder: Path) -> dict:
     effects = _sanitize_effects(cfg.get("effects") if isinstance(cfg.get("effects"), dict) else {})
     chroma_opening = _sanitize_chroma_opening(
         cfg.get("chroma_opening") if isinstance(cfg.get("chroma_opening"), dict) else {})
+    export_resolution = _sanitize_export_resolution(cfg.get("export_resolution"))
     return {"version": VERSION, "video_name": folder.name, "source": "derived", "total_duration": total,
             "target_duration": target, "audio_clips": audio, "excluded": [], "visual_segments": segs,
             "video_tracks": [{"id": "V1", "segments": segs}], "text_lane": text,
@@ -294,7 +304,8 @@ def build_initial(folder: Path) -> dict:
                 "A1": {"muted": False}, "V1": {"hidden": False}, "T1": {"hidden": False},
             }, "now_playing": now_playing, "visualizer": visualizer, "icon": icon,
             "effects": effects, "chroma_opening": chroma_opening,
-            "album_loop": dict(ALBUM_LOOP_DEFAULTS), "updated_at": None}
+            "album_loop": dict(ALBUM_LOOP_DEFAULTS),
+            "export_resolution": export_resolution, "updated_at": None}
 
 
 def normalize(model: dict) -> dict:
@@ -387,6 +398,7 @@ def normalize(model: dict) -> dict:
         model.get("now_playing") if isinstance(model.get("now_playing"), dict) else {})
     model["album_loop"] = _sanitize_album_loop(
         model.get("album_loop") if isinstance(model.get("album_loop"), dict) else {})
+    model["export_resolution"] = _sanitize_export_resolution(model.get("export_resolution"))
     model["version"] = VERSION
     # updated_at はここでは触らない。毎回現在時刻を刻むと load() 経由の GET/PUT 検査で
     # 値が揺れ、楽観ロックが常に 409 になる。刻印は save() の書き込み直前のみ。
@@ -406,6 +418,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         before_effects = json.dumps(d.get("effects") or {}, sort_keys=True)
         before_chroma = json.dumps(d.get("chroma_opening") or {}, sort_keys=True)
         before_album_loop = json.dumps(d.get("album_loop") or {}, sort_keys=True)
+        before_export_resolution = d.get("export_resolution")
         missing_tracks = not isinstance(d.get("video_tracks"), list) or not d.get("video_tracks") or not isinstance(d.get("text_tracks"), list) or not d.get("text_tracks")
         if "now_playing" not in d:
             cfg = _channel_config(Path(folder)); np = dict(NOW_PLAYING_DEFAULTS)
@@ -415,6 +428,8 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         # the final override. Merge partial legacy payloads instead of making
         # every client resend the complete visualizer object.
         cfg = _channel_config(Path(folder))
+        if "export_resolution" not in d:
+            d["export_resolution"] = _sanitize_export_resolution(cfg.get("export_resolution"))
         channel_visualizer = cfg.get("visualizer") if isinstance(cfg.get("visualizer"), dict) else {}
         saved_visualizer = d.get("visualizer") if isinstance(d.get("visualizer"), dict) else {}
         visualizer = dict(channel_visualizer); visualizer.update(saved_visualizer)
@@ -439,7 +454,8 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
                 or before_icon != json.dumps(normalized.get("icon") or {}, sort_keys=True)
                 or before_effects != json.dumps(normalized.get("effects") or {}, sort_keys=True)
                 or before_chroma != json.dumps(normalized.get("chroma_opening") or {}, sort_keys=True)
-                or before_album_loop != json.dumps(normalized.get("album_loop") or {}, sort_keys=True)):
+                or before_album_loop != json.dumps(normalized.get("album_loop") or {}, sort_keys=True)
+                or before_export_resolution != normalized.get("export_resolution")):
             atomic_write(p, normalized)
         return normalized
     d = build_initial(Path(folder))
@@ -449,7 +465,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
 
 def save(folder: Path, model: dict) -> dict:
     current = build_initial(Path(folder))
-    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "chroma_opening", "album_loop"}
+    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "chroma_opening", "album_loop", "export_resolution"}
     incoming = {k: v for k, v in model.items() if k in allowed}
     # Older clients only sent text_lane.  build_initial() already has text_tracks,
     # so without this promotion normalize() would let the generated empty T1 win.

@@ -553,6 +553,20 @@
       "category": "production"
     },
     {
+      "key": "channel.export_resolution",
+      "label_ja": "書き出し解像度",
+      "description_ja": "ffmpeg書き出しの解像度",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "export_resolution"
+      },
+      "type": "string",
+      "choices": ["1080p", "2160p"],
+      "category": "production"
+    },
+    {
       "key": "channel.suno.prompt",
       "label_ja": "SUNOスタイル",
       "description_ja": "楽曲生成プロンプト・好み",
