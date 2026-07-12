@@ -522,6 +522,7 @@
 .pr-program .atl-preview-canvas>img{position:relative;z-index:10}
 .pr-program .atl-preview-canvas>img.atl-preview-video-layer{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;pointer-events:none}
 .atl-visualizer-overlay{position:absolute;z-index:20;width:var(--visualizer-width,72%);height:var(--visualizer-height,16.67%);pointer-events:none;opacity:1}
+.atl-noise-overlay{position:absolute;inset:0;z-index:12;width:100%;height:100%;pointer-events:none}.atl-icon-overlay{position:absolute;z-index:18;pointer-events:none}.atl-noise-overlay[hidden],.atl-icon-overlay[hidden]{display:none}.atl-preview-canvas:has(.atl-vintage-preview)::after{content:"";position:absolute;inset:0;z-index:13;pointer-events:none;background:radial-gradient(ellipse at center,transparent 48%,rgba(0,0,0,.58) 100%)}
 .pr-program .atl-now-playing-overlay{z-index:30}
 .pr-program .atl-free-text-overlay{position:absolute;z-index:40;pointer-events:none;max-width:90%;font-weight:600;text-align:center;white-space:pre-wrap}.pr-program .atl-free-text-overlay.is-selected-preview{z-index:45;filter:drop-shadow(0 0 2px #0008)}
 .atl-visualizer-overlay[hidden]{display:none}

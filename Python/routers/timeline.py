@@ -72,6 +72,10 @@ class VisualizerTemplateUpdate(BaseModel):
     channel_id: str
     visualizer: dict
 
+class DecorationTemplateUpdate(BaseModel):
+    channel_id: str
+    value: dict
+
 def _intro_asset(folder: Path) -> Optional[Path]:
     try:
         cfg = json.loads((folder.parent / ".app_channel_config.json").read_text(encoding="utf-8"))
@@ -143,6 +147,25 @@ def save_visualizer_template(video_name: str, req: VisualizerTemplateUpdate):
                 channel_id=req.channel_id, actor="timeline-ui"))
         except KeyError:
             raise HTTPException(400, f"未対応のビジュアライザー設定です: {key}")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    return {"status":"ok","saved":len(results)}
+
+@router.post("/{video_name}/{kind}-template")
+def save_decoration_template(video_name: str, kind: str, req: DecorationTemplateUpdate):
+    _folder(video_name)
+    if kind not in {"icon", "effects"}:
+        raise HTTPException(404, "未対応のテンプレートです")
+    results=[]
+    for key, value in req.value.items():
+        try:
+            results.append(config_set(
+                f"channel.{kind}.{key}",
+                json.dumps(value, ensure_ascii=False) if isinstance(value,(dict,list)) else
+                ("true" if value is True else "false" if value is False else str(value)),
+                channel_id=req.channel_id, actor="timeline-ui"))
+        except KeyError:
+            raise HTTPException(400, f"未対応の{kind}設定です: {key}")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
     return {"status":"ok","saved":len(results)}

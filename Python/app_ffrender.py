@@ -36,6 +36,8 @@ import wave
 from pathlib import Path
 from typing import Optional
 
+from PIL import Image, ImageDraw
+
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
@@ -69,7 +71,7 @@ def _run_ff(cmd: list, label: str) -> float:
         raise RuntimeError(f"[{label}] ffmpeg 失敗 (rc={r.returncode})\n"
                            f"cmd: {' '.join(str(c) for c in cmd[:12])} ...\n"
                            f"{(r.stderr or '')[-2000:]}")
-    print(f"  ✓ {label}: {dt:.1f}s")
+    print(f"  OK {label}: {dt:.1f}s")
     return dt
 
 
@@ -121,7 +123,7 @@ def _load_channel_ffrender(vol_folder: Path) -> dict:
         cfg = cc.get("ffrender") if isinstance(cc, dict) else None
         return cfg if isinstance(cfg, dict) else {}
     except Exception as e:
-        print(f"  ⚠ channel ffrender 設定読み込み失敗（既定を使用）: {e}")
+        print(f"  WARNING: channel ffrender 設定読み込み失敗（既定を使用）: {e}")
         return {}
 
 
@@ -140,7 +142,20 @@ def _load_channel_visualizer(vol_folder: Path) -> dict:
         cfg = data.get("visualizer") if isinstance(data, dict) else None
         return cfg if isinstance(cfg, dict) else {}
     except Exception as e:
-        print(f"  ⚠ channel visualizer 設定読み込み失敗（既定を使用）: {e}")
+        print(f"  WARNING: channel visualizer 設定読み込み失敗（既定を使用）: {e}")
+        return {}
+
+
+def _load_channel_block(vol_folder: Path, key: str) -> dict:
+    try:
+        path = Path(vol_folder).parent / ".app_channel_config.json"
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        value = data.get(key) if isinstance(data, dict) else None
+        return value if isinstance(value, dict) else {}
+    except Exception as exc:
+        print(f"  WARNING: channel {key} 設定読み込み失敗（既定を使用）: {exc}")
         return {}
 
 
@@ -235,7 +250,7 @@ def load_manifest(vol_folder: Path) -> Optional[dict]:
         try:
             return json.loads(p.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"  ⚠ manifest 読み込み失敗（無視して再生成）: {e}")
+            print(f"  WARNING: manifest 読み込み失敗（無視して再生成）: {e}")
     return None
 
 
@@ -286,7 +301,7 @@ def derive_order_from_clips(clips: list, music_dir: Path) -> list:
         if f:
             order.append(f)
         else:
-            print(f"  ⚠ timeline の曲 '{c.get('title')}' を music/ で解決できず（スキップ）")
+            print(f"  WARNING: timeline の曲 '{c.get('title')}' を music/ で解決できず（スキップ）")
     return order
 
 
@@ -428,7 +443,7 @@ def resolve_composition(vol_folder: Path, *, target_override: Optional[float],
                 audio_specs.append(spec)
             else:
                 missing.append(clip.get("filename") or clip.get("path"))
-        if missing: print(f"  ⚠ vol_timeline.json の曲が見つかりません: {missing}")
+        if missing: print(f"  WARNING: vol_timeline.json の曲が見つかりません: {missing}")
         visuals = timeline.get("visual_segments") or []
         imgs = [(Path(str(x.get("image_path") or "")) if Path(str(x.get("image_path") or "")).is_absolute() else vol_folder / str(x.get("image_path") or "")) for x in visuals]
         imgs = [p for p in imgs if p.is_file()]
@@ -442,7 +457,7 @@ def resolve_composition(vol_folder: Path, *, target_override: Optional[float],
         for n in m["audio"]["order"]:
             (order.append(by_name[n]) if n in by_name else missing.append(n))
         if missing:
-            print(f"  ⚠ manifest の曲が music/ に不在: {missing}")
+            print(f"  WARNING: manifest の曲が music/ に不在: {missing}")
         main = (vol_folder / m["images"]["main"]) if m["images"].get("main") else None
         if main and not main.exists():
             main = None
@@ -802,7 +817,7 @@ def _load_channel_burn(vol_folder: Path) -> dict:
         b = cc.get("burn_titles") if isinstance(cc, dict) else None
         return {k: v for k, v in b.items() if k != "mode"} if isinstance(b, dict) else {}
     except Exception as e:
-        print(f"  ⚠ channel burn 設定読み込み失敗（既定を使用）: {e}")
+        print(f"  WARNING: channel burn 設定読み込み失敗（既定を使用）: {e}")
         return {}
 
 
@@ -1152,6 +1167,141 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     return cfg
 
 
+def resolve_icon_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -> dict:
+    cfg = {
+        "enabled": False, "image_path": "", "rotate": True,
+        "period_seconds": 20.0, "size_px": 430, "circle_crop": True,
+        "center_hole": False, "position": "top-center", "margin": 64,
+        "opacity": 1.0,
+    }
+    if isinstance(channel_cfg, dict):
+        cfg.update(channel_cfg)
+    if isinstance(timeline_cfg, dict):
+        cfg.update(timeline_cfg)
+    cfg["enabled"] = cfg.get("enabled") is True
+    cfg["image_path"] = str(cfg.get("image_path") or "").strip()
+    cfg["rotate"] = cfg.get("rotate") is not False
+    cfg["period_seconds"] = _finite_float(cfg.get("period_seconds"), 20, minimum=5, maximum=60)
+    cfg["size_px"] = int(_finite_float(cfg.get("size_px"), 430, minimum=100, maximum=900))
+    cfg["circle_crop"] = cfg.get("circle_crop") is not False
+    cfg["center_hole"] = cfg.get("center_hole") is True
+    positions = {"top-left", "top-center", "top-right", "middle-left", "center",
+                 "middle-right", "bottom-left", "bottom-center", "bottom-right"}
+    position = str(cfg.get("position") or "top-center").lower()
+    cfg["position"] = position if position in positions else "top-center"
+    cfg["margin"] = int(_finite_float(cfg.get("margin"), 64, minimum=0, maximum=1080))
+    cfg["opacity"] = _finite_float(cfg.get("opacity"), 1, minimum=0, maximum=1)
+    rotated_size = int(math.ceil(cfg["size_px"] * 1.4143)) if cfg["rotate"] else cfg["size_px"]
+    edge_x = cfg["position"].endswith(("-left", "-right"))
+    edge_y = cfg["position"].startswith(("top-", "bottom-"))
+    if edge_x:
+        cfg["margin"] = min(cfg["margin"], max(0, WIDTH - rotated_size))
+    if edge_y:
+        cfg["margin"] = min(cfg["margin"], max(0, HEIGHT - rotated_size))
+    return cfg
+
+
+def resolve_effects_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -> dict:
+    cfg = {"vintage": False, "noise_sand": False, "noise_horizontal": False,
+           "noise_vertical": False, "noise_strength": 30}
+    if isinstance(channel_cfg, dict):
+        cfg.update(channel_cfg)
+    if isinstance(timeline_cfg, dict):
+        cfg.update(timeline_cfg)
+    for key in ("vintage", "noise_sand", "noise_horizontal", "noise_vertical"):
+        cfg[key] = cfg.get(key) is True
+    cfg["noise_strength"] = int(_finite_float(
+        cfg.get("noise_strength"), 30, minimum=5, maximum=100))
+    return cfg
+
+
+def effects_enabled(cfg: dict) -> bool:
+    return any(cfg.get(key) for key in
+               ("vintage", "noise_sand", "noise_horizontal", "noise_vertical"))
+
+
+def prepare_icon_image(vol_folder: Path, cfg: dict, scratch: Path) -> Optional[Path]:
+    if not cfg.get("enabled") or not cfg.get("image_path"):
+        return None
+    raw = Path(str(cfg["image_path"])).expanduser()
+    source = raw if raw.is_absolute() else Path(vol_folder) / raw
+    if not source.is_file():
+        print(f"  WARNING: アイコン画像が見つからないため無効化: {cfg['image_path']}")
+        return None
+    with Image.open(source) as opened:
+        image = opened.convert("RGBA")
+        scale = max(1024 / image.width, 1024 / image.height)
+        resized = image.resize((max(1, round(image.width * scale)),
+                                max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
+        left = (resized.width - 1024) // 2
+        top = (resized.height - 1024) // 2
+        prepared = resized.crop((left, top, left + 1024, top + 1024))
+    alpha = Image.new("L", (1024, 1024), 255)
+    draw = ImageDraw.Draw(alpha)
+    if cfg.get("circle_crop"):
+        alpha = Image.new("L", (1024, 1024), 0)
+        draw = ImageDraw.Draw(alpha)
+        draw.ellipse((0, 0, 1023, 1023), fill=255)
+    if cfg.get("center_hole"):
+        radius = round(1024 * .09)
+        draw.ellipse((512 - radius, 512 - radius, 512 + radius, 512 + radius), fill=0)
+    prepared.putalpha(alpha)
+    out = scratch / "icon_prepared.png"
+    prepared.save(out)
+    return out
+
+
+def _append_effect_filters(filters: list[str], current: str, cfg: dict,
+                           prefix: str) -> str:
+    strength = int(cfg.get("noise_strength", 30))
+    if cfg.get("vintage"):
+        target = f"{prefix}_vintage"
+        filters.append(f"[{current}]curves=preset=vintage,vignette[{target}]")
+        current = target
+    if cfg.get("noise_sand"):
+        target = f"{prefix}_sand"
+        filters.append(f"[{current}]noise=alls={strength * .5:g}:allf=t+u[{target}]")
+        current = target
+    if cfg.get("noise_horizontal"):
+        base = f"{prefix}_horizontal_base"
+        noise = f"{prefix}_horizontal_noise"
+        target = f"{prefix}_horizontal"
+        opacity = .03 + strength / 100 * .22
+        filters.append(f"[{current}]drawgrid=w=32767:h=16:t=1:c=black@0.12,format=gbrp[{base}]")
+        filters.append(f"color=black:s=4x1080:r={FPS},format=gray,noise=alls=100:allf=t+u,"
+                       f"scale=1920:1080:flags=neighbor,format=gbrp[{noise}]")
+        filters.append(f"[{base}][{noise}]blend=all_mode=screen:all_opacity={opacity:.4f}[{target}]")
+        current = target
+    if cfg.get("noise_vertical"):
+        base = f"{prefix}_vertical_base"
+        noise = f"{prefix}_vertical_noise"
+        target = f"{prefix}_vertical"
+        opacity = .02 + strength / 100 * .20
+        filters.append(f"[{current}]drawgrid=w=16:h=32767:t=1:c=black@0.12,format=gbrp[{base}]")
+        filters.append(f"color=black:s=1920x4:r={FPS},format=gray,noise=alls=100:allf=t+u,"
+                       f"scale=1920:1080:flags=neighbor,format=gbrp[{noise}]")
+        filters.append(f"[{base}][{noise}]blend=all_mode=screen:all_opacity={opacity:.4f}[{target}]")
+        current = target
+    return current
+
+
+def _append_icon_filters(filters: list[str], current: str, input_index: int,
+                         cfg: dict, prefix: str) -> str:
+    size = int(cfg["size_px"])
+    source = f"{prefix}_source"
+    chain = f"[{input_index}:v]format=rgba,scale={size}:{size}"
+    if cfg.get("rotate"):
+        rotated = int(math.ceil(size * 1.4143))
+        chain += (f",rotate=2*PI*t/{float(cfg['period_seconds']):g}:"
+                  f"ow={rotated}:oh={rotated}:c=black@0")
+    chain += f",colorchannelmixer=aa={float(cfg['opacity']):g}[{source}]"
+    filters.append(chain)
+    x, y = _visualizer_xy(cfg["position"], int(cfg["margin"]))
+    target = f"{prefix}_overlay"
+    filters.append(f"[{current}][{source}]overlay=x={x}:y={y}:shortest=1[{target}]")
+    return target
+
+
 def _visualizer_xy(position: str, margin: int) -> tuple[str, str]:
     parts = position.split("-")
     vert = parts[0] if len(parts) > 1 else "middle"
@@ -1229,33 +1379,54 @@ def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: P
     return out
 
 
-def build_repeated_first_song_visualizer(video: Path, first_song: Path, cfg: dict,
-                                         total: float, out: Path, *, crf: int,
-                                         scratch: Path) -> Path:
-    """Render the visualizer once from song 1, then stream-copy loop it.
-
-    Long BGM videos do not need frame-accurate spectrum after the first song.
-    Keeping a pre-rendered loop preserves motion while avoiding a full-duration
-    audio analysis and video encode on every export.
-    """
-    loop_duration = min(
-        max(GOP_FRAMES * 1001 / 30000, float(cfg.get("loop_seconds") or 20)),
-        probe_duration(first_song), total)
-    loop = scratch / "visualizer_first_song_loop.mp4"
-    source, x, y, pattern = _visualizer_filter_source(1, cfg)
-    graph = f"{source};[0:v][viz]overlay=x={x}:y={y}:shortest=1[v]"
-    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-             "-i", str(video), "-i", str(first_song), "-filter_complex", graph,
-             "-map", "[v]", "-t", f"{loop_duration:.3f}", "-an", "-r", FPS,
+def build_repeated_v1_decorations(video: Path, first_song: Optional[Path],
+                                  visualizer_cfg: dict, icon_cfg: dict,
+                                  effects_cfg: dict, icon_path: Optional[Path],
+                                  total: float, out: Path, *, crf: int,
+                                  scratch: Path) -> Path:
+    """Bake active V1 decorations once and stream-copy the resulting loop."""
+    loop_seconds = float(visualizer_cfg.get("loop_seconds") or 20)
+    if icon_cfg.get("enabled") and icon_cfg.get("rotate"):
+        period = float(icon_cfg["period_seconds"])
+        loop_duration = period * math.ceil(max(20, loop_seconds) / period)
+    else:
+        loop_duration = loop_seconds
+    loop_duration = min(max(GOP_FRAMES * 1001 / 30000, loop_duration), total)
+    loop = scratch / "v1_decorations_loop.mp4"
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video)]
+    audio_index = None
+    if visualizer_cfg.get("enabled") and first_song is not None:
+        audio_index = len(cmd)
+        cmd += ["-stream_loop", "-1", "-i", str(first_song)]
+        audio_index = 1
+    icon_index = None
+    if icon_cfg.get("enabled") and icon_path is not None:
+        icon_index = 1 + (1 if audio_index is not None else 0)
+        cmd += ["-loop", "1", "-i", str(icon_path)]
+    filters = []
+    current = "0:v"
+    if effects_enabled(effects_cfg):
+        current = _append_effect_filters(filters, current, effects_cfg, "loop_effect")
+    if icon_index is not None:
+        current = _append_icon_filters(filters, current, icon_index, icon_cfg, "loop_icon")
+    pattern = "none"
+    if audio_index is not None:
+        source, x, y, pattern = _visualizer_filter_source(audio_index, visualizer_cfg)
+        filters.append(source)
+        filters.append(f"[{current}][viz]overlay=x={x}:y={y}:shortest=1[loop_visualizer]")
+        current = "loop_visualizer"
+    graph = ";".join(filters)
+    _run_ff(cmd + ["-filter_complex", graph,
+             "-map", f"[{current}]", "-t", f"{loop_duration:.3f}", "-an", "-r", FPS,
              "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
              "-pix_fmt", "yuv420p", "-bf", "0", "-g", str(GOP_FRAMES),
              "-sc_threshold", "0", "-video_track_timescale", "30000", str(loop)],
-            f"1曲目Spectrumループ作成 ({pattern}, {loop_duration:.1f}s)")
+            f"V1装飾ループ作成 ({pattern}, {loop_duration:.1f}s)")
     frames = max(1, round(float(total) * 30000 / 1001))
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-stream_loop", "-1", "-i", str(loop), "-frames:v", str(frames),
              "-c", "copy", "-video_track_timescale", "30000", str(out)],
-            "1曲目Spectrumを全尺へコピーループ")
+            "V1装飾を全尺へコピーループ")
     return out
 
 
@@ -1513,7 +1684,7 @@ def _text_track_clauses(tracks: list, scratch: Path, total: float) -> list:
             raw_x=xs.get(horiz,xs['center']); raw_y=ys.get(vert,ys['center'])
             clauses.append(f"drawtext=fontfile='{font}':textfile='{tf}':fontsize={font_size}:fontcolor={color}:alpha='{alpha}':borderw={border_width}:bordercolor={border}:x=max(0\\,min(w-text_w\\,{raw_x})):y=max(0\\,min(h-text_h\\,{raw_y})):enable='between(t,{start:.3f},{end:.3f})'")
     if skipped_unedited:
-        print(f"⚠ 未編集のテキストクリップ {skipped_unedited} 件をスキップ")
+        print(f"WARNING: 未編集のテキストクリップ {skipped_unedited} 件をスキップ")
     return clauses
 
 
@@ -1531,7 +1702,8 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
 
 def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
                                  video_tracks: list, vol_folder: Path,
-                                 visualizer_cfg: dict, clips: list,
+                                 visualizer_cfg: dict, icon_cfg: dict,
+                                 effects_cfg: dict, icon_path: Optional[Path], clips: list,
                                  now_playing_cfg: dict, text_tracks: list,
                                  out: Path, crf: int, scratch: Path,
                                  chunk_safe: bool = False) -> Path:
@@ -1539,10 +1711,14 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     duration = max(0.0, probe_duration(video))
     items = _video_track_items(video_tracks, vol_folder)
     use_visualizer = bool(visualizer_cfg.get("enabled") and audio is not None)
+    use_icon = bool(icon_cfg.get("enabled") and icon_path is not None)
+    use_effects = effects_enabled(effects_cfg)
     now_clauses = _now_playing_clauses(clips, now_playing_cfg, scratch, duration)
     text_clauses = _text_track_clauses(text_tracks, scratch, duration)
     active = []
+    if use_effects: active.append("effects")
     if items: active.append("video_tracks")
+    if use_icon: active.append("icon")
     if use_visualizer: active.append("visualizer")
     if now_clauses: active.append("now_playing")
     if text_clauses: active.append("text")
@@ -1554,12 +1730,17 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     if use_visualizer:
         audio_index = 1
         cmd += ["-i", str(audio)]
-    image_start = 2 if use_visualizer else 1
+    icon_index = 1 + (1 if use_visualizer else 0) if use_icon else None
+    if use_icon:
+        cmd += ["-loop", "1", "-i", str(icon_path)]
+    image_start = 1 + (1 if use_visualizer else 0) + (1 if use_icon else 0)
     for path, _, _ in items:
         cmd += ["-loop", "1", "-i", str(path)]
 
     filters = []
     current = "0:v"
+    if use_effects:
+        current = _append_effect_filters(filters, current, effects_cfg, "single_effect")
     for offset, (_, start, end) in enumerate(items):
         input_index = image_start + offset
         image_label = f"overlay_image_{offset}"
@@ -1567,6 +1748,8 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
         filters.append(f"[{input_index}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,format=rgba[{image_label}]")
         filters.append(f"[{current}][{image_label}]overlay=(W-w)/2:(H-h)/2:enable='between(t,{start:.3f},{end:.3f})'[{next_label}]")
         current = next_label
+    if icon_index is not None:
+        current = _append_icon_filters(filters, current, icon_index, icon_cfg, "single_icon")
     if use_visualizer:
         source, x, y, _ = _visualizer_filter_source(audio_index, visualizer_cfg)
         filters.append(source)
@@ -1595,7 +1778,7 @@ def _typewriter_speed(clip: dict, text_length: int, start: float, end: float) ->
     available = max(0.001, end - start - 0.3)
     required = text_length / available if text_length else speed
     if required > speed:
-        print(f"  ⚠ タイプライター速度を {speed:.2f} → {required:.2f} 文字/秒に自動調整")
+        print(f"  WARNING: タイプライター速度を {speed:.2f} から {required:.2f} 文字/秒に自動調整")
         speed = required
     return speed
 
@@ -1629,7 +1812,7 @@ def _fixed_text_origin(text: str, font: Path, font_size: int, horiz: str,
         y = margin if vert == "top" else (HEIGHT - height) / 2 if vert in {"center", "middle"} else HEIGHT - height - margin
         return f"{max(0, min(WIDTH-width, x)):.1f}", f"{max(0, min(HEIGHT-height, y)):.1f}"
     except Exception as exc:
-        print(f"  ⚠ Pillowで全文サイズを取得できないため左寄せにフォールバック: {exc}")
+        print(f"  WARNING: Pillowで全文サイズを取得できないため左寄せにフォールバック: {exc}")
         return str(margin), str(margin if vert == "top" else max(margin, (HEIGHT-font_size)//2))
 
 
@@ -1871,7 +2054,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     num = _extract_num(vol_folder)
     music_dir = vol_folder / "music"
     if not music_dir.exists() or not any(music_dir.glob("*.mp3")):
-        print(f"❌ music/ に mp3 がありません: {music_dir}")
+        print(f"ERROR: music/ に mp3 がありません: {music_dir}")
         return None
 
     cache_dir = CACHE_ROOT / re.sub(r"[^A-Za-z0-9_.-]+", "_", vol_folder.name)
@@ -1890,14 +2073,14 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     songs, main_img, subs, target, audio_bitrate, fade, burn, audio_specs = resolve_composition(
         vol_folder, target_override=target, cache_dir=cache_dir, bitrate=audio_bitrate)
     if not songs:
-        print("❌ 曲順が空（music/ 解決に失敗）")
+        print("ERROR: 曲順が空（music/ 解決に失敗）")
         return None
     ffr_cfg = _load_channel_ffrender(vol_folder)
     if ffr_cfg.get("video_crf") is not None:
         try:
             crf = int(ffr_cfg.get("video_crf"))
         except Exception:
-            print(f"  ⚠ video_crf が不正です（既定を使用）: {ffr_cfg.get('video_crf')}")
+            print(f"  WARNING: video_crf が不正です（既定を使用）: {ffr_cfg.get('video_crf')}")
     if ffr_cfg.get("audio_bitrate"):
         audio_bitrate = str(ffr_cfg.get("audio_bitrate"))
     loop_seconds = float(ffr_cfg.get("loop_seconds") or (GOP_FRAMES * 1001 / 30000))
@@ -1918,11 +2101,11 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             intro_sec = probe_duration(cand)
             print(f"  冒頭SE: {cand.name} ({intro_sec:.2f}s)")
         else:
-            print(f"  ⚠ 冒頭SEが見つかりません: {ffr_cfg.get('intro_sound')}")
+            print(f"  WARNING: 冒頭SEが見つかりません: {ffr_cfg.get('intro_sound')}")
             intro_audio = None
             intro_sec = 0.0
     if intro_sec >= target:
-        print(f"❌ 冒頭SEが目標尺以上です: intro={intro_sec:.2f}s target={target:.2f}s")
+        print(f"ERROR: 冒頭SEが目標尺以上です: intro={intro_sec:.2f}s target={target:.2f}s")
         return None
     # 焼き込みの最終決定: 既定 → channel 設定（フォント/サイズ/色/位置）→ Premiere 由来位置、で合成。
     # mode は burn_mode 明示優先、無ければ manifest 継承。結果は manifest に永続化。
@@ -1956,13 +2139,22 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     visualizer_cfg = resolve_visualizer_config(
         _load_channel_visualizer(vol_folder),
         timeline_data.get("visualizer") if isinstance(timeline_data, dict) else None)
+    icon_cfg = resolve_icon_config(
+        _load_channel_block(vol_folder, "icon"),
+        timeline_data.get("icon") if isinstance(timeline_data, dict) else None)
+    effects_cfg = resolve_effects_config(
+        _load_channel_block(vol_folder, "effects"),
+        timeline_data.get("effects") if isinstance(timeline_data, dict) else None)
+    icon_path = prepare_icon_image(vol_folder, icon_cfg, scratch)
+    if icon_cfg.get("enabled") and icon_path is None:
+        icon_cfg = {**icon_cfg, "enabled": False}
     track_states = timeline_data.get("track_states") if isinstance(timeline_data, dict) else {}
     track_states = track_states if isinstance(track_states, dict) else {}
     audio_muted = bool((track_states.get("A1") or {}).get("muted"))
     v1_hidden = bool((track_states.get("V1") or {}).get("hidden"))
     song_clips = compute_placement(songs, song_target, audio_specs)
     if not song_clips:
-        print("❌ 配置クリップが空（曲尺取得に失敗）")
+        print("ERROR: 配置クリップが空（曲尺取得に失敗）")
         return None
     clips = _shift_clips(song_clips, intro_sec) if intro_sec else song_clips
     for timeline_index, clip in enumerate(clips):
@@ -2047,7 +2239,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                 crf=crf, scratch=scratch,
                 transition=str(intro_cfg.get("transition") or "fade"))
         else:
-            print(f"  ⚠ 冒頭ディゾルブ画像が見つかりません: from={from_name} to={to_name}")
+            print(f"  WARNING: 冒頭ディゾルブ画像が見つかりません: from={from_name} to={to_name}")
 
     hybrid_applied = False
     if intro_video:
@@ -2093,8 +2285,10 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
                 track.get("segments") and
                 not (track_states.get(str(track.get("id") or "")) or {}).get("hidden")
                 for track in (timeline_data.get("video_tracks") or [])[1:])
-            if visualizer_cfg.get("enabled"):
-                print("  ビジュアライザーONのためスタンプ無効（全編エンコード）")
+            decorations_active = (visualizer_cfg.get("enabled") or icon_cfg.get("enabled")
+                                  or effects_enabled(effects_cfg))
+            if decorations_active:
+                print("  V1装飾ONのためスタンプ無効（装飾経路で処理）")
                 video = build_video_with_crossfades(timeline_segments, scratch / "video.mp4", crf=crf)
             elif v1_hidden:
                 # The black/transparent V1 replacement is applied below; do
@@ -2139,26 +2333,23 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             now_playing_cfg["enabled"] = False
 
     if visualizer_cfg.get("enabled") and audio is None:
-        print("  ⚠ ビジュアライザーONですがA1消音のため焼き込みをスキップ")
+        print("  WARNING: ビジュアライザーONですがA1消音のため焼き込みをスキップ")
 
-    # Static BGM channels can reuse song 1's spectrum animation.  Once the
-    # loop exists, extending it to three hours and adding a short intro message
-    # are both copy-oriented operations instead of a full-duration encode.
-    # The loop repeats the base video's first seconds verbatim, so it is only
-    # valid when V1 is a single static image with no separate intro video.
+    # A static V1 can reuse a short decoration loop. The loop includes effects,
+    # icon and spectrum in their final layer order before timed text is added.
     static_v1 = len({str(s[0]) for s in segments}) == 1 and intro_video is None
-    if (visualizer_cfg.get("enabled") and audio is not None and song_clips
-            and not static_v1
-            and not any((t.get("segments") or []) for t in video_tracks[1:])):
-        print("  ⚠ V1が静止1枚でないためSpectrumループを使わず完全同期(1パス統合)で焼き込み")
-    if (visualizer_cfg.get("enabled") and audio is not None and song_clips
-            and static_v1
-            and not any((t.get("segments") or []) for t in video_tracks[1:])):
+    upper_video_active = any((t.get("segments") or []) for t in video_tracks[1:])
+    spectrum_active = bool(visualizer_cfg.get("enabled") and audio is not None and song_clips)
+    decorations_active = spectrum_active or icon_cfg.get("enabled") or effects_enabled(effects_cfg)
+    if decorations_active and (not static_v1 or upper_video_active):
+        print("  V1装飾ループを使わず完全同期（1パス統合）で焼き込み")
+    if decorations_active and static_v1 and not upper_video_active:
         plain_video = video
-        video = build_repeated_first_song_visualizer(
-            video, Path(song_clips[0]["path"]), visualizer_cfg, total,
-            scratch / "video_visualizer_looped.mp4", crf=crf, scratch=scratch)
-        if visualizer_cfg.get("start_after_intro_text"):
+        video = build_repeated_v1_decorations(
+            video, Path(song_clips[0]["path"]) if spectrum_active else None,
+            visualizer_cfg, icon_cfg, effects_cfg, icon_path, total,
+            scratch / "video_decorations_looped.mp4", crf=crf, scratch=scratch)
+        if spectrum_active and visualizer_cfg.get("start_after_intro_text"):
             authored_ends = [
                 float(c.get("end") or 0) for t in text_tracks
                 for c in (t.get("clips") or [])
@@ -2179,16 +2370,19 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
             text_tracks = []
             now_playing_cfg = {**now_playing_cfg, "enabled": False}
         visualizer_cfg = {**visualizer_cfg, "enabled": False}
+        icon_cfg = {**icon_cfg, "enabled": False}
+        effects_cfg = {key: False for key in effects_cfg}
         hybrid_applied = True
 
-    # Final compositing contract (back to front): V1 -> V2+ -> visualizer ->
+    # Final compositing contract (back to front): V1 -> effects -> V2+ -> icon -> visualizer ->
     # Now Playing -> authored T1/T2/... text. Hybrid chunks already contain the
     # final two layers in this same order and never run when a visualizer/V2+ is
     # active, so they must not be applied twice here.
     if not hybrid_applied:
         video = compose_overlays_single_pass(
             video, audio, video_tracks=video_tracks, vol_folder=vol_folder,
-            visualizer_cfg=visualizer_cfg, clips=clips,
+            visualizer_cfg=visualizer_cfg, icon_cfg=icon_cfg,
+            effects_cfg=effects_cfg, icon_path=icon_path, clips=clips,
             now_playing_cfg=now_playing_cfg, text_tracks=text_tracks,
             out=scratch / "video_overlays.mp4", crf=crf, scratch=scratch)
 
@@ -2216,7 +2410,7 @@ def render(vol_folder: Path, *, target: Optional[float] = None, output_path: Opt
     print(f"  SRT={srt_path.name} / TC={tc_path.name}")
     print("=" * 60)
     if abs(dur - target) > 2.0:
-        print(f"  ⚠ 尺が target と {abs(dur - target):.1f}s ずれています")
+        print(f"  WARNING: 尺が target と {abs(dur - target):.1f}s ずれています")
     return output_path
 
 
@@ -2252,7 +2446,7 @@ def main():
     args = ap.parse_args()
 
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        print("❌ ffmpeg / ffprobe が見つかりません（brew install ffmpeg）")
+        print("ERROR: ffmpeg / ffprobe が見つかりません（brew install ffmpeg）")
         sys.exit(1)
 
     vol = Path(args.vol_folder).expanduser()
@@ -2281,7 +2475,7 @@ def main():
                      use_audio_cache=not args.no_audio_cache,
                      burn_mode=args.burn_titles)
     except Exception as e:
-        print(f"❌ ffrender 失敗: {e}")
+        print(f"ERROR: ffrender 失敗: {e}")
         sys.exit(1)
     sys.exit(0 if out and out.exists() else 1)
 

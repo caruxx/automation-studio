@@ -1214,6 +1214,51 @@
       "key": "channel.visualizer.opacity", "label_ja": "ビジュアライザーの不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
     },
     {
+      "key": "channel.icon.enabled", "label_ja": "回転アイコン", "description_ja": "画像アイコンを映像へ合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.enabled"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.icon.image_path", "label_ja": "アイコン画像", "description_ja": "volフォルダからの相対パス", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.image_path"}, "type": "string", "category": "production"
+    },
+    {
+      "key": "channel.icon.rotate", "label_ja": "アイコン回転", "description_ja": "アイコンを一定周期で回転", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.rotate"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.icon.period_seconds", "label_ja": "回転周期", "description_ja": "1回転にかける秒数", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.period_seconds"}, "type": "number", "validation": {"min": 5, "max": 60}, "category": "production"
+    },
+    {
+      "key": "channel.icon.size_px", "label_ja": "アイコンサイズ", "description_ja": "アイコンの直径", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.size_px"}, "type": "integer", "validation": {"min": 100, "max": 900}, "category": "production"
+    },
+    {
+      "key": "channel.icon.circle_crop", "label_ja": "円形切り抜き", "description_ja": "画像を円形に切り抜く", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.circle_crop"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.icon.center_hole", "label_ja": "中央穴", "description_ja": "中心半径9パーセントを透明にする", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.center_hole"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.icon.position", "label_ja": "アイコン位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+    },
+    {
+      "key": "channel.icon.margin", "label_ja": "アイコン余白", "description_ja": "画面端からの余白", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.margin"}, "type": "integer", "validation": {"min": 0, "max": 1080}, "category": "production"
+    },
+    {
+      "key": "channel.icon.opacity", "label_ja": "アイコン不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
+    },
+    {
+      "key": "channel.effects.vintage", "label_ja": "ヴィンテージ", "description_ja": "色調と周辺減光を加える", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.vintage"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_sand", "label_ja": "砂嵐ノイズ", "description_ja": "全画面へ粒状ノイズを加える", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_sand"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_horizontal", "label_ja": "横ノイズ", "description_ja": "横方向の走査線ノイズを加える", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_horizontal"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_vertical", "label_ja": "縦ノイズ", "description_ja": "縦方向の走査線ノイズを加える", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_vertical"}, "type": "boolean", "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_strength", "label_ja": "ノイズ強度", "description_ja": "各ノイズ効果の強さ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_strength"}, "type": "integer", "validation": {"min": 5, "max": 100}, "category": "production"
+    },
+    {
       "key": "stock.warn_days",
       "label_ja": "素材在庫警告日数",
       "description_ja": "未投稿素材の在庫がこの日数未満なら警告する",
