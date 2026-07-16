@@ -2466,6 +2466,8 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
     print("[3] 画像区間 + ループ連結...")
     total = clips[-1]["end"]
     intro_video = None
+    rest_video = None
+    rest_total = total
     # A saved V1 timeline is already the authored visual source of truth.  In
     # that case keep the intro sound, but let the hybrid timeline renderer own
     # the picture so only its short changing ranges are encoded; the static
@@ -2600,9 +2602,12 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
     if visualizer_cfg.get("enabled") and audio is None:
         print("  WARNING: ビジュアライザーONですがA1消音のため焼き込みをスキップ")
 
-    # A static V1 can reuse a short decoration loop. The loop includes effects,
-    # icon and spectrum in their final layer order before timed text is added.
-    static_v1 = len({str(s[0]) for s in segments}) == 1 and intro_video is None
+    # A static V1 can reuse a short decoration loop.  A separate intro dissolve
+    # does not make the *main* V1 dynamic: decorate/loop only the static rest,
+    # then prepend the already-rendered intro.  Repeating the full video here
+    # would replay the intro every loop; rejecting the loop entirely would
+    # force an unnecessary full-duration spectrum encode.
+    static_v1 = len({str(s[0]) for s in segments}) == 1
     upper_video_active = any((t.get("segments") or []) for t in video_tracks[1:])
     spectrum_active = bool(visualizer_cfg.get("enabled") and audio is not None and song_clips)
     decorations_active = spectrum_active or icon_cfg.get("enabled") or effects_enabled(effects_cfg)
@@ -2610,11 +2615,20 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
         print("  V1装飾ループを使わず完全同期（1パス統合）で焼き込み")
     if decorations_active and static_v1 and not upper_video_active:
         plain_video = video
-        video = build_repeated_v1_decorations(
-            video, Path(song_clips[0]["path"]) if spectrum_active else None,
-            visualizer_cfg, icon_cfg, effects_cfg, icon_path, total,
+        decoration_base = rest_video if intro_video is not None and rest_video is not None else video
+        decoration_total = rest_total if intro_video is not None and rest_video is not None else total
+        decorated = build_repeated_v1_decorations(
+            decoration_base, Path(song_clips[0]["path"]) if spectrum_active else None,
+            visualizer_cfg, icon_cfg, effects_cfg, icon_path, decoration_total,
             scratch / "video_decorations_looped.mp4", crf=crf, scratch=scratch)
-        if spectrum_active and visualizer_cfg.get("start_after_intro_text"):
+        if intro_video is not None and rest_video is not None:
+            video = concat_videos_lossless(
+                [intro_video, decorated], scratch / "video_decorations_with_intro.mp4",
+                scratch=scratch)
+        else:
+            video = decorated
+        if (spectrum_active and intro_video is None
+                and visualizer_cfg.get("start_after_intro_text")):
             authored_ends = [
                 float(c.get("end") or 0) for t in text_tracks
                 for c in (t.get("clips") or [])
