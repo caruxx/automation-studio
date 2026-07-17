@@ -677,15 +677,19 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .auto-exec-bar .aeb-group:hover{border-color:var(--border-hover);background:rgba(59,130,246,.07)}
 
 /* ===== Track Player ===== */
-.tr-row{display:grid;grid-template-columns:36px 1fr 50px 64px 24px;gap:var(--space-2);align-items:center;padding:10px 14px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-md);cursor:pointer}
+.tr-row{display:grid;grid-template-columns:36px 1fr 50px 112px 72px;gap:var(--space-2);align-items:center;padding:10px 14px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-md);cursor:pointer}
 .tr-row:hover{background:var(--bg-overlay)}
 .tr-row+.tr-row{margin-top:6px}
 .tr-row.liked{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.04)}
 .tr-row.liked-2{border-color:rgba(239,68,68,.6);background:rgba(239,68,68,.07)}
 .tr-row.liked-3{border-color:rgba(239,68,68,.85);background:rgba(239,68,68,.12)}
 .tr-row.bad{border-color:rgba(113,113,113,.4);background:rgba(113,113,113,.07);opacity:.5}
+.tr-row.pending-delete{border-color:var(--accent-danger);background:rgba(239,68,68,.08);cursor:default}
+.tr-row.pending-delete .tr-name{text-decoration:line-through;color:var(--text-tertiary)}
+.tr-delete-state{font-size:var(--text-xs);font-weight:var(--font-semibold);color:var(--accent-danger);white-space:nowrap}
+.tr-undo-btn{white-space:nowrap}
 .tr-dur{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);text-align:center;white-space:nowrap}
-/* Heart ボタン: タップでサイクル ♡→♥→♥♥→♥♥♥→♡ */
+/* 優先度ボタン: タップで 0→1→2→3→0 を切り替える */
 .tr-heart{background:none;border:none;cursor:pointer;padding:2px 4px;border-radius:var(--radius-sm);font-size:15px;letter-spacing:-2px;transition:transform .1s;color:var(--text-tertiary);white-space:nowrap;font-family:inherit}
 .tr-heart:hover{transform:scale(1.15)}
 /* Bad: 小さいバツ */
@@ -703,7 +707,7 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .tr-loc-music{background:rgba(34,197,94,.2);color:var(--accent-success)}
 .tr-loc-original_music{background:rgba(167,139,250,.2);color:var(--brand-purple)}
 @media(max-width:900px){
-  .tr-row{grid-template-columns:32px 1fr 44px 56px 20px}
+  .tr-row{grid-template-columns:32px 1fr 44px 96px 64px}
 }
 
 /* ===== タブレット以下（768px 以下） ===== */
@@ -1384,7 +1388,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <!-- Render Queue（P2-1 — Premiere/Export シリアライズキュー） -->
     <details id="renderQueueCard" class="card" style="margin-bottom:14px">
       <summary class="card-header" style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:var(--space-2)">
-        <div class="sec-title" style="margin:0;flex:1">Render Queue（Premiere / Export）</div>
+        <div class="sec-title" style="margin:0;flex:1">書き出しキュー(Premiere/Media Encoder)</div>
         <span id="rqSummary" class="fh" style="font-weight:normal;font-size:var(--text-xs)"></span>
         <button class="btn btn-ghost btn-sm" onclick="event.preventDefault();event.stopPropagation();loadRenderQueue()">更新</button>
       </summary>
@@ -3399,6 +3403,10 @@ function aggregateProgressSix(completedStages,currentStage){
     current:group.stages.includes(currentStage),
   }));
 }
+function progressSixLabelForStage(stage){
+  const normalized={plan:'suno',download:'suno',process_tracks:'rename',images:'bgimage',jsx:'premiere'}[stage]||stage||'';
+  return PROGRESS_SIX_GROUPS.find(group=>group.stages.includes(normalized))?.label||normalized||'未定';
+}
 function renderProgressSix(segments,opts){
   const compact=!!(opts&&opts.compact);
   return `<div class="progress-six${compact?' compact':''}" aria-label="6工程の進捗">${segments.map(segment=>{
@@ -4543,10 +4551,14 @@ function renderSunoSummary(s){
   s=s||{};
   const promptPreview=(s.prompt||'').slice(0,140)+((s.prompt||'').length>140?'...':'');
   const provLabel=({chatgpt:'ChatGPT',claude:'Claude (CLI)',codex:'Codex (CLI)'})[(s.provider==='gemini'?'claude':s.provider)||'claude']||s.provider;
+  const rawMode=s.generation_mode||'styles_title_only';
+  const modeLabel=({styles_title_only:'スタイルとタイトル（インスト）',lyrics_styles:'歌詞・スタイル・タイトル（歌あり）',lyrics:'歌詞のみ（歌あり）',instrumental_filler:'インストゥルメンタル一括'})[rawMode]||'カスタム設定';
+  const rawModel=s.model||'';
+  const modelLabel=rawModel==='cli-default'?'既定モデル':(rawModel||'未設定');
   el.innerHTML=`
     <div style="display:grid;grid-template-columns:90px 1fr;gap:var(--space-2) var(--space-3)">
-      <div style="color:var(--text-tertiary)">プロバイダー</div><div>${esc(provLabel)} <span style="color:var(--text-tertiary)">/ ${esc(s.model||'')}</span></div>
-      <div style="color:var(--text-tertiary)">生成モード</div><div>${esc(s.generation_mode||'styles_title_only')}</div>
+      <div style="color:var(--text-tertiary)">プロバイダー</div><div>${esc(provLabel)} / ${esc(modelLabel)}${rawModel?` <small style="color:var(--text-tertiary)">${esc(rawModel)}</small>`:''}</div>
+      <div style="color:var(--text-tertiary)">生成モード</div><div>${esc(modeLabel)} <small style="color:var(--text-tertiary)">${esc(rawMode)}</small></div>
       <div style="color:var(--text-tertiary)">回数 / 間隔</div><div>${s.loop_count||5} 回 / ${s.loop_interval_sec||180} 秒 ${s.loop_batch?'<span style="color:var(--accent-info)">[一括]</span>':''}</div>
       <div style="color:var(--text-tertiary)">プロンプト</div><div style="font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">${esc(promptPreview)||'<span style="color:var(--accent-warning)">未設定</span>'}</div>
     </div>`;
@@ -5320,9 +5332,12 @@ function renderLedgerTable(runs){
       ?(r.duration_sec>=60?Math.round(r.duration_sec/60)+'分':r.duration_sec+'秒'):'-';
     const exit=r.exit_code!=null?r.exit_code:'';
     const fail=r.failed_stage?` <span class="badge badge-danger">${esc(r.failed_stage)}</span>`:'';
+    const resumeCommand=`python3 app_pipeline.py ${String(r.vol||'')} --from ${r.failed_stage||''}`;
     const resumeHint=(r.status==='failed'&&r.failed_stage)
-      ?`<div class="ledger-hint">再開: <code>python3 app_pipeline.py ${esc(String(r.vol||''))} --from ${esc(r.failed_stage)}</code></div>`:'';
-    const summary=r.summary?`<div class="ledger-sum">${esc(r.summary)}</div>`:'';
+      ?`<div class="ledger-hint"><button class="btn btn-ghost btn-sm" onclick="copyUiText(decodeURIComponent('${encodeURIComponent(resumeCommand)}'),'再現コマンドをコピーしました')">コマンドをコピー</button></div>`:'';
+    const rawSummary=String(r.summary||'');
+    const summaryText=/reaped as stale\s*>\s*21600s/i.test(rawSummary)?'6時間応答なしのため打ち切り':rawSummary;
+    const summary=r.summary?`<div class="ledger-sum" title="${esc(rawSummary)}">${esc(summaryText)}</div>`:'';
     const chainBtn=r.parent_run_id?`<button class="btn btn-ghost btn-sm" onclick="showRunChain('${esc(r.run_id)}')">連鎖</button>`:'';
     const started=r.started_at?String(r.started_at).replace('T',' ').replace(/(\.\d+)?Z?$/,''):'';
     rows+=`<tr>
@@ -5365,7 +5380,7 @@ async function showRunChain(runId){
     if(!r.ok){toast('連鎖の取得に失敗','e');return;}
     const d=await r.json();
     const chain=(d&&d.chain)||[];
-    let h='<div class="mo-head"><div class="mo-title">実行連鎖（auto_resume 親子）</div><button class="mo-x" onclick="closeModal()">×</button></div><div class="mo-body"><table class="ledger-table"><thead><tr><th>#</th><th>vol</th><th>状態</th><th>from</th><th>失敗工程</th><th>開始</th></tr></thead><tbody>';
+    let h='<div class="mo-head"><div class="mo-title">実行連鎖（auto_resume 親子）</div><button class="mo-x" onclick="closeModal()" aria-label="閉じる">閉じる</button></div><div class="mo-body"><table class="ledger-table"><thead><tr><th>#</th><th>vol</th><th>状態</th><th>from</th><th>失敗工程</th><th>開始</th></tr></thead><tbody>';
     chain.forEach((c,i)=>{
       const st=c.started_at?String(c.started_at).replace('T',' ').replace(/(\.\d+)?Z?$/,''):'';
       h+=`<tr><td>${i+1}</td><td>vol.${esc(String(c.vol||''))}</td><td>${_ledgerBadge(c.status)}</td><td>${esc(c.from_stage||'')}</td><td>${esc(c.failed_stage||'')}</td><td>${esc(st)}</td></tr>`;
@@ -5428,13 +5443,13 @@ function renderRunsActive(d){
           }else{
             gateInfo = ` • <span style="color:var(--accent-info)">公開待ち（過去日付）</span>`;
           }
-          gateBtn=`<button class="btn btn-ghost btn-sm" style="font-size:var(--text-2xs);padding:2px 6px;margin-left:4px" onclick="event.stopPropagation();publishNow('${esc(v.name)}')" title="今すぐ公開">▶</button>`;
+          gateBtn=`<button class="btn btn-ghost btn-sm" style="font-size:var(--text-2xs);padding:2px 6px;margin-left:4px" onclick="event.stopPropagation();publishNow('${esc(v.name)}')" title="今すぐ公開">公開</button>`;
         }else if((v.privacy||'')==='private'){
           gateInfo = ` • <span style="color:var(--text-tertiary)">private</span>`;
-          gateBtn=`<button class="btn btn-ghost btn-sm" style="font-size:var(--text-2xs);padding:2px 6px;margin-left:4px" onclick="event.stopPropagation();publishNow('${esc(v.name)}')" title="今すぐ公開">▶</button>`;
+          gateBtn=`<button class="btn btn-ghost btn-sm" style="font-size:var(--text-2xs);padding:2px 6px;margin-left:4px" onclick="event.stopPropagation();publishNow('${esc(v.name)}')" title="今すぐ公開">公開</button>`;
         }
       }
-      const stageText=v.is_done?(isPub?'✓ 公開済':(v.is_uploaded?'✓ upload 済':'✓ 完了')): v.current?`次: ${esc(v.current)}`:'-';
+      const stageText=v.is_done?(isPub?'公開済':(v.is_uploaded?'公開済':'完了')): v.current?`次: ${esc(progressSixLabelForStage(v.current))}`:'-';
       const conceptHtml=v.concept?esc(v.concept):`<span class="fh">${esc(v.name||'')}</span>`;
       return `<div class="runs-vol-row${v.is_done?' is-done':''}" onclick="showVideoDetail('${esc(v.name)}');go('videos')" style="cursor:pointer">
         <div class="runs-vol-num">vol.${esc(v.vol||'?')}</div>
@@ -6637,7 +6652,7 @@ async function showVideoDetail(name, fromRouter=false){
                 <span class="tr-location-badge tr-loc-root">ROOT</span> フォルダ直下（SUNO DL済み） ／
                 <span class="tr-location-badge tr-loc-music">MUSIC</span> 処理済み（Premiere で使用） ／
                 <span class="tr-location-badge tr-loc-original_music">ORIG</span> バックアップ<br>
-                ♥ をクリックでいいね！いいね数だけファイル名に <code>z</code> が追加されます。× は5秒後にローカルから完全削除されます。
+                「優先度アップ」でファイル名に <code>z</code> が付き、多いほど優先されます。「削除」は5秒以内なら元に戻せます。
               </div>
               <div class="mgmt-bar" id="trackMgmt">
                 <span style="color:var(--text-tertiary)">一括操作:</span>
@@ -6650,7 +6665,7 @@ async function showVideoDetail(name, fromRouter=false){
                 <select class="fs" id="trackSort" onchange="loadTrackList('${esc(name)}')" style="width:110px;padding:var(--space-1);font-size:var(--text-xs)">
                   <option value="name">名前順</option>
                   <option value="duration">時間順</option>
-                  <option value="likes">いいね順</option>
+                  <option value="likes">優先度順</option>
                 </select>
                 <span id="trackTotalDur" style="margin-left:auto;color:var(--accent-info);font-family:var(--font-mono);font-size:var(--text-xs)"></span>
               </div>
@@ -11195,20 +11210,22 @@ function renderTrackRow(name,t,idx){
   const likes=Math.min(t.likes||0,3);
   const rowClass=t.is_bad?'bad':(likes===3?'liked-3':likes===2?'liked-2':likes===1?'liked':'');
   const prefix=t.is_bad?'<span style="color:var(--text-tertiary);font-weight:700">x_</span>':(likes>0?`<span style="color:var(--accent-danger);font-weight:700">${'z'.repeat(likes)}_</span>`:'');
-  const heartIcon=likes===0?'♡':('♥').repeat(likes);
-  const heartClass=likes===0?'':(`on-${likes}`);
   const nextLikes=(likes>=3)?0:likes+1;
-  return `<div class="tr-row ${rowClass}" data-rel="${esc(t.rel_path)}" data-idx="${idx}" onclick="_trRowClick(event,'${esc(name)}','${relEsc}',${idx})">
+  const deleteKey=_trackDeleteKey(name,t.rel_path);
+  const pending=_trackDeleteTimers.get(deleteKey);
+  const pendingClass=pending?' pending-delete':'';
+  const deleteAction=pending
+    ?`<button class="btn btn-secondary btn-sm tr-undo-btn" onclick="event.stopPropagation();undoTrackDelete('${esc(name)}','${relEsc}')">元に戻す</button>`
+    :`<button class="tr-bad-btn" onclick="event.stopPropagation();toggleBad('${esc(name)}','${relEsc}')" title="5秒後に完全削除">削除</button>`;
+  return `<div class="tr-row ${rowClass}${pendingClass}" data-rel="${esc(t.rel_path)}" data-idx="${idx}" onclick="_trRowClick(event,'${esc(name)}','${relEsc}',${idx})">
     <div class="tr-idx">${idx+1}</div>
     <div class="tr-info">
       <div class="tr-name">${prefix}${esc(t.base_name)}</div>
       <div class="tr-sub"><span class="tr-location-badge ${locClass}">${locLabel}</span></div>
     </div>
     <div class="tr-dur">${_fmtDur(t.duration)}</div>
-    <div class="tr-like">
-      <button class="tr-heart ${heartClass}" onclick="event.stopPropagation();setLikeTrack('${esc(name)}','${relEsc}',${nextLikes})" title="いいね (${likes}/3 → ${nextLikes})">${heartIcon}</button>
-    </div>
-    <button class="tr-bad-btn ${t.is_bad?'on':''}" onclick="event.stopPropagation();toggleBad('${esc(name)}','${relEsc}')" title="5秒後に完全削除">✕</button>
+    <div class="tr-like">${pending?`<span class="tr-delete-state">削除まで <span class="tr-delete-countdown">${Math.max(1,Math.ceil((pending.deadline-Date.now())/1000))}</span>秒</span>`:`<button class="tr-heart ${likes?`on-${likes}`:''}" onclick="event.stopPropagation();setLikeTrack('${esc(name)}','${relEsc}',${nextLikes})" title="優先度アップ(ファイル名にzを追記)">優先度 ${likes}/3</button>`}</div>
+    ${deleteAction}
   </div>`;
 }
 function _trRowClick(e,name,relPath,idx){
@@ -11217,18 +11234,61 @@ function _trRowClick(e,name,relPath,idx){
   playerLoad(name,tracks,idx);
 }
 let _lastTrackList=[];
-async function toggleBad(name,relPath){
+const _trackDeleteTimers=new Map();
+function _trackDeleteKey(name,relPath){return `${name}\n${relPath}`}
+function _refreshTrackDeleteCountdown(key){
+  const pending=_trackDeleteTimers.get(key);if(!pending)return;
+  const row=Array.from(document.querySelectorAll('.tr-row[data-rel]')).find(r=>r.dataset.rel===pending.relPath);
+  const el=row?.querySelector('.tr-delete-countdown');
+  if(el)el.textContent=String(Math.max(1,Math.ceil((pending.deadline-Date.now())/1000)));
+}
+function _rerenderTrackRow(name,relPath){
+  const row=Array.from(document.querySelectorAll('.tr-row[data-rel]')).find(r=>r.dataset.rel===relPath);
+  if(!row)return;
+  const idx=parseInt(row.dataset.idx)||0,t=_lastTrackList[idx];if(!t)return;
+  const tmp=document.createElement('div');tmp.innerHTML=renderTrackRow(name,t,idx);row.replaceWith(tmp.firstElementChild);
+}
+function toggleBad(name,relPath){
+  const key=_trackDeleteKey(name,relPath);
+  if(_trackDeleteTimers.has(key))return;
+  const pending={name,relPath,deadline:Date.now()+5000,timer:null,interval:null};
+  pending.timer=setTimeout(()=>commitTrackDelete(key),5000);
+  pending.interval=setInterval(()=>_refreshTrackDeleteCountdown(key),250);
+  _trackDeleteTimers.set(key,pending);
+  _rerenderTrackRow(name,relPath);
+  toast('5秒後にローカルから完全削除します','w');
+}
+function undoTrackDelete(name,relPath){
+  const key=_trackDeleteKey(name,relPath),pending=_trackDeleteTimers.get(key);
+  if(!pending)return;
+  clearTimeout(pending.timer);
+  clearInterval(pending.interval);
+  _trackDeleteTimers.delete(key);
+  _rerenderTrackRow(name,relPath);
+  toast('削除を取り消しました','s');
+}
+async function commitTrackDelete(key){
+  const pending=_trackDeleteTimers.get(key);if(!pending)return;
+  clearInterval(pending.interval);
+  _trackDeleteTimers.delete(key);
   try{
-    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/track-like`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rel_path:relPath,toggle_bad:true})});
-    if(r.ok){
-      const d=await r.json();
-      _patchTrackRow(name,relPath,d);
-      const sec=d.delete_after_sec||5;
-      toast(`${sec}秒後にローカルから完全削除します`,'w');
-      setTimeout(()=>loadTrackList(name),(sec*1000)+600);
+    let relPaths=[pending.relPath];
+    const tracksR=await fetch(`/api/videos/${encodeURIComponent(pending.name)}/tracks`);
+    if(tracksR.ok){
+      const tracks=(await tracksR.json()).tracks||[];
+      const target=tracks.find(t=>t.rel_path===pending.relPath);
+      if(target)relPaths=[...new Set(tracks.filter(t=>t.base_name===target.base_name).map(t=>t.rel_path))];
     }
-    else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
-  }catch(e){toast('接続エラー','e')}
+    const results=await Promise.all(relPaths.map(relPath=>fetch(`/api/videos/${encodeURIComponent(pending.name)}/track?rel_path=${encodeURIComponent(relPath)}`,{method:'DELETE'})));
+    if(results.every(r=>r.ok)){
+      toast('楽曲を削除しました','s');
+      loadTrackList(pending.name);
+    }
+    else{
+      const failed=results.find(r=>!r.ok),e=await failed.json().catch(()=>({}));
+      _rerenderTrackRow(pending.name,pending.relPath);toast(e.detail||'一部の削除に失敗しました','e');
+    }
+  }catch(e){_rerenderTrackRow(pending.name,pending.relPath);toast('接続エラー','e')}
 }
 function _patchTrackRow(name,oldRelPath,data){
   const row=Array.from(document.querySelectorAll('.tr-row[data-rel]')).find(r=>r.dataset.rel===oldRelPath);
@@ -12124,9 +12184,9 @@ async function loadIgnoreList(){
   el.innerHTML=`<div style="display:flex;flex-wrap:wrap;gap:var(--space-2)">`+
     items.map(n=>`<span style="display:inline-flex;align-items:center;gap:var(--space-2);padding:var(--space-1) var(--space-2);background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs)">
       <span>${esc(n)}</span>
-      <button class="btn btn-ghost btn-xs" style="padding:0 6px" title="無視リストから外す" onclick="unhideFromIgnoreList('${esc(n)}')">✕</button>
+      <button class="btn btn-ghost btn-xs" style="padding:0 6px" title="無視リストから外す" onclick="unhideFromIgnoreList('${esc(n)}')">解除</button>
     </span>`).join('')+
-    `</div><div class="fh" style="margin-top:var(--space-2)">${items.length} 件 ・ ✕ ボタンで個別に解除、上の「無視リストをリセット」で全クリア</div>`;
+    `</div><div class="fh" style="margin-top:var(--space-2)">${items.length} 件 ・ 「解除」で個別に外すか、上の「無視リストをリセット」で全クリアできます</div>`;
 }
 async function saveAutoUploadAfterExport(){
   const enabled=!!document.getElementById('autoUploadAfterExport')?.checked;
@@ -12174,8 +12234,8 @@ async function loadExportCandidates(){
     list.innerHTML=cands.map(c=>`
       <div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface);margin-bottom:var(--space-2)">
         <div style="flex:1;min-width:0">
-          <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(c.video_name)}</div>
-          <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px;font-family:var(--font-mono)">${esc(c.prproj_path||'')}</div>
+          <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(c.video_name)} <span class="fh">/ ${esc(_exportChannelName(c.video_name,c.folder||c.prproj_path))}</span></div>
+          ${_exportPathsDetails([{label:'Premiereプロジェクト',path:c.prproj_path}])}
         </div>
         <button class="btn btn-primary btn-sm" onclick="queueExportItem('${esc(c.video_name)}')">キューに追加</button>
         <button class="btn btn-ghost btn-sm" onclick="markExportDone('${esc(c.video_name)}')" title="完了マーク（無視リストへ追加）">完了</button>
@@ -12199,6 +12259,21 @@ function _fmtBytes(b){
   if(b<1024*1024*1024)return (b/1024/1024).toFixed(1)+' MB';
   return (b/1024/1024/1024).toFixed(2)+' GB';
 }
+function copyUiText(value,successMessage='コピーしました'){
+  navigator.clipboard.writeText(String(value||'')).then(()=>toast(successMessage,'s')).catch(()=>toast('コピーに失敗しました','e'));
+}
+function _exportChannelName(videoName,path){
+  const exact=(_channels||[]).find(c=>path&&c.folder&&String(path).startsWith(c.folder));
+  if(exact)return exact.name||exact.channel_name||exact.id;
+  const prefix=String(videoName||'').match(/^\d+_([^_]+)_/)?.[1]||'';
+  const byPrefix=(_channels||[]).find(c=>prefix&&String(c.prefix||c.file_prefix||'').toLowerCase()===prefix.toLowerCase());
+  return byPrefix?.name||byPrefix?.channel_name||_lastConfig?.dashboard?.channel_name||'チャンネル未設定';
+}
+function _exportPathsDetails(paths){
+  const rows=(paths||[]).filter(x=>x.path);
+  if(!rows.length)return '';
+  return `<details style="margin-top:var(--space-1)"><summary class="fh" style="cursor:pointer">ファイルの場所</summary>${rows.map(x=>`<div style="display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-1)"><span class="fh">${esc(x.label)}</span><button class="btn btn-ghost btn-sm" title="${esc(x.path)}" onclick="event.preventDefault();copyUiText(decodeURIComponent('${encodeURIComponent(x.path)}'),'パスをコピーしました')">パスをコピー</button></div>`).join('')}</details>`;
+}
 function _fmtMmSs(s){
   if(!s||s<0)return '';
   s=Math.floor(s);
@@ -12211,8 +12286,8 @@ function _phaseLabel(phase){
     writing: '書き出し中',
     stabilizing: '終盤処理（安定待ち）',
     done: '完了',
-    appear_timeout: '⚠️ AME 取りこぼし疑い',
-    stable_timeout: '⚠️ AME ハング疑い',
+    appear_timeout: 'AME 取りこぼしの可能性',
+    stable_timeout: 'AME 応答停止の可能性',
   })[phase]||phase||'';
 }
 async function loadExportQueue(){
@@ -12253,9 +12328,8 @@ async function loadExportQueue(){
       }
       return `<div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface);margin-bottom:var(--space-2)">
         <div style="flex:1;min-width:0">
-          <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(x.video_name)} ${badge}</div>
-          <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px;font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.prproj_path)}">${esc(x.prproj_path||'')}</div>
-          ${x.output_path?`<div style="font-size:var(--text-xs);color:var(--text-secondary);margin-top:2px">→ ${esc(x.output_path)}</div>`:''}
+          <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(x.video_name)} <span class="fh">/ ${esc(_exportChannelName(x.video_name,x.folder||x.prproj_path))}</span> ${badge}</div>
+          ${_exportPathsDetails([{label:'Premiereプロジェクト',path:x.prproj_path},{label:'書き出し先',path:x.output_path}])}
           ${progressHtml}
           ${x.error?`<div style="font-size:var(--text-xs);color:var(--accent-danger);margin-top:2px">${esc(x.error)}</div>`:''}
         </div>
