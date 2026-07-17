@@ -98,13 +98,12 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .topbar-chip{padding:4px 10px;border-radius:var(--radius-full);background:var(--bg-elevated);border:1px solid var(--border-default);font-weight:var(--font-medium);color:var(--text-secondary);white-space:nowrap}
 .topbar-right .clock-text{font-variant-numeric:tabular-nums;color:var(--text-secondary);white-space:nowrap}
 .main{flex:1;overflow-y:auto;overflow-x:hidden;padding:var(--space-6) var(--space-8);padding-bottom:calc(var(--player-h) + var(--space-6))}
-/* ===== モバイル用ハンバーガーメニュー（900px 以下で出現） ===== */
+/* ===== モバイル用ハンバーガーメニュー（1100px 以下で出現） ===== */
 .hamburger{display:none;background:none;border:none;color:var(--text-primary);cursor:pointer;padding:var(--space-2);border-radius:var(--radius-sm);font-size:22px;line-height:1;width:40px;height:40px;align-items:center;justify-content:center}
 .hamburger:hover{background:var(--bg-elevated)}
 .sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:499}
 .sidebar-backdrop.open{display:block}
-@media(min-width:901px){.hamburger{display:inline-flex}}
-@media(max-width:900px){
+@media(max-width:1100px){
   .app{grid-template-columns:1fr;grid-template-areas:"topbar" "main"}
   .hamburger{display:inline-flex}
   .sidebar{position:fixed;top:var(--topbar-h);left:0;width:260px;height:calc(100vh - var(--topbar-h));z-index:501;transform:translateX(-100%);transition:transform .2s ease-out;box-shadow:4px 0 24px rgba(0,0,0,.4);grid-area:unset}
@@ -128,7 +127,7 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .sidebar-profile-avatar img{width:100%;height:100%;object-fit:cover;display:block}
 .sidebar-profile-label{font-size:var(--text-xs);color:var(--text-tertiary);margin-top:var(--space-1)}
 .sidebar-profile-name{font-size:var(--text-base);font-weight:var(--font-semibold);color:var(--text-primary);text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:900px){
+@media(max-width:1100px){
   .sidebar-profile{padding:var(--space-4) var(--space-3)}
   .sidebar-profile-avatar{width:72px;height:72px;font-size:24px}
 }
@@ -2314,7 +2313,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
             <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:6px">パネルが応答していません。次のどちらかを試してください：</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
               <button class="btn btn-ghost btn-sm" onclick="reopenPanel()">パネルを開く</button>
-              <button class="btn btn-destructive btn-sm" onclick="restartPremiere()">Premiere を再起動</button>
+              <button class="btn btn-secondary btn-sm" onclick="restartPremiere()">Premiere を再起動</button>
             </div>
             <div style="font-size:var(--text-2xs);color:var(--text-tertiary);margin-top:6px">※「パネルを開く」は自動化メニュー操作です。権限が必要な場合はアクセシビリティ設定を確認してください。</div>
           </div>
@@ -12545,7 +12544,8 @@ async function deletePrompt(id){
 
 /* ==== Create Video ==== */
 function showCreateVideoModal(){
-  const t=new Date().toISOString().split('T')[0];
+  const now=new Date();
+  const t=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
   const prefix=_safePrefixValue(_lastConfig?.dashboard?.file_prefix)||'vol';
   modal(`<div class="mo-title">新規動画フォルダ</div><div class="ff"><label class="fl">公開予定日</label><input type="date" class="fi" id="newVDate" value="${t}"></div><div class="fh" style="margin-bottom:14px"><code>{連番}_${esc(prefix)}_{日付}</code> 形式で自動生成します。変更は「基本設定 → 動画フォルダ prefix」から行えます。</div><div class="btns"><button class="btn btn-primary" onclick="createVideo()">作成</button><button class="btn btn-secondary" onclick="closeModal()">キャンセル</button></div>`);
 }
