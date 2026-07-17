@@ -74,10 +74,15 @@ def api_desc_video_info(video_name: str):
     }
 
 @router.get("/api/youtube-desc/thumbnail/{video_name}")
-def api_desc_thumbnail(video_name: str):
+def api_desc_thumbnail(video_name: str, channel_id: Optional[str] = None):
     """サムネイル画像を返す"""
-    config = get_dashboard_config()
-    folder = resolve_video_folder(video_name)
+    channel_root = None
+    if channel_id:
+        channel = next((ch for ch in get_channels() if ch.get("id") == channel_id), None)
+        if not channel or not str(channel.get("folder") or "").strip():
+            raise HTTPException(404, "チャンネルが見つかりません")
+        channel_root = Path(channel["folder"])
+    folder = resolve_video_folder(video_name, channel_root=channel_root)
     m = re.match(r'^(\d+)_', video_name)
     num = m.group(1) if m else "00"
     for pattern in ["サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png", f"vol{num}.jpg", f"vol{num}.png"]:

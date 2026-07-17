@@ -2544,6 +2544,11 @@ def api_runs_active():
             stage_info = _infer_stage_from_artifacts(d)
             concept_file = d / "concept.txt"
             concept = concept_file.read_text(encoding="utf-8").strip() if concept_file.exists() else ""
+            num = info["num_text"]
+            has_thumb = any((d / filename).exists() for filename in (
+                "サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png",
+                f"vol{num}.jpg", f"vol{num}.png",
+            ))
             up_marker = d / "youtube_upload.json"
             video_id = ""
             scheduled_publish_at = ""
@@ -2568,6 +2573,7 @@ def api_runs_active():
                 "is_uploaded": bool(video_id),
                 "video_id": video_id,
                 "concept": concept,
+                "has_thumb": has_thumb,
                 # P2-7: 公開ゲート状態
                 "scheduled_publish_at": scheduled_publish_at,
                 "published_at": published_at,

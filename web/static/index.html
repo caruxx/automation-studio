@@ -742,11 +742,13 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 @media(max-width:768px){
   /* コンテンツ一覧テーブルの列削減（操作列と公開予定を畳む） */
   .video-table-head{display:none}
-  .video-row{grid-template-columns:32px 44px 1fr;gap:var(--space-2);padding:12px}
-  .video-row>div:nth-child(4),
-  .video-row>div:nth-child(5),
-  .video-row>div:nth-child(6),
-  .video-row>div:nth-child(7){grid-column:1/-1;padding-left:76px}
+  .video-row{grid-template-columns:1fr auto;gap:var(--space-2);padding:12px}
+  .video-row>div:nth-child(1),
+  .video-row>div:nth-child(2),
+  .video-row>div:nth-child(5){grid-column:1/-1}
+  .video-row>div:nth-child(3){grid-column:1}
+  .video-row>div:nth-child(4){grid-column:2}
+  .video-row .vr-actions{justify-content:flex-start}
   .vr-thumb,.vr-thumb-empty{width:64px;height:36px}
   /* 動画詳細の 2 カラム → 縦積み */
   .g2,.g3,.g4{grid-template-columns:1fr !important}
@@ -1222,7 +1224,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
 
 /* 動画一覧テーブル: 右パネル併存時の列幅圧縮 */
 @media (min-width:1101px) and (max-width:1500px){
-  .video-row{grid-template-columns:28px 40px 240px 1fr 160px 90px 90px;gap:var(--space-2);padding:12px}
+  .video-table-head,
+  .video-row{grid-template-columns:minmax(220px,1.2fr) minmax(260px,1fr) 130px 90px 140px;gap:var(--space-2);padding:12px}
 }
 
 /* 7段ステッパー: 横スクロール時のスクロールバー控えめに */
@@ -5686,7 +5689,7 @@ async function loadVideos(){
       vs=(runs.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{
         const done=new Set(v.completed||[]);
         const segments=groups.map(([key,label,stages])=>({key,label,stages,complete:stages.every(s=>done.has(s)),current:stages.includes(v.current)}));
-        return {num:v.vol,name:v.name,channel_id:ch.channel_id,channel_name:ch.channel_name,title:'',concept:v.concept||'',publish_date:v.publish_date||'',has_upload:!!v.is_uploaded,is_hidden:false,progress:{segments,is_complete:!!v.is_done,next_stage:v.current||'',action:{kind:'open',label:'詳細を見る',stage:''},publish:{scheduled:!!v.publish_date,is_past_due:false}}};
+        return {num:v.vol,name:v.name,channel_id:ch.channel_id,channel_name:ch.channel_name,title:'',concept:v.concept||'',publish_date:v.publish_date||'',has_thumb:!!v.has_thumb,has_upload:!!v.is_uploaded,is_hidden:false,progress:{segments,is_complete:!!v.is_done,next_stage:v.current||'',action:{kind:'open',label:'詳細を見る',stage:''},publish:{scheduled:!!v.publish_date,is_past_due:false}}};
       }));
     }else{
       const d=await (await fetch('/api/videos')).json();vs=d.videos||[];
@@ -5714,7 +5717,8 @@ async function loadVideos(){
     vs.forEach(v=>{
       const summary=v.progress||{};
       const segments=summary.segments||[];
-      const thumbUrl=v.has_thumb?`/api/youtube-desc/thumbnail/${encodeURIComponent(v.name)}`:null;
+      const thumbChannel=v.channel_id?`?channel_id=${encodeURIComponent(v.channel_id)}`:'';
+      const thumbUrl=v.has_thumb?`/api/youtube-desc/thumbnail/${encodeURIComponent(v.name)}${thumbChannel}`:null;
       const displayTitle=v.title||v.name;
       const subLine=`vol.${esc(v.num)}${v.channel_name?' ・ '+esc(v.channel_name):''}`;
       const isDone=!!summary.is_complete;
