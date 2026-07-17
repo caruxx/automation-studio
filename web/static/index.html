@@ -170,6 +170,8 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .nav-btn.on{background:var(--bg-elevated);color:var(--text-primary);font-weight:var(--font-semibold)}
 .nav-btn.on::before{background:var(--accent-primary)}
 .nav-btn .nav-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-nav>.nav-btn,.nav-more .nav-btn{font-size:var(--text-base);color:var(--text-primary)}
+.nav-more summary{font-size:var(--text-sm);color:var(--text-secondary)}
 .sidebar-footer{border-top:1px solid var(--border-default);padding:var(--space-2);display:flex;flex-direction:column;gap:2px}
 
 /* ===== Pages ===== */
@@ -1259,7 +1261,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <div id="youtubeStatusChip" class="topbar-chip" style="display:none;align-items:center;gap:6px;cursor:pointer;background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(239,68,68,.05));border-color:rgba(239,68,68,.4)" onclick="go('youtube')" title="YouTube アップロードログを開く"></div>
     <span id="clock" class="clock-text"></span>
     <button class="btn btn-primary btn-sm" id="topbarNewVideoBtn" onclick="showCreateVideoModal()">+ 新規動画</button>
-    <div class="account-menu" id="chSwitcher" onclick="toggleChDropdown(event)">
+    <div class="account-menu" id="chSwitcher" role="button" tabindex="0" aria-label="チャンネルを切り替える" aria-haspopup="true" aria-expanded="false" onclick="toggleChDropdown(event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleChDropdown(event)}">
       <div id="chIconWrap"></div>
       <div class="account-meta">
         <div class="channel-name" id="chName">orzz.</div>
@@ -1295,18 +1297,18 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
   </div>
 
   <nav class="sidebar-nav">
-    <button class="nav-btn on" data-p="dashboard" data-e2-nav="dashboard" onclick="go('dashboard')"><span class="nav-label">ホーム</span></button>
-    <button class="nav-btn" data-p="videos" data-e2-nav="videos" onclick="go('videos')"><span class="nav-label">制作</span></button>
-    <button class="nav-btn" data-p="benchmark" data-e2-nav="analysis" onclick="go('benchmark')"><span class="nav-label">分析</span></button>
-    <button class="nav-btn" data-p="settings" data-e2-nav="settings" onclick="go('settings')"><span class="nav-label">設定</span></button>
+    <button class="nav-btn on" data-p="dashboard" data-e2-nav="dashboard" aria-label="ホーム" onclick="go('dashboard')"><span class="nav-label">ホーム</span></button>
+    <button class="nav-btn" data-p="videos" data-e2-nav="videos" aria-label="制作" onclick="go('videos')"><span class="nav-label">制作</span></button>
+    <button class="nav-btn" data-p="benchmark" data-e2-nav="analysis" aria-label="分析" onclick="go('benchmark')"><span class="nav-label">分析</span></button>
+    <button class="nav-btn" data-p="settings" data-e2-nav="settings" aria-label="設定" onclick="go('settings')"><span class="nav-label">設定</span></button>
+    <button class="nav-btn" data-p="ledger" aria-label="実行履歴" onclick="go('ledger')"><span class="nav-label">実行履歴</span></button>
     <details class="nav-more">
-      <summary>関連ツール</summary>
-      <button class="nav-btn" data-p="suno" onclick="go('suno')"><span class="nav-label">SUNO</span></button>
-      <button class="nav-btn" data-p="premiere" onclick="go('premiere')"><span class="nav-label">Premiere</span></button>
-      <button class="nav-btn" data-p="export" onclick="go('export')"><span class="nav-label">書き出し</span></button>
-      <button class="nav-btn" data-p="youtube" onclick="go('youtube')"><span class="nav-label">YouTube</span></button>
-      <button class="nav-btn" data-p="live" onclick="go('live')"><span class="nav-label">ライブ配信</span></button>
-      <button class="nav-btn" data-p="ledger" onclick="go('ledger')"><span class="nav-label">実行履歴</span></button>
+      <summary>工程ツール</summary>
+      <button class="nav-btn" data-p="suno" aria-label="SUNO" onclick="go('suno')"><span class="nav-label">SUNO</span></button>
+      <button class="nav-btn" data-p="premiere" aria-label="Premiere" onclick="go('premiere')"><span class="nav-label">Premiere</span></button>
+      <button class="nav-btn" data-p="export" aria-label="書き出し" onclick="go('export')"><span class="nav-label">書き出し</span></button>
+      <button class="nav-btn" data-p="youtube" aria-label="YouTube" onclick="go('youtube')"><span class="nav-label">YouTube</span></button>
+      <button class="nav-btn" data-p="live" aria-label="ライブ配信" onclick="go('live')"><span class="nav-label">ライブ配信</span></button>
     </details>
   </nav>
 
@@ -1361,7 +1363,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
       </summary>
       <div>
       <div class="fh dash-source">データ提供: <a href="https://www.youtube.com/" target="_blank" rel="noopener">YouTube</a></div>
-      <div id="dashMonetization"><div class="fh">読み込み中...</div></div>
+      <div id="dashMonetization"><div class="fh">未取得（更新で取得）</div></div>
       </div>
     </details>
 
@@ -2161,7 +2163,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <div class="page-head">
       <div>
         <div class="section-heading"><span class="product-icon adobe-me lg">Me</span><div class="page-title">書き出し</div></div>
-        <div class="fh" style="margin-top:2px">Media Encoder で書き出し可能な動画と、自動キューの状況</div>
+        <div class="fh" style="margin-top:2px">vol単位の書き出しは vol詳細 → 書き出しタブ から。このページはキュー横断の管理用です</div>
       </div>
     </div>
 
@@ -2228,7 +2230,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <div class="page-head">
       <div>
         <div class="section-heading"><span class="product-icon service suno lg"><img src="https://www.google.com/s2/favicons?sz=64&domain=suno.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Su</span></span><div class="page-title">SUNO 自動生成</div></div>
-        <div class="fh" style="margin-top:2px">設定の編集は <a href="#" onclick="go('settings');return false" style="color:var(--accent-primary)">基本設定</a> から</div>
+        <div class="fh" style="margin-top:2px">vol単位の生成は 制作 → vol詳細 → 楽曲タブ から。このページは一括生成・復旧用です</div>
       </div>
     </div>
     <div class="g2">
@@ -2275,7 +2277,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
   <!-- ===== Calendar ===== -->
   <!-- ===== Premiere ===== -->
   <div class="page" id="p-premiere">
-    <div class="page-head"><div class="section-heading"><span class="product-icon adobe-pr lg">Pr</span><div class="page-title">Premiere Pro</div></div></div>
+    <div class="page-head"><div><div class="section-heading"><span class="product-icon adobe-pr lg">Pr</span><div class="page-title">Premiere Pro</div></div><div class="fh" style="margin-top:2px">接続の復旧と一括レンダー用です。vol単位の編集は vol詳細 → 編集タブ から</div></div></div>
     <div class="g2">
       <div>
         <div class="card" style="padding-bottom:12px">
@@ -2344,7 +2346,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
 
   <!-- ===== YouTube ===== -->
   <div class="page" id="p-youtube">
-    <div class="page-head"><div class="section-heading"><span class="product-icon service youtube lg"><img src="https://www.google.com/s2/favicons?sz=64&domain=youtube.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">YT</span></span><div class="page-title">YouTube</div></div></div>
+    <div class="page-head"><div><div class="section-heading"><span class="product-icon service youtube lg"><img src="https://www.google.com/s2/favicons?sz=64&domain=youtube.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">YT</span></span><div class="page-title">YouTube</div></div><div class="fh" style="margin-top:2px">vol単位の公開設定は 制作 → vol詳細 → 公開準備 から。このページは一括・復旧用です</div></div></div>
     <div class="card" style="margin-bottom:var(--space-5)">
       <div class="card-header"><div class="sec-title" style="margin:0">説明文エディタ</div></div>
       <div class="g2" style="gap:var(--space-4)">
@@ -3536,6 +3538,34 @@ window.fetch = function(input, init={}){
   if(method==='GET' && !init.signal) init={...init,signal:_pageAbortController.signal};
   return _nativeFetch(input,init);
 };
+const FETCH_TIMEOUT_MS=15000;
+async function fetchWithTimeout(input,init={},timeoutMs=FETCH_TIMEOUT_MS){
+  const controller=new AbortController();
+  const method=String(init.method||'GET').toUpperCase();
+  const parentSignal=init.signal||(method==='GET'?_pageAbortController.signal:null);
+  const abortFromParent=()=>controller.abort();
+  if(parentSignal){
+    if(parentSignal.aborted)controller.abort();
+    else parentSignal.addEventListener('abort',abortFromParent,{once:true});
+  }
+  let timedOut=false;
+  const timer=setTimeout(()=>{timedOut=true;controller.abort()},timeoutMs);
+  try{return await _nativeFetch(input,{...init,signal:controller.signal})}
+  catch(e){
+    if(timedOut){const err=new Error('15秒以内に応答がありませんでした');err.name='TimeoutError';throw err}
+    throw e;
+  }finally{
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort',abortFromParent);
+  }
+}
+function fetchFallbackHtml(retryCall,isTimeout){
+  return `<div class="ct-error-recover">
+    <div class="ct-error-recover-title">取得できませんでした</div>
+    <div class="ct-error-recover-causes">${isTimeout?'通信が15秒以内に完了しませんでした。':'サーバーとの通信を確認してください。'}</div>
+    <div class="ct-error-recover-actions"><button class="btn btn-secondary btn-sm" onclick="${retryCall}">再試行</button></div>
+  </div>`;
+}
 function _canonicalPage(n){return ({home:'dashboard',analysis:'benchmark',health:'ledger',autopilot:'dashboard',automation:'dashboard',notify:'settings'})[n]||n}
 function _canonicalDetailTab(tab){return ({timeline:'edit',premiere:'edit'})[tab]||tab}
 function _routeUrl(s){
@@ -3767,8 +3797,18 @@ function relocateBenchmarkCardsToBenchmarkPage(){
 }
 
 /* ==== Channel Switcher ==== */
-function toggleChDropdown(e){e&&e.stopPropagation();const dd=document.getElementById('chDropdown');dd.classList.toggle('open')}
-document.addEventListener('click',e=>{if(!e.target.closest('#chSwitcher'))document.getElementById('chDropdown').classList.remove('open')});
+function toggleChDropdown(e){
+  e&&e.stopPropagation();
+  const dd=document.getElementById('chDropdown');
+  const open=dd.classList.toggle('open');
+  document.getElementById('chSwitcher')?.setAttribute('aria-expanded',String(open));
+}
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#chSwitcher')){
+    document.getElementById('chDropdown').classList.remove('open');
+    document.getElementById('chSwitcher')?.setAttribute('aria-expanded','false');
+  }
+});
 async function loadChannelSwitcher(){
   try{
     const[cr,cfgr]=await Promise.all([fetch('/api/channels'),fetch('/api/config')]);
@@ -3805,7 +3845,7 @@ async function loadChannelSwitcher(){
     const brandLabel=(_lastConfig?.dashboard?.brand_short)||'Automation Studio';
     let html=`<div class="ch-dd-header"><div class="ch-dd-name">${esc(active.channel_name||'')}</div><div class="ch-dd-email">${esc(brandLabel)}</div></div>`;
     html+=`<div class="ch-dd-list">`;
-    html+=`<div class="channel-dropdown-item" onclick="switchCh('all');event.stopPropagation()"><div class="ch-item-icon-placeholder">全</div><div class="ch-item-info"><div class="ch-item-name">全チャンネル</div><div class="ch-item-sub">ホーム・制作の横断表示</div></div>${_uiChannelId==='all'?'<span class="ch-item-check">✓</span>':''}</div>`;
+    html+=`<div class="channel-dropdown-item" role="button" tabindex="0" aria-label="全チャンネル" onclick="switchCh('all');event.stopPropagation()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchCh('all');event.stopPropagation()}"><div class="ch-item-icon-placeholder">全</div><div class="ch-item-info"><div class="ch-item-name">全チャンネル</div><div class="ch-item-sub">ホーム・制作の横断表示</div></div>${_uiChannelId==='all'?'<span class="ch-item-check" style="font-size:var(--text-xs)">選択中</span>':''}</div>`;
     if(_channels.length===0){
       html+=`<div style="padding:var(--space-3);color:var(--text-tertiary);font-size:var(--text-sm)">チャンネル未登録。下のボタンから追加できます。</div>`;
     }
@@ -3815,13 +3855,13 @@ async function loadChannelSwitcher(){
       const iconHtml=c.icon_url
         ? `<img class="ch-item-icon" src="${esc(c.icon_url)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ch-item-icon-placeholder',textContent:'${init}'}))">`
         : `<div class="ch-item-icon-placeholder">${init}</div>`;
-      html+=`<div class="channel-dropdown-item" onclick="switchCh('${c.id}');event.stopPropagation()">
+      html+=`<div class="channel-dropdown-item" role="button" tabindex="0" aria-label="${esc(c.name)}" onclick="switchCh('${c.id}');event.stopPropagation()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchCh('${c.id}');event.stopPropagation()}">
         ${iconHtml}
         <div class="ch-item-info">
           <div class="ch-item-name">${esc(c.name)}</div>
           <div class="ch-item-sub">${esc(c.handle||(c.folder?c.folder.split('/').pop():''))}</div>
         </div>
-        ${isA?'<span class="ch-item-check">✓</span>':''}
+        ${isA?'<span class="ch-item-check" style="font-size:var(--text-xs)">選択中</span>':''}
       </div>`;
     });
     html+=`</div>`;
@@ -4146,7 +4186,7 @@ async function reauthChannelYouTube(id,name){
     toast('再認証失敗: '+(d.detail||d.error||r.status),'e');
   }catch(e){toast('再認証エラー','e')}
 }
-function closeChDD(){document.getElementById('chDropdown').classList.remove('open')}
+function closeChDD(){document.getElementById('chDropdown').classList.remove('open');document.getElementById('chSwitcher')?.setAttribute('aria-expanded','false')}
 async function switchCh(id, skipNavigate=false){
   if(id==='all'){
     _uiChannelId='all';localStorage.setItem('automationStudioChannelContext','all');closeChDD();
@@ -5037,14 +5077,18 @@ async function loadAutopilot(){
   const body=document.getElementById('autopilotBody');
   if(!body) return;
   body.innerHTML='<div class="fh">読み込み中...</div>';
+  const note=document.getElementById('autopilotWiredNote');
+  if(note)note.textContent='自動運転の状態を確認中...';
   try{
     const [wsR,qsR,stockR,monetR,channelsR]=await Promise.all([
-      fetch('/api/workers/status'),
-      fetch('/api/quota/status'),
-      fetch('/api/stock'),
-      fetch('/api/monetization'),
-      fetch('/api/channels')
+      fetchWithTimeout('/api/workers/status'),
+      fetchWithTimeout('/api/quota/status'),
+      fetchWithTimeout('/api/stock'),
+      fetchWithTimeout('/api/monetization'),
+      fetchWithTimeout('/api/channels')
     ]);
+    const failed=[wsR,qsR,stockR,monetR,channelsR].find(r=>!r.ok);
+    if(failed)throw new Error(`HTTP ${failed.status}`);
     const ws=wsR.ok?await wsR.json():null;
     const qs=qsR.ok?await qsR.json():null;
     _apQuota={};
@@ -5057,7 +5101,9 @@ async function loadAutopilot(){
     renderUpdateGuardBanner(ws&&ws.update_guard);
     body.innerHTML=renderAutopilot(ws);
   }catch(e){
-    body.innerHTML='<div class="fh">自動運転情報の取得に失敗しました（'+esc((e&&e.message)||e)+'）</div>';
+    if(e?.name==='AbortError')return;
+    if(note)note.textContent='自動運転の状態を取得できませんでした';
+    body.innerHTML=fetchFallbackHtml('loadAutopilot()',e?.name==='TimeoutError');
   }
 }
 
@@ -5523,13 +5569,19 @@ async function loadMonetizationCards(force){
   if(!el)return;
   el.innerHTML='<div class="fh">読み込み中...</div>';
   try{
-    const r=await fetch('/api/monetization'+(force?'?force=true':''));
+    const r=await fetchWithTimeout('/api/monetization'+(force?'?force=true':''));
     const d=await r.json();
-    if(!r.ok){el.innerHTML='<div class="fh">取得失敗: '+esc(d.detail||r.statusText)+'</div>';return}
+    if(!r.ok){el.innerHTML='<div class="fh">未取得（更新で取得）</div>';return}
     const chs=d.channels||[];
     if(!chs.length){el.innerHTML='<div class="fh">チャンネルがありません</div>';return}
     el.innerHTML=`<div class="dash-monetization-grid">${chs.map(ch=>{
       const latest=ch.latest||{};
+      const hasLatest=latest.subscriber_count!=null;
+      if(!hasLatest)return `<div class="stat dash-monetization-card">
+        <div class="stat-l" title="${esc(ch.name||'')}">${esc(ch.name||'-')}</div>
+        <div class="fh" style="margin:0">未取得（更新で取得）</div>
+        ${ch.error?`<div class="fh" style="color:var(--accent-danger);margin-top:var(--space-1)">${esc(ch.error)}</div>`:''}
+      </div>`;
       const subs=Number(latest.subscriber_count||0);
       const pct=Number(ch.subscriber_progress_pct||0);
       const pred=ch.subscriber_prediction||{};
@@ -5548,9 +5600,7 @@ async function loadMonetizationCards(force){
         ${err}
       </div>`;
     }).join('')}</div>`;
-  }catch(e){
-    el.innerHTML='<div class="fh">取得失敗: '+esc(e.message||e)+'</div>';
-  }
+  }catch(e){if(e?.name!=='AbortError')el.innerHTML='<div class="fh">未取得（更新で取得）</div>'}
 }
 
 async function loadQuotaCard(){
@@ -5578,6 +5628,7 @@ async function loadQuotaCard(){
 
 async function loadDashboard(){
   try{
+    loadAutopilot();
     loadWeeklyTasks();
     loadPdcaReport();
     loadMonetizationCards(false);
@@ -14980,11 +15031,13 @@ let _liveLocalVids={},_liveExtVids={}; // アップロード候補（チャン�
 function _lvVal(id){const e=document.getElementById(id);return e?e.value.trim():''}
 function _lvEl(id){return document.getElementById(id)}
 
-function loadLivePage(){loadLiveConfig().then(()=>{loadLiveStatus(true);loadLiveViewers(false)})}
+function loadLivePage(){loadLiveConfig();loadLiveStatus(true);loadLiveViewers(false)}
 
 async function loadLiveConfig(){
   try{
-    const d=await fetch('/api/live/config').then(r=>r.json());
+    const r=await fetchWithTimeout('/api/live/config');
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
     _liveCfg=d;
     const v=d.config.vps||{};
     const set=(id,val)=>{const e=_lvEl(id);if(e)e.value=val};
@@ -14994,19 +15047,27 @@ async function loadLiveConfig(){
     const sel=_lvEl('liveAddRegistry');
     if(sel)sel.innerHTML='<option value="">選択...</option>'+(d.registry_channels||[]).map(c=>`<option value="${esc(c.id)}">${esc(c.name||c.id)}</option>`).join('');
     if(!v.host)_lvEl('liveSetupCard').style.display='block';
-  }catch(e){toast('ライブ配信設定の読込失敗: '+e,'e')}
+  }catch(e){if(e?.name!=='AbortError')toast('ライブ配信設定の読込失敗: '+e,'e')}
 }
 
 async function loadLiveStatus(manual){
   if(_liveStatusBusy&&!manual)return; // VPS 不達時(SSH timeout ~10s)のポーリング重複を防ぐ
   _liveStatusBusy=true;
+  const el=_lvEl('liveVpsStatus');
+  if(el&&!_liveStatus)el.innerHTML='<span class="fh">読み込み中...</span>';
   try{
-    const d=await fetch('/api/live/status').then(r=>r.json());
+    const r=await fetchWithTimeout('/api/live/status');
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
     _liveStatus=d;
     renderLiveVps(d);
     renderLiveGroups(d);
     if(manual&&d.status==='ok')toast('状態を更新しました','i');
-  }catch(e){if(manual)toast('状態取得失敗: '+e,'e')}
+  }catch(e){
+    if(e?.name==='AbortError')return;
+    if(el)el.innerHTML=fetchFallbackHtml('loadLiveStatus(true)',e?.name==='TimeoutError');
+    if(manual)toast('状態を取得できませんでした','e');
+  }
   finally{_liveStatusBusy=false}
 }
 function startLivePoll(){
