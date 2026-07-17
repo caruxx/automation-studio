@@ -342,22 +342,13 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .progress-six-seg.current .progress-six-bar{background:var(--accent-primary);box-shadow:0 0 0 2px rgba(59,130,246,.22),0 0 12px rgba(59,130,246,.65)}
 .progress-six-label{display:block;margin-top:5px;font-size:var(--text-2xs);color:var(--text-tertiary);white-space:nowrap}
 .progress-six-seg.done .progress-six-label,.progress-six-seg.current .progress-six-label{color:var(--text-secondary)}
+.progress-six.compact{grid-template-columns:repeat(6,minmax(12px,1fr));gap:4px;align-items:center}
+.progress-six.compact .progress-six-label{display:none}
 .publish-chip,.state-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border-default);border-radius:var(--radius-full);padding:5px 9px;font-size:var(--text-xs);white-space:nowrap}
 .publish-chip.past{color:var(--accent-warning);border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.1)}
 .publish-chip.scheduled{color:var(--accent-info);border-color:rgba(59,130,246,.4)}
 .next-action{width:100%;white-space:nowrap}
 
-/* ===== Progress Stepper（動画一覧内用 コンパクト） ===== */
-.prog{display:flex;align-items:center;gap:3px}
-
-/* ===== Step Chips（ラベル付き工程チップ：一覧・ダッシュボード横断） ===== */
-.step-chips{display:inline-flex;align-items:center;gap:var(--space-1);flex-wrap:nowrap}
-.step-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:var(--radius-full);background:var(--bg-overlay);color:var(--text-tertiary);font-size:var(--text-xs);font-weight:var(--font-medium);white-space:nowrap;line-height:1;border:1px solid transparent;transition:.12s}
-.step-chip .sc-icon{font-size:var(--text-2xs);font-weight:var(--font-bold);min-width:10px;text-align:center}
-.step-chip.done{background:rgba(34,197,94,.14);color:var(--accent-success);border-color:rgba(34,197,94,.25)}
-.step-chip.current{background:rgba(245,158,11,.18);color:var(--accent-warning);border-color:rgba(245,158,11,.35)}
-.step-chip.compact{padding:0;width:18px;height:18px;border-radius:50%;justify-content:center;gap:0}
-.step-chip.compact .sc-label{display:none}
 .gtb-mini-list{display:flex;flex-wrap:wrap;gap:var(--space-2)}
 .gtb-mini{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-3);background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-md);font-size:var(--text-xs);min-width:240px;flex:1 1 280px}
 .gtb-mini.running{border-left:3px solid var(--accent-primary)}
@@ -382,16 +373,12 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .runs-quota-bar>span{display:block;height:100%;background:var(--accent-success);transition:width .2s}
 .runs-quota-bar>span.warn{background:var(--accent-warning)}
 .runs-quota-bar>span.danger{background:var(--accent-danger)}
-.runs-vol-row{display:grid;grid-template-columns:60px 1fr auto;gap:8px;padding:6px 8px;background:var(--bg-elevated);border-radius:var(--radius-sm);font-size:var(--text-xs);align-items:center}
+.runs-vol-row{display:grid;grid-template-columns:60px 1fr minmax(96px,120px);gap:8px;padding:6px 8px;background:var(--bg-elevated);border-radius:var(--radius-sm);font-size:var(--text-xs);align-items:center}
 .runs-vol-row.is-done{opacity:.55}
 .runs-vol-num{font-family:var(--font-mono);color:var(--accent-info);font-weight:600;font-size:12px}
 .runs-vol-info{min-width:0;overflow:hidden}
 .runs-vol-concept{color:var(--text-primary);font-size:var(--text-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .runs-vol-stage{color:var(--text-tertiary);font-size:var(--text-2xs);font-family:var(--font-mono);margin-top:2px}
-.runs-vol-chips{display:flex;gap:2px;flex-shrink:0}
-.runs-stage-chip{width:8px;height:8px;border-radius:50%;background:var(--bg-overlay);border:1px solid var(--border-default)}
-.runs-stage-chip.done{background:var(--accent-success);border-color:var(--accent-success)}
-.runs-stage-chip.current{background:var(--accent-warning);border-color:var(--accent-warning);box-shadow:0 0 0 2px rgba(245,158,11,.25)}
 .runs-history{margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px dashed var(--border-default);font-size:var(--text-xs);color:var(--text-secondary)}
 .runs-history-item{display:flex;gap:8px;padding:3px 0;font-family:var(--font-mono);font-size:var(--text-2xs)}
 .runs-history-item .h-time{color:var(--text-tertiary);width:11ch;flex-shrink:0}
@@ -669,19 +656,6 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .aut-save-bar{position:sticky;bottom:calc(var(--player-h) + var(--space-3));z-index:10;display:flex;justify-content:flex-end;margin-top:var(--space-4);pointer-events:none}
 .aut-save-bar .btn{pointer-events:auto;box-shadow:var(--shadow-lg)}
 
-/* ===== Stepper Panel（詳細画面右サイド／大きい版） ===== */
-.detail-layout{display:block;max-width:100%}
-.sp-item{display:flex;align-items:center;gap:var(--space-3);padding:10px 8px;border-radius:var(--radius-md);cursor:pointer;transition:background .1s}
-.sp-item:hover{background:var(--bg-elevated)}
-.sp-item.active{background:var(--bg-elevated)}
-.sp-dot{width:24px;height:24px;border-radius:50%;background:var(--bg-overlay);border:2px solid var(--border-default);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
-.sp-dot.done{background:var(--accent-success);border-color:var(--accent-success);color:var(--text-on-accent)}
-.sp-dot.current{border-color:var(--accent-warning);color:var(--accent-warning)}
-.sp-label{font-size:var(--text-sm);font-weight:500;flex:1}
-.sp-status{font-size:var(--text-xs);color:var(--text-tertiary)}
-.sp-connector{width:2px;height:10px;background:var(--border-default);margin-left:19px}
-.sp-connector.done{background:var(--accent-success)}
-
 /* ===== Auto Exec Bar ===== */
 .auto-exec-bar{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:var(--space-4);padding:12px 16px;background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-lg);margin-bottom:var(--space-4)}
 .auto-exec-main{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;min-width:0}
@@ -690,16 +664,11 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
 .auto-exec-bar .aeb-title{font-size:12px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em}
 .auto-exec-bar .btn{margin-left:0}
 
-/* ===== Detail Tabs (ステッパー統合) ===== */
+/* ===== Detail Tabs ===== */
 .tabs{display:flex;border-bottom:1px solid var(--border-default);margin-bottom:var(--space-5);overflow-x:auto}
-.tab{padding:10px 14px;font-size:12px;font-weight:500;color:var(--text-tertiary);background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;transition:.15s;font-family:inherit;display:flex;align-items:center;gap:5px}
+.tab{padding:10px 14px;font-size:12px;font-weight:500;color:var(--text-tertiary);background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;transition:.15s;font-family:inherit}
 .tab:hover{color:var(--text-secondary)}
 .tab.on{color:var(--text-primary);border-bottom-color:var(--accent-primary)}
-.tab .step-badge{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:var(--text-2xs);font-weight:700;flex-shrink:0}
-.tab .step-badge.done{background:var(--accent-success);color:var(--text-on-accent)}
-.tab .step-badge.current{background:var(--accent-warning);color:#000}
-.tab .step-badge.pending{background:var(--bg-overlay);color:var(--text-tertiary);border:1px solid var(--border-default)}
-.tab.locked{opacity:.7}
 .tab-panel{display:none}
 .tab-panel.on{display:block}
 .tab-next{margin-top:var(--space-4);padding-top:14px;border-top:1px solid var(--border-default);display:flex;justify-content:flex-end;gap:var(--space-2)}
@@ -791,6 +760,8 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
   /* フィルター・検索バーを折り返し */
   #vFilterBtns{flex-wrap:wrap}
   #vSearchInput{width:100%!important}
+  .dash-progress-row{grid-template-columns:44px minmax(0,1fr)!important}
+  .dash-progress-row>.progress-six{grid-column:2}
   /* ボトムプレイヤーをコンパクト（曲名のみ + 再生ボタン） */
   .bottom-player{grid-template-columns:1fr auto;padding:0 var(--space-3);gap:var(--space-2)}
   .bp-info .bp-sub{display:none}
@@ -800,6 +771,8 @@ a{color:var(--accent-info);text-decoration:none}a:hover{text-decoration:underlin
   .toast{max-width:100%}
   /* 動画詳細: メタ編集の右サイドパネル等を縦積み */
   #vDetail .g2{grid-template-columns:1fr !important}
+  .detail-head{flex-direction:column}
+  .detail-meta{width:100%}
   .detail-toolbar{align-items:flex-start;flex-direction:column}
   .meta-workspace,.upload-layout{grid-template-columns:1fr}
   .export-summary{grid-template-columns:1fr}
@@ -3390,23 +3363,16 @@ const MODELS={
 };
 const PAGE_TITLES={dashboard:'ホーム',videos:'制作',channels:'チャンネル',benchmark:'分析',automation:'ホーム',updates:'アップデート',export:'書き出し',ledger:'実行履歴',health:'接続状態',autopilot:'ホーム',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',live:'ライブ配信（VPS）',notify:'Discord 通知',settings:'設定'};
 
-// 動画詳細タブ定義（ワークフロー順）
-// stepKey: WORKFLOW_STEPS のキー（完了判定に使用）
-// requires: 前提タブ key（未完だと無効化）
-// next: 「次へ」ボタンで遷移する先
+// 動画詳細タブ定義
 const DETAIL_TABS=[
-  {key:'edit',    label:'編集',       stepKey:'suno', requires:null, next:'export', auto:'構成・仕上げ'},
-  {key:'meta',    label:'公開準備',   stepKey:'meta',    requires:null,      next:'suno',     auto:'タイトル・説明・タグ・公開設定'},
-  {key:'suno',    label:'楽曲',       stepKey:'suno',    requires:null,      next:'images',   auto:'SUNO 生成 → DL → 後処理'},
-  {key:'images',  label:'画像',       stepKey:'images',  requires:'suno',    next:'export',   auto:'画像生成・選択'},
-  {key:'export',  label:'書き出し',   stepKey:'export',  requires:'images',  next:'meta',     auto:'MP4 書き出し'},
+  {key:'edit',label:'編集'},
+  {key:'meta',label:'公開準備'},
+  {key:'suno',label:'楽曲'},
+  {key:'images',label:'画像'},
+  {key:'export',label:'書き出し'},
 ];
 
-// ===== ワークフロー 8 工程定義（PSD合成を追加） =====
-// 内部の工程数（UI ステッパー） 6 → 8。
-// バックエンド app_pipeline.py の STEPS は 11 工程（plan を除く）だが、
-// 詳細タブと過密にしないため UI は「楽曲 / 背景画像 / PSD合成 / 画像選択 / 配置 / 書出 / メタ / 公開」の 8 工程に集約。
-// `has_bg_image`: vol{N}.png または vol{N}.jpg がフォルダ直下にある（パイプライン bgimage 完了マーカー）。
+// 詳細APIの readiness をパイプライン工程へ正規化する内部定義
 const WORKFLOW_STEPS=[
   {key:'suno',short:'楽曲',label:'SUNO生成',test:v=>v.has_music},
   {key:'bgimage',short:'背景',label:'背景画像',test:v=>v.has_bg_image || v.has_images_selected || v.has_thumb},
@@ -3417,14 +3383,27 @@ const WORKFLOW_STEPS=[
   {key:'meta',short:'メタ',label:'動画メタ',test:v=>v.has_desc && v.has_tags},
   {key:'upload',short:'公開',label:'アップロード',test:v=>v.has_upload}
 ];
-function renderStepChips(steps,opts){
-  // opts: {compact:bool} compact=trueでアイコンのみ
-  const compact=opts&&opts.compact;
-  const cls=compact?' compact':'';
-  return `<div class="step-chips">${steps.map((s,i)=>{
-    const state=s.done?'done':s.current?'current':'';
-    const icon=s.done?'✓':s.current?'●':String(i+1);
-    return `<span class="step-chip ${state}${cls}" title="${s.label}: ${s.done?'完了':s.current?'進行中':'未着手'}"><span class="sc-icon">${icon}</span><span class="sc-label">${s.short||s.label}</span></span>`;
+const PROGRESS_SIX_GROUPS=[
+  {key:'music',label:'楽曲',stages:['suno','rename']},
+  {key:'image',label:'画像',stages:['bgimage','psd_composite']},
+  {key:'video',label:'動画',stages:['premiere','export']},
+  {key:'qa',label:'検査',stages:['qa']},
+  {key:'meta',label:'メタ',stages:['meta','localization','thumbnail']},
+  {key:'publish',label:'公開',stages:['upload']},
+];
+function aggregateProgressSix(completedStages,currentStage){
+  const done=completedStages instanceof Set?completedStages:new Set(completedStages||[]);
+  return PROGRESS_SIX_GROUPS.map(group=>({
+    ...group,
+    complete:group.stages.every(stage=>done.has(stage)),
+    current:group.stages.includes(currentStage),
+  }));
+}
+function renderProgressSix(segments,opts){
+  const compact=!!(opts&&opts.compact);
+  return `<div class="progress-six${compact?' compact':''}" aria-label="6工程の進捗">${segments.map(segment=>{
+    const status=segment.complete?'完了':segment.current?'進行中':'未着手';
+    return `<div class="progress-six-seg${segment.complete?' done':segment.current?' current':''}" data-segment="${esc(segment.key)}" title="${esc(segment.label)}: ${status}"><div class="progress-six-bar"></div><span class="progress-six-label">${esc(segment.label)}</span></div>`;
   }).join('')}</div>`;
 }
 function stepsStatus(v){
@@ -3435,10 +3414,29 @@ function stepsStatus(v){
     return {...s,done,current:!done && prevDone};
   });
 }
+function progressSixForVideo(v){
+  const summary=v.progress||{};
+  if(Array.isArray(summary.done_stages)){
+    return aggregateProgressSix(summary.done_stages,summary.next_stage||'');
+  }
+  const internal=stepsStatus(v);
+  const internalDone=new Set(internal.filter(step=>step.done).map(step=>step.key));
+  const completed=[];
+  if(internalDone.has('suno'))completed.push('suno','rename');
+  if(internalDone.has('bgimage'))completed.push('bgimage');
+  if(internalDone.has('psd_composite'))completed.push('psd_composite');
+  if(internalDone.has('jsx'))completed.push('premiere');
+  if(internalDone.has('export'))completed.push('export');
+  if(internalDone.has('meta'))completed.push('meta','localization','thumbnail');
+  if(internalDone.has('upload'))completed.push('upload');
+  const currentKey=internal.find(step=>step.current)?.key||'';
+  const currentStage={suno:'suno',bgimage:'bgimage',psd_composite:'psd_composite',images:'bgimage',jsx:'premiere',export:'export',meta:'meta',upload:'upload'}[currentKey]||'';
+  return aggregateProgressSix(completed,currentStage);
+}
 function workflowProgress(v){
-  const s=stepsStatus(v);
-  const done=s.filter(x=>x.done).length;
-  return {done,total:s.length,steps:s};
+  const segments=progressSixForVideo(v);
+  const done=segments.filter(segment=>segment.complete).length;
+  return {done,total:segments.length,steps:segments.map(segment=>({...segment,done:segment.complete}))};
 }
 
 let _descRefs=[],_descVD=null,_channels=[],_curVideo=null,_curTab='meta';
@@ -5397,7 +5395,6 @@ async function loadRunsActive(){
 function renderRunsActive(d){
   const body=document.getElementById('runsActiveBody');
   if(!body) return;
-  const stages=d.stages||['plan','suno','rename','premiere','export','meta','upload'];
   const chs=d.channels||[];
   if(chs.length===0){
     body.innerHTML='<div class="fh">チャンネルが未登録です。基本設定 > チャンネル管理から追加してください。</div>';
@@ -5415,23 +5412,8 @@ function renderRunsActive(d){
       : `<div class="runs-ch-icon" style="display:flex;align-items:center;justify-content:center;font-size:var(--text-3xs);color:var(--text-tertiary)">CH</div>`;
     let volsHtml=(ch.vols||[]).map(v=>{
       const completed=new Set(v.completed||[]);
-      // C1: バックエンド工程を動画一覧と同じ語彙（楽曲/背景/合成/配置/書出/メタ/公開）に集約して表示を統一
-      const groups=[
-        {label:'楽曲',keys:['suno','rename']},
-        {label:'背景',keys:['bgimage']},
-        {label:'合成',keys:['psd_composite','thumbnail']},
-        {label:'配置',keys:['premiere','jsx','srt']},
-        {label:'書出',keys:['export']},
-        {label:'メタ',keys:['meta','localization']},
-        {label:'公開',keys:['upload']},
-      ].map(g=>({...g,keys:g.keys.filter(k=>stages.includes(k))})).filter(g=>g.keys.length);
-      const chips=groups.map(g=>{
-        const done=g.keys.every(k=>completed.has(k));
-        const cur=g.keys.includes(v.current);
-        const cls=done?'done':(cur?'current':'');
-        const st=done?'完了':cur?'進行中':'未着手';
-        return `<div class="runs-stage-chip ${cls}" title="${esc(g.label)}: ${st}"></div>`;
-      }).join('');
+      if(v.has_thumb)completed.add('bgimage').add('psd_composite').add('thumbnail');
+      const segments=aggregateProgressSix(completed,v.current||'');
       // P2-7: 公開ゲート表示
       let gateInfo='';
       let gateBtn='';
@@ -5460,7 +5442,7 @@ function renderRunsActive(d){
           <div class="runs-vol-concept" title="${esc(v.concept||v.name||'')}">${conceptHtml}</div>
           <div class="runs-vol-stage">${stageText}${v.video_id?' • <a href="https://youtu.be/'+esc(v.video_id)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">YT</a>':''}${gateInfo}${gateBtn}</div>
         </div>
-        <div class="runs-vol-chips">${chips}</div>
+        ${renderProgressSix(segments,{compact:true})}
       </div>`;
     }).join('');
     if(!volsHtml) volsHtml=`<div class="fh" style="font-size:var(--text-xs);padding:6px 0">vol 無し</div>`;
@@ -5595,7 +5577,11 @@ async function loadDashboard(){
     let vs=[];
     if(_uiChannelId==='all'){
       const d=await (await fetch('/api/runs/active')).json();
-      vs=(d.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{const done=new Set(v.completed||[]);return {name:v.name,num:v.vol,title:'',publish_date:v.publish_date,channel_id:ch.channel_id,has_music:done.has('rename'),has_mp4:done.has('export'),has_upload:!!v.is_uploaded};}));
+      vs=(d.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{
+        const done=new Set(v.completed||[]);
+        if(v.has_thumb)done.add('bgimage').add('psd_composite').add('thumbnail');
+        return {name:v.name,num:v.vol,title:'',publish_date:v.publish_date,channel_id:ch.channel_id,has_music:done.has('rename'),has_mp4:done.has('export'),has_upload:!!v.is_uploaded,progress:{done_stages:[...done],next_stage:v.current||''}};
+      }));
     }else{
       const d=await (await fetch('/api/videos')).json();vs=d.videos||[];
     }
@@ -5622,12 +5608,10 @@ async function loadDashboard(){
       nextEl.innerHTML=next.map(({v,prog})=>{
         const cur=prog.steps.find(s=>s.current);
         const t=v.title||v.name;
-        // minmax(0,1fr) でタイトル列の min-content を 0 に → ellipsis が効き、右の進捗チップ列が常に同じ x 位置に固定される
-        return `<div class="video-row" onclick="${_uiChannelId==='all'?`openCrossChannelVideo('${esc(v.channel_id)}','${esc(v.name)}')`:`goToVideoDetail('${esc(v.name)}')`}" style="grid-template-columns:44px minmax(0,1fr) 140px 60px;padding:var(--space-3)">
+        return `<div class="video-row dash-progress-row" onclick="${_uiChannelId==='all'?`openCrossChannelVideo('${esc(v.channel_id)}','${esc(v.name)}')`:`goToVideoDetail('${esc(v.name)}')`}" style="grid-template-columns:44px minmax(0,1fr) minmax(240px,320px);padding:var(--space-3)">
           <div class="vr-num">vol.${v.num}</div>
           <div style="min-width:0"><div class="vr-title">${esc(t)}</div><div class="vr-sub">${cur?'次: '+cur.label:'—'}</div></div>
-          <div style="white-space:nowrap">${renderStepChips(prog.steps,{compact:true})}</div>
-          <div style="text-align:right;font-size:var(--text-xs);color:var(--text-tertiary);white-space:nowrap">${prog.done}/${prog.total}</div>
+          ${renderProgressSix(prog.steps)}
         </div>`;
       }).join('');
     }
@@ -5641,11 +5625,10 @@ async function loadDashboard(){
       recEl.innerHTML=recent.map(v=>{
         const p=workflowProgress(v);
         const t=v.title||v.name;
-        return `<div class="video-row" onclick="${_uiChannelId==='all'?`openCrossChannelVideo('${esc(v.channel_id)}','${esc(v.name)}')`:`goToVideoDetail('${esc(v.name)}')`}" style="grid-template-columns:44px minmax(0,1fr) 140px 60px;padding:var(--space-3)">
+        return `<div class="video-row dash-progress-row" onclick="${_uiChannelId==='all'?`openCrossChannelVideo('${esc(v.channel_id)}','${esc(v.name)}')`:`goToVideoDetail('${esc(v.name)}')`}" style="grid-template-columns:44px minmax(0,1fr) minmax(240px,320px);padding:var(--space-3)">
           <div class="vr-num">vol.${v.num}</div>
           <div style="min-width:0"><div class="vr-title">${esc(t)}</div><div class="vr-sub">${esc(v.publish_date||'公開日未設定')}</div></div>
-          <div style="white-space:nowrap">${renderStepChips(p.steps,{compact:true})}</div>
-          <div style="text-align:right;font-size:var(--text-xs);color:var(--text-tertiary);white-space:nowrap">${p.done}/${p.total}</div>
+          ${renderProgressSix(p.steps)}
         </div>`;
       }).join('');
     }
@@ -5684,11 +5667,10 @@ async function loadVideos(){
     let vs=[];
     if(_uiChannelId==='all'){
       const runs=await (await fetch('/api/runs/active')).json();
-      const groups=[['music','楽曲',['suno','rename']],['image','画像',['bgimage','psd_composite']],['video','動画',['premiere','export']],['qa','検査',['qa']],['meta','メタ',['meta','localization','thumbnail']],['publish','公開',['upload']]];
       vs=(runs.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{
         const done=new Set(v.completed||[]);
-        const segments=groups.map(([key,label,stages])=>({key,label,stages,complete:stages.every(s=>done.has(s)),current:stages.includes(v.current)}));
-        return {num:v.vol,name:v.name,channel_id:ch.channel_id,channel_name:ch.channel_name,title:'',concept:v.concept||'',publish_date:v.publish_date||'',has_thumb:!!v.has_thumb,has_upload:!!v.is_uploaded,is_hidden:false,progress:{segments,is_complete:!!v.is_done,next_stage:v.current||'',action:{kind:'open',label:'詳細を見る',stage:''},publish:{scheduled:!!v.publish_date,is_past_due:false}}};
+        if(v.has_thumb)done.add('bgimage').add('psd_composite').add('thumbnail');
+        return {num:v.vol,name:v.name,channel_id:ch.channel_id,channel_name:ch.channel_name,title:'',concept:v.concept||'',publish_date:v.publish_date||'',has_thumb:!!v.has_thumb,has_upload:!!v.is_uploaded,is_hidden:false,progress:{done_stages:[...done],is_complete:!!v.is_done,next_stage:v.current||'',action:{kind:'open',label:'詳細を見る',stage:''},publish:{scheduled:!!v.publish_date,is_past_due:false}}};
       }));
     }else{
       const d=await (await fetch('/api/videos')).json();vs=d.videos||[];
@@ -5715,7 +5697,7 @@ async function loadVideos(){
       </div>`;
     vs.forEach(v=>{
       const summary=v.progress||{};
-      const segments=summary.segments||[];
+      const segments=progressSixForVideo(v);
       const thumbChannel=v.channel_id?`?channel_id=${encodeURIComponent(v.channel_id)}`:'';
       const thumbUrl=v.has_thumb?`/api/youtube-desc/thumbnail/${encodeURIComponent(v.name)}${thumbChannel}`:null;
       const displayTitle=v.title||v.name;
@@ -5735,7 +5717,7 @@ async function loadVideos(){
           ${thumbUrl?`<img class="vr-thumb" src="${thumbUrl}" onerror="this.outerHTML='<div class=\\'vr-thumb-empty\\'>IMG</div>'">`:'<div class="vr-thumb-empty">IMG</div>'}
           <div class="vr-info"><div class="vr-title">${esc(displayTitle)}${hiddenBadge}</div><div class="vr-sub">${subLine}</div></div>
         </div>
-        <div class="progress-six" aria-label="6工程の進捗">${segments.map(s=>`<div class="progress-six-seg${s.complete?' done':s.current?' current':''}" data-segment="${esc(s.key)}"><div class="progress-six-bar"></div><span class="progress-six-label">${esc(s.label)}</span></div>`).join('')}</div>
+        ${renderProgressSix(segments)}
         <div><span class="publish-chip ${pubClass}">${pubPrefix}${esc(v.publish_date||'未設定')}</span></div>
         <div><span class="state-chip">${esc(state)}</span></div>
         <div class="vr-actions">
@@ -5984,16 +5966,16 @@ async function showVideoDetail(name, fromRouter=false){
       fetch(`/api/videos/${encodeURIComponent(name)}/title`)
     ]);
     const d=await dr.json(),td=await tr.json();
-    // 進捗ステッパー用: 一覧時と同じ形に正規化
+    const cachedVideo=_videosCache.find(video=>video.name===name);
     const v={
       name:d.name,num:d.num,
       has_music:d.readiness.music,has_srt:d.readiness.srt,
       has_mp4:d.readiness.mp4,has_desc:d.readiness.description,
-      has_thumb:d.readiness.thumbnail,has_upload:!!d.readiness.upload
+      has_tags:d.readiness.tags,has_bg_image:d.readiness.bg_image,
+      has_thumb:d.readiness.thumbnail,has_upload:!!d.readiness.upload,
+      progress:cachedVideo?.progress,
     };
     const p=workflowProgress(v);
-    // P0-C: 既定タブは「次にやる工程」。全工程完了なら公開準備（meta）を開く
-    const curStep=p.steps.find(s=>s.current);
     _curTab='edit';
 
     const el=document.getElementById('vDetail');
@@ -6006,19 +5988,7 @@ async function showVideoDetail(name, fromRouter=false){
       ?`<img class="detail-thumb" src="/api/youtube-desc/thumbnail/${encodeURIComponent(name)}">`
       :'<div class="detail-thumb-empty">IMG</div>';
 
-    const stepsHtml=p.steps.map((s,i,arr)=>{
-      const dotClass=s.done?'done':s.current?'current':'';
-      const icon=s.done?'✓':s.current?'●':String(i+1);
-      return `<div class="sp-item${_curTab===stepTabKey(s.key)?' active':''}" onclick="setTab('${stepTabKey(s.key)}')">
-        <div class="sp-dot ${dotClass}">${icon}</div>
-        <div class="sp-label">${s.label}</div>
-        <div class="sp-status">${s.done?'完了':s.current?'進行中':'未着手'}</div>
-      </div>${i<arr.length-1?'<div class="sp-connector'+(s.done?' done':'')+'"></div>':''}`;
-    }).join('');
-
     const rd=d.readiness;
-    const items=Object.entries({music:'楽曲',thumbnail:'サムネイル',premiere:'プロジェクト',srt:'字幕',timecode:'TC',mp4:'書き出し',description:'説明文',upload:'アップロード'});
-    const riHtml=items.map(([k,l])=>`<div class="readiness-item ${rd[k]?'ri-ok':'ri-ng'}">${rd[k]?'✓':'○'} ${l}</div>`).join('');
 
     el.innerHTML=`
       <div class="detail-toolbar">
@@ -6032,6 +6002,7 @@ async function showVideoDetail(name, fromRouter=false){
         <div class="detail-meta">
           <div class="detail-title">vol.${d.num}</div>
           <div class="detail-sub">公開予定: ${esc(d.publish_date||'未設定')} ・ 楽曲: ${d.music_count}曲${d.mp4_file?` ・ MP4: ${d.mp4_size_mb}MB`:''}</div>
+          ${renderProgressSix(p.steps)}
         </div>
       </div>
       <!-- 自動実行バー（連結関係をグループで可視化） -->
@@ -6063,7 +6034,7 @@ async function showVideoDetail(name, fromRouter=false){
 
       <div>
         <div class="tabs" id="detailTabs">
-          ${_buildStepperTabs(v)}
+          ${_buildDetailTabs()}
         </div>
 
           <div class="tab-panel on" data-t="edit">
@@ -7403,48 +7374,8 @@ function _startCodexPoll(name){
 }
 
 
-function stepTabKey(k){
-  // WORKFLOW_STEPS.key → 対応する DETAIL_TABS.key
-  // bgimage / psd_composite は「画像」、Premiere 配置は「編集」タブ内のサブ工程。
-  return ({suno:'suno',bgimage:'images',psd_composite:'images',images:'images',jsx:'edit',export:'export',meta:'meta',upload:'meta',rename:'suno'})[k]||'suno';
-}
-function _tabStatusMap(v){
-  // DETAIL_TABS.key → {done,current,locked,sub}
-  const steps=stepsStatus(v);
-  const byKey={};steps.forEach(s=>byKey[s.key]=s);
-  const m={};
-  DETAIL_TABS.forEach(t=>{
-    const s=byKey[t.stepKey]||{done:false,current:false};
-    const req=t.requires?byKey[DETAIL_TABS.find(x=>x.key===t.requires)?.stepKey]:null;
-    const locked=!!(t.requires && req && !req.done);
-    m[t.key]={done:s.done,current:s.current,locked};
-    // 「画像」タブはサブ工程（背景→合成→選抜）を集約表示。
-    // 一覧の 8 工程チップと同じ判定を使い、見る場所による進捗のズレを無くす。
-    if(t.key==='images'){
-      const sub=[
-        {label:'背景',  done:!!(byKey['bgimage']?.done)},
-        {label:'合成',  done:!!(byKey['psd_composite']?.done)},
-        {label:'選抜',  done:!!(byKey['images']?.done)},
-      ];
-      m[t.key].sub=sub;
-      m[t.key].partial=!s.done && sub.some(x=>x.done);
-    }
-  });
-  return m;
-}
-function _buildStepperTabs(v){
-  const stat=_tabStatusMap(v);
-  return DETAIL_TABS.map((t,i)=>{
-    const s=stat[t.key];
-    const cls=s.done?'done':((s.current||s.partial)?'current':'pending');
-    const icon=s.done?'✓':(s.partial?'◐':(s.current?'●':String(i+1)));
-    const active=t.key==='edit'?'on':'';
-    const lockCls=s.locked?' locked':'';
-    let tip='';
-    if(s.locked)tip=`title="推奨順序: 先に「${DETAIL_TABS.find(x=>x.key===t.requires)?.label}」を完了することを推奨"`;
-    else if(s.sub)tip=`title="${s.sub.map(x=>`${x.label}${x.done?'✓':'…'}`).join(' → ')}"`;
-    return `<button class="tab ${active}${lockCls}" data-t="${t.key}" onclick="setTab('${t.key}')" ${tip}><span class="step-badge ${cls}">${icon}</span>${t.label}</button>`;
-  }).join('');
+function _buildDetailTabs(){
+  return DETAIL_TABS.map(tab=>`<button class="tab${tab.key==='edit'?' on':''}" data-t="${tab.key}" onclick="setTab('${tab.key}')">${tab.label}</button>`).join('');
 }
 function runAutoExec(name){
   const checks=document.querySelectorAll('#autoExecBar input[type="checkbox"]:checked');
@@ -7536,11 +7467,6 @@ function setTab(t){
   _curTab=t;
   document.querySelectorAll('#p-videos .tab').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
   document.querySelectorAll('#p-videos .tab-panel').forEach(p=>p.classList.toggle('on',p.dataset.t===t));
-  // ステッパーのハイライトも更新
-  document.querySelectorAll('.sp-item').forEach((el,i)=>{
-    const step=WORKFLOW_STEPS[i];if(!step)return;
-    el.classList.toggle('active',stepTabKey(step.key)===t);
-  });
   // images タブを開いたら Photoshop 接続を自動チェック
   if(t==='images' && _curVideo){
     setTimeout(()=>checkPhotoshopFor(_curVideo),200);
