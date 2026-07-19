@@ -22,6 +22,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+from array import array
 import copy
 import hashlib
 import json
@@ -47,7 +48,11 @@ from app_premiere import generate_srt, generate_timecode, _read_file_prefix  # n
 from app_timeline import TIMELINE_NAME, load as load_vol_timeline  # noqa: E402
 
 # ── AME 目標スペック（HN_vol11.mp4 実測値に合わせる） ──────────────────
-FPS = "30000/1001"          # 29.97
+DEFAULT_FPS = "30000/1001"
+FPS = DEFAULT_FPS             # 29.97; render() 開始時に ffrender.fps で確定
+FPS_NUM, FPS_DEN = 30000, 1001
+FRAME_RATE = FPS_NUM / FPS_DEN
+VIDEO_TIMESCALE = "30000"
 WIDTH, HEIGHT = 1920, 1080
 GOP_FRAMES = 150            # 1 ループ素材 = 150 フレーム = 1 closed GOP（約 5.005s）
 DEFAULT_CRF = 18           # 静止画ループ素材の品質。容量ノブ（28 なら約 1/4）
@@ -60,6 +65,78 @@ LIMITER = "alimiter=limit=0.97:level=false"
 CACHE_ROOT = Path.home() / ".cache" / "ffrender"
 FFMPEG_TIMEOUT = int(os.environ.get("APP_FFRENDER_TIMEOUT_SEC") or 21600)
 FFPROBE_TIMEOUT = int(os.environ.get("APP_FFPROBE_TIMEOUT_SEC") or 30)
+VIDEO_BITRATE_MBPS: Optional[float] = None
+VIDEO_ENCODER = "libx264"
+
+
+def _configure_video(ffr_cfg: dict) -> None:
+    """1 レンダー内の FPS / GOP / encoder を一度だけ確定する。"""
+    global FPS, FPS_NUM, FPS_DEN, FRAME_RATE, VIDEO_TIMESCALE, GOP_FRAMES
+    global VIDEO_BITRATE_MBPS, VIDEO_ENCODER
+    raw_fps = ffr_cfg.get("fps")
+    fps_map = {24: ("24", 24, 1), 30: ("30", 30, 1), 60: ("60", 60, 1)}
+    try:
+        selected = int(raw_fps) if raw_fps is not None else None
+    except (TypeError, ValueError):
+        selected = None
+    if raw_fps is not None and selected not in fps_map:
+        print(f"  WARNING: fps={raw_fps!r} は無効なため既定 29.97 を使用")
+    if selected in fps_map:
+        FPS, FPS_NUM, FPS_DEN = fps_map[selected]
+        FRAME_RATE = FPS_NUM / FPS_DEN
+        VIDEO_TIMESCALE = str(FPS_NUM)
+        GOP_FRAMES = int(round(FRAME_RATE * 2))
+    else:
+        FPS, FPS_NUM, FPS_DEN = DEFAULT_FPS, 30000, 1001
+        FRAME_RATE = FPS_NUM / FPS_DEN
+        VIDEO_TIMESCALE = "30000"
+        # 既定値は旧コマンド列と完全一致させる。
+        GOP_FRAMES = 150
+
+    VIDEO_BITRATE_MBPS = None
+    raw_bitrate = ffr_cfg.get("bitrate_mbps")
+    if raw_bitrate not in (None, ""):
+        bitrate = _finite_float(raw_bitrate, 0, minimum=0, maximum=200)
+        if bitrate > 0:
+            VIDEO_BITRATE_MBPS = bitrate
+    VIDEO_ENCODER = "libx264"
+    if VIDEO_BITRATE_MBPS is not None and not str(
+            os.environ.get("APP_FFRENDER_DISABLE_VIDEOTOOLBOX") or "").lower() in {
+                "1", "true", "yes", "on"}:
+        probe = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                               capture_output=True, text=True, timeout=FFPROBE_TIMEOUT)
+        if "h264_videotoolbox" in (probe.stdout or ""):
+            VIDEO_ENCODER = "h264_videotoolbox"
+
+
+def _bitrate_to_crf(mbps: float) -> int:
+    points = ((40, 12), (20, 14), (16, 16), (10, 18), (8, 19), (6, 21))
+    return min(points, key=lambda pair: abs(pair[0] - mbps))[1]
+
+
+def _video_encode_args(crf: int) -> list[str]:
+    if VIDEO_BITRATE_MBPS is None:
+        return ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf)]
+    if VIDEO_ENCODER == "h264_videotoolbox":
+        return ["-c:v", VIDEO_ENCODER, "-b:v", f"{VIDEO_BITRATE_MBPS:g}M",
+                "-profile:v", "high"]
+    return ["-c:v", "libx264", "-preset", "medium", "-crf",
+            str(_bitrate_to_crf(VIDEO_BITRATE_MBPS))]
+
+
+def _closed_gop_args(frames: int) -> list[str]:
+    if VIDEO_BITRATE_MBPS is None or VIDEO_ENCODER == "libx264":
+        return ["-x264-params",
+                f"keyint={frames}:min-keyint={frames}:scenecut=0:bframes=0"]
+    return ["-bf", "0", "-g", str(frames)]
+
+
+def _frames(seconds: float) -> int:
+    return max(1, round(float(seconds) * FRAME_RATE))
+
+
+def _gop_seconds() -> float:
+    return GOP_FRAMES / FRAME_RATE
 
 
 # ── 小物 ───────────────────────────────────────────────────────────────
@@ -889,6 +966,8 @@ def _img_gop(img: Path, crf: int, scratch: Path, cache: dict,
     """画像（＋常時表示の題字）を 1 closed GOP にエンコードしてキャッシュ。"""
     loop_frames = max(1, int(loop_frames or GOP_FRAMES))
     key = (str(img), img.stat().st_mtime_ns, crf, title or "", loop_frames)
+    if FPS != DEFAULT_FPS or VIDEO_BITRATE_MBPS is not None:
+        key += (FPS, VIDEO_ENCODER, VIDEO_BITRATE_MBPS)
     if key in cache:
         return cache[key]
     out = scratch / f"loop_{hashlib.sha1(str(key).encode()).hexdigest()[:12]}.mp4"
@@ -898,13 +977,13 @@ def _img_gop(img: Path, crf: int, scratch: Path, cache: dict,
     if title and burn:
         vf += "," + _drawtext_clause(title, burn, scratch)
     vf += ",format=yuv420p"
-    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-loop", "1", "-i", str(img), "-r", FPS, "-frames:v", str(loop_frames),
-             "-vf", vf, "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
-             "-pix_fmt", "yuv420p", "-color_range", "tv",
-             "-x264-params", f"keyint={loop_frames}:min-keyint={loop_frames}:scenecut=0:bframes=0",
+             "-vf", vf] + _video_encode_args(crf) + [
+             "-pix_fmt", "yuv420p", "-color_range", "tv"] + _closed_gop_args(loop_frames) + [
              "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
-             str(out)], f"ループ素材 enc ({img.name}{' +題字' if title else ''})")
+             str(out)]
+    _run_ff(cmd, f"ループ素材 enc ({img.name}{' +題字' if title else ''})")
     cache[key] = out
     return out
 
@@ -930,17 +1009,17 @@ def _build_blocks(blocks: list, out: Path, *, crf: int, scratch: Path,
     if len(blocks) == 1:
         img, title, dur = blocks[0]
         gop = _img_gop(img, crf, scratch, gop_cache, title, burn, loop_frames=loop_frames)
-        frames = max(1, round(float(dur) * 30000 / 1001))
+        frames = _frames(dur)
         _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                  "-stream_loop", "-1", "-i", str(gop), "-frames:v", str(frames),
-                 "-c", "copy", "-video_track_timescale", "30000", str(out)],
+                 "-c", "copy", "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
                 "連結(単一ブロック) stream_loop")
         return out
     ts_files = []
     for idx, (img, title, dur) in enumerate(blocks):
         gop = _img_gop(img, crf, scratch, gop_cache, title, burn, loop_frames=loop_frames)
         ts = scratch / f"seg_{idx:03d}.ts"
-        frames = max(1, round(float(dur) * 30000 / 1001))
+        frames = _frames(dur)
         _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                  "-stream_loop", "-1", "-i", str(gop), "-frames:v", str(frames),
                  "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", str(ts)],
@@ -1013,7 +1092,7 @@ def build_video_with_crossfades(segments: list, out: Path, *, crf: int) -> Path:
             filters.append(f"[{current}][v{i}]xfade=transition=fade:duration={fade:.3f}:offset={offset:.3f}[{outlabel}]")
             elapsed += durations[i]-fade
         current=outlabel
-    cmd += ["-filter_complex",";".join(filters),"-map",f"[{current}]","-r",FPS,"-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p",str(out)]
+    cmd += ["-filter_complex",";".join(filters),"-map",f"[{current}]","-r",FPS] + _video_encode_args(crf) + ["-pix_fmt","yuv420p",str(out)]
     _run_ff(cmd,"タイムライン映像クロスフェード")
     return out
 
@@ -1033,15 +1112,19 @@ def build_intro_dissolve(from_img: Path, to_img: Path, duration: float, out: Pat
     vf = (_image_vf("0") + ";" + _image_vf("1") + ";"
           f"[0v][1v]xfade=transition={transition}:duration={duration:.3f}:offset=0,"
           "format=yuv420p[v]")
-    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-loop", "1", "-t", f"{duration:.3f}", "-i", str(from_img),
              "-loop", "1", "-t", f"{duration:.3f}", "-i", str(to_img),
              "-filter_complex", vf, "-map", "[v]", "-r", FPS, "-t", f"{duration:.3f}",
-             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
-             "-pix_fmt", "yuv420p", "-color_range", "tv",
-             "-x264-params", f"keyint={GOP_FRAMES}:min-keyint={GOP_FRAMES}:scenecut=0",
+             ] + _video_encode_args(crf) + ["-pix_fmt", "yuv420p", "-color_range", "tv"]
+    if VIDEO_BITRATE_MBPS is None or VIDEO_ENCODER == "libx264":
+        cmd += ["-x264-params", f"keyint={GOP_FRAMES}:min-keyint={GOP_FRAMES}:scenecut=0"]
+    else:
+        cmd += ["-g", str(GOP_FRAMES)]
+    cmd += [
              "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
-             str(out)], f"冒頭ディゾルブ ({from_img.name} → {to_img.name}, {duration:.2f}s)")
+             str(out)]
+    _run_ff(cmd, f"冒頭ディゾルブ ({from_img.name} → {to_img.name}, {duration:.2f}s)")
     return out
 
 
@@ -1058,7 +1141,7 @@ def concat_videos_lossless(parts: list, out: Path, *, scratch: Path) -> Path:
     concat_txt.write_text("".join(f"file '{p}'\n" for p in ts_files), encoding="utf-8")
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-f", "concat", "-safe", "0", "-i", str(concat_txt),
-             "-c", "copy", "-video_track_timescale", "30000", str(out)],
+             "-c", "copy", "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
             "冒頭映像 + 本編映像 連結")
     return out
 
@@ -1070,7 +1153,7 @@ def concat_album_video(parts: list, out: Path, *, scratch: Path) -> Path:
         encoding="utf-8")
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-f", "concat", "-safe", "0", "-i", str(concat_txt),
-             "-c", "copy", "-video_track_timescale", "30000", str(out)],
+             "-c", "copy", "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
             "アルバム周回映像 concat copy")
     return out
 
@@ -1192,8 +1275,8 @@ def build_hidden_video(duration: float, out: Path, *, crf: int) -> Path:
     """V1非表示時の黒背景。映像ストリーム自体は mux に必要なため残す。"""
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-f", "lavfi", "-i", f"color=c=black:s={WIDTH}x{HEIGHT}:r={FPS}",
-             "-t", f"{max(0.1, duration):.3f}", "-an", "-c:v", "libx264",
-             "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p", str(out)],
+             "-t", f"{max(0.1, duration):.3f}", "-an"] + _video_encode_args(crf)
+            + ["-pix_fmt", "yuv420p", str(out)],
             "V1非表示（黒背景）")
     return out
 
@@ -1205,6 +1288,7 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
         "bands": 48, "motion": "normal",
         "margin": 64, "width_percent": 60, "height_px": 180,
         "color1": "#ffffff", "color2": "#66ccff", "opacity": 0.7,
+        "bar_width_percent": 87.5,
         "loop_seconds": 20.0,
     }
     legacy_motion = ((isinstance(channel_cfg, dict) and bool(channel_cfg))
@@ -1216,7 +1300,7 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     if isinstance(timeline_cfg, dict):
         cfg.update(timeline_cfg)
     cfg["pattern"] = str(cfg.get("pattern") or "bars").lower()
-    if cfg["pattern"] not in {"bars", "mirror", "wave", "circle", "line"}:
+    if cfg["pattern"] not in {"bars", "mirror", "wave", "circle", "ring", "line"}:
         cfg["pattern"] = "bars"
     if legacy_motion and not has_motion:
         cfg["motion"] = "max"
@@ -1230,6 +1314,8 @@ def resolve_visualizer_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -
     cfg["width_percent"] = _finite_float(cfg.get("width_percent"), 60, minimum=5, maximum=100)
     cfg["height_px"] = int(_finite_float(cfg.get("height_px"), 180, minimum=24, maximum=1080))
     cfg["opacity"] = _finite_float(cfg.get("opacity"), .7, minimum=0, maximum=1)
+    cfg["bar_width_percent"] = _finite_float(
+        cfg.get("bar_width_percent"), 87.5, minimum=20, maximum=100)
     cfg["loop_seconds"] = _finite_float(cfg.get("loop_seconds"), 20, minimum=2, maximum=600)
     _resolve_free_xy(cfg)
     # Renderer geometry is authoritative.  Keep authored settings where possible,
@@ -1291,16 +1377,61 @@ def resolve_icon_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -> dict
 
 def resolve_effects_config(channel_cfg: dict, timeline_cfg: Optional[dict]) -> dict:
     cfg = {"vintage": False, "noise_sand": False, "noise_horizontal": False,
-           "noise_vertical": False, "noise_strength": 30}
+           "noise_vertical": False, "noise_rain": False, "noise_fog": False,
+           "noise_film": False, "noise_strength": 30}
     if isinstance(channel_cfg, dict):
         cfg.update(channel_cfg)
     if isinstance(timeline_cfg, dict):
         cfg.update(timeline_cfg)
-    for key in ("vintage", "noise_sand", "noise_horizontal", "noise_vertical"):
+    for key in ("vintage", "noise_sand", "noise_horizontal", "noise_vertical",
+                "noise_rain", "noise_fog", "noise_film"):
         cfg[key] = cfg.get(key) is True
     cfg["noise_strength"] = int(_finite_float(
         cfg.get("noise_strength"), 30, minimum=5, maximum=100))
     return cfg
+
+
+def resolve_fg_config(channel_cfg: dict, timeline_cfg: Optional[dict],
+                      vol_folder: Path) -> dict:
+    cfg = {"enabled": False, "image_path": "", "x": 0, "y": 0,
+           "w": 1920, "h": 1080}
+    if isinstance(channel_cfg, dict):
+        cfg.update(channel_cfg)
+    if isinstance(timeline_cfg, dict):
+        cfg.update(timeline_cfg)
+    cfg["enabled"] = cfg.get("enabled") is True
+    cfg["image_path"] = str(cfg.get("image_path") or "").strip()
+    cfg["x"] = _finite_float(cfg.get("x"), 0, minimum=0, maximum=1920)
+    cfg["y"] = _finite_float(cfg.get("y"), 0, minimum=0, maximum=1080)
+    cfg["w"] = _finite_float(cfg.get("w"), 1920, minimum=1, maximum=1920)
+    cfg["h"] = _finite_float(cfg.get("h"), 1080, minimum=1, maximum=1080)
+    source = _resolve_channel_asset(vol_folder, cfg["image_path"])
+    if cfg["enabled"] and (source is None or not source.is_file()):
+        print(f"  WARNING: 最前面オーバーレイ画像が見つからないため無効化: {cfg['image_path']}")
+        cfg["enabled"] = False
+        source = None
+    cfg["source"] = source
+    return cfg
+
+
+def apply_foreground_overlay(video: Path, cfg: dict, out: Path, *, crf: int) -> Path:
+    """Place the optional frame PNG after every other visual layer."""
+    if not cfg.get("enabled") or not cfg.get("source"):
+        return video
+    duration = max(.1, probe_duration(video))
+    width = max(1, int(round(float(cfg["w"]))))
+    height = max(1, int(round(float(cfg["h"]))))
+    x = int(round(float(cfg["x"])))
+    y = int(round(float(cfg["y"])))
+    graph = (f"[1:v]scale={width}:{height},format=rgba[fg];"
+             f"[0:v][fg]overlay=x={x}:y={y}:shortest=1[v]")
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+           "-i", str(video), "-loop", "1", "-framerate", FPS, "-i", str(cfg["source"]),
+           "-filter_complex", graph, "-map", "[v]", "-t", f"{duration:.3f}",
+           "-an", "-r", FPS] + _video_encode_args(crf) + [
+           "-pix_fmt", "yuv420p", "-video_track_timescale", VIDEO_TIMESCALE, str(out)]
+    _run_ff(cmd, "最前面オーバーレイ合成")
+    return out
 
 
 def resolve_chroma_opening_config(channel_cfg: dict, timeline_cfg: Optional[dict],
@@ -1354,7 +1485,8 @@ def _chroma_opening_filter(input_index: int, cfg: dict, label: str) -> tuple[str
 
 def effects_enabled(cfg: dict) -> bool:
     return any(cfg.get(key) for key in
-               ("vintage", "noise_sand", "noise_horizontal", "noise_vertical"))
+               ("vintage", "noise_sand", "noise_horizontal", "noise_vertical",
+                "noise_rain", "noise_fog", "noise_film"))
 
 
 def prepare_icon_image(vol_folder: Path, cfg: dict, scratch: Path) -> Optional[Path]:
@@ -1422,6 +1554,62 @@ def _append_effect_filters(filters: list[str], current: str, cfg: dict,
                        f"scale={WIDTH}:{HEIGHT}:flags=neighbor,format=gbrp[{noise}]")
         filters.append(f"[{base}][{noise}]blend=all_mode=screen:all_opacity={opacity:.4f}[{target}]")
         current = target
+    if cfg.get("noise_rain"):
+        base = f"{prefix}_rain_base"
+        noise = f"{prefix}_rain_noise"
+        target = f"{prefix}_rain"
+        opacity = .04 + strength / 100 * .30
+        loop_seconds = _finite_float(cfg.get("loop_seconds"), 20, minimum=2, maximum=600)
+        scroll_speed = 1 / max(1, round(FRAME_RATE * loop_seconds))
+        filters.append(f"[{current}]format=gbrp[{base}]")
+        filters.append(
+            f"color=black:s=120x68:r={FPS},format=gray,noise=alls=100:allf=t+u,"
+            f"geq=lum='if(gt(lum(X,Y),45),255,0)',scroll=v={scroll_speed:.9f},"
+            f"avgblur=sizeX=1:sizeY=8,scale={WIDTH}:{HEIGHT}:flags=bilinear,format=gbrp[{noise}]")
+        filters.append(
+            f"[{base}][{noise}]blend=all_mode=screen:all_opacity={opacity:.4f}[{target}]")
+        current = target
+    if cfg.get("noise_fog"):
+        base = f"{prefix}_fog_base"
+        tile = f"{prefix}_fog_tile"
+        noise = f"{prefix}_fog_noise"
+        target = f"{prefix}_fog"
+        opacity = .05 + strength / 100 * .24
+        loop_seconds = _finite_float(cfg.get("loop_seconds"), 20, minimum=2, maximum=600)
+        scroll_speed = 1 / max(1, round(FRAME_RATE * loop_seconds))
+        filters.append(f"[{current}]format=gbrp[{base}]")
+        filters.append(
+            f"color=black:s=64x36:r={FPS},format=gray,noise=alls=100:allf=u,gblur=sigma=5,"
+            f"split[{prefix}_fog_a][{prefix}_fog_b];"
+            f"[{prefix}_fog_b]hflip[{prefix}_fog_flip];"
+            f"[{prefix}_fog_a][{prefix}_fog_flip]hstack[{tile}]")
+        filters.append(
+            f"[{tile}]scroll=h={scroll_speed:.9f},scale={WIDTH}:{HEIGHT}:flags=bilinear,"
+            f"gblur=sigma={12 * geometry_scale},format=gbrp[{noise}]")
+        filters.append(
+            f"[{base}][{noise}]blend=all_mode=screen:all_opacity={opacity:.4f}[{target}]")
+        current = target
+    if cfg.get("noise_film"):
+        base = f"{prefix}_film_base"
+        dust = f"{prefix}_film_dust"
+        dusted = f"{prefix}_film_dusted"
+        exposure = f"{prefix}_film_exposure"
+        target = f"{prefix}_film"
+        dust_opacity = .03 + strength / 100 * .26
+        flicker_opacity = .02 + strength / 100 * .12
+        filters.append(f"[{current}]format=gbrp[{base}]")
+        filters.append(
+            f"color=black:s=160x90:r={FPS},format=gray,noise=alls=100:allf=t+u,"
+            f"geq=lum='if(gt(lum(X,Y),47),255,0)',scale={WIDTH}:{HEIGHT}:flags=neighbor,"
+            f"format=gbrp[{dust}]")
+        filters.append(
+            f"[{base}][{dust}]blend=all_mode=screen:all_opacity={dust_opacity:.4f}[{dusted}]")
+        filters.append(
+            f"color=black:s=8x8:r={FPS},format=gray,noise=alls=65:allf=t+u,"
+            f"scale={WIDTH}:{HEIGHT}:flags=bilinear,format=gbrp[{exposure}]")
+        filters.append(
+            f"[{dusted}][{exposure}]blend=all_mode=softlight:all_opacity={flicker_opacity:.4f}[{target}]")
+        current = target
     return current
 
 
@@ -1475,7 +1663,60 @@ def _overlay_xy(cfg: dict, position: str, margin: int) -> tuple[str, str]:
     return _visualizer_xy(position, margin)
 
 
-def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, str, str]:
+def _ring_geometry(cfg: dict) -> tuple[int, int, int, int, float, float]:
+    width = max(16, int(round(WIDTH * float(cfg["width_percent"]) / 100 / 2) * 2))
+    height = max(16, int(round(int(cfg["height_px"]) / 2) * 2))
+    bands = int(cfg.get("bands", 48))
+    r1 = min(width, height) / 2 - 1
+    r0 = r1 * .62
+    strip_width = max(bands, int(round((2 * math.pi * r1) / bands)) * bands)
+    strip_height = max(8, int(math.ceil(r1 - r0)) + 1)
+    return width, height, strip_width, strip_height, r0, r1
+
+
+def _write_ring_maps(cfg: dict, scratch: Path) -> tuple[Path, Path]:
+    """Write gray16 PGM polar remap coordinates into the render scratch dir."""
+    width, height, strip_width, strip_height, r0, r1 = _ring_geometry(cfg)
+    key = f"{width}x{height}_{strip_width}x{strip_height}_{r0:.3f}_{r1:.3f}"
+    suffix = hashlib.sha1(key.encode()).hexdigest()[:10]
+    x_path = scratch / f"ring_xmap_{suffix}.pgm"
+    y_path = scratch / f"ring_ymap_{suffix}.pgm"
+    if x_path.exists() and y_path.exists():
+        return x_path, y_path
+    x_values = array("H")
+    y_values = array("H")
+    cx, cy = width / 2, height / 2
+    span = max(1e-6, r1 - r0)
+    for py in range(height):
+        dy = py - cy
+        for px in range(width):
+            dx = px - cx
+            radius = math.hypot(dx, dy)
+            angle = (math.atan2(dx, -dy) / (2 * math.pi) + 1) % 1
+            x_values.append(min(65535, max(0, round(angle * strip_width))))
+            if r0 <= radius <= r1:
+                mapped_y = 2 + (r1 - radius) / span * (strip_height - 1)
+                y_values.append(min(65535, max(0, round(mapped_y))))
+            else:
+                y_values.append(0)
+    if sys.byteorder == "little":
+        x_values.byteswap()
+        y_values.byteswap()
+    header = f"P5\n{width} {height}\n65535\n".encode("ascii")
+    x_path.write_bytes(header + x_values.tobytes())
+    y_path.write_bytes(header + y_values.tobytes())
+    return x_path, y_path
+
+
+def _bar_gap(width: int, bands: int, percent: float) -> int:
+    if percent >= 100:
+        return 0
+    return max(1, int(round((width / bands) * (1 - percent / 100))))
+
+
+def _visualizer_filter_source(audio_input: int, cfg: dict, *,
+                              ring_map_inputs: Optional[tuple[int, int]] = None
+                              ) -> tuple[str, str, str, str]:
     """Return the legacy visualizer source plus its overlay geometry unchanged."""
     width = max(16, int(round(WIDTH * float(cfg["width_percent"]) / 100 / 2) * 2))
     height = max(16, int(round(int(cfg["height_px"]) / 2) * 2))
@@ -1488,7 +1729,7 @@ def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, st
     opacity = float(cfg["opacity"])
     x, y = _overlay_xy(cfg, cfg["position"], int(cfg["margin"]))
     normalized = "aformat=channel_layouts=stereo,dynaudnorm=f=250:g=15:p=0.95:m=30"
-    gap = max(2, int(round(width / 400)))
+    gap = _bar_gap(width, bands, float(cfg.get("bar_width_percent", 87.5)))
     prefix = f"[{audio_input}:a]{normalized}"
     if pattern == "wave":
         source = (f"{prefix},showwaves=s={width}x{height}:mode=p2p:"
@@ -1499,24 +1740,45 @@ def _visualizer_filter_source(audio_input: int, cfg: dict) -> tuple[str, str, st
         source = (f"{prefix},avectorscope=s={side}x{side}:r={FPS}:"
                   f"mode=lissajous:draw=line:scale=sqrt:rc=0:gc=200:bc=255,format=rgba,"
                   f"colorchannelmixer=aa={opacity},scale={width}:{height}:force_original_aspect_ratio=decrease[viz]")
+    elif pattern == "ring":
+        if ring_map_inputs is None:
+            raise ValueError("ring visualizer requires PGM map inputs")
+        _, _, strip_width, strip_height, _, _ = _ring_geometry(cfg)
+        ring_gap = _bar_gap(strip_width, bands, float(cfg.get("bar_width_percent", 87.5)))
+        grid = ("" if ring_gap == 0 else
+                f",drawgrid=w=iw/{bands}:h=ih:t={ring_gap}:c=black@0:replace=1")
+        xmap_input, ymap_input = ring_map_inputs
+        source = (
+            f"{prefix},showfreqs=s={strip_width}x{strip_height}:mode=bar:rate={FPS}:"
+            f"ascale={ascale}:fscale=log:win_size=2048:averaging=2:colors={color1}|{color2},"
+            f"format=rgba,colorkey=black:0.08:0{grid},"
+            f"pad=w=iw:h=ih+2:x=0:y=2:color=black@0,format=gbrap[ring_strip];"
+            f"[{xmap_input}:v]format=gray16le[ring_xmap];"
+            f"[{ymap_input}:v]format=gray16le[ring_ymap];"
+            f"[ring_strip][ring_xmap][ring_ymap]remap=fill=black@0,format=rgba,"
+            f"colorchannelmixer=aa={opacity}[viz]")
     elif pattern == "line":
         source = (f"{prefix},showfreqs=s={width}x{height}:mode=line:rate={FPS}:ascale={ascale}:fscale=log:"
                   f"win_size=2048:averaging=2:colors={color1}|{color2},format=rgba,colorkey=black:0.08:0,"
                   f"colorchannelmixer=aa={opacity}[viz]")
     elif pattern == "mirror":
         half = max(8, height // 2)
-        half_gap = max(1, int(round(width / 400)))
+        half_gap = _bar_gap(width, bands, float(cfg.get("bar_width_percent", 87.5)))
+        grid = ("" if half_gap == 0 else
+                f",drawgrid=w=iw/{bands}:h=ih:t={half_gap}:c=black@0:replace=1")
         source = (f"{prefix},showfreqs=s={bands}x{half}:mode=bar:rate={FPS}:ascale={ascale}:fscale=log:"
                   f"win_size=2048:averaging=2:colors={color1}|{color2},"
                   f"scale={width}:{half}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
-                  f"drawgrid=w=iw/{bands}:h=ih:t={half_gap}:c=black@0:replace=1,"
+                  f"{grid.lstrip(',') + ',' if grid else ''}"
                   f"colorchannelmixer=aa={opacity}[top];"
                   f"[top]split[a][b];[b]vflip[c];[a][c]vstack[viz]")
     else:
+        grid = ("" if gap == 0 else
+                f",drawgrid=w=iw/{bands}:h=ih:t={gap}:c=black@0:replace=1")
         source = (f"{prefix},showfreqs=s={bands}x{height}:mode=bar:rate={FPS}:ascale={ascale}:fscale=log:"
                   f"win_size=2048:averaging=2:colors={color1}|{color2},"
                   f"scale={width}:{height}:flags=neighbor,format=rgba,colorkey=black:0.08:0,"
-                  f"drawgrid=w=iw/{bands}:h=ih:t={gap}:c=black@0:replace=1,"
+                  f"{grid.lstrip(',') + ',' if grid else ''}"
                   f"colorchannelmixer=aa={opacity}[viz]")
     return source, x, y, pattern
 
@@ -1527,13 +1789,21 @@ def apply_audio_visualizer(video: Path, audio: Optional[Path], cfg: dict, out: P
     if not cfg.get("enabled") or audio is None:
         return video
     duration = probe_duration(video)
-    source, x, y, pattern = _visualizer_filter_source(1, cfg)
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+           "-i", str(video), "-i", str(audio)]
+    ring_inputs = None
+    if cfg.get("pattern") == "ring":
+        xmap, ymap = _write_ring_maps(cfg, Path(out).parent)
+        ring_inputs = (2, 3)
+        cmd += ["-loop", "1", "-framerate", FPS, "-i", str(xmap),
+                "-loop", "1", "-framerate", FPS, "-i", str(ymap)]
+    source, x, y, pattern = _visualizer_filter_source(
+        1, cfg, ring_map_inputs=ring_inputs)
     graph = f"{source};[0:v][viz]overlay=x={x}:y={y}:shortest=1[v]"
-    _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-             "-i", str(video), "-i", str(audio), "-filter_complex", graph,
-             "-map", "[v]", "-t", f"{duration:.3f}", "-an", "-r", FPS,
-             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
-             "-pix_fmt", "yuv420p", "-video_track_timescale", "30000", str(out)],
+    _run_ff(cmd + ["-filter_complex", graph,
+             "-map", "[v]", "-t", f"{duration:.3f}", "-an", "-r", FPS]
+            + _video_encode_args(crf) + [
+             "-pix_fmt", "yuv420p", "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
             f"オーディオビジュアライザー焼き込み ({pattern})")
     return out
 
@@ -1550,7 +1820,7 @@ def build_repeated_v1_decorations(video: Path, first_song: Optional[Path],
         loop_duration = period * math.ceil(max(20, loop_seconds) / period)
     else:
         loop_duration = loop_seconds
-    loop_duration = min(max(GOP_FRAMES * 1001 / 30000, loop_duration), total)
+    loop_duration = min(max(_gop_seconds(), loop_duration), total)
     loop = scratch / "v1_decorations_loop.mp4"
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video)]
     audio_index = None
@@ -1570,21 +1840,29 @@ def build_repeated_v1_decorations(video: Path, first_song: Optional[Path],
         current = _append_icon_filters(filters, current, icon_index, icon_cfg, "loop_icon")
     pattern = "none"
     if audio_index is not None:
-        source, x, y, pattern = _visualizer_filter_source(audio_index, visualizer_cfg)
+        ring_inputs = None
+        if visualizer_cfg.get("pattern") == "ring":
+            xmap, ymap = _write_ring_maps(visualizer_cfg, scratch)
+            ring_inputs = (icon_index + 1 if icon_index is not None else 2,
+                           icon_index + 2 if icon_index is not None else 3)
+            cmd += ["-loop", "1", "-framerate", FPS, "-i", str(xmap),
+                    "-loop", "1", "-framerate", FPS, "-i", str(ymap)]
+        source, x, y, pattern = _visualizer_filter_source(
+            audio_index, visualizer_cfg, ring_map_inputs=ring_inputs)
         filters.append(source)
         filters.append(f"[{current}][viz]overlay=x={x}:y={y}:shortest=1[loop_visualizer]")
         current = "loop_visualizer"
     graph = ";".join(filters)
     _run_ff(cmd + ["-filter_complex", graph,
-             "-map", f"[{current}]", "-t", f"{loop_duration:.3f}", "-an", "-r", FPS,
-             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+             "-map", f"[{current}]", "-t", f"{loop_duration:.3f}", "-an", "-r", FPS]
+            + _video_encode_args(crf) + [
              "-pix_fmt", "yuv420p", "-bf", "0", "-g", str(GOP_FRAMES),
-             "-sc_threshold", "0", "-video_track_timescale", "30000", str(loop)],
+             "-sc_threshold", "0", "-video_track_timescale", VIDEO_TIMESCALE, str(loop)],
             f"V1装飾ループ作成 ({pattern}, {loop_duration:.1f}s)")
-    frames = max(1, round(float(total) * 30000 / 1001))
+    frames = _frames(total)
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-stream_loop", "-1", "-i", str(loop), "-frames:v", str(frames),
-             "-c", "copy", "-video_track_timescale", "30000", str(out)],
+             "-c", "copy", "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
             "V1装飾を全尺へコピーループ")
     return out
 
@@ -1597,22 +1875,22 @@ def apply_delayed_visualizer(plain: Path, visualized: Path, start: float, fade: 
     fade = max(0.1, min(3.0, float(fade)))
     if start >= total - .1:
         return plain
-    gop_seconds = GOP_FRAMES * 1001 / 30000
+    gop_seconds = _gop_seconds()
     head_end = min(total, max(gop_seconds,
         math.ceil((start + fade) / gop_seconds) * gop_seconds))
     head = scratch / "visualizer_delayed_head.mp4"
     tail = scratch / "visualizer_delayed_tail.mp4"
-    graph = (f"[0:v]trim=0:{head_end:.6f},fps={FPS},settb=1/30000,setpts=PTS-STARTPTS[a];"
-             f"[1:v]trim=0:{head_end:.6f},fps={FPS},settb=1/30000,setpts=PTS-STARTPTS[b];"
+    graph = (f"[0:v]trim=0:{head_end:.6f},fps={FPS},settb=1/{VIDEO_TIMESCALE},setpts=PTS-STARTPTS[a];"
+             f"[1:v]trim=0:{head_end:.6f},fps={FPS},settb=1/{VIDEO_TIMESCALE},setpts=PTS-STARTPTS[b];"
              f"[a][b]xfade=transition=fade:duration={fade:.3f}:offset={start:.3f},"
              "format=yuv420p[v]")
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-i", str(plain), "-i", str(visualized),
              "-filter_complex", graph, "-map", "[v]", "-t", f"{head_end:.6f}",
-             "-an", "-r", FPS, "-c:v", "libx264", "-preset", "medium",
-             "-crf", str(crf), "-pix_fmt", "yuv420p", "-bf", "0",
+             "-an", "-r", FPS] + _video_encode_args(crf) + [
+             "-pix_fmt", "yuv420p", "-bf", "0",
              "-g", str(GOP_FRAMES), "-sc_threshold", "0",
-             "-video_track_timescale", "30000", str(head)],
+             "-video_track_timescale", VIDEO_TIMESCALE, str(head)],
             f"導入後Spectrumディゾルブ ({start:.2f}s + {fade:.2f}s)")
     if head_end >= total - .02:
         return head
@@ -1630,7 +1908,7 @@ def apply_intro_text_hybrid(video: Path, text_tracks: list, total: float, out: P
             if c.get("kind") == "free_text" and str(c.get("text") or "").strip()]
     if not ends:
         return video
-    gop_seconds = GOP_FRAMES * 1001 / 30000
+    gop_seconds = _gop_seconds()
     head_end = min(total, max(gop_seconds, math.ceil(max(ends) / gop_seconds) * gop_seconds))
     clauses = _text_track_clauses(text_tracks, scratch, head_end)
     if not clauses:
@@ -1638,10 +1916,10 @@ def apply_intro_text_hybrid(video: Path, text_tracks: list, total: float, out: P
     head = scratch / "intro_text_head.mp4"
     tail = scratch / "intro_text_tail.mp4"
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video),
-             "-t", f"{head_end:.6f}", "-vf", ",".join(clauses), "-an",
-             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+             "-t", f"{head_end:.6f}", "-vf", ",".join(clauses), "-an"]
+            + _video_encode_args(crf) + [
              "-pix_fmt", "yuv420p", "-bf", "0", "-g", str(GOP_FRAMES),
-             "-sc_threshold", "0", "-video_track_timescale", "30000", str(head)],
+             "-sc_threshold", "0", "-video_track_timescale", VIDEO_TIMESCALE, str(head)],
             f"冒頭テキスト区間のみエンコード ({head_end:.2f}s)")
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-ss", f"{head_end:.6f}", "-i", str(video), "-c", "copy",
@@ -1658,7 +1936,7 @@ def apply_chroma_opening_head(video: Path, cfg: dict, total: float, out: Path,
     duration = min(float(total), float(cfg.get("duration") or 0))
     if duration <= 0:
         return video
-    gop_seconds = GOP_FRAMES * 1001 / 30000
+    gop_seconds = _gop_seconds()
     head_end = min(total, max(gop_seconds, math.ceil(duration / gop_seconds) * gop_seconds))
     head = scratch / "chroma_opening_head.mp4"
     tail = scratch / "chroma_opening_tail.mp4"
@@ -1667,10 +1945,10 @@ def apply_chroma_opening_head(video: Path, cfg: dict, total: float, out: Path,
              f"enable='lt(t,{duration:.6f})'[v]")
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-i", str(video), "-i", str(cfg["source"]), "-filter_complex", graph,
-             "-map", "[v]", "-t", f"{head_end:.6f}", "-an", "-r", FPS,
-             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+             "-map", "[v]", "-t", f"{head_end:.6f}", "-an", "-r", FPS]
+            + _video_encode_args(crf) + [
              "-pix_fmt", "yuv420p", "-bf", "0", "-g", str(GOP_FRAMES),
-             "-sc_threshold", "0", "-video_track_timescale", "30000", str(head)],
+             "-sc_threshold", "0", "-video_track_timescale", VIDEO_TIMESCALE, str(head)],
             f"クロマキーOP冒頭区間のみエンコード ({duration:.2f}s、head {head_end:.2f}s)")
     if head_end >= total - .02:
         return head
@@ -1688,7 +1966,7 @@ def apply_timed_overlays_hybrid(video: Path, clips: list, now_cfg: dict,
     changes = _timeline_change_ranges([], clips, now_cfg, text_tracks, total)
     if not changes:
         return video
-    gop_seconds = GOP_FRAMES * 1001 / 30000
+    gop_seconds = _gop_seconds()
     expanded = []
     for start, end in changes:
         start = max(0.0, math.floor(start / gop_seconds) * gop_seconds)
@@ -1711,7 +1989,7 @@ def apply_timed_overlays_hybrid(video: Path, clips: list, now_cfg: dict,
         _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                  "-ss", f"{start:.6f}", "-i", str(video), "-t", f"{end-start:.6f}",
                  "-map", "0:v:0", "-an", "-c:v", "copy",
-                 "-video_track_timescale", "30000", str(base)],
+                 "-video_track_timescale", VIDEO_TIMESCALE, str(base)],
                 f"時間変化チャンク抽出 {start:.2f}-{end:.2f}s")
         part = base
         if dynamic:
@@ -1731,7 +2009,7 @@ def apply_timed_overlays_hybrid(video: Path, clips: list, now_cfg: dict,
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-f", "concat", "-safe", "0", "-i", str(concat_txt),
              "-map", "0:v:0", "-an", "-c:v", "copy",
-             "-video_track_timescale", "30000", str(out)],
+             "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
             "時間変化チャンク ロスレス連結")
     return out
 
@@ -1793,9 +2071,9 @@ def apply_now_playing(video: Path, clips: list, cfg: dict, out: Path, *, crf: in
     total = max(0.0, probe_duration(video))
     clauses = _now_playing_clauses(clips, cfg, scratch, total)
     if not clauses: return video
-    cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an","-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p"]
+    cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an"] + _video_encode_args(crf) + ["-pix_fmt","yuv420p"]
     if chunk_safe:
-        cmd += ["-bf","0","-g",str(GOP_FRAMES),"-sc_threshold","0","-video_track_timescale","30000"]
+        cmd += ["-bf","0","-g",str(GOP_FRAMES),"-sc_threshold","0","-video_track_timescale",VIDEO_TIMESCALE]
     _run_ff(cmd + [str(out)],"Now Playing 曲名焼き込み")
     return out
 
@@ -1820,7 +2098,7 @@ def apply_video_tracks(video: Path, tracks: list, vol_folder: Path, out: Path, *
     for i, (_, start, end) in enumerate(items, 1):
         filters.append(f"[{i}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,format=rgba[v{i}]")
         nxt=f"ov{i}"; filters.append(f"[{current}][v{i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,{start:.3f},{end:.3f})'[{nxt}]"); current=nxt
-    cmd += ["-filter_complex",";".join(filters),"-map",f"[{current}]","-t",f"{probe_duration(video):.3f}","-an","-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p",str(out)]
+    cmd += ["-filter_complex",";".join(filters),"-map",f"[{current}]","-t",f"{probe_duration(video):.3f}","-an"] + _video_encode_args(crf) + ["-pix_fmt","yuv420p",str(out)]
     _run_ff(cmd,"複数映像トラック合成")
     return out
 
@@ -1888,9 +2166,9 @@ def apply_text_tracks(video: Path, tracks: list, out: Path, *, crf: int,
     """Burn free-text clips from T1+ during their authored time ranges."""
     clauses = _text_track_clauses(tracks, scratch, max(0.0, probe_duration(video)))
     if not clauses: return video
-    cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an","-c:v","libx264","-preset","medium","-crf",str(crf),"-pix_fmt","yuv420p"]
+    cmd = ["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-vf",",".join(clauses),"-an"] + _video_encode_args(crf) + ["-pix_fmt","yuv420p"]
     if chunk_safe:
-        cmd += ["-bf","0","-g",str(GOP_FRAMES),"-sc_threshold","0","-video_track_timescale","30000"]
+        cmd += ["-bf","0","-g",str(GOP_FRAMES),"-sc_threshold","0","-video_track_timescale",VIDEO_TIMESCALE]
     _run_ff(cmd + [str(out)],"自由テキスト焼き込み")
     return out
 
@@ -1938,6 +2216,14 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     if use_chroma:
         cmd += ["-i", str(chroma_opening_cfg["source"])]
 
+    ring_inputs = None
+    if use_visualizer and visualizer_cfg.get("pattern") == "ring":
+        xmap, ymap = _write_ring_maps(visualizer_cfg, scratch)
+        first_map_index = image_start + len(items) + (1 if use_chroma else 0)
+        ring_inputs = (first_map_index, first_map_index + 1)
+        cmd += ["-loop", "1", "-framerate", FPS, "-i", str(xmap),
+                "-loop", "1", "-framerate", FPS, "-i", str(ymap)]
+
     filters = []
     current = "0:v"
     if use_effects:
@@ -1952,7 +2238,8 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     if icon_index is not None:
         current = _append_icon_filters(filters, current, icon_index, icon_cfg, "single_icon")
     if use_visualizer:
-        source, x, y, _ = _visualizer_filter_source(audio_index, visualizer_cfg)
+        source, x, y, _ = _visualizer_filter_source(
+            audio_index, visualizer_cfg, ring_map_inputs=ring_inputs)
         filters.append(source)
         filters.append(f"[{current}][viz]overlay=x={x}:y={y}:shortest=1[with_visualizer]")
         current = "with_visualizer"
@@ -1969,9 +2256,8 @@ def compose_overlays_single_pass(video: Path, audio: Optional[Path], *,
     script = scratch / "overlay_filter_complex.txt"
     script.write_text(";".join(filters), encoding="utf-8")
     cmd += ["-filter_complex_script", str(script), "-map", f"[{current}]",
-            "-t", f"{duration:.3f}", "-an", "-r", FPS,
-            "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
-            "-pix_fmt", "yuv420p", "-video_track_timescale", "30000"]
+            "-t", f"{duration:.3f}", "-an", "-r", FPS] + _video_encode_args(crf) + [
+            "-pix_fmt", "yuv420p", "-video_track_timescale", VIDEO_TIMESCALE]
     if chunk_safe:
         cmd += ["-bf", "0", "-g", str(GOP_FRAMES), "-sc_threshold", "0"]
     print(f"  オーバーレイ統合: {'+'.join(active)} を1パスで焼き込み")
@@ -2181,9 +2467,9 @@ def _render_v1_slice(segments: list, start: float, end: float, out: Path, *,
                  "-loop","1","-t",f"{duration:.3f}","-i",str(before),
                  "-loop","1","-t",f"{duration:.3f}","-i",str(after),
                  "-filter_complex",vf,"-map","[v]","-r",FPS,"-t",f"{duration:.3f}",
-                 "-an","-c:v","libx264","-preset","medium","-crf",str(crf),
+                 "-an"] + _video_encode_args(crf) + [
                  "-pix_fmt","yuv420p","-bf","0","-g",str(GOP_FRAMES),
-                 "-sc_threshold","0","-video_track_timescale","30000",str(out)],
+                 "-sc_threshold","0","-video_track_timescale",VIDEO_TIMESCALE,str(out)],
                 f"変化区間 enc ディゾルブ {start:.2f}-{end:.2f}s")
         return out
     image = _seg_at(start + .001, [(x[0], x[1], x[2]) for x in segments])
@@ -2192,10 +2478,10 @@ def _render_v1_slice(segments: list, start: float, end: float, out: Path, *,
     # turning every repeated frame into a very large I-frame.
     cache = gop_cache if gop_cache is not None else {}
     gop = _img_gop(image, crf, scratch, cache, loop_frames=loop_frames)
-    frames = max(1, round(duration * 30000 / 1001))
+    frames = _frames(duration)
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-stream_loop", "-1", "-i", str(gop), "-frames:v", str(frames),
-             "-an", "-c:v", "copy", "-video_track_timescale", "30000", str(out)],
+             "-an", "-c:v", "copy", "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
             f"静止区間 stamp copy {start:.2f}-{end:.2f}s")
     return out
 
@@ -2211,7 +2497,7 @@ def build_timeline_video_hybrid(segments: list, clips: list, now_cfg: dict,
         bounds.update((start, end))
     for seg in segments:
         bounds.update((max(0.0, float(seg[1])), min(total, float(seg[2]))))
-    frame_rate = 30000 / 1001
+    frame_rate = FRAME_RATE
     # Snap every absolute boundary to the shared frame grid. Using differences
     # between rounded absolute frame numbers prevents per-chunk rounding drift.
     bounds = sorted({round(x * frame_rate) / frame_rate for x in bounds if 0 <= x <= total})
@@ -2245,7 +2531,7 @@ def build_timeline_video_hybrid(segments: list, clips: list, now_cfg: dict,
     _run_ff(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-f", "concat", "-safe", "0", "-i", str(concat_txt),
              "-map", "0:v:0", "-an", "-c:v", "copy",
-             "-video_track_timescale", "30000", str(out)],
+             "-video_track_timescale", VIDEO_TIMESCALE, str(out)],
             "ハイブリッドチャンク MP4 ロスレス連結")
     return out
 
@@ -2277,13 +2563,15 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
     print(f"  scratch={scratch}  cache={cache_dir}")
     print("=" * 60)
 
+    ffr_cfg = _load_channel_ffrender(vol_folder)
+    _configure_video(ffr_cfg)
+
     # 0) 構成解決（manifest 優先 → 無ければ新規生成して manifest 保存）
     songs, main_img, subs, target, audio_bitrate, fade, burn, audio_specs = resolve_composition(
         vol_folder, target_override=target, cache_dir=cache_dir, bitrate=audio_bitrate)
     if not songs:
         print("ERROR: 曲順が空（music/ 解決に失敗）")
         return None
-    ffr_cfg = _load_channel_ffrender(vol_folder)
     if ffr_cfg.get("video_crf") is not None:
         try:
             crf = int(ffr_cfg.get("video_crf"))
@@ -2294,8 +2582,8 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
         print("  4K(3840x2160)で書き出し")
     if ffr_cfg.get("audio_bitrate"):
         audio_bitrate = str(ffr_cfg.get("audio_bitrate"))
-    loop_seconds = float(ffr_cfg.get("loop_seconds") or (GOP_FRAMES * 1001 / 30000))
-    loop_frames = max(1, int(round(loop_seconds * 30000 / 1001)))
+    loop_seconds = float(ffr_cfg.get("loop_seconds") or _gop_seconds())
+    loop_frames = max(1, int(round(loop_seconds * FRAME_RATE)))
     print(f"  映像設定: crf={crf} / loop={loop_seconds:.2f}s ({loop_frames} frames)")
     intro_audio = None
     intro_sec = 0.0
@@ -2367,6 +2655,13 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
     effects_cfg = resolve_effects_config(
         _load_channel_block(vol_folder, "effects"),
         timeline_data.get("effects") if isinstance(timeline_data, dict) else None)
+    effects_cfg["loop_seconds"] = _finite_float(
+        ffr_cfg.get("loop_seconds"), 20, minimum=2, maximum=600)
+    fg_cfg = resolve_fg_config(
+        _load_channel_block(vol_folder, "fg"),
+        timeline_data.get("fg") if isinstance(timeline_data, dict) else None,
+        vol_folder)
+    fg_cfg = _scale_geometry(fg_cfg, ("x", "y", "w", "h"), geometry_scale)
     chroma_opening_cfg = resolve_chroma_opening_config(
         _load_channel_block(vol_folder, "chroma_opening"),
         timeline_data.get("chroma_opening") if isinstance(timeline_data, dict) else None,
@@ -2697,6 +2992,11 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
         video = concat_album_video(
             [video] + [repeat_video] * (album_loop_count - 1),
             scratch / "video_album_loop.mp4", scratch=scratch)
+
+    # fg はスペクトラムの2プロセス経路や文字トラックも含む
+    # すべての合成後に置き、常に最前面とする。
+    video = apply_foreground_overlay(
+        video, fg_cfg, scratch / "video_foreground.mp4", crf=crf)
 
     # 7) mux
     print("[4] mux...")

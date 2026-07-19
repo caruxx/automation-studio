@@ -30,6 +30,7 @@ VISUALIZER_DEFAULTS = {
     "margin": 64, "width_percent": 60.0, "height_px": 160,
     "color_mode": "single", "color1": "#ffffff", "color2": "#7c3aed",
     "opacity": 0.75,
+    "bar_width_percent": 87.5,
     "loop_seconds": 20.0,
 }
 ICON_DEFAULTS = {
@@ -40,7 +41,12 @@ ICON_DEFAULTS = {
 }
 EFFECTS_DEFAULTS = {
     "vintage": False, "noise_sand": False, "noise_horizontal": False,
-    "noise_vertical": False, "noise_strength": 30,
+    "noise_vertical": False, "noise_rain": False, "noise_fog": False,
+    "noise_film": False, "noise_strength": 30,
+}
+FG_DEFAULTS = {
+    "enabled": False, "image_path": "", "x": 0, "y": 0,
+    "w": 1920, "h": 1080,
 }
 CHROMA_OPENING_DEFAULTS = {
     "enabled": False, "video_path": "", "key_color": "#00ff00",
@@ -50,7 +56,7 @@ CHROMA_OPENING_DEFAULTS = {
 ALBUM_LOOP_DEFAULTS = {"count": 1}
 EXPORT_RESOLUTIONS = {"1080p", "2160p"}
 
-VISUALIZER_PATTERNS = {"bars", "mirror", "wave", "circle", "line"}
+VISUALIZER_PATTERNS = {"bars", "mirror", "wave", "circle", "ring", "line"}
 VISUALIZER_MOTIONS = {"calm", "normal", "lively", "max"}
 POSITIONS = {"top-left", "top-center", "top-right", "middle-left", "center",
              "middle-right", "bottom-left", "bottom-center", "bottom-right"}
@@ -110,11 +116,25 @@ def _sanitize_effects(value: dict | None) -> dict:
     incoming = value if isinstance(value, dict) else {}
     effects = dict(EFFECTS_DEFAULTS)
     effects.update(incoming)
-    for key in ("vintage", "noise_sand", "noise_horizontal", "noise_vertical"):
+    for key in ("vintage", "noise_sand", "noise_horizontal", "noise_vertical",
+                "noise_rain", "noise_fog", "noise_film"):
         effects[key] = effects.get(key) is True
     effects["noise_strength"] = int(round(
         _finite_clamped(effects.get("noise_strength"), 30, 5, 100)))
     return effects
+
+
+def _sanitize_fg(value: dict | None) -> dict:
+    incoming = value if isinstance(value, dict) else {}
+    fg = dict(FG_DEFAULTS)
+    fg.update(incoming)
+    fg["enabled"] = fg.get("enabled") is True
+    fg["image_path"] = str(fg.get("image_path") or "").strip()
+    fg["x"] = _finite_clamped(fg.get("x"), 0, 0, 1920)
+    fg["y"] = _finite_clamped(fg.get("y"), 0, 0, 1080)
+    fg["w"] = _finite_clamped(fg.get("w"), 1920, 1, 1920)
+    fg["h"] = _finite_clamped(fg.get("h"), 1080, 1, 1080)
+    return fg
 
 
 def _sanitize_chroma_opening(value: dict | None) -> dict:
@@ -170,6 +190,8 @@ def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
     visualizer["pattern"] = pattern if pattern in VISUALIZER_PATTERNS else "bars"
     motion = str(visualizer.get("motion") or "normal").lower()
     visualizer["motion"] = motion if motion in VISUALIZER_MOTIONS else "normal"
+    visualizer["bar_width_percent"] = _finite_clamped(
+        visualizer.get("bar_width_percent"), 87.5, 20, 100)
     _sanitize_free_xy(visualizer, incoming)
     return visualizer
 
@@ -293,6 +315,7 @@ def build_initial(folder: Path) -> dict:
     visualizer = _sanitize_visualizer(channel_visualizer, legacy=bool(channel_visualizer))
     icon = _sanitize_icon(cfg.get("icon") if isinstance(cfg.get("icon"), dict) else {})
     effects = _sanitize_effects(cfg.get("effects") if isinstance(cfg.get("effects"), dict) else {})
+    fg = _sanitize_fg(cfg.get("fg") if isinstance(cfg.get("fg"), dict) else {})
     chroma_opening = _sanitize_chroma_opening(
         cfg.get("chroma_opening") if isinstance(cfg.get("chroma_opening"), dict) else {})
     export_resolution = _sanitize_export_resolution(cfg.get("export_resolution"))
@@ -303,7 +326,7 @@ def build_initial(folder: Path) -> dict:
             "audio_crossfade_curve": "equal_power", "track_states": {
                 "A1": {"muted": False}, "V1": {"hidden": False}, "T1": {"hidden": False},
             }, "now_playing": now_playing, "visualizer": visualizer, "icon": icon,
-            "effects": effects, "chroma_opening": chroma_opening,
+            "effects": effects, "fg": fg, "chroma_opening": chroma_opening,
             "album_loop": dict(ALBUM_LOOP_DEFAULTS),
             "export_resolution": export_resolution, "updated_at": None}
 
@@ -392,6 +415,8 @@ def normalize(model: dict) -> dict:
         model.get("icon") if isinstance(model.get("icon"), dict) else {})
     model["effects"] = _sanitize_effects(
         model.get("effects") if isinstance(model.get("effects"), dict) else {})
+    model["fg"] = _sanitize_fg(
+        model.get("fg") if isinstance(model.get("fg"), dict) else {})
     model["chroma_opening"] = _sanitize_chroma_opening(
         model.get("chroma_opening") if isinstance(model.get("chroma_opening"), dict) else {})
     model["now_playing"] = _sanitize_now_playing(
@@ -416,6 +441,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         before_visualizer = json.dumps(d.get("visualizer") or {}, sort_keys=True)
         before_icon = json.dumps(d.get("icon") or {}, sort_keys=True)
         before_effects = json.dumps(d.get("effects") or {}, sort_keys=True)
+        before_fg = json.dumps(d.get("fg") or {}, sort_keys=True)
         before_chroma = json.dumps(d.get("chroma_opening") or {}, sort_keys=True)
         before_album_loop = json.dumps(d.get("album_loop") or {}, sort_keys=True)
         before_export_resolution = d.get("export_resolution")
@@ -436,7 +462,8 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         d["visualizer"] = _sanitize_visualizer(
             visualizer, legacy=bool(channel_visualizer or saved_visualizer)
             and "motion" not in channel_visualizer and "motion" not in saved_visualizer)
-        for key, sanitizer in (("icon", _sanitize_icon), ("effects", _sanitize_effects)):
+        for key, sanitizer in (("icon", _sanitize_icon), ("effects", _sanitize_effects),
+                               ("fg", _sanitize_fg)):
             channel_value = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
             saved_value = d.get(key) if isinstance(d.get(key), dict) else {}
             merged = dict(channel_value); merged.update(saved_value)
@@ -453,6 +480,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
                 or before_visualizer != json.dumps(normalized.get("visualizer") or {}, sort_keys=True)
                 or before_icon != json.dumps(normalized.get("icon") or {}, sort_keys=True)
                 or before_effects != json.dumps(normalized.get("effects") or {}, sort_keys=True)
+                or before_fg != json.dumps(normalized.get("fg") or {}, sort_keys=True)
                 or before_chroma != json.dumps(normalized.get("chroma_opening") or {}, sort_keys=True)
                 or before_album_loop != json.dumps(normalized.get("album_loop") or {}, sort_keys=True)
                 or before_export_resolution != normalized.get("export_resolution")):
@@ -465,7 +493,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
 
 def save(folder: Path, model: dict) -> dict:
     current = build_initial(Path(folder))
-    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "chroma_opening", "album_loop", "export_resolution"}
+    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "fg", "chroma_opening", "album_loop", "export_resolution"}
     incoming = {k: v for k, v in model.items() if k in allowed}
     # Older clients only sent text_lane.  build_initial() already has text_tracks,
     # so without this promotion normalize() would let the generated empty T1 win.
@@ -477,7 +505,8 @@ def save(folder: Path, model: dict) -> dict:
         visualizer.update(incoming["visualizer"])
         incoming["visualizer"] = _sanitize_visualizer(visualizer)
     for key, defaults, sanitizer in (("icon", ICON_DEFAULTS, _sanitize_icon),
-                                     ("effects", EFFECTS_DEFAULTS, _sanitize_effects)):
+                                     ("effects", EFFECTS_DEFAULTS, _sanitize_effects),
+                                     ("fg", FG_DEFAULTS, _sanitize_fg)):
         if isinstance(incoming.get(key), dict):
             merged = dict(current.get(key) or defaults)
             merged.update(incoming[key])
