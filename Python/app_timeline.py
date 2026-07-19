@@ -137,6 +137,26 @@ def _sanitize_fg(value: dict | None) -> dict:
     return fg
 
 
+def _sanitize_ffrender(value: dict | None) -> dict:
+    incoming = value if isinstance(value, dict) else {}
+    raw_fps = incoming.get("fps")
+    try:
+        fps = int(raw_fps) if raw_fps not in (None, "") else None
+    except (TypeError, ValueError, OverflowError):
+        fps = None
+    raw_bitrate = incoming.get("bitrate_mbps")
+    try:
+        bitrate = float(raw_bitrate) if raw_bitrate not in (None, "") else None
+    except (TypeError, ValueError, OverflowError):
+        bitrate = None
+    if bitrate is not None and (not math.isfinite(bitrate) or bitrate <= 0):
+        bitrate = None
+    return {
+        "fps": fps if fps in {24, 30, 60} else None,
+        "bitrate_mbps": min(200.0, bitrate) if bitrate is not None else None,
+    }
+
+
 def _sanitize_chroma_opening(value: dict | None) -> dict:
     incoming = value if isinstance(value, dict) else {}
     cfg = dict(CHROMA_OPENING_DEFAULTS)
@@ -316,6 +336,8 @@ def build_initial(folder: Path) -> dict:
     icon = _sanitize_icon(cfg.get("icon") if isinstance(cfg.get("icon"), dict) else {})
     effects = _sanitize_effects(cfg.get("effects") if isinstance(cfg.get("effects"), dict) else {})
     fg = _sanitize_fg(cfg.get("fg") if isinstance(cfg.get("fg"), dict) else {})
+    ffrender = _sanitize_ffrender(
+        cfg.get("ffrender") if isinstance(cfg.get("ffrender"), dict) else {})
     chroma_opening = _sanitize_chroma_opening(
         cfg.get("chroma_opening") if isinstance(cfg.get("chroma_opening"), dict) else {})
     export_resolution = _sanitize_export_resolution(cfg.get("export_resolution"))
@@ -326,7 +348,8 @@ def build_initial(folder: Path) -> dict:
             "audio_crossfade_curve": "equal_power", "track_states": {
                 "A1": {"muted": False}, "V1": {"hidden": False}, "T1": {"hidden": False},
             }, "now_playing": now_playing, "visualizer": visualizer, "icon": icon,
-            "effects": effects, "fg": fg, "chroma_opening": chroma_opening,
+            "effects": effects, "fg": fg, "ffrender": ffrender,
+            "chroma_opening": chroma_opening,
             "album_loop": dict(ALBUM_LOOP_DEFAULTS),
             "export_resolution": export_resolution, "updated_at": None}
 
@@ -417,6 +440,8 @@ def normalize(model: dict) -> dict:
         model.get("effects") if isinstance(model.get("effects"), dict) else {})
     model["fg"] = _sanitize_fg(
         model.get("fg") if isinstance(model.get("fg"), dict) else {})
+    model["ffrender"] = _sanitize_ffrender(
+        model.get("ffrender") if isinstance(model.get("ffrender"), dict) else {})
     model["chroma_opening"] = _sanitize_chroma_opening(
         model.get("chroma_opening") if isinstance(model.get("chroma_opening"), dict) else {})
     model["now_playing"] = _sanitize_now_playing(
@@ -442,6 +467,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
         before_icon = json.dumps(d.get("icon") or {}, sort_keys=True)
         before_effects = json.dumps(d.get("effects") or {}, sort_keys=True)
         before_fg = json.dumps(d.get("fg") or {}, sort_keys=True)
+        before_ffrender = json.dumps(d.get("ffrender") or {}, sort_keys=True)
         before_chroma = json.dumps(d.get("chroma_opening") or {}, sort_keys=True)
         before_album_loop = json.dumps(d.get("album_loop") or {}, sort_keys=True)
         before_export_resolution = d.get("export_resolution")
@@ -468,6 +494,9 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
             saved_value = d.get(key) if isinstance(d.get(key), dict) else {}
             merged = dict(channel_value); merged.update(saved_value)
             d[key] = sanitizer(merged)
+        channel_ffrender = cfg.get("ffrender") if isinstance(cfg.get("ffrender"), dict) else {}
+        saved_ffrender = d.get("ffrender") if isinstance(d.get("ffrender"), dict) else {}
+        d["ffrender"] = _sanitize_ffrender({**channel_ffrender, **saved_ffrender})
         channel_chroma = cfg.get("chroma_opening") if isinstance(cfg.get("chroma_opening"), dict) else {}
         saved_chroma = d.get("chroma_opening") if isinstance(d.get("chroma_opening"), dict) else {}
         d["chroma_opening"] = _sanitize_chroma_opening({**channel_chroma, **saved_chroma})
@@ -481,6 +510,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
                 or before_icon != json.dumps(normalized.get("icon") or {}, sort_keys=True)
                 or before_effects != json.dumps(normalized.get("effects") or {}, sort_keys=True)
                 or before_fg != json.dumps(normalized.get("fg") or {}, sort_keys=True)
+                or before_ffrender != json.dumps(normalized.get("ffrender") or {}, sort_keys=True)
                 or before_chroma != json.dumps(normalized.get("chroma_opening") or {}, sort_keys=True)
                 or before_album_loop != json.dumps(normalized.get("album_loop") or {}, sort_keys=True)
                 or before_export_resolution != normalized.get("export_resolution")):
@@ -493,7 +523,7 @@ def load(folder: Path, *, persist_initial: bool = False) -> dict:
 
 def save(folder: Path, model: dict) -> dict:
     current = build_initial(Path(folder))
-    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "fg", "chroma_opening", "album_loop", "export_resolution"}
+    allowed = {"version", "video_name", "target_duration", "audio_clips", "excluded", "visual_segments", "video_tracks", "text_lane", "text_tracks", "crossfade_sec", "audio_crossfade_sec", "audio_crossfade_curve", "track_states", "now_playing", "visualizer", "icon", "effects", "fg", "ffrender", "chroma_opening", "album_loop", "export_resolution"}
     incoming = {k: v for k, v in model.items() if k in allowed}
     # Older clients only sent text_lane.  build_initial() already has text_tracks,
     # so without this promotion normalize() would let the generated empty T1 win.
@@ -511,6 +541,8 @@ def save(folder: Path, model: dict) -> dict:
             merged = dict(current.get(key) or defaults)
             merged.update(incoming[key])
             incoming[key] = sanitizer(merged)
+    if isinstance(incoming.get("ffrender"), dict):
+        incoming["ffrender"] = _sanitize_ffrender(incoming["ffrender"])
     if isinstance(incoming.get("chroma_opening"), dict):
         merged = dict(current.get("chroma_opening") or CHROMA_OPENING_DEFAULTS)
         merged.update(incoming["chroma_opening"])

@@ -155,7 +155,7 @@ def save_visualizer_template(video_name: str, req: VisualizerTemplateUpdate):
 @router.post("/{video_name}/{kind}-template")
 def save_decoration_template(video_name: str, kind: str, req: DecorationTemplateUpdate):
     _folder(video_name)
-    if kind not in {"icon", "effects", "chroma_opening"}:
+    if kind not in {"icon", "effects", "fg", "chroma_opening"}:
         raise HTTPException(404, "未対応のテンプレートです")
     results=[]
     for key, value in req.value.items():

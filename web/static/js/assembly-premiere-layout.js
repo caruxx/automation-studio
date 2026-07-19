@@ -2,7 +2,7 @@
 (function(){
 'use strict';
 if(typeof window.ATL_SPECTRUM_COPY==='undefined')window.ATL_SPECTRUM_COPY=true;
-const P={images:[],videos:[],audioContext:null,analyser:null,visualFrame:0,previewImage:null,visualizerVisible:true,visualizerObserver:null,currentAudio:null,destinationConnected:false,lastSpectrum:null,lastWave:null,spectrumRec:null,visualMode:'measure',visualStartedAt:0,layoutGuides:false,propertyEdit:null};
+const P={images:[],videos:[],audioContext:null,analyser:null,visualFrame:0,previewImage:null,visualizerVisible:true,visualizerObserver:null,currentAudio:null,destinationConnected:false,lastSpectrum:null,lastWave:null,spectrumRec:null,visualMode:'measure',visualStartedAt:0,layoutGuides:true,selectedOverlay:null,propertyEdit:null};
 const clone=x=>JSON.parse(JSON.stringify(x));
 const fmt=s=>{s=Math.max(0,Math.round(Number(s)||0));return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`};
 function panel(title,cls){const el=document.createElement('section');el.className=`pr-panel ${cls}`;el.innerHTML=`<div class="pr-panel-title">${title}</div>`;return el}
@@ -36,7 +36,7 @@ function effectsEnabled(v){return !!(v.vintage||v.noise_sand||v.noise_horizontal
 function persistentSectionData(key){if(key==='now'){const v=_atlModel.now_playing||{};return{enabled:!!v.enabled,summary:`${finite(v.intro_seconds,8)}秒 ${POSITION_LABELS[v.position||'bottom-center']||'下中央'}`}}if(key==='icon'){const v=_atlModel.icon||{};return{enabled:!!v.enabled,summary:`${finite(v.period_seconds,20)}秒/周 ${finite(v.size_px,430)}px`}}if(key==='effects'){const v=_atlModel.effects||{},names=[['vintage','ヴィンテージ'],['noise_sand','砂嵐'],['noise_horizontal','横ノイズ'],['noise_vertical','縦ノイズ']].filter(([k])=>v[k]).map(([,label])=>label);return{enabled:effectsEnabled(v),summary:names.join('、')}}if(key==='chroma'){const v=_atlModel.chroma_opening||{};return{enabled:!!v.enabled,summary:`${POSITION_LABELS[v.position||'center']||'中央'} ${finite(v.width_percent,100)}%`}}const v=_atlModel.visualizer||{},patterns={bars:'バー',mirror:'ミラーバー',wave:'波形',line:'周波数ライン',circle:'円形'};return{enabled:!!v.enabled,summary:`${patterns[v.pattern||'bars']||'バー'} ${finite(v.bands,48)}本 ${POSITION_LABELS[v.position||'bottom-center']||'下中央'}`}}
 function persistentAccordion(key,title,html,cls=''){const state=persistentSectionData(key),attrName={now:'now',chroma:'chroma-opening'}[key]||key,body=unwrapSection(html).replace(new RegExp(`<div class="pr-prop-row"><span>[^<]*<\\/span><input data-${attrName}="enabled"[^>]*><\\/div>`),'');return accordionSection(key,title,state.enabled,state.summary,body,cls)}
 const freeMode=v=>Number.isFinite(Number(v?.x))&&Number.isFinite(Number(v?.y));
-const placementRow=kind=>`<span class="atl-placement-mode">${freeMode(_atlModel?.[kind])?'自由配置中':''}</span><button type="button" class="btn btn-secondary btn-sm" data-placement-reset="${kind}">配置リセット</button>`;
+const placementRow=kind=>{const cfg=_atlModel?.[kind]||{},label=freeMode(cfg)?`自由配置 ${Math.round(finite(cfg.x))}, ${Math.round(finite(cfg.y))} px`:'';return `<span class="atl-placement-mode">${label}</span><button type="button" class="btn btn-secondary btn-sm" data-placement-reset="${kind}">配置リセット</button>`};
 function placementBox(width,height,cfg,margin=0){const base=window.atlPlacementBox?.(width,height,cfg?.position||'center',margin)||{x:0,y:0,w:width,h:height};if(!freeMode(cfg))return base;const x=finite(cfg.x),y=finite(cfg.y);return{x,y,w:width,h:height,outside:x<0||y<0||x+width>1920||y+height>1080}}
 function resolveSelection(sel){if(!sel)return null;if(sel.kind==='audio'){const row=(_atlModel.audio_clips||[]).find(x=>x.id===sel.id);return row?{kind:'audio',label:'音声',name:row.filename||row.id,row}:null}if(sel.kind==='visual'){const row=(_atlModel.visual_segments||[])[Number(sel.index)];return row?{kind:'visual',label:'映像',name:row.image_path||row.id,row}:null}if(sel.kind==='free-text'){const track=(_atlModel.text_tracks||[]).find(x=>x.id===sel.trackId),row=track?.clips?.[Number(sel.index)];return row?{kind:'text',label:'文字',name:row.text||row.id,row,track}:null}return null}
 function commonProperties(item){const row=item.row,start=finite(row.start),end=finite(row.end,start+finite(row.duration)),duration=Math.max(0,end-start),readOnly=item.kind==='audio'?' readonly aria-readonly="true"':'';return `<div class="pr-prop-row"><span>種類</span><strong>${item.label}</strong></div><div class="pr-prop-row"><span>名前</span><span title="${attr(item.name)}">${esc(item.name)}</span></div><div class="pr-prop-row"><span>開始</span><input data-prop="start" type="number" step="0.1" value="${start}"${readOnly}></div><div class="pr-prop-row"><span>終了</span><input data-prop="end" type="number" step="0.1" value="${end}"${readOnly}></div><div class="pr-prop-row"><span>尺</span><output data-duration-output>${duration.toFixed(2)} 秒</output></div>`}
@@ -66,7 +66,7 @@ function schedulePropertyCommit(item){let edit=P.propertyEdit;if(!edit||edit.ref
 function applyPropertyInput(box,item,input){if(!item||input.readOnly)return;const value=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value,key=input.dataset.prop,next=normalizeProp(key,value);if(Object.is(item.row[key],next))return;schedulePropertyCommit(item);item.row[key]=next;if(item.kind!=='audio'&&finite(item.row.end)<=finite(item.row.start))item.row.end=finite(item.row.start)+.1;if(item.kind==='text'&&item.track?.id==='T1')_atlModel.text_lane=item.track.clips;const start=finite(item.row.start),end=finite(item.row.end,start),out=box.querySelector('[data-duration-output]');if(out)out.textContent=`${Math.max(0,end-start).toFixed(2)} 秒`;if(item.kind==='audio'&&key==='gain_db'&&P.currentAudio?._atlClipId===item.row.id)applyPreviewGain(item.row.gain_db);if(item.kind==='text'){if(key==='text')updateTextChip(item);if(key==='start'||key==='end')updateTextChipGeometry(item);window.atlUpdatePreview?.(_atlPlayhead)}window.aplRenderLayoutGuides?.();clearTimeout(P.propertyEdit?.rangeTimer);if(P.propertyEdit)P.propertyEdit.rangeTimer=setTimeout(()=>window.atlRenderRangeWarning?.(),120)}
 function bindProperties(box,item){if(item?.kind==='text')box.querySelectorAll('[data-prop]').forEach(input=>{const apply=()=>applyPropertyInput(box,item,input);input.addEventListener('input',apply);input.addEventListener('change',apply);input.addEventListener('blur',flushPropertyEdit)});else if(item){const updateDuration=()=>{const start=finite(box.querySelector('[data-prop="start"]')?.value),end=finite(box.querySelector('[data-prop="end"]')?.value,start),out=box.querySelector('[data-duration-output]');if(out)out.textContent=`${Math.max(0,end-start).toFixed(2)} 秒`};box.querySelectorAll('[data-prop="start"],[data-prop="end"]').forEach(input=>input.addEventListener('input',updateDuration));const gain=box.querySelector('[data-prop="gain_db"]');gain?.addEventListener('input',()=>{if(P.currentAudio?._atlClipId===item.row.id)applyPreviewGain(finite(gain.value))})}box.querySelector('[data-save-props]')?.addEventListener('click',()=>{if(!item)return;if(item.kind==='text'){flushPropertyEdit();return}const before=clone(_atlModel);box.querySelectorAll('[data-prop]').forEach(input=>{const value=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value;item.row[input.dataset.prop]=normalizeProp(input.dataset.prop,value)});window.atlCommit(before)});box.querySelector('[data-save-now]')?.addEventListener('click',()=>{const before=clone(_atlModel),n=_atlModel.now_playing||(_atlModel.now_playing={});box.querySelectorAll('[data-now]').forEach(x=>n[x.dataset.now]=x.type==='checkbox'?x.checked:x.type==='number'?Number(x.value):x.value);window.atlCommit(before)});box.querySelector('[data-save-visualizer]')?.addEventListener('click',()=>saveVisualizer(box,false));box.querySelector('[data-template-visualizer]')?.addEventListener('click',()=>saveVisualizer(box,true))}
 function setAccordionOpen(details,open){details.open=open;const state=accordionState();state[details.dataset.accordion]=open;localStorage.setItem(ACCORDION_STORAGE_KEY,JSON.stringify(state))}
-async function togglePersistentSection(input){const details=input.closest('[data-accordion]'),key=input.dataset.sectionToggle,enabled=input.checked,before=clone(_atlModel);if(key==='effects'){const v=_atlModel.effects||(_atlModel.effects={});if(enabled)v.vintage=true;else ['vintage','noise_sand','noise_horizontal','noise_vertical'].forEach(name=>v[name]=false)}else{const modelKey={now:'now_playing',chroma:'chroma_opening'}[key]||key;const v=_atlModel[modelKey]||(_atlModel[modelKey]={});v.enabled=enabled;details.querySelectorAll(`[data-${key==='now'?'now':key==='chroma'?'chroma-opening':key}="enabled"]`).forEach(field=>field.checked=enabled)}if(enabled)setAccordionOpen(details,true);const state=persistentSectionData(key),summary=details.querySelector('[data-section-summary]');if(summary)summary.textContent=state.enabled?state.summary:'オフ';await window.atlCommit(before)}
+async function togglePersistentSection(input){const details=input.closest('[data-accordion]'),key=input.dataset.sectionToggle,enabled=input.checked,before=clone(_atlModel);if(key==='effects'){const v=_atlModel.effects||(_atlModel.effects={});if(enabled)v.vintage=true;else ['vintage','noise_sand','noise_horizontal','noise_vertical','noise_rain','noise_fog','noise_film'].forEach(name=>v[name]=false)}else{const modelKey={now:'now_playing',chroma:'chroma_opening'}[key]||key;const v=_atlModel[modelKey]||(_atlModel[modelKey]={});v.enabled=enabled;details.querySelectorAll(`[data-${key==='now'?'now':key==='chroma'?'chroma-opening':key}="enabled"]`).forEach(field=>field.checked=enabled)}if(enabled)setAccordionOpen(details,true);const state=persistentSectionData(key),summary=details.querySelector('[data-section-summary]');if(summary)summary.textContent=state.enabled?state.summary:'オフ';await window.atlCommit(before)}
 async function saveVisualizer(box,template){const before=P.visualizerSaved||clone(_atlModel),v=readVisualizer(box);_atlModel.visualizer=v;await window.atlCommit(before);P.visualizerSaved=null;applyVisualizerLayout();bindVisualizerCanvas();if(template){const channelId=window.AutomationStudioContext?.channelId||(typeof _uiChannelId!=='undefined'?_uiChannelId:'');const r=await fetch(`/api/timeline/${encodeURIComponent(_curVideo)}/visualizer-template`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_id:channelId,visualizer:v})});toast(r.ok?'チャンネルテンプレートへ保存しました':'テンプレート保存に失敗しました',r.ok?'s':'e')}}
 function bindResize(shell,handle,kind){handle.addEventListener('pointerdown',e=>{e.preventDefault();handle.classList.add('dragging');const move=ev=>{const r=shell.getBoundingClientRect();if(kind==='project')shell.style.setProperty('--project-w',`${Math.max(180,Math.min(r.width*.4,ev.clientX-r.left))}px`);else if(kind==='properties')shell.style.setProperty('--properties-w',`${Math.max(200,Math.min(r.width*.4,r.right-ev.clientX))}px`);else shell.style.setProperty('--top-h',`${Math.max(260,Math.min(620,ev.clientY-r.top))}px`)},up=()=>{handle.classList.remove('dragging');removeEventListener('pointermove',move);removeEventListener('pointerup',up)};addEventListener('pointermove',move);addEventListener('pointerup',up)})}
 function stopVisualizer(audio){if(audio&&P.currentAudio!==audio)return;if(P.visualFrame)cancelAnimationFrame(P.visualFrame);P.visualFrame=0}
@@ -110,21 +110,189 @@ function renderDecorationPreview(sec){const {noise,icon}=ensureDecorationCanvase
 function renderChromaOpeningPreview(sec){const host=document.querySelector('#atlPreview .atl-preview-canvas'),cfg=_atlModel?.chroma_opening||{};if(!host)return;let video=document.getElementById('atlChromaOpeningOverlay');if(!video){video=document.createElement('video');video.id='atlChromaOpeningOverlay';video.className='atl-chroma-opening-overlay';video.muted=true;video.playsInline=true;host.append(video)}const asset=P.videos.find(x=>x.path===cfg.video_path),duration=finite(asset?.duration,cfg.duration),active=cfg.enabled&&asset&&finite(sec)>=0&&finite(sec)<duration;video.hidden=!active;if(!active)return;const width=1920*Math.max(10,Math.min(100,finite(cfg.width_percent,100)))/100,height=1080*Math.max(10,Math.min(100,finite(cfg.height_percent,100)))/100,box=window.atlPlacementBox?.(width,height,cfg.position||'center',0)||{x:0,y:0};video.style.cssText=`left:${box.x/19.2}%;top:${box.y/10.8}%;width:${width/19.2}%;height:${height/10.8}%;opacity:${Math.max(0,Math.min(1,finite(cfg.opacity,1)))*.5}`;const url=`/api/timeline/${encodeURIComponent(_curVideo)}/video?path=${encodeURIComponent(cfg.video_path)}`;if(video.dataset.src!==url){video.dataset.src=url;video.src=url}if(video.readyState>=1)try{video.currentTime=Math.min(duration-.01,Math.max(0,finite(sec)))}catch{}}
 function renderPreviewLayers(sec){const canvas=document.querySelector('#atlPreview .atl-preview-canvas');if(!canvas||!_atlModel)return;canvas.querySelectorAll('.atl-preview-video-layer,.atl-free-text-overlay').forEach(x=>x.remove());const time=finite(sec),videos=Array.isArray(_atlModel.video_tracks)?_atlModel.video_tracks.slice(1):[];videos.forEach((track,index)=>{if((_atlModel.track_states?.[track.id]||{}).hidden)return;const segment=(track.segments||[]).find(x=>time>=finite(x.start)&&time<finite(x.end));if(!segment?.image_path)return;const image=document.createElement('img');image.className='atl-preview-video-layer';image.dataset.previewVideoTrack=track.id;image.alt='';image.src=`/api/timeline/${encodeURIComponent(_curVideo)}/image?path=${encodeURIComponent(segment.image_path)}`;image.style.zIndex=String(11+Math.min(index,8));canvas.append(image)});const selected=window._atlFilmora?.selected,selectedRef=selected?.kind==='free-text'?`${selected.trackId}:${selected.index}`:'';(_atlModel.text_tracks||[]).forEach(track=>{if((_atlModel.track_states?.[track.id]||{}).hidden)return;(track.clips||[]).forEach((clip,index)=>{const isSelected=selectedRef===`${track.id}:${index}`,active=clip.kind==='free_text'&&time>=finite(clip.start)&&time<finite(clip.end);if(!isSelected&&!active)return;const text=document.createElement('div'),full=clip.text||'テキストを入力',duration=Math.max(.001,finite(clip.end)-finite(clip.start)),requested=Math.max(1,Math.min(60,finite(clip.effect_speed,12))),speed=Math.max(requested,full.length/Math.max(.001,duration-.3)),count=isSelected||clip.effect!=='typewriter'?full.length:Math.max(0,Math.min(full.length,Math.floor((time-finite(clip.start))*speed)));text.className=`atl-free-text-overlay ${previewPositionClass(clip.position)}${isSelected?' is-selected-preview':''}`;text.dataset.previewTextTrack=track.id;text.textContent=full.slice(0,count);text.style.cssText=`--atl-text-margin:${Math.max(0,finite(clip.margin,64))/10.8}%;font-size:${Math.max(12,finite(clip.size,48)/3)}px;color:${clip.color||'#fff'};opacity:${Math.max(0,Math.min(1,finite(clip.opacity,1)))};-webkit-text-stroke:${Math.max(0,finite(clip.border_width,2)/3)}px ${clip.border_color||'#000'};font-family:${JSON.stringify(clip.font_name||'Hiragino Sans')}`;canvas.append(text)})})}
 function guideTextBox(text,cfg){const size=Math.max(1,finite(cfg?.size,48)),lines=String(text||'').split('\n'),probe=document.createElement('canvas').getContext('2d');if(probe)probe.font=`${size}px ${cfg?.font_name||'Hiragino Sans'}`;const w=Math.min(1920,Math.max(size,...lines.map(line=>probe?probe.measureText(line||' ').width:(line.length||1)*size*.6))),h=Math.min(1080,Math.max(size*1.2,lines.length*size*1.25));return{w,h}}
-function addLayoutGuide(layer,label,box){const el=document.createElement('div');el.className=`atl-layout-box${box.outside?' is-outside':''}`;el.style.cssText=`left:${box.x/19.2}%;top:${box.y/10.8}%;width:${box.w/19.2}%;height:${box.h/10.8}%`;el.innerHTML=`<span>${label}${box.outside?' ー フレーム外':''}</span>`;layer.append(el)}
-function renderLayoutGuides(){const layer=document.getElementById('atlLayoutGuides');if(!layer||!_atlModel)return;layer.hidden=!P.layoutGuides;layer.replaceChildren();if(!P.layoutGuides)return;const frame=document.createElement('div');frame.className='atl-layout-frame';frame.innerHTML='<span>1920 × 1080 書き出しフレーム</span>';layer.append(frame);const place=window.atlPlacementBox;if(typeof place!=='function')return;const v=_atlModel.visualizer||{};if(v.enabled)addLayoutGuide(layer,'ビジュアライザー',place(1920*Math.max(0,finite(v.width_percent,72))/100,Math.max(0,finite(v.height_px,180)),v.position||'bottom-center',v.margin));const c=_atlModel.chroma_opening||{};if(c.enabled)addLayoutGuide(layer,'クロマキーOP',place(1920*Math.max(10,Math.min(100,finite(c.width_percent,100)))/100,1080*Math.max(10,Math.min(100,finite(c.height_percent,100)))/100,c.position||'center',0));const n=_atlModel.now_playing||{};if(n.enabled){const title=document.getElementById('atlNowPlayingOverlay')?.textContent||'曲名 (Now Playing)',size=guideTextBox(title,n);addLayoutGuide(layer,'Now Playing',place(size.w,size.h,n.position||'bottom-center',n.margin??64))}const sel=window._atlFilmora?.selected;if(sel?.kind==='free-text'){const track=(_atlModel.text_tracks||[]).find(x=>x.id===sel.trackId),clip=track?.clips?.[Number(sel.index)];if(clip){const size=guideTextBox(clip.text||'テキスト',clip);addLayoutGuide(layer,`選択中テキスト ${sel.trackId}`,place(size.w,size.h,clip.position||'center',clip.margin??64))}}}
-function renderIconGuide(){const layer=document.getElementById('atlLayoutGuides'),cfg=_atlModel?.icon||{},place=window.atlPlacementBox;if(!layer||layer.hidden||!cfg.enabled||typeof place!=='function')return;const size=Math.max(100,Math.min(900,finite(cfg.size_px,430)))*(cfg.rotate!==false?1.4143:1);addLayoutGuide(layer,'回転アイコン',place(size,size,cfg.position||'top-center',cfg.margin??64))}
-function addDraggableGuide(layer,kind,label,box,resizable=false){const el=document.createElement('div');el.className=`atl-layout-box atl-layout-draggable${box.outside?' is-outside':''}`;el.dataset.overlayKind=kind;el.style.cssText=`left:${box.x/19.2}%;top:${box.y/10.8}%;width:${box.w/19.2}%;height:${box.h/10.8}%`;el.innerHTML=`<span>${label} <b>${Math.round(box.x)}, ${Math.round(box.y)} px</b></span>${resizable?'<i class="atl-layout-resize" data-layout-resize></i>':''}`;layer.append(el)}
-function overlayGuideData(){const rows=[];const v=_atlModel.visualizer||{};if(v.enabled){const w=1920*Math.max(0,finite(v.width_percent,72))/100,h=Math.max(0,finite(v.height_px,180));rows.push(['visualizer','ビジュアライザー',placementBox(w,h,v,v.margin),true])}const i=_atlModel.icon||{};if(i.enabled){const s=Math.max(100,Math.min(900,finite(i.size_px,430)))*(i.rotate!==false?1.4143:1);rows.push(['icon','回転アイコン',placementBox(s,s,i,i.margin??64),true])}const c=_atlModel.chroma_opening||{};if(c.enabled){const w=1920*Math.max(.1,Math.min(100,finite(c.width_percent,100)))/100,h=1080*Math.max(.1,Math.min(100,finite(c.height_percent,100)))/100;rows.push(['chroma_opening','クロマキーOP',placementBox(w,h,c,0),false])}const n=_atlModel.now_playing||{};if(n.enabled){const title=document.getElementById('atlNowPlayingOverlay')?.textContent||'曲名 (Now Playing)',size=guideTextBox(title,n);rows.push(['now_playing','楽曲名表示',placementBox(size.w,size.h,n,n.margin??64),false])}return rows}
-renderLayoutGuides=function(){const layer=document.getElementById('atlLayoutGuides');if(!layer||!_atlModel)return;layer.hidden=!P.layoutGuides;layer.replaceChildren();if(!P.layoutGuides)return;const frame=document.createElement('div');frame.className='atl-layout-frame';frame.innerHTML='<span>1920 × 1080 書き出しフレーム</span>';layer.append(frame);overlayGuideData().forEach(row=>addDraggableGuide(layer,...row))};
 function applyFreePreviewPositions(){const pairs=[['atlVisualizerOverlay',_atlModel?.visualizer],['atlIconOverlay',_atlModel?.icon],['atlChromaOpeningOverlay',_atlModel?.chroma_opening],['atlNowPlayingOverlay',_atlModel?.now_playing]];pairs.forEach(([id,cfg])=>{const el=document.getElementById(id);if(!el)return;if(freeMode(cfg)){el.style.left=`${finite(cfg.x)/19.2}%`;el.style.top=`${finite(cfg.y)/10.8}%`;el.style.right='auto';el.style.bottom='auto';el.style.transform='none'}else if(id==='atlVisualizerOverlay'){el.style.removeProperty('left');el.style.removeProperty('top');el.style.removeProperty('right');el.style.removeProperty('bottom');el.style.removeProperty('transform')}})}
-function bindOverlayDrag(){const layer=document.getElementById('atlLayoutGuides');if(!layer||layer.dataset.dragBound)return;layer.dataset.dragBound='1';layer.addEventListener('pointerdown',e=>{const guide=e.target.closest('.atl-layout-draggable');if(!guide||!P.layoutGuides)return;e.preventDefault();const kind=guide.dataset.overlayKind,cfg=_atlModel[kind],before=clone(_atlModel),canvas=layer.getBoundingClientRect(),start={x:e.clientX,y:e.clientY},box=overlayGuideData().find(row=>row[0]===kind)?.[2];if(!cfg||!box||!canvas.width||!canvas.height)return;const resizing=!!e.target.closest('[data-layout-resize]');guide.setPointerCapture?.(e.pointerId);const move=ev=>{const dx=(ev.clientX-start.x)*1920/canvas.width,dy=(ev.clientY-start.y)*1080/canvas.height;if(resizing){if(kind==='visualizer'){cfg.width_percent=Math.max(10,Math.min(100,(box.w+dx)/1920*100));cfg.height_px=Math.max(20,Math.min(1080,box.h+dy))}else if(kind==='icon'){const scale=cfg.rotate!==false?1.4143:1;cfg.size_px=Math.max(100,Math.min(900,Math.max(box.w+dx,box.h+dy)/scale))}}else{cfg.x=Math.max(0,Math.min(1920,box.x+dx));cfg.y=Math.max(0,Math.min(1080,box.y+dy))}window.atlUpdatePreview?.(_atlPlayhead);const live=document.querySelector(`[data-overlay-kind="${kind}"] span b`);if(live)live.textContent=`${Math.round(finite(cfg.x,box.x))}, ${Math.round(finite(cfg.y,box.y))} px`};const up=async ev=>{removeEventListener('pointermove',move);removeEventListener('pointerup',up);guide.releasePointerCapture?.(ev.pointerId);if(resizing&&!freeMode(cfg)){cfg.x=Math.max(0,box.x);cfg.y=Math.max(0,box.y)}await window.atlCommit(before);renderProperties();window.atlUpdatePreview?.(_atlPlayhead)};addEventListener('pointermove',move);addEventListener('pointerup',up,{once:true})})}
 function toggleLayoutGuides(button){P.layoutGuides=!P.layoutGuides;button?.setAttribute('aria-pressed',String(P.layoutGuides));button?.classList.toggle('active',P.layoutGuides);renderLayoutGuides();bindOverlayDrag()}
 function normalizeVisualizerUi(){const v=_atlModel?.visualizer;if(!v)return;v.color=v.color1||v.color||'#ffffff';v.color2=v.color2||'#7c3aed';v.color_mode=v.color_mode||'gradient'}
-bindOverlayDrag=function(){const layer=document.getElementById('atlLayoutGuides');if(!layer||layer.dataset.dragBound)return;layer.dataset.dragBound='1';layer.addEventListener('pointerdown',e=>{const guide=e.target.closest('.atl-layout-draggable');if(!guide||!P.layoutGuides)return;e.preventDefault();const kind=guide.dataset.overlayKind,cfg=_atlModel[kind],before=clone(_atlModel),canvas=layer.getBoundingClientRect(),start={x:e.clientX,y:e.clientY},box=overlayGuideData().find(row=>row[0]===kind)?.[2];if(!cfg||!box||!canvas.width||!canvas.height)return;const resizing=!!e.target.closest('[data-layout-resize]');guide.setPointerCapture?.(e.pointerId);const move=ev=>{const dx=(ev.clientX-start.x)*1920/canvas.width,dy=(ev.clientY-start.y)*1080/canvas.height;if(resizing){if(kind==='visualizer'){cfg.width_percent=Math.max(10,Math.min(100,(box.w+dx)/1920*100));cfg.height_px=Math.max(20,Math.min(1080,box.h+dy))}else if(kind==='icon'){const scale=cfg.rotate!==false?1.4143:1;cfg.size_px=Math.max(100,Math.min(900,Math.max(box.w+dx,box.h+dy)/scale))}}else{cfg.x=Math.max(0,Math.min(1920,box.x+dx));cfg.y=Math.max(0,Math.min(1080,box.y+dy))}window.atlUpdatePreview?.(_atlPlayhead)};const up=async ev=>{removeEventListener('pointermove',move);removeEventListener('pointerup',up);guide.releasePointerCapture?.(ev.pointerId);if(resizing&&!freeMode(cfg)){cfg.x=Math.max(0,box.x);cfg.y=Math.max(0,box.y)}await window.atlCommit(before);renderProperties();window.atlUpdatePreview?.(_atlPlayhead)};addEventListener('pointermove',move);addEventListener('pointerup',up,{once:true})})};
 const readVisualizerBase=readVisualizer;readVisualizer=function(box){const value=readVisualizerBase(box),old=_atlModel?.visualizer||{};if(freeMode(old)){value.x=old.x;value.y=old.y}return value};
 const readDecorationBase=readDecoration;readDecoration=function(box,kind){const value=readDecorationBase(box,kind),old=_atlModel?.[kind]||{};if(freeMode(old)){value.x=old.x;value.y=old.y}return value};
 const readChromaOpeningBase=readChromaOpening;readChromaOpening=function(box){const value=readChromaOpeningBase(box),old=_atlModel?.chroma_opening||{};if(freeMode(old)){value.x=old.x;value.y=old.y}return value};
-window.aplApplyLayout=function(){const root=document.getElementById('assemblyTimeline'),preview=document.getElementById('atlPreview');if(root&&preview&&!root.contains(preview))root.prepend(preview);ensureLayout();placePreview();loadAssets();normalizeVisualizerUi();renderProperties();decorateTracks();premiereTrackOrder();refreshNowPlayingLabels();decorateFilmstrips();enhanceConnectionSettings();applyVisualizerLayout();guardLayout()};
+
+/* ffrender property additions and direct manipulation. */
+const persistentSectionDataBase=persistentSectionData;
+persistentSectionData=function(key){
+  if(key==='fg'){
+    const v=_atlModel.fg||{};
+    return{enabled:!!v.enabled,summary:v.image_path?`${finite(v.w,1920)} x ${finite(v.h,1080)}`:'画像未選択'};
+  }
+  if(key==='effects'){
+    const v=_atlModel.effects||{},names=[['vintage','ヴィンテージ'],['noise_sand','砂嵐'],['noise_horizontal','横ノイズ'],['noise_vertical','縦ノイズ'],['noise_rain','雨'],['noise_fog','霧'],['noise_film','古いフィルム']].filter(([name])=>v[name]).map(([,label])=>label);
+    return{enabled:effectsEnabled(v),summary:names.join('、')};
+  }
+  if(key==='visualizer'){
+    const v=_atlModel.visualizer||{},patterns={bars:'バー',mirror:'ミラーバー',wave:'波形',line:'周波数ライン',circle:'円形',ring:'リング'};
+    return{enabled:!!v.enabled,summary:`${patterns[v.pattern||'bars']||'バー'} ${finite(v.bands,48)}本 ${POSITION_LABELS[v.position||'bottom-center']||'下中央'}`};
+  }
+  return persistentSectionDataBase(key);
+};
+const visualizerFormBase=visualizerForm;
+visualizerForm=function(){
+  const v=_atlModel.visualizer||{};
+  return visualizerFormBase()
+    .replace('<option value="circle"','<option value="ring" '+(v.pattern==='ring'?'selected':'')+'>リング</option><option value="circle"')
+    .replace('<div class="pr-prop-row"><span>バー本数</span>',`<div class="pr-prop-row"><span>バーの太さ</span><div class="atl-range-field"><input data-visualizer="bar_width_percent" type="range" min="20" max="100" step="0.5" value="${finite(v.bar_width_percent,87.5)}"><output>${finite(v.bar_width_percent,87.5)}%</output></div></div><div class="pr-prop-row"><span>バー本数</span>`);
+};
+readVisualizer=function(box){
+  const value={};
+  box.querySelectorAll('[data-visualizer]').forEach(x=>value[x.dataset.visualizer]=x.type==='checkbox'?x.checked:x.type==='number'||x.type==='range'?Number(x.value):x.value);
+  if(value.color){value.color1=value.color;delete value.color}
+  value.color_mode=value.color_mode||_atlModel?.visualizer?.color_mode||'gradient';
+  value.width_percent=Math.max(10,Math.min(100,finite(value.width_percent,60)));
+  value.height_px=Math.max(20,Math.min(1080,finite(value.height_px,160)));
+  value.margin=Math.max(0,finite(value.margin,64));
+  value.opacity=Math.max(0,Math.min(1,finite(value.opacity,.75)));
+  value.bands=Math.max(16,Math.min(192,Math.round(finite(value.bands,48)/4)*4));
+  value.bar_width_percent=Math.max(20,Math.min(100,finite(value.bar_width_percent,87.5)));
+  value.motion=['calm','normal','lively','max'].includes(value.motion)?value.motion:'normal';
+  value.pattern=['bars','mirror','wave','circle','ring','line'].includes(value.pattern)?value.pattern:'bars';
+  const old=_atlModel?.visualizer||{};
+  if(freeMode(old)){value.x=old.x;value.y=old.y}
+  return value;
+};
+effectsEnabled=function(v){return !!(v.vintage||v.noise_sand||v.noise_horizontal||v.noise_vertical||v.noise_rain||v.noise_fog||v.noise_film)};
+effectsSection=function(){
+  const v=_atlModel.effects||{},items=[['vintage','ヴィンテージ'],['noise_sand','砂嵐ノイズ'],['noise_horizontal','横ノイズ'],['noise_vertical','縦ノイズ'],['noise_rain','雨'],['noise_fog','霧'],['noise_film','古いフィルム']];
+  return `<section class="pr-prop-section pr-effects-settings"><h3>ノイズ/ヴィンテージ</h3><p>雨、霧などの追加効果は書き出しで確認してください。</p>${items.map(([key,label])=>`<div class="pr-prop-row"><span>${label}</span><input data-effects="${key}" type="checkbox" ${v[key]?'checked':''}></div>`).join('')}<div class="pr-prop-row"><span>ノイズ強度</span><input data-effects="noise_strength" type="number" min="5" max="100" value="${finite(v.noise_strength,30)}"></div><div class="pr-prop-actions"><button class="btn btn-primary btn-sm" data-save-effects>効果を保存</button><button class="btn btn-secondary btn-sm" data-template-effects>チャンネルのテンプレートとして保存</button></div></section>`;
+};
+function fgSection(){
+  const v=_atlModel.fg||{},images=P.images||[];
+  return `<section class="pr-prop-section pr-fg-settings"><h3>前面画像(フレーム)</h3><p>全レイヤーより前へ画像を重ねます。座標とサイズは1920 x 1080基準です。</p><div class="pr-prop-row"><span>表示</span><input data-fg="enabled" type="checkbox" ${v.enabled?'checked':''}></div><div class="pr-prop-row"><span>画像</span><select data-fg="image_path"><option value="">選択してください</option>${images.map(x=>`<option value="${esc(x.path)}" ${v.image_path===x.path?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>${[['x','X座標',0,1920],['y','Y座標',0,1080],['w','幅',1,1920],['h','高さ',1,1080]].map(([key,label,min,max])=>`<div class="pr-prop-row"><span>${label}</span><div class="atl-unit-field"><input data-fg="${key}" type="number" min="${min}" max="${max}" step="1" value="${finite(v[key],key==='w'?1920:key==='h'?1080:0)}"><span>px</span></div></div>`).join('')}<div class="pr-prop-actions"><button class="btn btn-primary btn-sm" data-save-fg>前面画像を保存</button><button class="btn btn-secondary btn-sm" data-template-fg>チャンネルのテンプレートとして保存</button></div></section>`;
+}
+function exportSection(){
+  const f=_atlModel.ffrender||{},resolution=_atlModel.export_resolution||'1080p',bitrate=f.bitrate_mbps??'',fps=f.fps??'';
+  const bitrates=['',6,8,10,16,20,30,40];
+  return `<details class="pr-prop-section pr-prop-accordion pr-export-settings" data-accordion="export"${accordionState().export===true?' open':''}><summary><span class="pr-accordion-caret" aria-hidden="true"></span><strong>書き出し設定</strong><small data-section-summary>${resolution==='2160p'?'3840 x 2160':'1920 x 1080'} / ${bitrate?bitrate+'Mbps':'CRF'} / ${fps||'29.97'}fps</small></summary><div class="pr-accordion-body"><p>プリセットまたは個別項目を選び、このvolへ保存します。</p><div class="pr-export-presets"><button type="button" data-export-preset="youtube">YouTube標準</button><button type="button" data-export-preset="high">高画質</button><button type="button" data-export-preset="4k">4K</button></div><div class="pr-prop-row"><span>解像度</span><select data-export="resolution"><option value="1080p" ${resolution==='1080p'?'selected':''}>1920 x 1080</option><option value="2160p" ${resolution==='2160p'?'selected':''}>3840 x 2160</option></select></div><div class="pr-prop-row"><span>ビットレート</span><select data-export="bitrate_mbps">${bitrates.map(value=>`<option value="${value}" ${String(value)===String(bitrate)?'selected':''}>${value?value+' Mbps':'指定なし (CRF)'}</option>`).join('')}</select></div><div class="pr-prop-row"><span>フレームレート</span><select data-export="fps"><option value="" ${fps===''?'selected':''}>指定なし (29.97 fps)</option>${[24,30,60].map(value=>`<option value="${value}" ${Number(fps)===value?'selected':''}>${value} fps</option>`).join('')}</select></div><div class="pr-prop-actions"><button class="btn btn-primary btn-sm" data-save-export>書き出し設定を保存</button></div></div></details>`;
+}
+visualizerSection=function(){
+  const visualizer=`<section><h3>オーディオビジュアライザー</h3><p>音声に連動して動画へ焼き込む演出を設定します。プレビューは近似表示です。</p>${visualizerForm()}</section>`;
+  return persistentAccordion('icon','回転アイコン',iconSection(),'pr-icon-settings')+persistentAccordion('effects','ノイズ/ヴィンテージ',effectsSection(),'pr-effects-settings')+persistentAccordion('chroma','クロマキーOP',chromaOpeningSection(),'pr-chroma-opening-settings')+persistentAccordion('visualizer','オーディオビジュアライザー',visualizer,'pr-visualizer-settings')+persistentAccordion('fg','前面画像(フレーム)',fgSection(),'pr-fg-settings')+exportSection();
+};
+function readFg(box){
+  const value={};
+  box.querySelectorAll('[data-fg]').forEach(x=>value[x.dataset.fg]=x.type==='checkbox'?x.checked:x.type==='number'?Number(x.value):x.value);
+  value.x=Math.max(0,Math.min(1920,finite(value.x)));
+  value.y=Math.max(0,Math.min(1080,finite(value.y)));
+  value.w=Math.max(1,Math.min(1920,finite(value.w,1920)));
+  value.h=Math.max(1,Math.min(1080,finite(value.h,1080)));
+  return value;
+}
+function readExport(box){
+  const resolution=box.querySelector('[data-export="resolution"]')?.value==='2160p'?'2160p':'1080p';
+  const bitrate=box.querySelector('[data-export="bitrate_mbps"]')?.value||'';
+  const fps=box.querySelector('[data-export="fps"]')?.value||'';
+  return{resolution,ffrender:{bitrate_mbps:bitrate===''?null:Number(bitrate),fps:fps===''?null:Number(fps)}};
+}
+function overlaySize(kind,cfg){
+  if(kind==='visualizer')return{w:1920*Math.max(10,Math.min(100,finite(cfg.width_percent,60)))/100,h:Math.max(20,finite(cfg.height_px,160))};
+  if(kind==='icon'){const scale=cfg.rotate!==false?1.4143:1,s=Math.max(100,Math.min(900,finite(cfg.size_px,430)))*scale;return{w:s,h:s}}
+  if(kind==='chroma_opening')return{w:1920*Math.max(10,Math.min(100,finite(cfg.width_percent,100)))/100,h:1080*Math.max(10,Math.min(100,finite(cfg.height_percent,100)))/100};
+  if(kind==='now_playing')return guideTextBox(document.getElementById('atlNowPlayingOverlay')?.textContent||'曲名 (Now Playing)',cfg);
+  return{w:Math.max(1,finite(cfg.w,1920)),h:Math.max(1,finite(cfg.h,1080))};
+}
+function overlayGuideData(){
+  const rows=[];
+  [['visualizer','ビジュアライザー'],['icon','回転アイコン'],['chroma_opening','クロマキーOP'],['now_playing','楽曲名表示'],['fg','前面画像']].forEach(([kind,label])=>{
+    const cfg=_atlModel?.[kind]||{};
+    if(!cfg.enabled)return;
+    const size=overlaySize(kind,cfg),margin=(kind==='fg'||kind==='chroma_opening')?0:finite(cfg.margin,60);
+    rows.push([kind,label,placementBox(size.w,size.h,cfg,margin),true]);
+  });
+  return rows;
+}
+function addDraggableGuide(layer,kind,label,box){
+  const el=document.createElement('div');
+  el.className=`atl-layout-box atl-layout-draggable${box.outside?' is-outside':''}${P.selectedOverlay===kind?' is-selected':''}`;
+  el.dataset.overlayKind=kind;
+  el.style.cssText=`left:${box.x/19.2}%;top:${box.y/10.8}%;width:${box.w/19.2}%;height:${box.h/10.8}%`;
+  el.innerHTML=`<span>${label} <b>${Math.round(box.x)}, ${Math.round(box.y)} px</b></span><i class="atl-layout-resize" data-layout-resize></i>`;
+  layer.append(el);
+}
+function renderLayoutGuides(){
+  const layer=document.getElementById('atlLayoutGuides');
+  if(!layer||!_atlModel)return;
+  layer.hidden=!P.layoutGuides;
+  layer.replaceChildren();
+  if(P.layoutGuides)overlayGuideData().forEach(row=>addDraggableGuide(layer,...row));
+  syncPlacementInteraction();
+}
+function applyOverlayBox(kind,cfg,next,original,resizing){
+  cfg.x=next.x;cfg.y=next.y;
+  if(!resizing)return;
+  if(kind==='visualizer'){cfg.width_percent=Math.max(10,Math.min(100,next.w/1920*100));cfg.height_px=Math.max(20,Math.min(1080,next.h))}
+  else if(kind==='icon'){const scale=cfg.rotate!==false?1.4143:1;cfg.size_px=Math.max(100,Math.min(900,Math.max(next.w,next.h)/scale))}
+  else if(kind==='chroma_opening'){cfg.width_percent=Math.max(10,Math.min(100,next.w/1920*100));cfg.height_percent=Math.max(10,Math.min(100,next.h/1080*100))}
+  else if(kind==='now_playing'){const scale=Math.max(next.w/Math.max(1,original.w),next.h/Math.max(1,original.h));cfg.size=Math.max(12,Math.min(180,finite(original.cfgSize,48)*scale))}
+  else{cfg.w=next.w;cfg.h=next.h}
+}
+function ensurePlacementInteraction(){
+  const host=document.querySelector('#atlPreview .atl-preview-canvas');
+  if(!host)return null;
+  let layer=document.getElementById('atlPlacementInteraction');
+  if(!layer){layer=document.createElement('div');layer.id='atlPlacementInteraction';layer.className='atl-placement-interaction';layer.setAttribute('aria-label','プレビュー配置編集');host.append(layer)}
+  return layer;
+}
+function syncPlacementInteraction(){
+  const layer=ensurePlacementInteraction();
+  if(!layer)return;
+  layer.classList.toggle('is-active',P.layoutGuides);
+  layer.setAttribute('aria-hidden',String(!P.layoutGuides));
+  layer.dataset.editMode=P.layoutGuides?'on':'off';
+}
+function placementMouseDown(event){
+  if(event.button!==0||!P.layoutGuides||!_atlModel)return;
+  const AP=window.AssemblyPlacement,layer=event.currentTarget,rect=layer.getBoundingClientRect();
+  if(!AP||!rect.width||!rect.height)return;
+  event.preventDefault();event.stopPropagation();
+  const rows=overlayGuideData(),start=AP.clientToLogical(rect,event.clientX,event.clientY),handleSize=Math.max(12*1920/rect.width,12*1080/rect.height),hit=AP.hitTest(rows,start,P.selectedOverlay,handleSize);
+  if(!hit){P.selectedOverlay=null;renderLayoutGuides();return}
+  const cfg=_atlModel[hit.kind],before=clone(_atlModel),original={...hit.box,cfgSize:finite(_atlModel[hit.kind]?.size,48)};
+  if(!cfg)return;
+  P.selectedOverlay=hit.kind;renderLayoutGuides();
+  document.body.classList.add('atl-placement-dragging');
+  let changed=false;
+  const move=ev=>{
+    ev.preventDefault();
+    const current=AP.clientToLogical(rect,ev.clientX,ev.clientY),next=hit.mode==='resize'?AP.resizeBox(original,start,current):AP.moveBox(original,start,current);
+    applyOverlayBox(hit.kind,cfg,next,original,hit.mode==='resize');changed=true;
+    window.atlUpdatePreview?.(_atlPlayhead);
+  };
+  const up=async ev=>{
+    ev?.preventDefault();document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up);document.body.classList.remove('atl-placement-dragging');
+    if(changed)await AP.savePlacement(window.atlCommit,before);
+    renderProperties();window.atlUpdatePreview?.(_atlPlayhead);
+  };
+  document.addEventListener('mousemove',move,{passive:false});
+  document.addEventListener('mouseup',up,{once:true,passive:false});
+}
+function bindOverlayDrag(){
+  const layer=ensurePlacementInteraction();
+  if(!layer)return;
+  syncPlacementInteraction();
+  if(layer.dataset.mouseBound)return;
+  layer.dataset.mouseBound='1';
+  layer.addEventListener('mousedown',placementMouseDown);
+}
+function renderForegroundPreview(){
+  const host=document.querySelector('#atlPreview .atl-preview-canvas'),cfg=_atlModel?.fg||{};
+  if(!host)return;
+  let image=document.getElementById('atlForegroundOverlay');
+  if(!image){image=document.createElement('img');image.id='atlForegroundOverlay';image.className='atl-foreground-overlay';image.alt='';host.append(image)}
+  image.hidden=!cfg.enabled||!cfg.image_path;
+  if(image.hidden)return;
+  const url=`/api/timeline/${encodeURIComponent(_curVideo)}/image?path=${encodeURIComponent(cfg.image_path)}`;
+  if(image.dataset.src!==url){image.dataset.src=url;image.src=url}
+  image.style.cssText=`left:${finite(cfg.x)/19.2}%;top:${finite(cfg.y)/10.8}%;width:${finite(cfg.w,1920)/19.2}%;height:${finite(cfg.h,1080)/10.8}%`;
+}
+window.aplApplyLayout=function(){const root=document.getElementById('assemblyTimeline'),preview=document.getElementById('atlPreview');if(root&&preview&&!root.contains(preview))root.prepend(preview);ensureLayout();placePreview();loadAssets();normalizeVisualizerUi();renderProperties();decorateTracks();premiereTrackOrder();refreshNowPlayingLabels();decorateFilmstrips();enhanceConnectionSettings();applyVisualizerLayout();bindOverlayDrag();guardLayout()};
 const basePlay=window.atlPlayAt;window.atlPlayAt=function(sec){const excluded=new Set(_atlModel?.excluded||[]),clip=(_atlModel?.audio_clips||[]).find(x=>!excluded.has(x.id)&&finite(x.start)<=finite(sec)&&finite(sec)<finite(x.end));basePlay(sec);if(clip&&_atlAudio){_atlAudio._atlClipId=clip.id;_atlAudio._atlGainDb=Math.max(-60,Math.min(12,finite(clip.gain_db)));_atlAudio.addEventListener('play',()=>document.querySelector('.pr-program .pr-spectrum')?.classList.remove('is-idle'));_atlAudio.addEventListener('pause',()=>{document.querySelector('.pr-program .pr-spectrum')?.classList.add('is-idle');if(P.visualMode==='measure')finishSpectrumRecord()},{once:true});_atlAudio.addEventListener('ended',()=>{document.querySelector('.pr-program .pr-spectrum')?.classList.add('is-idle');if(P.visualMode==='measure')finishSpectrumRecord()},{once:true})}setTimeout(()=>{if(clip&&_atlAudio&&connectAnalyser(_atlAudio))startVisualizer()},0)};
 window.atlOpenTransition=function(kind,index){window._atlFilmora.selected=kind==='audio'?{kind:'audio',id:_atlModel.audio_clips[index]?.id}:{kind:'visual',index};renderProperties()};
 window.atlOpenNowPlaying=function(){window._atlFilmora.selected={kind:'now-playing'};renderProperties();document.querySelector('[data-save-now]')?.scrollIntoView({block:'nearest'})};
@@ -148,12 +316,53 @@ document.addEventListener('click',e=>{const toggle=e.target.closest?.('#prProper
 document.addEventListener('change',e=>{const toggle=e.target.closest?.('#prProperties [data-section-toggle]');if(toggle)togglePersistentSection(toggle)},true);
 document.addEventListener('toggle',e=>{const details=e.target.closest?.('#prProperties [data-accordion]');if(!details)return;const state=accordionState();state[details.dataset.accordion]=details.open;localStorage.setItem(ACCORDION_STORAGE_KEY,JSON.stringify(state))},true);
 document.addEventListener('click',async e=>{const button=e.target.closest?.('[data-placement-reset]');if(!button||!_atlModel)return;const cfg=_atlModel[button.dataset.placementReset];if(!cfg)return;const before=clone(_atlModel);delete cfg.x;delete cfg.y;await window.atlCommit(before);renderProperties();window.atlUpdatePreview?.(_atlPlayhead)},true);
+document.addEventListener('input',e=>{const input=e.target.closest?.('#prProperties input[type="range"][data-visualizer]');if(!input)return;const output=input.parentElement?.querySelector('output');if(output)output.textContent=`${input.value}%`},true);
+document.addEventListener('change',e=>{const input=e.target.closest?.('#prProperties [data-fg]'),box=input?.closest('#prProperties');if(!input||!box||!_atlModel)return;_atlModel.fg=readFg(box);renderForegroundPreview();renderLayoutGuides()},true);
+document.addEventListener('click',async e=>{
+  const button=e.target.closest?.('#prProperties [data-save-fg],#prProperties [data-template-fg]');
+  if(!button||!_atlModel)return;
+  const box=button.closest('#prProperties'),before=clone(_atlModel),value=readFg(box);
+  _atlModel.fg=value;
+  await window.atlCommit(before);
+  if(button.hasAttribute('data-template-fg')){
+    const channelId=window.AutomationStudioContext?.channelId||(typeof _uiChannelId!=='undefined'?_uiChannelId:'');
+    const response=await fetch(`/api/timeline/${encodeURIComponent(_curVideo)}/fg-template`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_id:channelId,value})});
+    toast(response.ok?'チャンネルテンプレートへ保存しました':'テンプレート保存に失敗しました',response.ok?'s':'e');
+  }
+},true);
+document.addEventListener('click',async e=>{
+  const button=e.target.closest?.('#prProperties [data-save-export]');
+  if(!button||!_atlModel)return;
+  const before=clone(_atlModel),value=readExport(button.closest('#prProperties'));
+  _atlModel.export_resolution=value.resolution;_atlModel.ffrender=value.ffrender;
+  await window.atlCommit(before);toast('書き出し設定を保存しました','s');
+},true);
+document.addEventListener('click',async e=>{
+  const button=e.target.closest?.('#prProperties [data-export-preset]');
+  if(!button||!_atlModel)return;
+  const presets={youtube:{resolution:'1080p',bitrate_mbps:8,fps:30,label:'YouTube標準'},high:{resolution:'1080p',bitrate_mbps:16,fps:30,label:'高画質'},'4k':{resolution:'2160p',bitrate_mbps:40,fps:30,label:'4K'}},preset=presets[button.dataset.exportPreset];
+  if(!preset)return;
+  const before=clone(_atlModel);_atlModel.export_resolution=preset.resolution;_atlModel.ffrender={bitrate_mbps:preset.bitrate_mbps,fps:preset.fps};
+  await window.atlCommit(before);toast(`${preset.label}プリセットを適用しました`,'s');renderProperties();
+},true);
+document.addEventListener('click',async e=>{
+  const button=e.target.closest?.('#prProperties [data-overlay-align]');
+  if(!button||!_atlModel)return;
+  const kind=button.dataset.overlayAlign,cfg=_atlModel[kind];
+  if(!cfg)return;
+  const AP=window.AssemblyPlacement,before=clone(_atlModel),size=overlaySize(kind,cfg),margin=(kind==='fg'||kind==='chroma_opening')?0:60,axis=button.dataset.alignAxis,value=button.dataset.alignValue,box=placementBox(size.w,size.h,cfg,margin),next=AP?.alignBox(box,axis,value,margin);
+  if(!next)return;
+  applyOverlayBox(kind,cfg,next,box,false);
+  P.selectedOverlay=kind;await AP.savePlacement(window.atlCommit,before);renderProperties();window.atlUpdatePreview?.(_atlPlayhead);
+},true);
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeContextMenu()});
 addEventListener('scroll',closeContextMenu,true);
 addEventListener('keydown',e=>{const editor=document.getElementById('premiereEditor'),target=e.target;if(!editor||editor.hidden||editor.offsetParent===null||!_atlModel||target?.isContentEditable||target?.matches?.('input,textarea,select,[contenteditable="true"]'))return;const key=e.key;if(![' ','ArrowLeft','ArrowRight','Home','End'].includes(key))return;e.preventDefault();e.stopImmediatePropagation();if(key===' ')window.atlToggleFilmora?.();else if(key==='Home')window.atlSetPosition?.(0);else if(key==='End')window.atlSetPosition?.(programTotal());else if(e.shiftKey)window.atlBoundary?.(key==='ArrowLeft'?-1:1);else window.atlSetPosition?.((Number(_atlPlayhead)||0)+(key==='ArrowLeft'?-5:5))},true);
 addEventListener('resize',closeContextMenu);
 const renderPropertiesBase=renderProperties;renderProperties=function(){renderPropertiesBase();const section=document.querySelector('#prProperties .pr-visualizer-settings'),colorInput=section?.querySelector('[data-visualizer="color"]');if(section&&!section.querySelector('[data-visualizer="color_mode"]')&&colorInput){const row=document.createElement('div');row.className='pr-prop-row';row.innerHTML=`<span>配色</span><select data-visualizer="color_mode"><option value="single">単色</option><option value="gradient">2色グラデーション</option></select>`;row.querySelector('select').value=_atlModel?.visualizer?.color_mode||'gradient';colorInput.closest('.pr-prop-row').before(row)}[['visualizer','.pr-visualizer-settings [data-visualizer="position"]'],['icon','.pr-icon-settings [data-icon="position"]'],['chroma_opening','.pr-chroma-opening-settings [data-chroma-opening="position"]'],['now_playing','.pr-now-playing-settings [data-now="position"]']].forEach(([kind,selector])=>{const select=document.querySelector(`#prProperties ${selector}`),row=select?.closest('.pr-prop-row');if(row&&!row.querySelector('[data-placement-reset]'))row.insertAdjacentHTML('beforeend',placementRow(kind))})};
-const atlUpdatePreviewBase=window.atlUpdatePreview;window.atlUpdatePreview=function(sec){const result=atlUpdatePreviewBase?.(sec);renderPreviewLayers(sec);renderDecorationPreview(sec);renderChromaOpeningPreview(sec);applyFreePreviewPositions();previewTypewriterSound(finite(sec));renderLayoutGuides();bindOverlayDrag();updateProgramStrip(sec);return result};
+function alignmentControls(kind){return `<div class="atl-align-controls" data-align-for="${kind}"><span>位置揃え</span><div><button type="button" data-overlay-align="${kind}" data-align-axis="x" data-align-value="left">左</button><button type="button" data-overlay-align="${kind}" data-align-axis="x" data-align-value="center">横中央</button><button type="button" data-overlay-align="${kind}" data-align-axis="x" data-align-value="right">右</button><button type="button" data-overlay-align="${kind}" data-align-axis="y" data-align-value="top">上</button><button type="button" data-overlay-align="${kind}" data-align-axis="y" data-align-value="center">縦中央</button><button type="button" data-overlay-align="${kind}" data-align-axis="y" data-align-value="bottom">下</button></div></div>`}
+const renderPropertiesPlacementBase=renderProperties;renderProperties=function(){renderPropertiesPlacementBase();[['now_playing','.pr-now-playing-settings'],['visualizer','.pr-visualizer-settings'],['icon','.pr-icon-settings'],['chroma_opening','.pr-chroma-opening-settings'],['fg','.pr-fg-settings']].forEach(([kind,selector])=>{const section=document.querySelector(`#prProperties ${selector} .pr-accordion-body`)||document.querySelector(`#prProperties ${selector}`);if(section&&!section.querySelector(`[data-align-for="${kind}"]`)){const actions=section.querySelector('.pr-prop-actions');if(actions)actions.insertAdjacentHTML('beforebegin',alignmentControls(kind));else section.insertAdjacentHTML('beforeend',alignmentControls(kind))}})};
+const atlUpdatePreviewBase=window.atlUpdatePreview;window.atlUpdatePreview=function(sec){const result=atlUpdatePreviewBase?.(sec);renderPreviewLayers(sec);renderDecorationPreview(sec);renderChromaOpeningPreview(sec);renderForegroundPreview();applyFreePreviewPositions();previewTypewriterSound(finite(sec));renderLayoutGuides();bindOverlayDrag();updateProgramStrip(sec);return result};
 Object.assign(window,{prDropAsset:dropAsset,prRenderProperties:renderProperties,atlAddTextClip:addTextClip,aplTrackEnabled:id=>!trackDisabled(id),aplTransportSvg:transportSvg,aplReleasePreviewAudio:releasePreviewAudio,aplApplyVisualizerLayout:applyVisualizerLayout,aplPremiereTrackOrder:premiereTrackOrder,aplRenderLayoutGuides:renderLayoutGuides,aplToggleLayoutGuides:toggleLayoutGuides});
 if(typeof _atlModel!=='undefined'&&_atlModel&&typeof _curVideo!=='undefined'&&_curVideo&&document.getElementById('assemblyTimeline'))window.renderAssemblyTimeline(_curVideo);
 })();

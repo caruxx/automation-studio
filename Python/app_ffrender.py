@@ -2563,7 +2563,10 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
     print(f"  scratch={scratch}  cache={cache_dir}")
     print("=" * 60)
 
+    timeline_data = load_vol_timeline(vol_folder) if (vol_folder / TIMELINE_NAME).exists() else None
     ffr_cfg = _load_channel_ffrender(vol_folder)
+    if isinstance(timeline_data, dict) and isinstance(timeline_data.get("ffrender"), dict):
+        ffr_cfg = {**ffr_cfg, **timeline_data["ffrender"]}
     _configure_video(ffr_cfg)
 
     # 0) 構成解決（manifest 優先 → 無ければ新規生成して manifest 保存）
@@ -2634,7 +2637,6 @@ def _render_at_resolution(vol_folder: Path, *, target: Optional[float] = None, o
     # 1) 配置 → 2) SRT/TC（vol フォルダに既存と同名で出力）
     print("[1] 配置 + 字幕/チャプター生成...")
     song_target = max(0.0, target - intro_sec)
-    timeline_data = load_vol_timeline(vol_folder) if (vol_folder / TIMELINE_NAME).exists() else None
     timeline_data = _scale_timeline_text(timeline_data, geometry_scale)
     album_loop = timeline_data.get("album_loop") if isinstance(timeline_data, dict) else {}
     try:
