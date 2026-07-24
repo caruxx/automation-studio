@@ -20,6 +20,7 @@ FFMPEG_TIMEOUT = 4 * 60 * 60
 FFPROBE_TIMEOUT = 60
 FPS = 30
 GOP_FRAMES = 150
+DEFAULT_XFADE_SEC = 0.5
 VIDEO_BITRATE_MBPS = None
 VIDEO_ENCODER = "libx264"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v"}
@@ -629,6 +630,53 @@ def analysis_payload(
     }
 
 
+def apply_plan(media: List[Dict[str, Any]], plan_path: Path) -> List[Dict[str, Any]]:
+    """Apply an explicit plan order and adopted duration to scanned media."""
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("could not read plan JSON {0}: {1}".format(plan_path, exc))
+    if not isinstance(plan, dict) or not isinstance(plan.get("order"), list):
+        raise ValueError("plan JSON must contain an order array")
+    by_name = {item["name"]: item for item in media}
+    planned = []
+    seen = set()
+    for index, entry in enumerate(plan["order"]):
+        if not isinstance(entry, dict):
+            raise ValueError("plan order item {0} must be an object".format(index))
+        name = entry.get("name")
+        if not isinstance(name, str) or name not in by_name:
+            raise ValueError(
+                "plan order item {0} refers to unknown material: {1}".format(
+                    index, name
+                )
+            )
+        if name in seen:
+            raise ValueError("plan order contains duplicate material: {0}".format(name))
+        duration = _finite_float(
+            entry.get("sec"),
+            "plan order item {0} sec".format(index),
+            0.001,
+        )
+        source = by_name[name]
+        if (
+            source["kind"] == "video"
+            and duration > float(source["source_duration"]) + 0.001
+        ):
+            raise ValueError(
+                "plan duration exceeds source duration for {0}: {1:.3f} > {2:.3f}".format(
+                    name, duration, float(source["source_duration"])
+                )
+            )
+        item = dict(source)
+        item["adopted_duration"] = duration
+        planned.append(item)
+        seen.add(name)
+    if not planned:
+        raise ValueError("plan order must contain at least one material")
+    return planned
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Render video clips and photos as a telop/BGM vlog MP4."
@@ -638,9 +686,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--aspect", choices=("16:9", "9:16"), default="16:9")
     parser.add_argument("--bgm", help="Optional BGM audio path")
     parser.add_argument("--telops", help="Telops JSON path (default: <folder>/telops.json)")
+    parser.add_argument("--plan", help="Optional vlog plan JSON path")
     parser.add_argument("--photo-sec", type=float, default=4.0)
     parser.add_argument("--clip-max-sec", type=float, default=8.0)
-    parser.add_argument("--xfade-sec", type=float, default=0.5)
+    parser.add_argument("--xfade-sec", type=float, default=DEFAULT_XFADE_SEC)
     parser.add_argument("--order", choices=("name", "mtime"), default="name")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -667,8 +716,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             else folder / "telops.json"
         )
         bgm = Path(args.bgm).expanduser().resolve() if args.bgm else None
+        plan_path = Path(args.plan).expanduser().resolve() if args.plan else None
         if bgm is not None and not bgm.is_file():
             raise ValueError("BGM file does not exist: {0}".format(bgm))
+        if plan_path is not None and not plan_path.is_file():
+            raise ValueError("plan file does not exist: {0}".format(plan_path))
         media = scan_media(
             folder,
             args.order,
@@ -676,7 +728,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             clip_max_sec,
             [output] + ([bgm] if bgm is not None else []),
         )
+        if plan_path is not None:
+            media = apply_plan(media, plan_path)
         payload = analysis_payload(folder, output, args.aspect, media, xfade_sec)
+        if plan_path is not None:
+            payload["plan"] = str(plan_path)
         if payload["expected_duration"] <= 0:
             raise ValueError("expected output duration must be greater than zero")
         if len(media) > 1 and xfade_sec > 0:
