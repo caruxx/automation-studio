@@ -1418,6 +1418,10 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
     toggle_always_visible = bool(cfg.get("psd_toggle_always_visible"))
     psd_text_layer = cfg.get("psd_text_layer") or ""
     psd_text_font = cfg.get("psd_text_font") or ""  # PostScript 名（例: "HelveticaNeue-UltraLight"）。空ならコード側でフォント指定しない
+    psd_text_align = str(cfg.get("psd_text_align") or "center").strip().lower()
+    if psd_text_align not in ("center", "left", "right"):
+        print(f"  警告: psd_text_align={psd_text_align!r} は無効なため 'center' を使用")
+        psd_text_align = "center"
 
     # 英語シーンコピー生成（LLM）— scene_en.txt にキャッシュ。
     # 文字のトーン/例/禁止語/構文はチャンネル別設定 scene_text_* から渡す（無ければ persona 中立）。
@@ -1533,6 +1537,7 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
             toggle_always_visible=toggle_always_visible,
             target_width=target_width,
             target_height=target_height,
+            scene_text_align=psd_text_align,
             save_psd=True,
             **extra,
         )

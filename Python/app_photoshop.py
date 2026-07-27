@@ -310,22 +310,28 @@ def list_layers() -> list:
 
 
 def set_text(layer_name: str, text: str, centered: bool = False,
-             font: Optional[str] = None) -> bool:
+             font: Optional[str] = None, align: str = "center") -> bool:
     """テキストレイヤーを差し替える（グループ内も再帰検索）。
 
     Args:
         layer_name: 対象テキスト層名
         text: 差し替え後のテキスト
-        centered: True にすると、テキスト揃えを CENTER + 水平方向のみキャンバス中央に translate（縦位置は維持）
+        centered: True にすると、align に従って水平方向のみ translate（縦位置は維持）
         font: PostScript フォント名（例: "HelveticaNeue-UltraLight"）。指定時は
               contents 差し替え後に textItem.font を明示セットする（contents 書き換えで
               フォントが意図せずリセット/fallback されるケースへの保険）。
               システムに無いフォント名なら警告のみで non-fatal。
+        align: centered=True 時の水平位置。center はキャンバス中央、left は左端 6%、
+               right は右端 94% にテキストの対応する端を合わせる。
     """
+    align = str(align or "center").strip().lower()
+    if align not in ("center", "left", "right"):
+        raise ValueError("align は 'center', 'left', 'right' のいずれか")
     name_js = json.dumps(layer_name)
     text_js = json.dumps(text)
     centered_js = "true" if centered else "false"
     font_js = json.dumps(font) if font else "null"
+    align_js = json.dumps(align)
     code = f"""
         if (!app.documents.length) {{ "ERROR: no active doc"; }}
         else (function() {{
@@ -333,6 +339,7 @@ def set_text(layer_name: str, text: str, centered: bool = False,
             var wantText = {text_js};
             var doCenter = {centered_js};
             var wantFont = {font_js};
+            var wantAlign = {align_js};
             function find(layers) {{
                 for (var i = 0; i < layers.length; i++) {{
                     var l = layers[i];
@@ -353,15 +360,20 @@ def set_text(layer_name: str, text: str, centered: bool = False,
             }}
             if (doCenter) {{
                 try {{
-                    // テキスト揃え: CENTER
-                    t.textItem.justification = Justification.CENTER;
-                    // 水平方向のみキャンバス中央へ translate（縦位置は維持）
+                    if (wantAlign === "left") t.textItem.justification = Justification.LEFT;
+                    else if (wantAlign === "right") t.textItem.justification = Justification.RIGHT;
+                    else t.textItem.justification = Justification.CENTER;
+                    // 水平方向のみ指定位置へ translate（縦位置は維持）
                     var b = t.bounds; // [left, top, right, bottom] UnitValue
-                    var textCenterX = (b[0].as("px") + b[2].as("px")) / 2;
-                    var docCenterX = app.activeDocument.width.as("px") / 2;
-                    var dx = docCenterX - textCenterX;
+                    var left = b[0].as("px");
+                    var right = b[2].as("px");
+                    var docWidth = app.activeDocument.width.as("px");
+                    var dx;
+                    if (wantAlign === "left") dx = docWidth * 0.06 - left;
+                    else if (wantAlign === "right") dx = docWidth * 0.94 - right;
+                    else dx = docWidth / 2 - (left + right) / 2;
                     if (Math.abs(dx) > 0.5) t.translate(dx, 0);
-                }} catch (e) {{ return "ERROR: center failed: " + e; }}
+                }} catch (e) {{ return "ERROR: horizontal alignment failed: " + e; }}
             }}
             return "ok";
         }})();
@@ -479,13 +491,36 @@ _REPLACE_SO_TEMPLATE = """
                     var b = t.bounds;
                     var soW = b[2].as("px") - b[0].as("px");
                     var soH = b[3].as("px") - b[1].as("px");
-                    var scale = Math.max(docW / soW, docH / soH) * 100;
+                    // サブピクセル丸めで端に隙間が出ないよう、cover 倍率に微小な余裕を持たせる。
+                    var scale = Math.max(docW / soW, docH / soH) * 100 * 1.002;
                     var soCx = (b[0].as("px") + b[2].as("px")) / 2;
                     var soCy = (b[1].as("px") + b[3].as("px")) / 2;
                     var dx = (docW / 2) - soCx;
                     var dy = (docH / 2) - soCy;
                     t.translate(dx, dy);
                     t.resize(scale, scale, AnchorPosition.MIDDLECENTER);
+
+                    // resize 後の実 bounds を確認し、キャンバス端の不足を整数 px で補正する。
+                    var fitted = t.bounds;
+                    var left = fitted[0].as("px");
+                    var top = fitted[1].as("px");
+                    var right = fitted[2].as("px");
+                    var bottom = fitted[3].as("px");
+                    var fixX = 0;
+                    var fixY = 0;
+                    if (left > 0) {
+                        fixX = -Math.ceil(left);
+                    } else if (right < docW) {
+                        fixX = Math.ceil(docW - right);
+                    }
+                    if (top > 0) {
+                        fixY = -Math.ceil(top);
+                    } else if (bottom < docH) {
+                        fixY = Math.ceil(docH - bottom);
+                    }
+                    if (fixX !== 0 || fixY !== 0) {
+                        t.translate(fixX, fixY);
+                    }
                 }
                 __r = "ok";
             } catch(e) {
@@ -723,6 +758,7 @@ def render_dual_thumbnail(
     toggle_always_visible: bool = False,
     bg_base_only: bool = False,
     center_text: bool = True,
+    scene_text_align: str = "center",
 ) -> dict:
     """Harbor Notes 仕様: 2層対立式の2枚出力（背景画像 + サムネ）。
 
@@ -755,6 +791,7 @@ def render_dual_thumbnail(
         scene_text_ja: 日本語キャッチコピー（competitor 風）。None/空なら日本語層は触らない。
         scene_text_ja_layer: 日本語コピーを入れるテキスト層名。None なら日本語層は触らない。
         scene_text_ja_font: 日本語フォント名（例: "ヒラギノ角ゴシック W6"）。
+        scene_text_align: 英語シーン名層の水平位置（center / left / right）。
 
     競合・分離の方針:
         scene_text_ja / scene_text_ja_layer が両方与えられたときだけ日本語層を操作する。
@@ -788,8 +825,9 @@ def render_dual_thumbnail(
     except Exception as e:
         print(f"⚠ レイヤー名 '{base_layer}' 復元失敗（次回実行に影響なし）: {e}")
 
-    print(f"✍️  text: {scene_text_layer} = {scene_text!r} (centered={center_text}{', font=' + scene_text_font if scene_text_font else ''})")
-    set_text(scene_text_layer, scene_text, centered=center_text, font=scene_text_font)
+    print(f"✍️  text: {scene_text_layer} = {scene_text!r} (centered={center_text}, align={scene_text_align}{', font=' + scene_text_font if scene_text_font else ''})")
+    set_text(scene_text_layer, scene_text, centered=center_text, font=scene_text_font,
+             align=scene_text_align)
 
     # 日本語コピー（competitor 風）— enabled かつ層が与えられたときだけ操作。
     # 失敗（層が見つからない/テキスト層でない等）は non-fatal で続行する
