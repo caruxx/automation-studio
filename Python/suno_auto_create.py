@@ -17,6 +17,7 @@ import sys
 import random
 import time
 import atexit
+import unicodedata
 from pathlib import Path
 
 from resource_lock import ResourceBusyError, ResourceLock
@@ -175,6 +176,14 @@ class BotChallengeDetected(RuntimeError):
     """SUNO 側で Bot/CAPTCHA チャレンジが表示されたときに raise。
     UnattendedLoginRequired と同じく exit 75 で抜け、pipeline 側で手動介入扱いにする。"""
     pass
+
+
+class SunoSubmissionError(RuntimeError):
+    """SUNO への1曲分のフォーム投入・送信が失敗したことを表す。"""
+
+    def __init__(self, step, message):
+        self.step = str(step or "song_submission")
+        super().__init__(message)
 
 
 def _is_unattended() -> bool:
@@ -1288,6 +1297,87 @@ def _click_workspace_card(page, workspace_name):
     return None
 
 
+def _scroll_workspaces_to_bottom(page):
+    """Workspace 一覧のスクロール領域を最下部まで送り lazy-load を促す。"""
+    previous = None
+    for _ in range(12):
+        try:
+            state = page.evaluate("""() => {
+                const nodes = [document.scrollingElement || document.documentElement];
+                for (const el of document.querySelectorAll('*')) {
+                    const style = getComputedStyle(el);
+                    if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                        el.scrollHeight > el.clientHeight) {
+                        nodes.push(el);
+                    }
+                }
+                const before = nodes.map(el => [el.scrollTop, el.scrollHeight, el.clientHeight]);
+                for (const el of nodes) el.scrollTop = el.scrollHeight;
+                return before.map((v, i) => `${i}:${v[0]}:${v[1]}:${v[2]}`).join('|');
+            }""")
+        except Exception:
+            break
+        time.sleep(0.6)
+        if state == previous:
+            break
+        previous = state
+
+
+def _expand_archived_workspaces(page):
+    """Archived セクションが閉じていれば展開する。"""
+    try:
+        return page.evaluate(r"""() => {
+            const candidates = document.querySelectorAll('button, [role="button"], summary');
+            for (const el of candidates) {
+                const text = (el.textContent || '').trim();
+                if (!/^Archived(?:\s|$)/i.test(text)) continue;
+                if (el.getAttribute('aria-expanded') === 'true') return `already open: ${text}`;
+                el.click();
+                return text;
+            }
+            return null;
+        }""")
+    except Exception:
+        return None
+
+
+def _find_workspace_card_with_fallbacks(page, workspace_name):
+    """通常表示、lazy-load 後、Archived 展開後の順で Workspace を探す。"""
+    found = _click_workspace_card(page, workspace_name)
+    if found:
+        return found
+
+    print("  Workspace 一覧を最下部までスクロールして再検索します")
+    _scroll_workspaces_to_bottom(page)
+    found = _click_workspace_card(page, workspace_name)
+    if found:
+        return f"lazy-load 後: {found}"
+
+    archived = _expand_archived_workspaces(page)
+    if archived:
+        print(f"  Archived セクションを展開: {archived}")
+        time.sleep(1.5)
+        _scroll_workspaces_to_bottom(page)
+        found = _click_workspace_card(page, workspace_name)
+        if found:
+            return f"Archived 展開後: {found}"
+    return None
+
+
+def _dump_workspaces_dom(page):
+    """Workspace 検索失敗時の診断用 DOM を保存する。"""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    path = CONFIG_DIR / f"workspaces_dom_dump_{timestamp}.html"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(page.content(), encoding="utf-8")
+        print(f"  診断用 DOM を保存: {path}")
+        return path
+    except Exception as e:
+        print(f"  診断用 DOM の保存に失敗: {e}")
+        return None
+
+
 def ensure_workspace(page, workspace_name):
     """SUNO /me/workspaces 経由で Workspace を作成（参考コード準拠）。
 
@@ -1316,7 +1406,7 @@ def ensure_workspace(page, workspace_name):
         return False
 
     # 既に同名のワークスペースがあればクリックして選択（重複作成を避ける）
-    found = _click_workspace_card(page, workspace_name)
+    found = _find_workspace_card_with_fallbacks(page, workspace_name)
     if found:
         time.sleep(2)
         print(f"  ✓ 既存 Workspace '{workspace_name}' を選択しました ({found})")
@@ -1425,6 +1515,32 @@ def _workspace_direct_url(workspace_name):
     return f"https://suno.com/create?wid={m.group(1)}"
 
 
+def _workspace_direct_url_from_status(workspace_name):
+    """Workspace 名に対応する status JSON から wid 直接 URL を復元する。"""
+    if not workspace_name or _workspace_direct_url(workspace_name):
+        return ""
+    safe_workspace = re.sub(r"[^A-Za-z0-9_.-]+", "_", workspace_name)
+    candidates = [
+        CONFIG_DIR / f"suno_status_{safe_workspace}.json",
+        CONFIG_DIR / "suno_status_latest.json",
+    ]
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        recorded_workspace = str(data.get("workspace") or "")
+        if recorded_workspace and recorded_workspace != workspace_name:
+            continue
+        if path.name == "suno_status_latest.json" and not recorded_workspace:
+            continue
+        direct_url = _workspace_direct_url(str(data.get("page_url") or ""))
+        if direct_url:
+            print(f"  status JSON から Workspace wid を復元: {path}")
+            return direct_url
+    return ""
+
+
 def download_workspace_tracks(page, workspace_name, target_dir):
     """指定 Workspace の全楽曲を MP3 ダウンロード → target_dir に保存。
 
@@ -1443,6 +1559,8 @@ def download_workspace_tracks(page, workspace_name, target_dir):
 
     # 1) UUID/URL 指定なら直接開く。同名 Workspace が複数ある場合の取り違えを防ぐ。
     direct_url = _workspace_direct_url(workspace_name)
+    if not direct_url:
+        direct_url = _workspace_direct_url_from_status(workspace_name)
     if direct_url:
         try:
             page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
@@ -1460,9 +1578,10 @@ def download_workspace_tracks(page, workspace_name, target_dir):
             print(f"  ⚠️ /me/workspaces アクセス失敗: {e}")
             return 0
 
-        found = _click_workspace_card(page, workspace_name)
+        found = _find_workspace_card_with_fallbacks(page, workspace_name)
         if not found:
             print(f"  ⚠️ Workspace '{workspace_name}' が見つかりません")
+            _dump_workspaces_dom(page)
             return 0
         time.sleep(3)
         print(f"  ✓ Workspace 開く ({found}): {page.url}")
@@ -1828,6 +1947,25 @@ def _collect_all_song_uuids(page, from_top: bool = False):
     return uuids_seen
 
 
+def is_suno_logged_in(page):
+    """Create ボタンまたは曲作成 UI から SUNO のログイン状態を確認する。"""
+    try:
+        if "suno.com" not in page.url:
+            return False
+        buttons = page.query_selector_all('button')
+        for btn in buttons:
+            try:
+                if _ui_text_match(btn.inner_text(), ("作成", "Create")):
+                    return True
+            except Exception:
+                continue
+        if page.query_selector('textarea'):
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def run_browser_automation(settings):
     """Playwright でブラウザを操作"""
     from playwright.sync_api import sync_playwright
@@ -1906,25 +2044,7 @@ def run_browser_automation(settings):
 
         # ログイン判定: suno.com にいて、かつ Create ボタンが存在するか確認
         def is_logged_in():
-            try:
-                # suno.com 上にいるか
-                if "suno.com" not in page.url:
-                    return False
-                # Create ボタンまたは曲作成UIが存在するか
-                buttons = page.query_selector_all('button')
-                for btn in buttons:
-                    try:
-                        text = btn.inner_text().strip().lower()
-                        if text in ('create', '作成'):
-                            return True
-                    except Exception:
-                        continue
-                # textarea (歌詞入力欄) が存在するか
-                if page.query_selector('textarea'):
-                    return True
-                return False
-            except Exception:
-                return False
+            return is_suno_logged_in(page)
 
         if not is_logged_in():
             print("\n⚠️  SUNOにログインが必要です。")
@@ -1980,9 +2100,11 @@ def run_browser_automation(settings):
 
         # ワークスペース確保（/create 上で名前を設定）
         workspace_name = settings.get("workspace") or ""
+        workspace_direct_url = ""
         if workspace_name:
             progress.update(page, phase="workspace", last_action=f"ensuring workspace {workspace_name}", emit=True)
             ensure_workspace(page, workspace_name)
+            workspace_direct_url = _workspace_direct_url(page.url)
             progress.reset_observed_counts(page)
 
         print(f"ページ読み込み完了: {page.url}\n")
@@ -2193,7 +2315,9 @@ def run_browser_automation(settings):
                 try:
                     progress.update(page, phase="auto_downloading",
                                     last_action=f"downloading to {auto_download_dir}", emit=True)
-                    downloaded = download_workspace_tracks(page, workspace_name, auto_download_dir)
+                    downloaded = download_workspace_tracks(
+                        page, workspace_direct_url or workspace_name, auto_download_dir
+                    )
                 finally:
                     if old_render_wait is None:
                         os.environ.pop("APP_SUNO_RENDER_WAIT_SEC", None)
@@ -2246,7 +2370,7 @@ def run_browser_automation(settings):
                 pass
 
 
-def _ensure_custom_mode(page):
+def _legacy_ensure_custom_mode(page):
     """SUNO の Create フォームを Custom モードにする。
 
     Simple モードでは title/styles/lyrics 欄が DOM に存在せず、注入が黙って失敗する。
@@ -2327,7 +2451,7 @@ def _ensure_custom_mode(page):
     return _fields_present()
 
 
-def set_instrumental_toggle(page, desired: bool) -> bool:
+def _legacy_set_instrumental_toggle(page, desired: bool) -> bool:
     """SUNO の歌詞セクション切替(Lyrics / Instrumental)を desired に合わせる。
 
     実測 DOM(2026-07 現UI): 歌詞セクションは button[role=radio] の
@@ -2382,7 +2506,7 @@ def set_instrumental_toggle(page, desired: bool) -> bool:
 
 
 
-def inject_into_suno(page, content):
+def _legacy_inject_into_suno(page, content):
     """SUNO のフォームに値を注入 — Ghost Writer (Tampermonkey) と完全同一のロジック。
 
     Ghost Writer の setReactValue + セレクタをそのまま page.evaluate で実行する。
@@ -2395,7 +2519,7 @@ def inject_into_suno(page, content):
     lyrics = content.get("lyrics", "")
 
     # Simple モード対策: 入力欄が存在しなければ Custom へ切り替える
-    _ensure_custom_mode(page)
+    _legacy_ensure_custom_mode(page)
     # 2026-07-05 方針:
     # SUNO の Lyrics / Instrumental トグルは使わない。
     # Instrumental は More Options 側ではなく、prompt/lyrics 欄へ入れる。
@@ -2737,6 +2861,420 @@ def inject_into_suno(page, content):
     return True
 
 
+_ADVANCED_TAB_TEXTS = ("アドバンスド", "Advanced")
+_WRITE_RADIO_TEXTS = ("書く", "Write")
+_STYLE_SECTION_TEXTS = ("スタイル", "Styles")
+_MORE_OPTIONS_TEXTS = ("その他のオプション", "More options")
+_TITLE_PLACEHOLDERS = ("曲名(任意)", "曲名（任意）", "Song title (optional)")
+_EXCLUDE_STYLE_PLACEHOLDERS = ("スタイルを除外", "Exclude styles")
+_LYRICS_ARIA_LABELS = ("歌詞エディタ", "Lyrics editor")
+_SIMPLE_SOUND_PLACEHOLDER_PARTS = (
+    "欲しいサウンドを説明",
+    "Describe the sound you want",
+    "Describe your sound",
+)
+
+
+def _normalize_ui_text(value):
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = re.sub(r"\s*([()])\s*", r"\1", normalized)
+    return normalized.casefold()
+
+
+def _ui_text_match(element_text, candidates):
+    """UI文言を空白や大文字小文字に依存せず候補集合と完全一致で照合する。"""
+    normalized = _normalize_ui_text(element_text)
+    return any(normalized == _normalize_ui_text(candidate) for candidate in candidates)
+
+
+def _find_text_locator(page, selector, candidates, visible_only=True):
+    locator = page.locator(selector)
+    for index in range(locator.count()):
+        current = locator.nth(index)
+        try:
+            if visible_only and not current.is_visible():
+                continue
+            if _ui_text_match(current.inner_text(), candidates):
+                return current
+        except Exception:
+            continue
+    return None
+
+
+def _find_attribute_locator(page, selector, attribute, candidates, visible_only=True):
+    locator = page.locator(selector)
+    for index in range(locator.count()):
+        current = locator.nth(index)
+        try:
+            if visible_only and not current.is_visible():
+                continue
+            if _ui_text_match(current.get_attribute(attribute), candidates):
+                return current
+        except Exception:
+            continue
+    return None
+
+
+def _find_section_control(page, labels, control_selector):
+    """ローカライズ済み見出しを起点に最も近いセクション内の入力欄を探す。"""
+    label = _find_text_locator(
+        page,
+        "label, div, span, p, h1, h2, h3, h4",
+        labels,
+        visible_only=True,
+    )
+    if label is None:
+        return None
+    node = label
+    for _ in range(8):
+        controls = node.locator(control_selector)
+        for index in range(controls.count()):
+            control = controls.nth(index)
+            try:
+                if not control.is_visible():
+                    continue
+                if labels == _STYLE_SECTION_TEXTS:
+                    placeholder = _normalize_ui_text(control.get_attribute("placeholder"))
+                    if any(
+                        _normalize_ui_text(part) in placeholder
+                        for part in _SIMPLE_SOUND_PLACEHOLDER_PARTS
+                    ):
+                        continue
+                return control
+            except Exception:
+                continue
+        node = node.locator("xpath=..")
+    return None
+
+
+def _form_dom_diagnostics(page, step):
+    """失敗時にフォーム周辺のouterHTMLを各500文字まで出力する。"""
+    try:
+        snapshots = page.evaluate("""(groups) => {
+            const norm = value => (value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+            const matches = (value, values) => values.some(v => norm(value) === norm(v));
+            const visible = el => {
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                    && style.display !== 'none' && style.visibility !== 'hidden';
+            };
+            const byText = values => Array.from(document.querySelectorAll(
+                'button, [role="tab"], [role="radio"], label, div, span, p, h1, h2, h3, h4'
+            )).find(el => visible(el) && matches(el.textContent, values));
+            const section = el => {
+                if (!el) return null;
+                let node = el;
+                for (let i = 0; i < 7 && node; i++, node = node.parentElement) {
+                    if (node.matches && node.matches('section, form, fieldset, [class*="section" i]')) return node;
+                    if (node.querySelector && node.querySelector('textarea, input, [contenteditable="true"]')) return node;
+                }
+                return el.parentElement || el;
+            };
+            const lyrics = document.querySelector(
+                'div.lyrics-editor-content[contenteditable="true"][role="textbox"], '
+                + '[contenteditable="true"][role="textbox"][data-lexical], '
+                + '[contenteditable="true"][role="textbox"][aria-label]'
+            );
+            const parts = {
+                tabs: section(byText(groups.advanced)),
+                lyrics: section(lyrics || byText(groups.write)),
+                styles: section(byText(groups.styles)),
+                options: section(byText(groups.moreOptions)),
+                create: section(byText(groups.create))
+            };
+            const out = {};
+            for (const [key, value] of Object.entries(parts)) {
+                out[key] = value ? (value.outerHTML || '').slice(0, 500) : '(not found)';
+            }
+            return out;
+        }""", {
+            "advanced": list(_ADVANCED_TAB_TEXTS),
+            "write": list(_WRITE_RADIO_TEXTS),
+            "styles": list(_STYLE_SECTION_TEXTS),
+            "moreOptions": list(_MORE_OPTIONS_TEXTS),
+            "create": ["作成", "Create"],
+        }) or {}
+    except Exception as exc:
+        print(f"FORM_DOM_DIAGNOSTIC step={step} error={exc}")
+        return
+    for name, html in snapshots.items():
+        compact = re.sub(r"\s+", " ", str(html or "")).strip()[:500]
+        print(f"FORM_DOM_DIAGNOSTIC step={step} section={name} html={compact}")
+
+
+def _ensure_advanced_mode(page):
+    """Playwrightの実クリックでAdvancedを選びaria-selectedを検証する。"""
+    tab = _find_text_locator(page, '[role="tab"]', _ADVANCED_TAB_TEXTS)
+    if tab is None:
+        _form_dom_diagnostics(page, "advanced_tab")
+        raise SunoSubmissionError("advanced_tab", "Advanced/アドバンスド タブが見つかりません")
+    if str(tab.get_attribute("aria-selected") or "").lower() != "true":
+        tab.click(timeout=5000)
+        time.sleep(1.2)
+    selected = str(tab.get_attribute("aria-selected") or "").lower()
+    if selected != "true":
+        _form_dom_diagnostics(page, "advanced_tab_validation")
+        raise SunoSubmissionError(
+            "advanced_tab_validation",
+            f"Advanced/アドバンスドへ切り替わりませんでした: aria-selected={selected!r}",
+        )
+    return True
+
+
+def _ensure_write_mode(page):
+    """Playwrightの実クリックでWriteを選びaria-checkedを検証する。"""
+    radio = _find_text_locator(page, 'button[role="radio"]', _WRITE_RADIO_TEXTS)
+    if radio is None:
+        _form_dom_diagnostics(page, "write_radio")
+        raise SunoSubmissionError("write_radio", "Write/書く ラジオが見つかりません")
+    if str(radio.get_attribute("aria-checked") or "").lower() != "true":
+        radio.click(timeout=5000)
+        time.sleep(1.0)
+    checked = str(radio.get_attribute("aria-checked") or "").lower()
+    if checked != "true":
+        _form_dom_diagnostics(page, "write_radio_validation")
+        raise SunoSubmissionError(
+            "write_radio_validation",
+            f"Write/書くへ切り替わりませんでした: aria-checked={checked!r}",
+        )
+    return True
+
+
+def _find_lyrics_editor(page):
+    selectors = (
+        'div.lyrics-editor-content[contenteditable="true"][role="textbox"]',
+        '[contenteditable="true"][role="textbox"][data-lexical]',
+    )
+    for selector in selectors:
+        locator = page.locator(selector)
+        for index in range(locator.count()):
+            current = locator.nth(index)
+            try:
+                if current.is_visible():
+                    return current
+            except Exception:
+                continue
+    return _find_attribute_locator(
+        page,
+        '[contenteditable="true"][role="textbox"][aria-label]',
+        "aria-label",
+        _LYRICS_ARIA_LABELS,
+    )
+
+
+def _locator_with_attribute(locator, attribute, max_levels=5):
+    node = locator
+    for _ in range(max_levels):
+        try:
+            value = node.get_attribute(attribute)
+            if value is not None:
+                return node, str(value)
+            node = node.locator("xpath=..")
+        except Exception:
+            break
+    return None, ""
+
+
+def _ensure_more_options_open(page):
+    """More optionsを閉じている場合だけ開き、aria-expanded=trueを確認する。"""
+    toggle = _find_text_locator(
+        page,
+        '[aria-expanded], button, [role="button"], summary, div, span, h1, h2, h3, h4',
+        _MORE_OPTIONS_TEXTS,
+        visible_only=True,
+    )
+    if toggle is None:
+        _form_dom_diagnostics(page, "more_options")
+        raise SunoSubmissionError("more_options", "More options/その他のオプションが見つかりません")
+    toggle, expanded = _locator_with_attribute(toggle, "aria-expanded")
+    if toggle is None:
+        _form_dom_diagnostics(page, "more_options_aria")
+        raise SunoSubmissionError("more_options_aria", "More optionsにaria-expandedがありません")
+    expanded = expanded.strip().lower()
+    if expanded not in ("true", "false"):
+        raise SunoSubmissionError(
+            "more_options_aria",
+            f"More optionsのaria-expandedが不正です: {expanded!r}",
+        )
+    if expanded == "false":
+        toggle.click(timeout=5000)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        current = str(toggle.get_attribute("aria-expanded") or "").strip().lower()
+        if current == "true":
+            return toggle
+        time.sleep(0.25)
+    _form_dom_diagnostics(page, "more_options_validation")
+    raise SunoSubmissionError(
+        "more_options_validation",
+        "More optionsを開いた状態にできませんでした",
+    )
+
+
+def _title_placeholder_match(value):
+    normalized = _normalize_ui_text(value)
+    if _ui_text_match(normalized, _TITLE_PLACEHOLDERS):
+        return True
+    return normalized.startswith("song title") or (
+        normalized.startswith("曲名") and "任意" in normalized
+    )
+
+
+def _title_inputs_in_create_panel(page):
+    """Createボタンとの最小共通祖先から曲名inputだけを返す。"""
+    create_button = _find_text_locator(page, "button", ("作成", "Create"), visible_only=True)
+    if create_button is None:
+        return []
+    node = create_button
+    for _ in range(12):
+        inputs = node.locator("input[placeholder]")
+        matched = []
+        for index in range(inputs.count()):
+            current = inputs.nth(index)
+            try:
+                if _title_placeholder_match(current.get_attribute("placeholder")):
+                    matched.append(current)
+            except Exception:
+                continue
+        if matched:
+            return matched
+        node = node.locator("xpath=..")
+    return []
+
+
+def _fill_optional_title(page, title, retries=2):
+    """任意タイトルを入力する。失敗しても警告だけで楽曲送信は継続する。"""
+    attempts = max(1, int(retries) + 1)
+    failures = []
+    for attempt in range(1, attempts + 1):
+        try:
+            _ensure_more_options_open(page)
+            candidates = _title_inputs_in_create_panel(page)
+            if not candidates:
+                raise RuntimeError("作成フォームパネル内に曲名inputが見つかりません")
+            candidate_errors = []
+            for title_input in candidates:
+                try:
+                    title_input.scroll_into_view_if_needed(timeout=5000)
+                    title_input.fill(title, timeout=5000)
+                    actual_title = title_input.input_value()
+                    if actual_title == title:
+                        return True
+                    candidate_errors.append(
+                        f"value mismatch expected={title!r} actual={actual_title!r}"
+                    )
+                except Exception as exc:
+                    candidate_errors.append(str(exc))
+            raise RuntimeError("; ".join(candidate_errors) or "曲名inputへの入力に失敗しました")
+        except Exception as exc:
+            failures.append(f"attempt {attempt}/{attempts}: {exc}")
+            if attempt < attempts:
+                time.sleep(0.5)
+
+    cleared = False
+    for title_input in _title_inputs_in_create_panel(page):
+        try:
+            title_input.scroll_into_view_if_needed(timeout=3000)
+            title_input.fill("", timeout=3000)
+            cleared = title_input.input_value() == "" or cleared
+        except Exception:
+            continue
+
+    # SUNO上のタイトルは任意。未設定clipはDL時にUUID名へフォールバックし、
+    # app_process_tracks.pyが後処理時にタイトルを再生成してkeep_both_takesも一意化する。
+    print(
+        "WARNING optional title was not set; continuing without title: "
+        f"cleared={cleared} details={' | '.join(failures)}"
+    )
+    _form_dom_diagnostics(page, "optional_title")
+    return False
+
+
+def _compact_form_value(value):
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def inject_into_suno(page, content):
+    """2026-07新Create UIへPlaywright実イベントで入力し、各値を読み戻す。"""
+    mode = str(content.get("mode") or "styles_title_only")
+    title = str(content.get("title") or "")
+    styles = str(content.get("styles") or "")
+    lyrics = str(content.get("lyrics") or "")
+    exclude_styles = str(content.get("exclude_styles") or content.get("excluded_styles") or "")
+    errors = []
+
+    _ensure_advanced_mode(page)
+
+    if lyrics and mode != "styles_title_only":
+        _ensure_write_mode(page)
+        lyrics_editor = _find_lyrics_editor(page)
+        if lyrics_editor is None:
+            errors.append("lyrics editor missing")
+        else:
+            try:
+                lyrics_editor.fill(lyrics, timeout=15000)
+                time.sleep(0.5)
+                actual_lyrics = lyrics_editor.text_content() or ""
+                expected_compact = _compact_form_value(lyrics)
+                actual_compact = _compact_form_value(actual_lyrics)
+                if not actual_compact.startswith(expected_compact[:200]):
+                    errors.append(
+                        f"lyrics value mismatch: expected_len={len(expected_compact)} "
+                        f"actual_len={len(actual_compact)}"
+                    )
+            except Exception as exc:
+                errors.append(f"lyrics input error: {exc}")
+
+    if styles:
+        styles_input = _find_section_control(page, _STYLE_SECTION_TEXTS, "textarea")
+        if styles_input is None:
+            errors.append("styles textarea missing")
+        else:
+            try:
+                styles_input.fill(styles, timeout=10000)
+                actual_styles = styles_input.input_value()
+                if actual_styles != styles:
+                    errors.append(
+                        f"styles value mismatch: expected_len={len(styles)} actual_len={len(actual_styles)}"
+                    )
+            except Exception as exc:
+                errors.append(f"styles input error: {exc}")
+
+    if title:
+        _fill_optional_title(page, title, retries=2)
+
+    if exclude_styles and not title:
+        try:
+            _ensure_more_options_open(page)
+        except Exception as exc:
+            errors.append(f"exclude styles panel error: {exc}")
+    exclude_input = _find_attribute_locator(
+        page,
+        "input[placeholder]",
+        "placeholder",
+        _EXCLUDE_STYLE_PLACEHOLDERS,
+        visible_only=True,
+    )
+    if exclude_input is not None:
+        try:
+            exclude_input.fill(exclude_styles, timeout=5000)
+            if exclude_input.input_value() != exclude_styles:
+                errors.append("exclude styles value mismatch")
+        except Exception as exc:
+            errors.append(f"exclude styles input error: {exc}")
+    elif exclude_styles:
+        errors.append("exclude styles input missing")
+
+    if errors:
+        print(f"フォーム入力検証失敗: {errors}")
+        _form_dom_diagnostics(page, "form_validation")
+        return False
+    return True
+
+
 _BRACKET_LINE_RE = re.compile(r'^\s*\[[^\]]+\]\s*$')
 
 _FALLBACK_BRACKET_LYRICS = (
@@ -2853,29 +3391,19 @@ def dismiss_error_toasts(page):
 
 
 def click_create_button(page):
-    """Create ボタンをクリック（複数戦略）"""
+    """日本語・英語のCreateボタンをPlaywright実イベントでクリックする。"""
     time.sleep(1)
 
-    # 戦略1: Playwright get_by_role
-    for name in ["Create", "create", "作成"]:
-        try:
-            btn = page.get_by_role("button", name=name).first
-            if btn.count() > 0 and btn.is_visible():
-                btn.click(timeout=3000)
-                return
-        except Exception:
-            continue
-
-    # 戦略2: テキストマッチ（大小無視）
+    # テキスト候補集合から探し、locator.clickで実イベントを発生させる。
     try:
-        btn = page.locator('button:has-text("Create")').first
-        if btn.count() > 0 and btn.is_visible():
-            btn.click(timeout=3000)
+        button = _find_text_locator(page, "button", ("作成", "Create"), visible_only=True)
+        if button is not None:
+            button.click(timeout=5000)
             return
     except Exception:
         pass
 
-    # 戦略3: data-testid
+    # テキストが消えた場合に備えた既存data-testidフォールバック。
     try:
         btn = page.locator('button[data-testid="create-button"]').first
         if btn.count() > 0:
@@ -2884,25 +3412,118 @@ def click_create_button(page):
     except Exception:
         pass
 
-    # 戦略4: JS で全ボタンを走査
-    try:
-        clicked = page.evaluate("""() => {
-            const btns = document.querySelectorAll('button');
-            for (const b of btns) {
-                const t = (b.textContent || '').trim().toLowerCase();
-                if (t === 'create' || t === '作成') {
-                    b.click();
-                    return true;
-                }
-            }
-            return false;
-        }""")
-        if clicked:
-            return
-    except Exception:
-        pass
-
     raise Exception("Create ボタンが見つかりません")
+
+
+def _submit_song_to_suno_impl(page, content, form_retries=2):
+    """既存のフォーム投入・Create・送信後検証を1曲分まとめて実行する。
+
+    instrumental_filler は必ず既定の [instrumental] 充填へ正規化する。
+    フォーム読み戻し検証が失敗した場合は、同じ実績経路で再投入する。
+    """
+    prepared = dict(content or {})
+    mode = str(prepared.get("mode") or "styles_title_only")
+    prepared["mode"] = mode
+    if mode == "instrumental_filler":
+        prepared["lyrics"] = build_instrumental_filler()
+
+    last_form_error = None
+    max_form_attempts = max(1, int(form_retries) + 1)
+    for form_attempt in range(1, max_form_attempts + 1):
+        try:
+            if inject_into_suno(page, prepared):
+                break
+            last_form_error = SunoSubmissionError(
+                "form_validation",
+                f"フォーム読み戻し検証に失敗しました (attempt {form_attempt}/{max_form_attempts})",
+            )
+        except Exception as exc:
+            last_form_error = exc
+        if form_attempt < max_form_attempts:
+            print(
+                f"  フォーム投入を再試行します "
+                f"(attempt {form_attempt + 1}/{max_form_attempts})"
+            )
+            time.sleep(2)
+    else:
+        if isinstance(last_form_error, SunoSubmissionError):
+            raise last_form_error
+        raise SunoSubmissionError(
+            "form_input",
+            f"フォーム入力中に例外が発生しました: {last_form_error}",
+        ) from last_form_error
+
+    for create_attempt in range(3):
+        try:
+            click_create_button(page)
+        except Exception as exc:
+            raise SunoSubmissionError(
+                "create_click", f"Create ボタンのクリックに失敗しました: {exc}"
+            ) from exc
+
+        if detect_bot_challenge(page):
+            brand = (_load_dashboard_config_for_brand().get("channel_name") or "SUNO")
+            message = f"[{brand}] Bot 判定が表示されました。手動で解除してください。"
+            _set_status(page, "Bot 判定を検出。手動操作が必要です", "err")
+            _notify_discord(message)
+            if os.environ.get("APP_KEEP_BROWSER", "").strip() in ("1", "true", "yes"):
+                deadline = time.time() + 600
+                while time.time() < deadline:
+                    time.sleep(5)
+                    if not detect_bot_challenge(page):
+                        if not inject_into_suno(page, prepared):
+                            raise SunoSubmissionError(
+                                "form_validation_after_bot",
+                                "Bot 判定解除後のフォーム再投入に失敗しました",
+                            )
+                        break
+                else:
+                    error = BotChallengeDetected("Bot 判定が10分以内に解除されませんでした")
+                    error.step = "bot_challenge"
+                    raise error
+                continue
+            error = BotChallengeDetected(message)
+            error.step = "bot_challenge"
+            raise error
+
+        # 既存経路と同じく、クリック後の著作権エラー検出を送信後検証とする。
+        if not detect_copyright_error(page):
+            return prepared
+
+        dismiss_error_toasts(page)
+        if create_attempt == 0 and prepared.get("lyrics"):
+            sanitized = sanitize_lyrics_for_suno(prepared["lyrics"])
+            if sanitized != prepared["lyrics"]:
+                prepared["lyrics"] = sanitized
+                if not inject_into_suno(page, prepared):
+                    raise SunoSubmissionError(
+                        "form_validation_after_copyright",
+                        "著作権エラー後のサニタイズ再投入に失敗しました",
+                    )
+                continue
+        if create_attempt == 1:
+            prepared["lyrics"] = _FALLBACK_BRACKET_LYRICS
+            if not inject_into_suno(page, prepared):
+                raise SunoSubmissionError(
+                    "form_validation_after_copyright",
+                    "著作権エラー後のフォールバック再投入に失敗しました",
+                )
+            continue
+        break
+
+    raise SunoSubmissionError(
+        "submission_verification",
+        "Create クリック後の送信検証に3回失敗しました",
+    )
+
+
+def submit_song_to_suno(page, content, form_retries=2):
+    """共有送信入口。失敗時はフォーム周辺DOMを診断ログへ残す。"""
+    try:
+        return _submit_song_to_suno_impl(page, content, form_retries=form_retries)
+    except BaseException as exc:
+        _form_dom_diagnostics(page, str(getattr(exc, "step", "song_submission")))
+        raise
 
 
 # ─── 設定管理 ──────────────────────────────────────────

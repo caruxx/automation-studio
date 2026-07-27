@@ -179,6 +179,38 @@ def _load_suno_config():
     return {}
 
 
+_SUNO_WID_RE = re.compile(
+    r"(?:[?&]wid=)?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
+    re.I,
+)
+
+
+def _suno_download_workspace_ref(workspace: str, status_path: Path) -> str:
+    """生成プロセスが保存した page_url から wid 直接 URL を取得する。"""
+    if _SUNO_WID_RE.search(workspace or ""):
+        return workspace
+    safe_workspace = re.sub(r"[^A-Za-z0-9_.-]+", "_", workspace)
+    candidates = [
+        status_path,
+        CONFIG_DIR / f"suno_status_{safe_workspace}.json",
+        CONFIG_DIR / "suno_status_latest.json",
+    ]
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        recorded_workspace = str(data.get("workspace") or "")
+        if recorded_workspace and recorded_workspace != workspace:
+            continue
+        if path.name == "suno_status_latest.json" and not recorded_workspace:
+            continue
+        match = _SUNO_WID_RE.search(str(data.get("page_url") or ""))
+        if match:
+            return f"https://suno.com/create?wid={match.group(1)}"
+    return workspace
+
+
 def _load_channel_suno_config() -> dict:
     """per-channel `.app_channel_config.json` の `suno` ブロックを返す（無ければ {}）。
 
@@ -748,10 +780,16 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             print(f"\n  ⏳ 最終曲の生成完了を待機: {final_wait} 秒（APP_SUNO_FINAL_WAIT_SEC で変更可）")
             time.sleep(final_wait)
 
-        print(f"\n  ⬇ Workspace DL 開始: {workspace} → {folder}")
+        download_workspace_ref = _suno_download_workspace_ref(
+            workspace, folder / "suno_status.json"
+        )
+        if download_workspace_ref != workspace:
+            print(f"\n  Workspace wid 直接 URL で DL を開始: {download_workspace_ref} → {folder}")
+        else:
+            print(f"\n  Workspace DL 開始: {workspace} → {folder}")
         dl_cmd = [
             sys.executable, str(BASE / "suno_auto_create.py"),
-            "--download-workspace", workspace,
+            "--download-workspace", download_workspace_ref,
             "--download-dir", str(folder),
         ]
         dl_ok = _run(dl_cmd, "SUNO ダウンロード", timeout=3600)
