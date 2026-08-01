@@ -2347,7 +2347,11 @@ def run_browser_automation(settings):
         # 対話モード → 10 秒だけ待つ。ハングしないよう必ず close に到達させる。
         # APP_KEEP_BROWSER=1 を立てた場合のみ、明示的にハング許容。
         try:
-            if _is_unattended():
+            no_hold = os.environ.get("APP_SUNO_NO_HOLD", "").strip().lower() in ("1", "true", "yes")
+            if no_hold:
+                print("\nAPP_SUNO_NO_HOLD=1: ブラウザ保持をスキップして閉じます。")
+                progress.update(page, phase="closing", last_action="closing browser", emit=True)
+            elif _is_unattended():
                 print("\n無人モード: ブラウザを閉じます...")
                 progress.update(page, phase="closing", last_action="closing browser", emit=True)
             elif os.environ.get("APP_KEEP_BROWSER", "").strip() in ("1", "true", "yes"):

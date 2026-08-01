@@ -465,8 +465,14 @@ def get_credentials(video_folder=None, token_override=None):
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                # invalid_grant 等で失効した refresh token が残っていても、
+                # crash せず新規 OAuth フローへ進めるよう資格情報を破棄する。
+                print(f"OAuth トークン refresh 失敗。再認証へ進みます: {type(e).__name__}")
+                creds = None
+        if not creds or not creds.valid:
             if not CLIENT_SECRET.exists():
                 print(f"エラー: {CLIENT_SECRET} が見つかりません")
                 print("Google Cloud Console からOAuthクライアントシークレットをダウンロードして配置してください")

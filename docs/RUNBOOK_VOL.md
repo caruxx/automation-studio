@@ -182,3 +182,36 @@ ffprobe -v error -show_entries format=duration \
 - サムネが読めない: 4 または 5 に戻る。
 - タイトル公式に合わない: meta step を再実行し、サムネ決めゼリフと一致させる。
 - publishAt がズレた: upload 設定と channel `publish_time_jst` を確認し、再アップロードや YouTube snippet 更新の前に dry-run する。
+
+## 8. 複数 vol 量産チェックリスト
+
+単発 vol の手順は上記を正とし、複数本では次を追加する。
+
+- [ ] 既存最大 vol と最新公開日を確認する。
+- [ ] 次の vol から連番で、最新公開日の翌日から1日ずつ進めた `publish_date` を使い、必要本数ぶん `POST /api/videos/create` を実行する。
+- [ ] batch 対象の全 vol フォルダが作成済みであることを確認する。
+- [ ] 実処理を伴わない dry-run で phase1 / phase2 と環境変数を確認する。
+
+```bash
+python3 Python/batch_orchestrator.py \
+  --vols 147-151 \
+  --duration-sec 3600 \
+  --channel orzz \
+  --dry-run
+```
+
+- [ ] dry-run に `phase1: parallel_guard.py suno ... app_pipeline.py N --only suno` と、`bgimage` から `upload` までの `phase2[step]: app_pipeline.py N --only <step>` が全 vol 分出ることを確認する。`psd_composite` は guard 付き、`premiere` / `export` は AME エンジン時だけ guard 付きであることも確認する。
+- [ ] 本実行する。phase1 は直列、phase2 は既定2並列でリレーされる。
+- [ ] 終了サマリの全 vol が `ok` または意図した `skipped completed` であることを確認する。
+- [ ] `logs/batch/YYYYMMDD_HHMMSS/volN.log` と各 `youtube_upload.json` の URL、予約日時を確認する。
+- [ ] 一部失敗時は原因を直し、同じ範囲を `--skip-completed` 付きで再実行する。
+
+```bash
+python3 Python/batch_orchestrator.py \
+  --vols 147-151 \
+  --duration-sec 3600 \
+  --channel orzz \
+  --skip-completed
+```
+
+preflight が失敗した場合は exit 78 となり、どの vol も開始されない。YouTube token refresh 失敗なら表示された `python3 app_youtube.py --auth-only <folder>` で再認証してから再実行する。

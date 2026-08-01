@@ -163,6 +163,11 @@ def build_cli(route: dict[str, Any], ctx: dict[str, Any], args: argparse.Namespa
     cmd = fill_value((route.get("cli") or {}).get("cmd", []), ctx)
     if args.intent == "pipeline" and args.from_step:
         cmd += ["--from", args.from_step]
+    if args.intent == "batch":
+        if args.max_post is not None:
+            cmd += ["--max-post", str(args.max_post)]
+        if args.skip_completed:
+            cmd += ["--skip-completed"]
     if args.via_api:
         cmd += ["--via-api"]
     return cmd
@@ -529,6 +534,10 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="intent 一覧")
     parser.add_argument("--explain", metavar="INTENT", help="intent の詳細")
     parser.add_argument("--vol", help="vol 番号")
+    parser.add_argument("--vols", help="batch の vol 範囲またはカンマ区切り一覧")
+    parser.add_argument("--duration-sec", type=int, help="batch の動画尺（秒）")
+    parser.add_argument("--max-post", type=int, default=None, help="batch の phase2 最大並列数")
+    parser.add_argument("--skip-completed", action="store_true", help="batch の完了済み vol をスキップ")
     parser.add_argument("--channel", help="チャンネル id")
     parser.add_argument("--switch", action="store_true", help="--channel が active と違う場合に明示切替")
     parser.add_argument("--via-api", action="store_true", help="API 経由で実行")
@@ -626,6 +635,11 @@ def main() -> int:
         emit({"ok": False, "intent": args.intent, "error": "unknown_intent"})
         return 2
 
+    if args.intent == "batch" and (not args.vols or not args.duration_sec):
+        print("batch には --vols と --duration-sec が必要です", file=sys.stderr)
+        emit({"ok": False, "intent": args.intent, "error": "missing_batch_args"})
+        return 2
+
     if args.via_api and not route.get("via_api_safe", True):
         reason = route.get("via_api_unsafe_reason") or "--via-api 非対応です"
         print(reason, file=sys.stderr)
@@ -647,12 +661,16 @@ def main() -> int:
             emit({"ok": False, "intent": args.intent, "error": "vol_not_found", "vol": vol, "candidates": resolved.get("candidates", [])})
             return 2
 
-    guard_code = ensure_channel_guard(args, resolved)
+    # batch は自身の preflight でサーバー確認後に active channel を切り替え、再検証する。
+    # studio.py 側で先に channel guard を通すと、切替前の正当な batch 要求を拒否してしまう。
+    guard_code = 0 if args.intent == "batch" else ensure_channel_guard(args, resolved)
     if guard_code:
         return guard_code
 
     ctx = {
         "vol": vol or "",
+        "vols": args.vols or "",
+        "duration_sec": args.duration_sec or "",
         "video_name": (resolved or {}).get("video_name", ""),
         "folder": (resolved or {}).get("folder", ""),
         # SUNO workspace 等のチャンネル別命名に使う（rw_vol 固定だと orzz 等で誤 workspace になる）

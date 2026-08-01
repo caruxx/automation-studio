@@ -758,6 +758,18 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
         suno_ok = _run(cmd, STEP_LABELS["suno"], timeout=suno_timeout,
                        env_overrides=suno_env_overrides or None)
 
+        # suno_auto_create.py 側の auto-download + 後処理が完了している場合は、
+        # 同じ workspace を再度 DL して別タイトルの重複テイクを作らない。
+        # 既定動作は維持し、batch orchestrator が明示した場合だけ有効にする。
+        skip_second_dl = os.environ.get("APP_SUNO_SKIP_SECOND_DL", "").strip().lower() in ("1", "true", "yes")
+        processed_tracks = sorted((folder / "music").glob("*.mp3"))
+        if skip_second_dl and processed_tracks:
+            print(
+                f"  APP_SUNO_SKIP_SECOND_DL=1: music/ に {len(processed_tracks)} 曲あるため、"
+                "2 回目の Workspace DL と app_process_tracks.py をスキップします"
+            )
+            return True
+
         # ─── 15/15 完了後の自動連携（DL + リネーム + フェード）─────────────────
         # SUNO は最終曲を投入後も裏で生成が走っているため、N 秒待ってから DL する。
         # APP_SUNO_AUTO_DOWNLOAD=0 で無効化可能（生成だけしたいケース用）。

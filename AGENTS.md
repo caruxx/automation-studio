@@ -217,6 +217,7 @@ lsof -ti:8888 | xargs kill -9
 | 「書き出して」 | `curl POST /api/premiere/export` |
 | 「アップロードして」 | `curl POST /api/youtube/upload {"video_name":"..."}` |
 | 「全部やって」 | `python3 app_pipeline.py <vol>` |
+| 「N本まとめて作って」「最新動画を5本作って（尺指定あり）」 | 既存最新 vol の翌日から日次の公開日で必要本数ぶん `POST /api/videos/create` を実行し、作成された連番を `python3 Python/batch_orchestrator.py --vols <開始>-<終了> --duration-sec <秒>` へ渡す。vol は既存最大値の次から連番、公開日は既存最新 vol の公開日の翌日から1日ずつ進める。 |
 | 「Premiere からやり直して」 | `python3 app_pipeline.py <vol> --from premiere` |
 | 「競合を分析して」 | `python3 app_competitor.py --analyze` |
 | 「seed動画を分析して」 | `python3 Python/studio.py seed-analyze --url <動画URL>` または `curl POST /api/benchmark/seed/run` |

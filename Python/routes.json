@@ -533,6 +533,33 @@
         "max_parallel": 1
       }
     },
+    "batch": {
+      "aliases": [
+        "N本まとめて作って",
+        "最新動画を5本作って"
+      ],
+      "description": "複数 vol のリレー式並列パイプライン",
+      "cli": {
+        "cmd": [
+          "python3",
+          "batch_orchestrator.py",
+          "--vols",
+          "{vols}",
+          "--duration-sec",
+          "{duration_sec}",
+          "--channel",
+          "{channel_id}"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "複数の長時間 subprocess とローカル資源ロックを管理するため CLI 専用。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "per-machine",
+        "max_parallel": 1
+      }
+    },
     "pipeline-from-premiere": {
       "aliases": [
         "Premiereからやり直して",
