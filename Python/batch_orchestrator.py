@@ -188,20 +188,22 @@ def env_overrides(duration_sec: int, channel_id: str, min_wait_sec: int | None =
         # ドラフト生成のブラウザ起動並行と、テイクDLの並列取得(403/429で逐次へ自動フォールバック)。
         "APP_SUNO_PARALLEL_DRAFT": os.environ.get("APP_SUNO_PARALLEL_DRAFT") or "1",
         "APP_SUNO_PARALLEL_DL": os.environ.get("APP_SUNO_PARALLEL_DL") or "4",
+        # 2026-08-01/02 の vol152-156 実測(QA 4本合格・サイズ従来レンジ)で既定昇格。
+        # APP_EXPORT_HWENC=0 で libx264 へ戻せる。
+        "APP_EXPORT_HWENC": os.environ.get("APP_EXPORT_HWENC") or "1",
         "APP_PROCESS_PARALLEL": process_parallel_default(),
         "APP_CHANNEL_ID": channel_id,
         "PYTHONUNBUFFERED": "1",
     }
-    if min_wait_sec is not None:
-        overrides["APP_SUNO_MIN_WAIT_SEC"] = str(min_wait_sec)
+    # 曲間フロア既定 20 秒: vol152-156 の5本で bot判定0・skip0 を確認して既定昇格
+    # (--min-wait-sec で上書き可。suno_auto_create 単体実行の既定 30 秒は不変)。
+    overrides["APP_SUNO_MIN_WAIT_SEC"] = str(min_wait_sec if min_wait_sec is not None else 20)
     return overrides
 
 
 def command_env(duration_sec: int, channel_id: str, min_wait_sec: int | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.update(env_overrides(duration_sec, channel_id, min_wait_sec))
-    if min_wait_sec is None:
-        env.pop("APP_SUNO_MIN_WAIT_SEC", None)
     return env
 
 
