@@ -88,8 +88,8 @@ post slot2:                                        vol148 phase2 ------>
 | `APP_SUNO_PARALLEL_DRAFT=1` | 手動A/B | Claude/Codexのプロンプト一括生成をブラウザ起動・Workspace確保と並行し、送信開始前にjoinする。未指定時は従来の直列実行。 |
 | `APP_SUNO_PARALLEL_DL=N` | 手動A/B | `N>1` でCookie/UAを引き継いだHTTP並列DL。HTTP 403/429を1件でも検出したらstageを破棄し、ブラウザ内逐次DLへ戻る。既定1。 |
 | `APP_PROCESS_PARALLEL=4` | orchestrator固定 | `app_process_tracks.py` のffmpeg処理を4並列にする。未指定時は1で従来の逐次処理。 |
-| `APP_EXPORT_HWENC=1` | 手動A/B | ffrenderの `libx264` を `h264_videotoolbox` へ切り替える。映像1.2Mbps CBR、AAC 320kbpsで現行容量帯を目標にする。未指定時は従来のencoder選択。 |
-| `APP_SUNO_MIN_WAIT_SEC=N` | `--min-wait-sec N` | 曲間フロア。CLI未指定時は現行30秒のまま。20秒はA/B未検証。`FORM_METRICS` 監視付きで1本ずつ検証してから展開する。 |
+| `APP_EXPORT_HWENC=1` | orchestrator 既定 | ffrenderの `libx264` を `h264_videotoolbox` へ切り替える。映像1.2Mbps CBR、AAC 320kbpsで現行容量帯を目標にする。2026-08-01/02のvol152-156でQA4本連続合格・サイズ従来レンジを確認し既定昇格。`APP_EXPORT_HWENC=0` でlibx264へ戻す。 |
+| `APP_SUNO_MIN_WAIT_SEC=N` | orchestrator 既定 20（`--min-wait-sec N` で上書き） | 曲間フロア。2026-08-01/02のvol152-156(5本)でbot判定0・スキップ0を確認し20秒を既定昇格。suno_auto_create単体実行の既定は30秒のまま。20秒未満へ下げる場合は `FORM_METRICS` 監視付きで1本ずつ検証すること。 |
 
 ### meta並行化の依存判定
 
