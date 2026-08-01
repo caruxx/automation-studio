@@ -44,6 +44,12 @@ python3 Python/batch_orchestrator.py \
 # カンマ区切りも可
 python3 Python/batch_orchestrator.py --vols 147,149,150 --duration-sec 3600
 
+# 画像先行を無効化し、従来のphase2内で実行
+python3 Python/batch_orchestrator.py --vols 147-151 --no-prefetch-image
+
+# SUNO曲間フロアを明示するA/B検証用
+python3 Python/batch_orchestrator.py --vols 147 --min-wait-sec 20
+
 # routing の確認
 python3 Python/studio.py batch --vols 147-151 --duration-sec 3600 --channel orzz --dry-run
 ```
@@ -54,14 +60,15 @@ python3 Python/studio.py batch --vols 147-151 --duration-sec 3600 --channel orzz
 
 ```text
 time --->
-SUNO lock:  vol147 phase1 ----> vol148 phase1 ----> vol149 phase1 ---->
-post slot1:                  vol147 phase2 ---------------------------->
-post slot2:                                      vol148 phase2 ------->
-queue:                                                   vol149 phase2
+SUNO lock:    vol147 phase1 ----> vol148 phase1 ----> vol149 phase1 ---->
+image lane:   vol147 bg->psd ----> vol148 bg->psd ----> vol149 bg->psd ->
+post slot1:                    vol147 phase2 --------------------------->
+post slot2:                                        vol148 phase2 ------>
 ```
 
 - phase1: `app_pipeline.py N --only suno --channel-id <id> --auto`。orchestrator の逐次ループで同時に2本起動しない。SUNO lock は `suno_auto_create.py` 内部に任せ、外側の `parallel_guard.py` では包まない。
-- phase2: 分割点は `bgimage`。`app_pipeline.py N --only <step> --channel-id <id> --auto` を `bgimage` から `upload` まで順に実行する。Photoshop / Premiere+AME のロックは各 step 内部の実装に任せ、orchestrator では二重取得しない。
+- 画像先行: phase1開始と同時に `bgimage → psd_composite` を別スレッドで開始する。PSD合成はスレッドロックでvol間直列にし、各step内部のPhotoshop lockも維持する。失敗時だけphase2冒頭で対象stepを再実行する。`--no-prefetch-image` で従来配置へ戻せる。
+- phase2: 画像先行有効時は `premiere` から `upload` まで順に実行する。画像先行無効時は従来どおり `bgimage` から始める。
 - `step_suno()` が生成、Workspace DL、`app_process_tracks.py` まで担当するため、phase1 後に `rename` step は重ねない。
 - phase1 は SUNO browser lock により全 vol 直列。phase1 完了直後にその vol の phase2 を投入し、次 vol の phase1 を開始する。
 - phase2 は既定2並列。`--max-post N` で変更できる。
@@ -78,7 +85,15 @@ queue:                                                   vol149 phase2
 | `APP_SUNO_ONESHOT=1` | orchestrator 固定 | 送信とready poll、DL、後処理を同じPlaywrightセッションで完結し、親側の2回目DLを行わない。 |
 | `APP_SUNO_SKIP_OPTIONAL_TITLE=1` | orchestrator 固定 | SUNOの任意タイトル入力とMore options探索を省く。未設定タイトルは後続の `app_process_tracks.py` が再生成する。 |
 | `APP_SUNO_FORM_DIAGNOSTICS=1` | 手動調査時のみ | フォーム失敗時のDOM診断ダンプを有効にする。既定はoffで、警告ログは引き続き出力する。 |
+| `APP_SUNO_PARALLEL_DRAFT=1` | 手動A/B | Claude/Codexのプロンプト一括生成をブラウザ起動・Workspace確保と並行し、送信開始前にjoinする。未指定時は従来の直列実行。 |
+| `APP_SUNO_PARALLEL_DL=N` | 手動A/B | `N>1` でCookie/UAを引き継いだHTTP並列DL。HTTP 403/429を1件でも検出したらstageを破棄し、ブラウザ内逐次DLへ戻る。既定1。 |
 | `APP_PROCESS_PARALLEL=4` | orchestrator固定 | `app_process_tracks.py` のffmpeg処理を4並列にする。未指定時は1で従来の逐次処理。 |
+| `APP_EXPORT_HWENC=1` | 手動A/B | ffrenderの `libx264` を `h264_videotoolbox` へ切り替える。映像1.2Mbps CBR、AAC 320kbpsで現行容量帯を目標にする。未指定時は従来のencoder選択。 |
+| `APP_SUNO_MIN_WAIT_SEC=N` | `--min-wait-sec N` | 曲間フロア。CLI未指定時は現行30秒のまま。20秒はA/B未検証。`FORM_METRICS` 監視付きで1本ずつ検証してから展開する。 |
+
+### meta並行化の依存判定
+
+`meta` は `claude_proposer.gather_context()` から `music_time_code_info_*.txt` を読み、説明文のTracklistへ挿入する。ffrender経路では曲順をmanifestで確定した後、export内でこのタイムコードを生成する。そのため `export ∥ (meta → localization)` は行わず、`export → qa → meta → localization` の順を維持する。
 
 ### preflight
 

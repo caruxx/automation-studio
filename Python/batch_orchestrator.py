@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -171,24 +172,36 @@ def process_parallel_default() -> str:
     return str(max(4, (os.cpu_count() or 4) - 2))
 
 
-def command_env(duration_sec: int, channel_id: str) -> dict[str, str]:
+def env_overrides(duration_sec: int, channel_id: str, min_wait_sec: int | None = None) -> dict[str, str]:
+    """orchestrator が pipeline 子プロセスへ与える環境変数オーバーライド。
+    実行(command_env)と dry-run 表示の両方がこれを唯一の出所とする。"""
+    overrides = {
+        "APP_DURATION_SEC": str(duration_sec),
+        "APP_SUNO_NO_HOLD": "1",
+        "APP_SUNO_SKIP_SECOND_DL": "1",
+        "APP_SUNO_READY_POLL": "1",
+        "APP_SUNO_ONESHOT": "1",
+        "APP_SUNO_SKIP_OPTIONAL_TITLE": "1",
+        # A/B検証 2026-08-01 (vol148-151): 0.7/0.5 とも bot判定0・skip0。
+        # 既定は安全マージンを取り 0.7。明示指定があればそちらを優先。
+        "APP_SUNO_FORM_WAIT_SCALE": os.environ.get("APP_SUNO_FORM_WAIT_SCALE") or "0.7",
+        # ドラフト生成のブラウザ起動並行と、テイクDLの並列取得(403/429で逐次へ自動フォールバック)。
+        "APP_SUNO_PARALLEL_DRAFT": os.environ.get("APP_SUNO_PARALLEL_DRAFT") or "1",
+        "APP_SUNO_PARALLEL_DL": os.environ.get("APP_SUNO_PARALLEL_DL") or "4",
+        "APP_PROCESS_PARALLEL": process_parallel_default(),
+        "APP_CHANNEL_ID": channel_id,
+        "PYTHONUNBUFFERED": "1",
+    }
+    if min_wait_sec is not None:
+        overrides["APP_SUNO_MIN_WAIT_SEC"] = str(min_wait_sec)
+    return overrides
+
+
+def command_env(duration_sec: int, channel_id: str, min_wait_sec: int | None = None) -> dict[str, str]:
     env = os.environ.copy()
-    env.update(
-        {
-            "APP_DURATION_SEC": str(duration_sec),
-            "APP_SUNO_NO_HOLD": "1",
-            "APP_SUNO_SKIP_SECOND_DL": "1",
-            "APP_SUNO_READY_POLL": "1",
-            "APP_SUNO_ONESHOT": "1",
-            "APP_SUNO_SKIP_OPTIONAL_TITLE": "1",
-            # A/B検証 2026-08-01 (vol148-151): 0.7/0.5 とも bot判定0・skip0。
-            # 既定は安全マージンを取り 0.7。明示指定があればそちらを優先。
-            "APP_SUNO_FORM_WAIT_SCALE": os.environ.get("APP_SUNO_FORM_WAIT_SCALE") or "0.7",
-            "APP_PROCESS_PARALLEL": process_parallel_default(),
-            "APP_CHANNEL_ID": channel_id,
-            "PYTHONUNBUFFERED": "1",
-        }
-    )
+    env.update(env_overrides(duration_sec, channel_id, min_wait_sec))
+    if min_wait_sec is None:
+        env.pop("APP_SUNO_MIN_WAIT_SEC", None)
     return env
 
 
@@ -214,23 +227,23 @@ def channel_export_engine(channel_folder: Path) -> str:
     return engine if engine in {"ame", "ffmpeg"} else "ame"
 
 
-def phase2_commands(vol: int, channel_id: str) -> list[tuple[str, list[str]]]:
+def step_command(vol: int, channel_id: str, step: str) -> list[str]:
+    return [
+        sys.executable,
+        str(BASE / "app_pipeline.py"),
+        str(vol),
+        "--only",
+        step,
+        "--channel-id",
+        channel_id,
+        "--auto",
+    ]
+
+
+def phase2_commands(vol: int, channel_id: str, *, include_images: bool) -> list[tuple[str, list[str]]]:
     """Build post commands; each pipeline implementation owns its resource lock."""
-    post_steps = STEPS[STEPS.index("bgimage"):]
-    commands = []
-    for step in post_steps:
-        pipeline = [
-            sys.executable,
-            str(BASE / "app_pipeline.py"),
-            str(vol),
-            "--only",
-            step,
-            "--channel-id",
-            channel_id,
-            "--auto",
-        ]
-        commands.append((step, pipeline))
-    return commands
+    first_step = "bgimage" if include_images else "premiere"
+    return [(step, step_command(vol, channel_id, step)) for step in STEPS[STEPS.index(first_step):]]
 
 
 def append_log(log_path: Path, message: str) -> None:
@@ -247,6 +260,29 @@ def run_logged(command: list[str], env: dict[str, str], log_path: Path, label: s
         elapsed = time.monotonic() - started
         stream.write(f"[{label}] exit={code} elapsed_sec={elapsed:.1f}\n")
     return code, elapsed
+
+
+def run_image_prefetch(vol: int, channel_id: str, env: dict[str, str], log_path: Path,
+                       photoshop_lock: threading.Lock) -> dict[str, int]:
+    """Run bgimage then PSD while phase1 proceeds; only PSD needs thread serialization."""
+    codes: dict[str, int] = {}
+    for step in ("bgimage", "psd_composite"):
+        command = step_command(vol, channel_id, step)
+        try:
+            if step == "psd_composite":
+                with photoshop_lock:
+                    code, _elapsed = run_logged(command, env, log_path, f"prefetch:{step}")
+            else:
+                code, _elapsed = run_logged(command, env, log_path, f"prefetch:{step}")
+        except Exception as exc:
+            code = 1
+            append_log(log_path, f"[prefetch:{step}] orchestrator error: {type(exc).__name__}: {exc}")
+        codes[step] = code
+        if code != 0:
+            if step == "bgimage":
+                codes["psd_composite"] = 1
+            break
+    return codes
 
 
 def remove_duplicate_tracks(folder: Path, log_path: Path) -> list[Path]:
@@ -306,6 +342,10 @@ def main() -> int:
     )
     parser.add_argument("--channel", default="", help="channel id; defaults to active channel")
     parser.add_argument("--max-post", type=int, default=2, help="maximum concurrent phase2 jobs (default: 2)")
+    parser.add_argument("--no-prefetch-image", action="store_true",
+                        help="disable bgimage/psd prefetch and keep them in phase2")
+    parser.add_argument("--min-wait-sec", type=int, default=None,
+                        help="pass APP_SUNO_MIN_WAIT_SEC to SUNO; unset keeps the current 30-second default")
     parser.add_argument("--dry-run", action="store_true", help="print the plan without preflight mutations or subprocesses")
     parser.add_argument("--skip-completed", action="store_true", help="skip vols accepted by the pipeline upload marker rule")
     args = parser.parse_args()
@@ -313,6 +353,8 @@ def main() -> int:
         parser.error("--duration-sec must be positive")
     if args.max_post <= 0:
         parser.error("--max-post must be positive")
+    if args.min_wait_sec is not None and args.min_wait_sec < 15:
+        parser.error("--min-wait-sec must be at least 15")
 
     try:
         channel = resolve_channel(args.channel)
@@ -333,26 +375,25 @@ def main() -> int:
             )
             return EXIT_PREFLIGHT
 
-        env_preview = {
-            "APP_DURATION_SEC": str(args.duration_sec),
-            "APP_SUNO_NO_HOLD": "1",
-            "APP_SUNO_SKIP_SECOND_DL": "1",
-            "APP_SUNO_READY_POLL": "1",
-            "APP_SUNO_ONESHOT": "1",
-            "APP_SUNO_SKIP_OPTIONAL_TITLE": "1",
-            "APP_PROCESS_PARALLEL": process_parallel_default(),
-            "APP_CHANNEL_ID": channel_id,
-        }
+        env_preview = env_overrides(args.duration_sec, channel_id, args.min_wait_sec)
+        env_preview.pop("PYTHONUNBUFFERED", None)
         export_engine = channel_export_engine(Path(channel["folder"]))
         print(f"channel: {channel_id} ({channel.get('name') or '-'})")
         print(f"export-engine: {export_engine}")
         print(f"vols: {','.join(str(vol) for vol, _ in resolved)}")
         print(f"max-post: {args.max_post}")
+        print(f"image-prefetch: {'disabled' if args.no_prefetch_image else 'enabled'}")
+        print("parallel-meta: disabled (meta Tracklist depends on ffrender timecode/manifest order)")
         print("environment: " + " ".join(f"{key}={value}" for key, value in env_preview.items()))
         for vol, folder in resolved:
             suffix = " [skip-completed candidate]" if args.skip_completed and completed(folder) else ""
             print(f"vol{vol} phase1: {' '.join(phase1_command(vol, channel_id))}{suffix}")
-            for step, command in phase2_commands(vol, channel_id):
+            if not args.no_prefetch_image:
+                for step in ("bgimage", "psd_composite"):
+                    print(f"vol{vol} prefetch-image[{step}]: {' '.join(step_command(vol, channel_id, step))}{suffix}")
+                print(f"vol{vol} phase2[image-recovery]: retry failed prefetch steps only{suffix}")
+            for step, command in phase2_commands(
+                    vol, channel_id, include_images=args.no_prefetch_image):
                 print(f"vol{vol} phase2[{step}]: {' '.join(command)}{suffix}")
         if args.dry_run:
             print("dry-run: no server start, channel switch, token refresh, file deletion, or pipeline process was performed")
@@ -370,12 +411,49 @@ def main() -> int:
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = ROOT / "logs" / "batch" / stamp
     log_dir.mkdir(parents=True, exist_ok=False)
-    env = command_env(args.duration_sec, channel_id)
+    env = command_env(args.duration_sec, channel_id, args.min_wait_sec)
     results = [Result(vol=vol, folder=folder) for vol, folder in resolved]
 
-    def run_phase2(result: Result, log_path: Path) -> Result:
+    def run_phase2(result: Result, log_path: Path,
+                   image_future: concurrent.futures.Future | None) -> Result:
         print(f"vol{result.vol} phase2 started")
-        for step, command in phase2_commands(result.vol, channel_id):
+        if image_future is not None:
+            try:
+                prefetch_codes = image_future.result()
+            except Exception as exc:
+                prefetch_codes = {"bgimage": 1, "psd_composite": 1}
+                append_log(log_path, f"[prefetch] result error: {type(exc).__name__}: {exc}")
+            failed_images = [
+                step for step in ("bgimage", "psd_composite")
+                if prefetch_codes.get(step, 1) != 0
+            ]
+            if failed_images:
+                recovery_steps = (
+                    ["bgimage", "psd_composite"] if "bgimage" in failed_images
+                    else ["psd_composite"]
+                )
+                print(f"vol{result.vol} phase2 image recovery: {','.join(recovery_steps)}")
+                for step in recovery_steps:
+                    try:
+                        code, elapsed = run_logged(
+                            step_command(result.vol, channel_id, step), env, log_path,
+                            f"phase2:image-recovery:{step}",
+                        )
+                    except Exception as exc:
+                        code, elapsed = 1, 0.0
+                        append_log(
+                            log_path,
+                            f"[phase2:image-recovery:{step}] orchestrator error: "
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    result.phase2_sec += elapsed
+                    if code != 0:
+                        result.phase2_code = code
+                        result.status = "phase2 failed"
+                        print(f"vol{result.vol} phase2 image recovery[{step}] finished: exit={code}")
+                        return result
+        for step, command in phase2_commands(
+                result.vol, channel_id, include_images=args.no_prefetch_image):
             try:
                 code, elapsed = run_logged(command, env, log_path, f"phase2:{step}")
             except Exception as exc:
@@ -397,7 +475,10 @@ def main() -> int:
         return result
 
     futures: list[concurrent.futures.Future[Result]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_post) as executor:
+    photoshop_lock = threading.Lock()
+    image_workers = max(1, len(results))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_post) as executor, \
+            concurrent.futures.ThreadPoolExecutor(max_workers=image_workers) as image_executor:
         for result in results:
             log_path = log_dir / f"vol{result.vol}.log"
             if args.skip_completed and completed(result.folder):
@@ -406,6 +487,12 @@ def main() -> int:
                 append_log(log_path, "[batch] skipped: existing upload marker satisfies pipeline skip rule")
                 print(f"vol{result.vol} skipped: completed upload marker")
                 continue
+            image_future = None
+            if not args.no_prefetch_image:
+                print(f"vol{result.vol} image prefetch started with phase1")
+                image_future = image_executor.submit(
+                    run_image_prefetch, result.vol, channel_id, env, log_path, photoshop_lock
+                )
             print(f"vol{result.vol} phase1 started")
             try:
                 result.phase1_code, result.phase1_sec = run_logged(
@@ -435,7 +522,7 @@ def main() -> int:
                 append_log(log_path, f"[dedupe] failed: {type(exc).__name__}: {exc}")
                 print(f"vol{result.vol} phase1 dedupe failed")
                 continue
-            futures.append(executor.submit(run_phase2, result, log_path))
+            futures.append(executor.submit(run_phase2, result, log_path, image_future))
         for future in concurrent.futures.as_completed(futures):
             future.result()
 

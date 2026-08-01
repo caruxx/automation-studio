@@ -67,12 +67,13 @@ FFMPEG_TIMEOUT = int(os.environ.get("APP_FFRENDER_TIMEOUT_SEC") or 21600)
 FFPROBE_TIMEOUT = int(os.environ.get("APP_FFPROBE_TIMEOUT_SEC") or 30)
 VIDEO_BITRATE_MBPS: Optional[float] = None
 VIDEO_ENCODER = "libx264"
+VIDEO_HWENC_FORCED = False
 
 
 def _configure_video(ffr_cfg: dict) -> None:
     """1 レンダー内の FPS / GOP / encoder を一度だけ確定する。"""
     global FPS, FPS_NUM, FPS_DEN, FRAME_RATE, VIDEO_TIMESCALE, GOP_FRAMES
-    global VIDEO_BITRATE_MBPS, VIDEO_ENCODER
+    global VIDEO_BITRATE_MBPS, VIDEO_ENCODER, VIDEO_HWENC_FORCED
     raw_fps = ffr_cfg.get("fps")
     fps_map = {24: ("24", 24, 1), 30: ("30", 30, 1), 60: ("60", 60, 1)}
     try:
@@ -94,13 +95,27 @@ def _configure_video(ffr_cfg: dict) -> None:
         GOP_FRAMES = 150
 
     VIDEO_BITRATE_MBPS = None
+    VIDEO_HWENC_FORCED = str(os.environ.get("APP_EXPORT_HWENC") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     raw_bitrate = ffr_cfg.get("bitrate_mbps")
     if raw_bitrate not in (None, ""):
         bitrate = _finite_float(raw_bitrate, 0, minimum=0, maximum=200)
         if bitrate > 0:
             VIDEO_BITRATE_MBPS = bitrate
     VIDEO_ENCODER = "libx264"
-    if VIDEO_BITRATE_MBPS is not None and not str(
+    if VIDEO_HWENC_FORCED:
+        if VIDEO_BITRATE_MBPS is None:
+            # 1.2 Mbps CBR video + 320 kbps AAC was calibrated to about
+            # 570-740 MB/hour with ffrender's short static GOP stream-copy path.
+            VIDEO_BITRATE_MBPS = 1.2
+        probe = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                               capture_output=True, text=True, timeout=FFPROBE_TIMEOUT)
+        if "h264_videotoolbox" not in (probe.stdout or ""):
+            raise RuntimeError("APP_EXPORT_HWENC=1 but h264_videotoolbox is unavailable")
+        VIDEO_ENCODER = "h264_videotoolbox"
+        print(f"  hardware encode: h264_videotoolbox / target={VIDEO_BITRATE_MBPS:g} Mbps")
+    elif VIDEO_BITRATE_MBPS is not None and not str(
             os.environ.get("APP_FFRENDER_DISABLE_VIDEOTOOLBOX") or "").lower() in {
                 "1", "true", "yes", "on"}:
         probe = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
@@ -118,8 +133,11 @@ def _video_encode_args(crf: int) -> list[str]:
     if VIDEO_BITRATE_MBPS is None:
         return ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf)]
     if VIDEO_ENCODER == "h264_videotoolbox":
-        return ["-c:v", VIDEO_ENCODER, "-b:v", f"{VIDEO_BITRATE_MBPS:g}M",
+        args = ["-c:v", VIDEO_ENCODER, "-b:v", f"{VIDEO_BITRATE_MBPS:g}M",
                 "-profile:v", "high"]
+        if VIDEO_HWENC_FORCED:
+            args += ["-constant_bit_rate", "true", "-realtime", "true"]
+        return args
     return ["-c:v", "libx264", "-preset", "medium", "-crf",
             str(_bitrate_to_crf(VIDEO_BITRATE_MBPS))]
 

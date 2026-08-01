@@ -10,14 +10,18 @@ SUNO のフォームに自動入力 → Create ボタンをクリック → ル�
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
 import sys
 import random
+import threading
 import time
 import atexit
 import unicodedata
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from resource_lock import ResourceBusyError, ResourceLock
@@ -1645,6 +1649,145 @@ def _workspace_direct_url_from_status(workspace_name):
     return ""
 
 
+def _parallel_dl_workers():
+    try:
+        return max(1, min(32, int(os.environ.get("APP_SUNO_PARALLEL_DL", "1"))))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _cookie_header(cookies) -> str:
+    if isinstance(cookies, dict):
+        pairs = cookies.items()
+    else:
+        pairs = ((item.get("name"), item.get("value")) for item in (cookies or []))
+    return "; ".join(f"{name}={value}" for name, value in pairs if name and value is not None)
+
+
+def _parallel_download_files(items, target_dir, workers, cookies, user_agent):
+    """Download prepared audio items concurrently into staging files.
+
+    Returns (success_count, fallback_required, ordered_results). A 403 or 429
+    discards every staged file so the caller can retry the full list through
+    Playwright's APIRequestContext.
+    """
+    target = Path(target_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    cookie = _cookie_header(cookies)
+    stop = threading.Event()
+
+    def _fetch(item):
+        idx = int(item["idx"])
+        fname = str(item["fname"])
+        part = target / f".{fname}.parallel-{os.getpid()}-{idx}.part"
+        if stop.is_set():
+            return {"idx": idx, "fname": fname, "status": "cancelled", "part": part}
+        headers = {
+            "User-Agent": user_agent or "Mozilla/5.0",
+            "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.8",
+            "Referer": "https://suno.com/",
+        }
+        if cookie:
+            headers["Cookie"] = cookie
+        request = urllib.request.Request(str(item["audio_url"]), headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            body = b""
+        except Exception as exc:
+            return {"idx": idx, "fname": fname, "status": "error", "error": str(exc), "part": part}
+        if status in (403, 429):
+            stop.set()
+            return {"idx": idx, "fname": fname, "status": status, "part": part}
+        if status < 200 or status >= 300:
+            return {"idx": idx, "fname": fname, "status": status, "part": part}
+        if len(body) < 1000:
+            return {"idx": idx, "fname": fname, "status": "empty", "part": part}
+        part.write_bytes(body)
+        return {"idx": idx, "fname": fname, "status": 200, "size": len(body), "part": part}
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(workers))) as executor:
+        futures = [executor.submit(_fetch, item) for item in items]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+            except concurrent.futures.CancelledError:
+                continue
+            except Exception as exc:
+                result = {"idx": len(results) + 1, "fname": "unknown", "status": "error",
+                          "error": str(exc), "part": target / ".parallel-error.part"}
+            results.append(result)
+            if result.get("status") in (403, 429):
+                stop.set()
+                for pending in futures:
+                    pending.cancel()
+    results.sort(key=lambda item: item["idx"])
+    fallback = any(item.get("status") in (403, 429) for item in results)
+    if fallback:
+        for item in results:
+            Path(item["part"]).unlink(missing_ok=True)
+        return 0, True, results
+
+    success = 0
+    for item in results:
+        part = Path(item["part"])
+        if item.get("status") == 200 and part.exists():
+            part.replace(target / item["fname"])
+            success += 1
+        else:
+            part.unlink(missing_ok=True)
+    return success, False, results
+
+
+def _parallel_download_candidates(page, uuids, cache, target):
+    """Collect every ready audio URL and allocate deterministic output names."""
+    items = []
+    missing = 0
+    used_names = set()
+    for idx, uuid in enumerate(uuids, 1):
+        meta = cache.get(uuid) or {}
+        audio_url = meta.get("audioUrl")
+        title = meta.get("title")
+        if not audio_url:
+            try:
+                meta2 = page.evaluate("""async (uuid) => {
+                    try {
+                        const r = await fetch(`/api/feed/?ids=${uuid}`, {credentials:'include'});
+                        if (!r.ok) return null;
+                        const data = await r.json();
+                        const clips = Array.isArray(data) ? data
+                            : Array.isArray(data && data.clips) ? data.clips
+                            : Array.isArray(data && data.data) ? data.data : data ? [data] : [];
+                        const c = clips[0];
+                        const u = c && (c.audio_url || c.audio || c.file_url || c.mp3_url);
+                        return u ? {audioUrl: u, title: c.title || c.name || uuid} : null;
+                    } catch(e) { return null; }
+                }""", uuid)
+                if meta2:
+                    audio_url = meta2.get("audioUrl")
+                    title = meta2.get("title")
+            except Exception:
+                pass
+        if not audio_url:
+            print(f"  [{idx}/{len(uuids)}] {uuid[:8]}... audio_url missing for parallel DL")
+            missing += 1
+            continue
+        safe_title = re.sub(r'[\\/:*?"<>|]', '_', title or uuid)
+        base = safe_title or f"track_{idx}"
+        fname = f"{base}.mp3"
+        counter = 2
+        while fname in used_names or (target / fname).exists():
+            fname = f"{base}_{counter}.mp3"
+            counter += 1
+        used_names.add(fname)
+        items.append({"idx": idx, "uuid": uuid, "audio_url": audio_url, "fname": fname})
+    return items, missing
+
+
 def download_workspace_tracks(page, workspace_name, target_dir):
     """指定 Workspace の全楽曲を MP3 ダウンロード → target_dir に保存。
 
@@ -1744,6 +1887,48 @@ def download_workspace_tracks(page, workspace_name, target_dir):
     failed = 0
     used_names = set()
     ctx_request = page.context.request  # Cookie 共有済の APIRequestContext
+
+    parallel_workers = _parallel_dl_workers()
+    if parallel_workers > 1:
+        items, missing = _parallel_download_candidates(page, uuids, cache, target)
+        try:
+            cookies = page.context.cookies()
+        except Exception:
+            cookies = []
+        try:
+            user_agent = str(page.evaluate("() => navigator.userAgent") or "")
+        except Exception:
+            user_agent = ""
+        print(f" parallel DL: workers={parallel_workers} files={len(items)}")
+        parallel_success, fallback, parallel_results = _parallel_download_files(
+            items, target, parallel_workers, cookies, user_agent
+        )
+        if fallback:
+            blocked = next(
+                (item for item in parallel_results if item.get("status") in (403, 429)), {}
+            )
+            print(
+                "parallel DL fallback: "
+                f"HTTP {blocked.get('status', 'blocked')} detected; retrying sequentially in browser session"
+            )
+        else:
+            for item in parallel_results:
+                status = item.get("status")
+                if status == 200:
+                    print(
+                        f"  [{item['idx']}/{len(uuids)}] {item['fname']} "
+                        f"({item.get('size', 0) / 1024 / 1024:.1f}MB)"
+                    )
+                else:
+                    print(f"  [{item['idx']}/{len(uuids)}] {item['fname']} failed: {status}")
+            failed = missing + len(items) - parallel_success
+            print(f"\n   完了: 成功 {parallel_success} / 失敗 {failed} / 総数 {len(uuids)}")
+            _set_status(
+                page,
+                f" 完了: 成功 {parallel_success} / 失敗 {failed}",
+                "ok" if failed == 0 else "warn",
+            )
+            return parallel_success
 
     for idx, uuid in enumerate(uuids, 1):
         try:
@@ -2105,6 +2290,25 @@ def run_browser_automation(settings):
     progress = SunoProgress(settings)
     progress.update(phase="launching", last_action="launching browser", emit=True)
 
+    draft_thread = None
+    draft_state = {"songs": None, "error": None}
+    parallel_draft = (
+        _env_flag("APP_SUNO_PARALLEL_DRAFT")
+        and not settings.get("pregenerated_songs")
+        and settings.get("batch_mode")
+        and settings.get("provider") in ("claude", "codex")
+    )
+    if parallel_draft:
+        def _draft_worker():
+            try:
+                draft_state["songs"] = generate_content_batch(dict(settings), loop_count)
+            except Exception as exc:
+                draft_state["error"] = exc
+
+        print("parallel draft: started with browser initialization")
+        draft_thread = threading.Thread(target=_draft_worker, name="suno-draft", daemon=True)
+        draft_thread.start()
+
     profile_dir = str(Path.home() / ".config/orzz/chromium_profile")
 
     with sync_playwright() as p:
@@ -2250,7 +2454,14 @@ def run_browser_automation(settings):
             try:
                 print(f" バッチモード: {settings.get('provider')} CLI でまとめて生成します")
                 progress.update(page, phase="drafting", last_action=f"generating {loop_count} drafts", emit=True)
-                batch_songs = generate_content_batch(settings, loop_count)
+                if draft_thread is not None:
+                    print("parallel draft: waiting for batch result")
+                    draft_thread.join()
+                    if draft_state["error"] is not None:
+                        raise draft_state["error"]
+                    batch_songs = draft_state["songs"]
+                else:
+                    batch_songs = generate_content_batch(settings, loop_count)
                 if len(batch_songs) < loop_count:
                     print(f"  ⚠️ 要求 {loop_count}曲 / 取得 {len(batch_songs)}曲。不足分はスキップ")
             except Exception as e:
