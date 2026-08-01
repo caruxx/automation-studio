@@ -179,10 +179,6 @@ def command_env(duration_sec: int, channel_id: str) -> dict[str, str]:
 def phase1_command(vol: int, channel_id: str) -> list[str]:
     return [
         sys.executable,
-        str(BASE / "parallel_guard.py"),
-        "suno",
-        "--",
-        sys.executable,
         str(BASE / "app_pipeline.py"),
         str(vol),
         "--only",
@@ -202,13 +198,10 @@ def channel_export_engine(channel_folder: Path) -> str:
     return engine if engine in {"ame", "ffmpeg"} else "ame"
 
 
-def phase2_commands(vol: int, channel_id: str, export_engine: str) -> list[tuple[str, list[str]]]:
-    """Build post commands while preserving single-resource locks per step."""
+def phase2_commands(vol: int, channel_id: str) -> list[tuple[str, list[str]]]:
+    """Build post commands; each pipeline implementation owns its resource lock."""
     post_steps = STEPS[STEPS.index("bgimage"):]
     commands = []
-    guard_intent = {"psd_composite": "psd"}
-    if export_engine != "ffmpeg":
-        guard_intent.update({"premiere": "premiere", "export": "export"})
     for step in post_steps:
         pipeline = [
             sys.executable,
@@ -220,15 +213,6 @@ def phase2_commands(vol: int, channel_id: str, export_engine: str) -> list[tuple
             channel_id,
             "--auto",
         ]
-        intent = guard_intent.get(step)
-        if intent:
-            pipeline = [
-                sys.executable,
-                str(BASE / "parallel_guard.py"),
-                intent,
-                "--",
-                *pipeline,
-            ]
         commands.append((step, pipeline))
     return commands
 
@@ -348,7 +332,7 @@ def main() -> int:
         for vol, folder in resolved:
             suffix = " [skip-completed candidate]" if args.skip_completed and completed(folder) else ""
             print(f"vol{vol} phase1: {' '.join(phase1_command(vol, channel_id))}{suffix}")
-            for step, command in phase2_commands(vol, channel_id, export_engine):
+            for step, command in phase2_commands(vol, channel_id):
                 print(f"vol{vol} phase2[{step}]: {' '.join(command)}{suffix}")
         if args.dry_run:
             print("dry-run: no server start, channel switch, token refresh, file deletion, or pipeline process was performed")
@@ -371,7 +355,7 @@ def main() -> int:
 
     def run_phase2(result: Result, log_path: Path) -> Result:
         print(f"vol{result.vol} phase2 started")
-        for step, command in phase2_commands(result.vol, channel_id, export_engine):
+        for step, command in phase2_commands(result.vol, channel_id):
             try:
                 code, elapsed = run_logged(command, env, log_path, f"phase2:{step}")
             except Exception as exc:
@@ -417,6 +401,13 @@ def main() -> int:
             if result.phase1_code != 0:
                 result.status = "phase1 failed"
                 continue
+            track_count = sum(1 for path in (result.folder / "music").glob("*.mp3") if path.is_file())
+            if track_count == 0:
+                result.status = "no tracks"
+                append_log(log_path, "[phase1] validation failed: music/*.mp3 count=0")
+                print(f"vol{result.vol} phase1 validation failed: no tracks")
+                continue
+            append_log(log_path, f"[phase1] validation ok: music/*.mp3 count={track_count}")
             try:
                 remove_duplicate_tracks(result.folder, log_path)
             except Exception as exc:

@@ -60,8 +60,8 @@ post slot2:                                      vol148 phase2 ------->
 queue:                                                   vol149 phase2
 ```
 
-- phase1: `parallel_guard.py suno -- app_pipeline.py N --only suno --channel-id <id> --auto`
-- phase2: 分割点は `bgimage`。`app_pipeline.py N --only <step> --channel-id <id> --auto` を `bgimage` から `upload` まで順に実行する。`psd_composite` は Photoshop lock を通す。`export_engine=ame` の `premiere` / `export` は Premiere+AME lock を通し、`export_engine=ffmpeg` では物理リソースを使わないため lock せず最大2本で並行できる。
+- phase1: `app_pipeline.py N --only suno --channel-id <id> --auto`。orchestrator の逐次ループで同時に2本起動しない。SUNO lock は `suno_auto_create.py` 内部に任せ、外側の `parallel_guard.py` では包まない。
+- phase2: 分割点は `bgimage`。`app_pipeline.py N --only <step> --channel-id <id> --auto` を `bgimage` から `upload` まで順に実行する。Photoshop / Premiere+AME のロックは各 step 内部の実装に任せ、orchestrator では二重取得しない。
 - `step_suno()` が生成、Workspace DL、`app_process_tracks.py` まで担当するため、phase1 後に `rename` step は重ねない。
 - phase1 は SUNO browser lock により全 vol 直列。phase1 完了直後にその vol の phase2 を投入し、次 vol の phase1 を開始する。
 - phase2 は既定2並列。`--max-post N` で変更できる。
@@ -90,6 +90,7 @@ queue:                                                   vol149 phase2
 ### 失敗と再開
 
 - phase1 失敗: その vol の phase2 を投入せず、次 vol の phase1 へ進む。
+- phase1 subprocess が exit 0 でも `music/*.mp3` が0件なら `no tracks` として失敗にし、phase2へ進めない。
 - phase2 失敗: 他 vol を止めず完走させる。
 - 全 vol 成功または完了済みスキップなら exit 0。1本でも失敗なら exit 1。
 - 再開時は同じ範囲に `--skip-completed` を付ける。`app_pipeline.py` の upload marker 判定と同じく、`youtube_upload.json` の video id に加え、現タイトル一致または72時間以内の upload を完了扱いにする。

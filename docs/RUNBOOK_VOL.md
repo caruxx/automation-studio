@@ -200,7 +200,7 @@ python3 Python/batch_orchestrator.py \
   --dry-run
 ```
 
-- [ ] dry-run に `phase1: parallel_guard.py suno ... app_pipeline.py N --only suno` と、`bgimage` から `upload` までの `phase2[step]: app_pipeline.py N --only <step>` が全 vol 分出ることを確認する。`psd_composite` は guard 付き、`premiere` / `export` は AME エンジン時だけ guard 付きであることも確認する。
+- [ ] dry-run に `phase1: app_pipeline.py N --only suno` と、`bgimage` から `upload` までの `phase2[step]: app_pipeline.py N --only <step>` が全 vol 分出ることを確認する。`parallel_guard.py` は表示されないことも確認する。各資源のロックは pipeline 内部で取得する。
 - [ ] 本実行する。phase1 は直列、phase2 は既定2並列でリレーされる。
 - [ ] 終了サマリの全 vol が `ok` または意図した `skipped completed` であることを確認する。
 - [ ] `logs/batch/YYYYMMDD_HHMMSS/volN.log` と各 `youtube_upload.json` の URL、予約日時を確認する。
