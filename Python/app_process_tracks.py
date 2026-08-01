@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -459,7 +460,7 @@ def ensure_ffmpeg():
         sys.exit(1)
 
 
-def process_mp3(src: Path, dst: Path):
+def process_mp3(src: Path, dst: Path, emit_log: bool = True):
     """末尾無音トリム + 8 秒フェードアウト + two-pass loudnorm 正規化 → dst に書き出す"""
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -527,7 +528,44 @@ def process_mp3(src: Path, dst: Path):
     if res2.returncode != 0:
         raise RuntimeError(f"loudnorm 2nd pass 失敗:\n{res2.stderr}")
 
-    print(f" loudnorm: input_i={in_i} LUFS → target {TARGET_LUFS} LUFS (offset={target_offset})")
+    message = f" loudnorm: input_i={in_i} LUFS → target {TARGET_LUFS} LUFS (offset={target_offset})"
+    if emit_log:
+        print(message)
+    return message
+
+
+def _process_plan_parallel(plan, original_dir: Path, music_dir: Path, keep_both_takes: bool):
+    """Run one ffmpeg plan without printing; caller emits returned lines in plan order."""
+    import traceback
+
+    src: Path = plan["src"]
+    new_name: str = plan["new_name"]
+    backup_path = original_dir / new_name
+    lines = []
+    try:
+        out_path = music_dir / new_name
+        lines.append(process_mp3(src, out_path, emit_log=False))
+        lines.append(f"  processed: music/{new_name}")
+        if keep_both_takes:
+            if src.parent == original_dir:
+                lines.append(f"  kept original: original_music/{src.name}")
+            else:
+                original_path = original_dir / src.name
+                if not original_path.exists():
+                    shutil.copy2(src, original_path)
+                    lines.append(f"  copied original: original_music/{src.name}")
+                src.unlink()
+                lines.append(f"  removed source: {src.name}")
+        else:
+            if backup_path.exists():
+                backup_path.unlink()
+            src.rename(backup_path)
+            lines.append(f"  moved: original_music/{new_name}")
+        return True, lines
+    except Exception as exc:
+        lines.append(f"  失敗: {exc}")
+        lines.append(traceback.format_exc())
+        return False, lines
 
 
 # ─── 公開前整備: AI透かし除去 + ID3タグ付与 + ファイル名正規化 ──────────
@@ -953,39 +991,65 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
         music_dir = folder / "music"
         original_dir.mkdir(exist_ok=True)
         music_dir.mkdir(exist_ok=True)
-        for i, plan in enumerate(plans):
-            src: Path = plan["src"]
-            new_name: str = plan["new_name"]
-            print(f"\n[{i+1}/{len(plans)}] {src.name}")
-            backup_path = original_dir / new_name
-            try:
-                # 1) ffmpeg 処理 → music/ に出力（元ファイルから直接処理）
-                out_path = music_dir / new_name
-                process_mp3(src, out_path)
-                print(f"  ✓ processed: music/{new_name}")
-                # 2) 原本保全。keep_both_takes では original_music/ の原本名をそのまま残す。
-                if keep_both_takes:
-                    if src.parent == original_dir:
-                        print(f"  ✓ kept original: original_music/{src.name}")
+        try:
+            parallel_workers = max(1, int(os.environ.get("APP_PROCESS_PARALLEL") or "1"))
+        except (TypeError, ValueError):
+            parallel_workers = 1
+
+        if parallel_workers > 1:
+            worker_count = min(parallel_workers, len(plans))
+            print(f"\n APP_PROCESS_PARALLEL={parallel_workers}: ffmpeg を {worker_count} 並列で処理")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        _process_plan_parallel, plan, original_dir, music_dir, keep_both_takes
+                    )
+                    for plan in plans
+                ]
+                # future は投入順に回収し、進捗ログと結果表示の順序を従来どおり保つ。
+                for i, (plan, future) in enumerate(zip(plans, futures), 1):
+                    src: Path = plan["src"]
+                    print(f"\n[{i}/{len(plans)}] {src.name}")
+                    ok, lines = future.result()
+                    for line in lines:
+                        print(line)
+                    if ok:
+                        success += 1
+        else:
+            # 既定 N=1 は従来の逐次処理をそのまま維持する。
+            for i, plan in enumerate(plans):
+                src: Path = plan["src"]
+                new_name: str = plan["new_name"]
+                print(f"\n[{i+1}/{len(plans)}] {src.name}")
+                backup_path = original_dir / new_name
+                try:
+                    # 1) ffmpeg 処理 → music/ に出力（元ファイルから直接処理）
+                    out_path = music_dir / new_name
+                    process_mp3(src, out_path)
+                    print(f"  ✓ processed: music/{new_name}")
+                    # 2) 原本保全。keep_both_takes では original_music/ の原本名をそのまま残す。
+                    if keep_both_takes:
+                        if src.parent == original_dir:
+                            print(f"  ✓ kept original: original_music/{src.name}")
+                        else:
+                            original_path = original_dir / src.name
+                            if not original_path.exists():
+                                shutil.copy2(src, original_path)
+                                print(f"  ✓ copied original: original_music/{src.name}")
+                            src.unlink()
+                            print(f"  ✓ removed source: {src.name}")
                     else:
-                        original_path = original_dir / src.name
-                        if not original_path.exists():
-                            shutil.copy2(src, original_path)
-                            print(f"  ✓ copied original: original_music/{src.name}")
-                        src.unlink()
-                        print(f"  ✓ removed source: {src.name}")
-                else:
-                    if backup_path.exists():
-                        backup_path.unlink()  # 同名が既に存在なら上書き
-                    src.rename(backup_path)
-                    print(f"  ✓ moved: original_music/{new_name}")
-                # ルート直下には残さない
-                success += 1
-            except Exception as e:
-                # スタックや ffmpeg stderr を含めて全文出力（黙って次に進まない）
-                import traceback
-                print(f"  ❌ 失敗: {e}")
-                print(traceback.format_exc())
+                        if backup_path.exists():
+                            backup_path.unlink()  # 同名が既に存在なら上書き
+                        src.rename(backup_path)
+                        print(f"  ✓ moved: original_music/{new_name}")
+                    # ルート直下には残さない
+                    success += 1
+                except Exception as e:
+                    # スタックや ffmpeg stderr を含めて全文出力（黙って次に進まない）
+                    import traceback
+                    print(f"  ❌ 失敗: {e}")
+                    print(traceback.format_exc())
 
     print("\n" + "=" * 60)
     print(f"  完了: {success}/{len(plans)}")

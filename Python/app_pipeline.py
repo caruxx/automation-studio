@@ -748,6 +748,16 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             cmd += ["--diversity-retry", str(div_retry)]
         if hist_limit is not None:
             cmd += ["--history-limit", str(hist_limit)]
+        oneshot = os.environ.get("APP_SUNO_ONESHOT", "").strip().lower() in ("1", "true", "yes")
+        ready_poll = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
+        render_wait_timeout = int(os.environ.get("APP_SUNO_AUTO_DOWNLOAD_TIMEOUT_SEC") or "2700")
+        if oneshot:
+            # 送信、ready poll、DL、後処理を同じ Playwright context 内で完結させる。
+            cmd += [
+                "--auto-download", str(folder),
+                "--auto-download-timeout", str(render_wait_timeout),
+                "--process-vol", str(vol),
+            ]
         # 絶対 timeout: 送信フェーズ count×(interval+90s) に加え、--auto-download の
         # レンダ待ち（既定 2700s）+ DL/close 余裕 900s を確保する。
         # 旧式 count*(interval+60)+600 は 15曲で 1950s となり、レンダ待ちに届かず
@@ -773,12 +783,15 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
         # 既定動作は維持し、batch orchestrator が明示した場合だけ有効にする。
         skip_second_dl = os.environ.get("APP_SUNO_SKIP_SECOND_DL", "").strip().lower() in ("1", "true", "yes")
         processed_tracks = sorted((folder / "music").glob("*.mp3"))
-        if skip_second_dl and processed_tracks:
+        if (skip_second_dl or oneshot) and processed_tracks:
             print(
-                f"  APP_SUNO_SKIP_SECOND_DL=1: music/ に {len(processed_tracks)} 曲あるため、"
+                f"  SUNO 子プロセス内の後処理完了: music/ に {len(processed_tracks)} 曲あるため、"
                 "2 回目の Workspace DL と app_process_tracks.py をスキップします"
             )
             return True
+        if oneshot:
+            print("  APP_SUNO_ONESHOT=1: 2 回目の Workspace DL は行いません")
+            return suno_ok
 
         # ─── 15/15 完了後の自動連携（DL + リネーム + フェード）─────────────────
         # SUNO は最終曲を投入後も裏で生成が走っているため、N 秒待ってから DL する。
@@ -797,10 +810,13 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             print("  ⚠ SUNO 生成は中断しましたが、生成済み楽曲を回収するため DL に進みます")
             print("     （APP_SUNO_CONTINUE_ON_PARTIAL=0 で従来動作 = 失敗時即停止）")
 
-        final_wait = int(os.environ.get("APP_SUNO_FINAL_WAIT_SEC") or "300")
-        if final_wait > 0:
-            print(f"\n  ⏳ 最終曲の生成完了を待機: {final_wait} 秒（APP_SUNO_FINAL_WAIT_SEC で変更可）")
-            time.sleep(final_wait)
+        if ready_poll:
+            print("\n  APP_SUNO_READY_POLL=1: 固定レンダ待ちを省き、DL セッション内で ready を確認します")
+        else:
+            final_wait = int(os.environ.get("APP_SUNO_FINAL_WAIT_SEC") or "300")
+            if final_wait > 0:
+                print(f"\n  ⏳ 最終曲の生成完了を待機: {final_wait} 秒（APP_SUNO_FINAL_WAIT_SEC で変更可）")
+                time.sleep(final_wait)
 
         download_workspace_ref = _suno_download_workspace_ref(
             workspace, folder / "suno_status.json"
@@ -814,6 +830,11 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             "--download-workspace", download_workspace_ref,
             "--download-dir", str(folder),
         ]
+        if ready_poll:
+            dl_cmd += [
+                "--expected-ready", str(count * 2),
+                "--auto-download-timeout", str(render_wait_timeout),
+            ]
         dl_ok = _run(dl_cmd, "SUNO ダウンロード", timeout=3600)
         if not dl_ok:
             print("  ⚠ ダウンロード失敗（生成は完了済み、後で `--download-workspace` を手動実行可）")

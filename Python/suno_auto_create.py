@@ -1788,14 +1788,16 @@ def _poll_until_auto_download_ready(page, workspace_name, expected_ready, timeou
                 print(f"  ✓ audio_ready {last_ready}/{expected_ready}: ダウンロードへ進みます")
                 return True, last_ready
             remaining = int(max(0, deadline - time.time()))
-            wait_sec = min(random.randint(60, 90), remaining)
+            ready_poll_enabled = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
+            wait_sec = min(20 if ready_poll_enabled else random.randint(60, 90), remaining)
             if wait_sec <= 0:
                 break
             print(f"  ⏳ audio_ready {last_ready}/{expected_ready}。次回確認まで {wait_sec}秒 (残り {remaining}秒)")
             time.sleep(wait_sec)
         except Exception as e:
             remaining = int(max(0, deadline - time.time()))
-            wait_sec = min(random.randint(60, 90), remaining)
+            ready_poll_enabled = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
+            wait_sec = min(20 if ready_poll_enabled else random.randint(60, 90), remaining)
             print(f"  ⚠️ ポーリング失敗（次周期で再試行）: {e}")
             progress.update(page, phase="auto_download_wait",
                             last_action=f"poll retry after error: {e}", emit=True)
@@ -1808,6 +1810,28 @@ def _poll_until_auto_download_ready(page, workspace_name, expected_ready, timeou
                     detected_tracks=last_ready,
                     last_action=f"timeout ready {last_ready}/{expected_ready}", emit=True)
     return False, last_ready
+
+
+def _ready_poll_and_download(page, workspace_name, target_dir, expected_ready, timeout_sec, progress):
+    """Wait for ready audio in the current session, then download every recoverable track."""
+    ready_complete, ready_count = _poll_until_auto_download_ready(
+        page, workspace_name, expected_ready, timeout_sec, progress
+    )
+    old_render_wait = os.environ.get("APP_SUNO_RENDER_WAIT_SEC")
+    if not ready_complete:
+        # タイムアウト時は download_workspace_tracks 内の追加待機を省き、
+        # その時点で audio_url が取れる曲だけを回収する。
+        os.environ["APP_SUNO_RENDER_WAIT_SEC"] = "0"
+    try:
+        progress.update(page, phase="auto_downloading",
+                        last_action=f"downloading to {target_dir}", emit=True)
+        downloaded = download_workspace_tracks(page, workspace_name, target_dir)
+    finally:
+        if old_render_wait is None:
+            os.environ.pop("APP_SUNO_RENDER_WAIT_SEC", None)
+        else:
+            os.environ["APP_SUNO_RENDER_WAIT_SEC"] = old_render_wait
+    return ready_complete, ready_count, int(downloaded or 0)
 
 
 def _run_auto_postprocess(process_vol, download_dir=None):
@@ -2304,25 +2328,14 @@ def run_browser_automation(settings):
                 print("\n⚠️ auto-download は指定されていますが、送信成功が 0 件のため DL をスキップします")
             else:
                 timeout_sec = int(settings.get("auto_download_timeout_sec") or 2700)
-                ready_complete, ready_count = _poll_until_auto_download_ready(
-                    page, workspace_name, expected_ready, timeout_sec, progress
+                ready_complete, ready_count, downloaded = _ready_poll_and_download(
+                    page,
+                    workspace_direct_url or workspace_name,
+                    auto_download_dir,
+                    expected_ready,
+                    timeout_sec,
+                    progress,
                 )
-                old_render_wait = os.environ.get("APP_SUNO_RENDER_WAIT_SEC")
-                if not ready_complete:
-                    # タイムアウト時は download_workspace_tracks 内の追加待機を省き、
-                    # その時点で audio_url が取れる曲だけを回収する。
-                    os.environ["APP_SUNO_RENDER_WAIT_SEC"] = "0"
-                try:
-                    progress.update(page, phase="auto_downloading",
-                                    last_action=f"downloading to {auto_download_dir}", emit=True)
-                    downloaded = download_workspace_tracks(
-                        page, workspace_direct_url or workspace_name, auto_download_dir
-                    )
-                finally:
-                    if old_render_wait is None:
-                        os.environ.pop("APP_SUNO_RENDER_WAIT_SEC", None)
-                    else:
-                        os.environ["APP_SUNO_RENDER_WAIT_SEC"] = old_render_wait
                 unrecovered = max(0, expected_ready - int(downloaded or 0))
                 if ready_complete:
                     print(f"\n auto-download 完了: DL {downloaded}/{expected_ready} / 未回収 {unrecovered}")
@@ -3536,6 +3549,7 @@ def _run_download_only(workspace_name, target_dir, settings):
     """Playwright を起動して指定 Workspace の楽曲をダウンロードして終了"""
     from playwright.sync_api import sync_playwright
     profile_dir = str(Path.home() / ".config/orzz/chromium_profile")
+    ready_poll = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
     with sync_playwright() as p:
         launch_kwargs = dict(
             user_data_dir=profile_dir, headless=False,
@@ -3550,9 +3564,21 @@ def _run_download_only(workspace_name, target_dir, settings):
             context = p.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
         # SUNO SPA の内部 fetch/XHR をインターセプトして audio_url をキャッシュ
         context.add_init_script(_SUNO_AUDIO_URL_INTERCEPTOR)
+        if ready_poll:
+            context.add_init_script(_STATUS_OVERLAY_SCRIPT)
         page = context.pages[0] if context.pages else context.new_page()
         try:
-            download_workspace_tracks(page, workspace_name, target_dir)
+            expected_ready = int(settings.get("expected_ready") or 0)
+            if ready_poll and expected_ready > 0:
+                progress_settings = dict(settings)
+                progress_settings["workspace"] = workspace_name
+                progress = SunoProgress(progress_settings)
+                timeout_sec = int(settings.get("auto_download_timeout_sec") or 2700)
+                _ready_poll_and_download(
+                    page, workspace_name, target_dir, expected_ready, timeout_sec, progress
+                )
+            else:
+                download_workspace_tracks(page, workspace_name, target_dir)
         finally:
             time.sleep(2)
             context.close()
@@ -3726,6 +3752,8 @@ def main():
                         help="生成送信後に同一ブラウザセッションでレンダ完了を待ち、DIR に自動ダウンロード")
     parser.add_argument("--auto-download-timeout", type=int, default=2700,
                         help="--auto-download の待機タイムアウト秒（既定 2700 = 45分）")
+    parser.add_argument("--expected-ready", type=int, default=0,
+                        help="APP_SUNO_READY_POLL=1 の download-only で待つ audio_ready 件数")
     parser.add_argument("--process-vol",
                         help="--auto-download の DL 完了後に指定 vol の楽曲後処理を本実行")
     parser.add_argument("--batch", action="store_true", help="CLI 一括生成モード（N曲分を1回で生成）")
@@ -3764,6 +3792,10 @@ def main():
     if args.auto_download:
         settings["auto_download_dir"] = args.auto_download
         settings["auto_download_timeout_sec"] = args.auto_download_timeout
+    elif args.download_workspace:
+        settings["auto_download_timeout_sec"] = args.auto_download_timeout
+    if args.expected_ready:
+        settings["expected_ready"] = args.expected_ready
     if args.process_vol:
         settings["process_vol"] = str(args.process_vol)
     if args.batch:

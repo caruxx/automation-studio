@@ -74,6 +74,9 @@ queue:                                                   vol149 phase2
 | `APP_DURATION_SEC` | `--duration-sec` | export / QA の目標尺を秒で指定する。 |
 | `APP_SUNO_NO_HOLD=1` | orchestrator 固定 | `APP_KEEP_BROWSER=1` でも送信、DL、後処理後の無限 hold を行わず正常終了する。 |
 | `APP_SUNO_SKIP_SECOND_DL=1` | orchestrator 固定 | 子プロセス完了時に `music/*.mp3` があれば親の2回目DLと後処理を省く。 |
+| `APP_SUNO_READY_POLL=1` | orchestrator 固定 | 固定300秒待ちを使わず、20秒間隔で `audio_ready` が送信成功数の2倍に達するまで確認する。タイムアウト時はready分だけ回収する。 |
+| `APP_SUNO_ONESHOT=1` | orchestrator 固定 | 送信とready poll、DL、後処理を同じPlaywrightセッションで完結し、親側の2回目DLを行わない。 |
+| `APP_PROCESS_PARALLEL=4` | orchestrator固定 | `app_process_tracks.py` のffmpeg処理を4並列にする。未指定時は1で従来の逐次処理。 |
 
 ### preflight
 

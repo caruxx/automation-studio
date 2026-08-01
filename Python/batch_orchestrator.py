@@ -169,6 +169,9 @@ def command_env(duration_sec: int, channel_id: str) -> dict[str, str]:
             "APP_DURATION_SEC": str(duration_sec),
             "APP_SUNO_NO_HOLD": "1",
             "APP_SUNO_SKIP_SECOND_DL": "1",
+            "APP_SUNO_READY_POLL": "1",
+            "APP_SUNO_ONESHOT": "1",
+            "APP_PROCESS_PARALLEL": "4",
             "APP_CHANNEL_ID": channel_id,
             "PYTHONUNBUFFERED": "1",
         }
@@ -321,6 +324,9 @@ def main() -> int:
             "APP_DURATION_SEC": str(args.duration_sec),
             "APP_SUNO_NO_HOLD": "1",
             "APP_SUNO_SKIP_SECOND_DL": "1",
+            "APP_SUNO_READY_POLL": "1",
+            "APP_SUNO_ONESHOT": "1",
+            "APP_PROCESS_PARALLEL": "4",
             "APP_CHANNEL_ID": channel_id,
         }
         export_engine = channel_export_engine(Path(channel["folder"]))
