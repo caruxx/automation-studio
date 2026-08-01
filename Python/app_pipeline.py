@@ -91,21 +91,31 @@ STEP_LABELS = {
 
 
 _CHANNEL_CONFIG_FILENAME = ".app_channel_config.json"
-_CHANNELS_REGISTRY = CONFIG_DIR / "channels.json"
+# 共有側 config/channels.json が canonical（app_core.CHANNELS_CONFIG と同じ解決）。
+# 旧来のローカル ~/.config/{app_id}/channels.json はフォールバックとして残す。
+try:
+    from _app_config import resolve_shared_config_dir as _resolve_shared_config_dir_reg
+    _CHANNELS_REGISTRY = _resolve_shared_config_dir_reg() / "channels.json"
+except Exception:
+    _CHANNELS_REGISTRY = CONFIG_DIR / "channels.json"
+_CHANNELS_REGISTRY_LOCAL = CONFIG_DIR / "channels.json"
 
 
 def _load_channels_registry() -> list:
-    """`~/.config/{app_id}/channels.json` を canonical source として読む。
+    """channels.json（共有 config が canonical、無ければローカル）を読む。
 
     P2-2 で「channels.json を first-class 化」した結果、pipeline / 他 CLI は
     channel_id <-> folder の双方向解決にこれを使う。"""
-    if not _CHANNELS_REGISTRY.exists():
-        return []
-    try:
-        d = json.loads(_CHANNELS_REGISTRY.read_text(encoding="utf-8"))
-        return d if isinstance(d, list) else []
-    except Exception:
-        return []
+    for path in (_CHANNELS_REGISTRY, _CHANNELS_REGISTRY_LOCAL):
+        if not path.exists():
+            continue
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(d, list) and d:
+                return d
+        except Exception:
+            continue
+    return []
 
 
 def _resolve_channel(*, channel_id: str = "", channel_folder: str = "") -> dict:
@@ -3276,6 +3286,14 @@ def main():
         resolved_ch = _resolve_channel(channel_id=os.environ["APP_CHANNEL_ID"])
 
     if resolved_ch:
+        # registry の folder は他マシンのホームパスで保存されている場合がある。
+        # app_core._resolve_to_current_host で現マシンの共有ドライブパスへ解決する。
+        try:
+            from app_core import _resolve_to_current_host
+            resolved_ch = dict(resolved_ch)
+            resolved_ch["folder"] = _resolve_to_current_host(resolved_ch.get("folder") or "")
+        except Exception:
+            pass
         ch_path = Path(resolved_ch["folder"]).expanduser()
         os.environ["APP_CHANNEL_FOLDER"] = str(ch_path)
         os.environ["APP_CHANNEL_NAME"] = resolved_ch.get("name") or ch_path.name
