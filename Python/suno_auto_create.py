@@ -39,6 +39,96 @@ except Exception:
 DEFAULT_CONFIG = CONFIG_DIR / "suno_config.json"
 HTTP_TIMEOUT_SEC = int(os.environ.get("APP_SUNO_HTTP_TIMEOUT_SEC") or 120)
 
+_FORM_WAIT_MIN_SEC = 0.2
+_FORM_METRICS = {}
+
+
+def _form_wait_scale():
+    """Return the A/B scale for waits used only by the active submit form path."""
+    raw = os.environ.get("APP_SUNO_FORM_WAIT_SCALE", "1.0").strip() or "1.0"
+    try:
+        scale = float(raw)
+    except (TypeError, ValueError):
+        print(f"WARNING invalid APP_SUNO_FORM_WAIT_SCALE={raw!r}; using 1.0")
+        return 1.0
+    if not (scale >= 0.0 and scale < float("inf")):
+        print(f"WARNING invalid APP_SUNO_FORM_WAIT_SCALE={raw!r}; using 1.0")
+        return 1.0
+    return scale
+
+
+def _scaled_form_wait_sec(seconds):
+    return max(_FORM_WAIT_MIN_SEC, float(seconds) * _form_wait_scale())
+
+
+def _form_wait(seconds):
+    """Sleep for a scaled form-operation wait, clamped to 0.2 seconds."""
+    time.sleep(_scaled_form_wait_sec(seconds))
+
+
+def _form_timeout_ms(milliseconds):
+    """Scale a Playwright form-operation timeout while preserving its ms unit."""
+    return int(round(_scaled_form_wait_sec(float(milliseconds) / 1000.0) * 1000.0))
+
+
+def _reset_form_metrics():
+    _FORM_METRICS.clear()
+    _FORM_METRICS.update({
+        "first_form_started_at": None,
+        "last_create_clicked_at": None,
+        "bot_challenges": 0,
+        "form_retries": 0,
+    })
+
+
+def _mark_form_started():
+    if not _FORM_METRICS:
+        _reset_form_metrics()
+    if _FORM_METRICS["first_form_started_at"] is None:
+        _FORM_METRICS["first_form_started_at"] = time.monotonic()
+
+
+def _mark_create_clicked():
+    if not _FORM_METRICS:
+        _reset_form_metrics()
+    _FORM_METRICS["last_create_clicked_at"] = time.monotonic()
+
+
+def _count_form_retry():
+    if not _FORM_METRICS:
+        _reset_form_metrics()
+    _FORM_METRICS["form_retries"] += 1
+
+
+def _count_bot_challenge():
+    if not _FORM_METRICS:
+        _reset_form_metrics()
+    _FORM_METRICS["bot_challenges"] += 1
+
+
+def _form_metrics_snapshot(songs_ok, songs_total):
+    if not _FORM_METRICS:
+        _reset_form_metrics()
+    started = _FORM_METRICS["first_form_started_at"]
+    clicked = _FORM_METRICS["last_create_clicked_at"]
+    elapsed = max(0.0, clicked - started) if started is not None and clicked is not None else 0.0
+    return {
+        "scale": _form_wait_scale(),
+        "songs_ok": int(songs_ok),
+        "songs_skipped": max(0, int(songs_total) - int(songs_ok)),
+        "bot_challenges": int(_FORM_METRICS["bot_challenges"]),
+        "form_retries": int(_FORM_METRICS["form_retries"]),
+        "submit_phase_sec": round(elapsed, 1),
+    }
+
+
+def _format_form_metrics(metrics):
+    return (
+        f"FORM_METRICS scale={metrics['scale']} songs_ok={metrics['songs_ok']} "
+        f"songs_skipped={metrics['songs_skipped']} bot_challenges={metrics['bot_challenges']} "
+        f"form_retries={metrics['form_retries']} submit_phase_sec={metrics['submit_phase_sec']:.1f}"
+    )
+
 
 class SunoProgress:
     """SUNO生成中の進捗をブラウザ/CLI/JSONへ同時に流す軽量レポーター。"""
@@ -57,6 +147,7 @@ class SunoProgress:
         self.audio_ready = 0
         self.page_url = ""
         self.last_action = "starting"
+        self.form_metrics = None
         self.last_change_at = time.time()
         self.last_emit_at = 0.0
 
@@ -81,7 +172,7 @@ class SunoProgress:
                 pass
 
     def update(self, page=None, *, phase=None, submitted=None, detected_tracks=None,
-               audio_ready=None, last_action=None, emit=False):
+               audio_ready=None, last_action=None, form_metrics=None, emit=False):
         changed = False
         if phase and phase != self.phase:
             self.phase = phase
@@ -98,6 +189,9 @@ class SunoProgress:
         if last_action and last_action != self.last_action:
             self.last_action = last_action
             changed = True
+        if form_metrics is not None and form_metrics != self.form_metrics:
+            self.form_metrics = dict(form_metrics)
+            changed = True
         self._probe_page(page)
         if changed:
             self.last_change_at = time.time()
@@ -109,7 +203,7 @@ class SunoProgress:
 
     def snapshot(self):
         now = time.time()
-        return {
+        data = {
             "workspace": self.workspace,
             "phase": self.phase,
             "submitted": self.submitted,
@@ -118,9 +212,13 @@ class SunoProgress:
             "audio_ready": self.audio_ready,
             "page_url": self.page_url,
             "last_action": self.last_action,
+            "form_metrics": self.form_metrics,
             "idle_sec": int(max(0, now - self.last_change_at)),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
+        if self.form_metrics is not None:
+            data.update(self.form_metrics)
+        return data
 
     def write(self):
         data = self.snapshot()
@@ -1994,6 +2092,7 @@ def run_browser_automation(settings):
     """Playwright でブラウザを操作"""
     from playwright.sync_api import sync_playwright
 
+    _reset_form_metrics()
     loop_count = settings.get("loop_count", 1)
     loop_interval = settings.get("loop_interval_sec", 180)
     headless = settings.get("headless", False)
@@ -2232,6 +2331,7 @@ def run_browser_automation(settings):
                             print(f" Bot 判定が解除されました。続行します")
                             _set_status(page, "Bot 判定解除を確認、続行します", "ok")
                             try:
+                                _count_form_retry()
                                 if not inject_into_suno(page, content):
                                     progress.update(page, phase="form_validation_error",
                                                     last_action=f"form validation stopped song {i}/{loop_count}", emit=True)
@@ -2261,6 +2361,7 @@ def run_browser_automation(settings):
                     if sanitized != content["lyrics"]:
                         print(f" 歌詞をブラケット構造のみにサニタイズして再投入")
                         content["lyrics"] = sanitized
+                        _count_form_retry()
                         if not inject_into_suno(page, content):
                             progress.update(page, phase="form_validation_error",
                                             last_action=f"form validation stopped song {i}/{loop_count}", emit=True)
@@ -2269,6 +2370,7 @@ def run_browser_automation(settings):
                 if attempt == 1:
                     print(f" フォールバック歌詞で再投入")
                     content["lyrics"] = _FALLBACK_BRACKET_LYRICS
+                    _count_form_retry()
                     if not inject_into_suno(page, content):
                         progress.update(page, phase="form_validation_error",
                                         last_action=f"form validation stopped song {i}/{loop_count}", emit=True)
@@ -2316,9 +2418,12 @@ def run_browser_automation(settings):
             print(f"  完了: {loop_count} 曲の生成リクエストを送信しました")
         else:
             print(f"  完了: 送信成功 {submit_ok_count} / 失敗・スキップ {loop_count - submit_ok_count} / 総数 {loop_count}")
+        form_metrics = _form_metrics_snapshot(submit_ok_count, loop_count)
+        print(_format_form_metrics(form_metrics))
         print(f"{'='*50}")
         progress.update(page, phase="submitted_all", submitted=submit_ok_count,
-                        last_action=f"create requests submitted ({submit_ok_count}/{loop_count})", emit=True)
+                        last_action=f"create requests submitted ({submit_ok_count}/{loop_count})",
+                        form_metrics=form_metrics, emit=True)
         progress.overlay(page, "ok")
 
         auto_download_dir = (settings.get("auto_download_dir") or "").strip()
@@ -2415,8 +2520,8 @@ def _legacy_ensure_custom_mode(page):
         try:
             el = page.get_by_role(role, name=re.compile(r"custom|カスタム", re.I)).first
             if el.count() > 0 and el.is_visible():
-                el.click(timeout=2000)
-                time.sleep(1.2)
+                el.click(timeout=_form_timeout_ms(2000))
+                _form_wait(1.2)
                 if _fields_present():
                     print(f"  ✓ Custom モードに切り替えました ({role})")
                     return True
@@ -2426,8 +2531,8 @@ def _legacy_ensure_custom_mode(page):
         try:
             el = page.get_by_text(label, exact=True).first
             if el.count() > 0 and el.is_visible():
-                el.click(timeout=2000)
-                time.sleep(1.2)
+                el.click(timeout=_form_timeout_ms(2000))
+                _form_wait(1.2)
                 if _fields_present():
                     print("  ✓ Custom モードに切り替えました")
                     return True
@@ -2458,7 +2563,7 @@ def _legacy_ensure_custom_mode(page):
             return false;
         }""")
         if clicked:
-            time.sleep(1.2)
+            _form_wait(1.2)
             if _fields_present():
                 print("  ✓ Custom モードに切り替えました (JS)")
                 return True
@@ -2503,7 +2608,7 @@ def _legacy_set_instrumental_toggle(page, desired: bool) -> bool:
     if not res.get("found"):
         return False
     if res.get("clicked"):
-        time.sleep(1.0)
+        _form_wait(1.0)
         print(f"  ⚙️ 歌詞セクションを {target} に切り替えました")
     # 読み戻し: aria-checked が付く UI なら state を確認。付かない UI では
     # 後段の読み戻し検証(歌詞欄の有無)が最終防衛線になるため found=True で返す。
@@ -2530,6 +2635,7 @@ def _legacy_inject_into_suno(page, content):
     ブラウザコンテキスト内で直接 React の _valueTracker をリセットするため、
     Playwright の fill() より確実に React に値が反映される。
     """
+    _mark_form_started()
     mode = content["mode"]
     title = content.get("title", "")
     styles = content.get("styles", "")
@@ -2565,7 +2671,7 @@ def _legacy_inject_into_suno(page, content):
                 return true;
             }""")
             if clicked_write:
-                time.sleep(1.0)
+                _form_wait(1.0)
                 print("  ⚙️ 歌詞タブを Write(手動歌詞) に切り替えました")
             else:
                 print("  ⚠️ Write(手動歌詞) radio が見つかりません。現在の表示状態のまま歌詞入力を試行します")
@@ -2832,7 +2938,7 @@ def _legacy_inject_into_suno(page, content):
 
     # contenteditable 歌詞エディタは insertText の反映が非同期のため、待機後に読み戻して検証する
     if results.get("lyrics_editable"):
-        time.sleep(1.5)
+        _form_wait(1.5)
         try:
             ed_ok = page.evaluate("""(lyr) => {
                 const ed = document.querySelector(
@@ -3029,8 +3135,8 @@ def _ensure_advanced_mode(page):
         _form_dom_diagnostics(page, "advanced_tab")
         raise SunoSubmissionError("advanced_tab", "Advanced/アドバンスド タブが見つかりません")
     if str(tab.get_attribute("aria-selected") or "").lower() != "true":
-        tab.click(timeout=5000)
-        time.sleep(1.2)
+        tab.click(timeout=_form_timeout_ms(5000))
+        _form_wait(1.2)
     selected = str(tab.get_attribute("aria-selected") or "").lower()
     if selected != "true":
         _form_dom_diagnostics(page, "advanced_tab_validation")
@@ -3048,8 +3154,8 @@ def _ensure_write_mode(page):
         _form_dom_diagnostics(page, "write_radio")
         raise SunoSubmissionError("write_radio", "Write/書く ラジオが見つかりません")
     if str(radio.get_attribute("aria-checked") or "").lower() != "true":
-        radio.click(timeout=5000)
-        time.sleep(1.0)
+        radio.click(timeout=_form_timeout_ms(5000))
+        _form_wait(1.0)
     checked = str(radio.get_attribute("aria-checked") or "").lower()
     if checked != "true":
         _form_dom_diagnostics(page, "write_radio_validation")
@@ -3117,13 +3223,13 @@ def _ensure_more_options_open(page):
             f"More optionsのaria-expandedが不正です: {expanded!r}",
         )
     if expanded == "false":
-        toggle.click(timeout=5000)
-    deadline = time.time() + 5
+        toggle.click(timeout=_form_timeout_ms(5000))
+    deadline = time.time() + _scaled_form_wait_sec(5)
     while time.time() < deadline:
         current = str(toggle.get_attribute("aria-expanded") or "").strip().lower()
         if current == "true":
             return toggle
-        time.sleep(0.25)
+        _form_wait(0.25)
     _form_dom_diagnostics(page, "more_options_validation")
     raise SunoSubmissionError(
         "more_options_validation",
@@ -3175,8 +3281,8 @@ def _fill_optional_title(page, title, retries=2):
             candidate_errors = []
             for title_input in candidates:
                 try:
-                    title_input.scroll_into_view_if_needed(timeout=5000)
-                    title_input.fill(title, timeout=5000)
+                    title_input.scroll_into_view_if_needed(timeout=_form_timeout_ms(5000))
+                    title_input.fill(title, timeout=_form_timeout_ms(5000))
                     actual_title = title_input.input_value()
                     if actual_title == title:
                         return True
@@ -3189,13 +3295,13 @@ def _fill_optional_title(page, title, retries=2):
         except Exception as exc:
             failures.append(f"attempt {attempt}/{attempts}: {exc}")
             if attempt < attempts:
-                time.sleep(0.5)
+                _form_wait(0.5)
 
     cleared = False
     for title_input in _title_inputs_in_create_panel(page):
         try:
-            title_input.scroll_into_view_if_needed(timeout=3000)
-            title_input.fill("", timeout=3000)
+            title_input.scroll_into_view_if_needed(timeout=_form_timeout_ms(3000))
+            title_input.fill("", timeout=_form_timeout_ms(3000))
             cleared = title_input.input_value() == "" or cleared
         except Exception:
             continue
@@ -3216,6 +3322,7 @@ def _compact_form_value(value):
 
 def inject_into_suno(page, content):
     """2026-07新Create UIへPlaywright実イベントで入力し、各値を読み戻す。"""
+    _mark_form_started()
     mode = str(content.get("mode") or "styles_title_only")
     title = str(content.get("title") or "")
     styles = str(content.get("styles") or "")
@@ -3232,8 +3339,8 @@ def inject_into_suno(page, content):
             errors.append("lyrics editor missing")
         else:
             try:
-                lyrics_editor.fill(lyrics, timeout=15000)
-                time.sleep(0.5)
+                lyrics_editor.fill(lyrics, timeout=_form_timeout_ms(15000))
+                _form_wait(0.5)
                 actual_lyrics = lyrics_editor.text_content() or ""
                 expected_compact = _compact_form_value(lyrics)
                 actual_compact = _compact_form_value(actual_lyrics)
@@ -3251,7 +3358,7 @@ def inject_into_suno(page, content):
             errors.append("styles textarea missing")
         else:
             try:
-                styles_input.fill(styles, timeout=10000)
+                styles_input.fill(styles, timeout=_form_timeout_ms(10000))
                 actual_styles = styles_input.input_value()
                 if actual_styles != styles:
                     errors.append(
@@ -3277,7 +3384,7 @@ def inject_into_suno(page, content):
     )
     if exclude_input is not None:
         try:
-            exclude_input.fill(exclude_styles, timeout=5000)
+            exclude_input.fill(exclude_styles, timeout=_form_timeout_ms(5000))
             if exclude_input.input_value() != exclude_styles:
                 errors.append("exclude styles value mismatch")
         except Exception as exc:
@@ -3331,7 +3438,7 @@ def detect_bot_challenge(page) -> bool:
         print("  ⚠️ APP_SKIP_BOT_CHECK=1 により Bot 判定検知をスキップしています（緊急バイパス）")
         return False
     try:
-        return bool(page.evaluate("""() => {
+        detected = bool(page.evaluate("""() => {
             // --- (1) iframe ホスト名チェック（主軸）---
             const iframes = Array.from(document.querySelectorAll('iframe'));
             const hostHints = ['challenges.cloudflare.com', 'hcaptcha.com', 'recaptcha'];
@@ -3371,6 +3478,9 @@ def detect_bot_challenge(page) -> bool:
             }
             return false;
         }"""))
+        if detected:
+            _count_bot_challenge()
+        return detected
     except Exception:
         return False
 
@@ -3380,7 +3490,7 @@ def detect_copyright_error(page, timeout_sec=5):
 
     "Couldn't generate that. Your lyrics contain copyrighted material." を検出。
     """
-    deadline = time.time() + timeout_sec
+    deadline = time.time() + _scaled_form_wait_sec(timeout_sec)
     while time.time() < deadline:
         try:
             found = page.evaluate("""() => {
@@ -3392,7 +3502,7 @@ def detect_copyright_error(page, timeout_sec=5):
                 return True
         except Exception:
             pass
-        time.sleep(0.4)
+        _form_wait(0.4)
     return False
 
 
@@ -3409,13 +3519,14 @@ def dismiss_error_toasts(page):
 
 def click_create_button(page):
     """日本語・英語のCreateボタンをPlaywright実イベントでクリックする。"""
-    time.sleep(1)
+    _form_wait(1)
 
     # テキスト候補集合から探し、locator.clickで実イベントを発生させる。
     try:
         button = _find_text_locator(page, "button", ("作成", "Create"), visible_only=True)
         if button is not None:
-            button.click(timeout=5000)
+            button.click(timeout=_form_timeout_ms(5000))
+            _mark_create_clicked()
             return
     except Exception:
         pass
@@ -3424,7 +3535,8 @@ def click_create_button(page):
     try:
         btn = page.locator('button[data-testid="create-button"]').first
         if btn.count() > 0:
-            btn.click(timeout=3000)
+            btn.click(timeout=_form_timeout_ms(3000))
+            _mark_create_clicked()
             return
     except Exception:
         pass
@@ -3461,7 +3573,8 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
                 f"  フォーム投入を再試行します "
                 f"(attempt {form_attempt + 1}/{max_form_attempts})"
             )
-            time.sleep(2)
+            _count_form_retry()
+            _form_wait(2)
     else:
         if isinstance(last_form_error, SunoSubmissionError):
             raise last_form_error
@@ -3488,6 +3601,7 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
                 while time.time() < deadline:
                     time.sleep(5)
                     if not detect_bot_challenge(page):
+                        _count_form_retry()
                         if not inject_into_suno(page, prepared):
                             raise SunoSubmissionError(
                                 "form_validation_after_bot",
@@ -3512,6 +3626,7 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
             sanitized = sanitize_lyrics_for_suno(prepared["lyrics"])
             if sanitized != prepared["lyrics"]:
                 prepared["lyrics"] = sanitized
+                _count_form_retry()
                 if not inject_into_suno(page, prepared):
                     raise SunoSubmissionError(
                         "form_validation_after_copyright",
@@ -3520,6 +3635,7 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
                 continue
         if create_attempt == 1:
             prepared["lyrics"] = _FALLBACK_BRACKET_LYRICS
+            _count_form_retry()
             if not inject_into_suno(page, prepared):
                 raise SunoSubmissionError(
                     "form_validation_after_copyright",
