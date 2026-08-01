@@ -162,6 +162,15 @@ def check_disk(channel_folder: Path) -> None:
         raise RuntimeError(f"disk free space is below 20 GiB: {free / 1024**3:.1f} GiB")
 
 
+def process_parallel_default() -> str:
+    """ffmpeg 後処理の並列度。CPU コア数 - 2（システムと並行 phase2 用に残す）。
+    下限 4 は従来値の維持。環境変数 APP_PROCESS_PARALLEL が明示されていればそちらを優先。"""
+    explicit = (os.environ.get("APP_PROCESS_PARALLEL") or "").strip()
+    if explicit:
+        return explicit
+    return str(max(4, (os.cpu_count() or 4) - 2))
+
+
 def command_env(duration_sec: int, channel_id: str) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
@@ -171,7 +180,7 @@ def command_env(duration_sec: int, channel_id: str) -> dict[str, str]:
             "APP_SUNO_SKIP_SECOND_DL": "1",
             "APP_SUNO_READY_POLL": "1",
             "APP_SUNO_ONESHOT": "1",
-            "APP_PROCESS_PARALLEL": "4",
+            "APP_PROCESS_PARALLEL": process_parallel_default(),
             "APP_CHANNEL_ID": channel_id,
             "PYTHONUNBUFFERED": "1",
         }
@@ -326,7 +335,7 @@ def main() -> int:
             "APP_SUNO_SKIP_SECOND_DL": "1",
             "APP_SUNO_READY_POLL": "1",
             "APP_SUNO_ONESHOT": "1",
-            "APP_PROCESS_PARALLEL": "4",
+            "APP_PROCESS_PARALLEL": process_parallel_default(),
             "APP_CHANNEL_ID": channel_id,
         }
         export_engine = channel_export_engine(Path(channel["folder"]))
