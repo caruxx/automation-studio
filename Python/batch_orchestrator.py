@@ -181,6 +181,9 @@ def command_env(duration_sec: int, channel_id: str) -> dict[str, str]:
             "APP_SUNO_READY_POLL": "1",
             "APP_SUNO_ONESHOT": "1",
             "APP_SUNO_SKIP_OPTIONAL_TITLE": "1",
+            # A/B検証 2026-08-01 (vol148-151): 0.7/0.5 とも bot判定0・skip0。
+            # 既定は安全マージンを取り 0.7。明示指定があればそちらを優先。
+            "APP_SUNO_FORM_WAIT_SCALE": os.environ.get("APP_SUNO_FORM_WAIT_SCALE") or "0.7",
             "APP_PROCESS_PARALLEL": process_parallel_default(),
             "APP_CHANNEL_ID": channel_id,
             "PYTHONUNBUFFERED": "1",
