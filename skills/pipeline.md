@@ -76,6 +76,8 @@ queue:                                                   vol149 phase2
 | `APP_SUNO_SKIP_SECOND_DL=1` | orchestrator 固定 | 子プロセス完了時に `music/*.mp3` があれば親の2回目DLと後処理を省く。 |
 | `APP_SUNO_READY_POLL=1` | orchestrator 固定 | 固定300秒待ちを使わず、20秒間隔で `audio_ready` が送信成功数の2倍に達するまで確認する。タイムアウト時はready分だけ回収する。 |
 | `APP_SUNO_ONESHOT=1` | orchestrator 固定 | 送信とready poll、DL、後処理を同じPlaywrightセッションで完結し、親側の2回目DLを行わない。 |
+| `APP_SUNO_SKIP_OPTIONAL_TITLE=1` | orchestrator 固定 | SUNOの任意タイトル入力とMore options探索を省く。未設定タイトルは後続の `app_process_tracks.py` が再生成する。 |
+| `APP_SUNO_FORM_DIAGNOSTICS=1` | 手動調査時のみ | フォーム失敗時のDOM診断ダンプを有効にする。既定はoffで、警告ログは引き続き出力する。 |
 | `APP_PROCESS_PARALLEL=4` | orchestrator固定 | `app_process_tracks.py` のffmpeg処理を4並列にする。未指定時は1で従来の逐次処理。 |
 
 ### preflight

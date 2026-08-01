@@ -180,6 +180,7 @@ def command_env(duration_sec: int, channel_id: str) -> dict[str, str]:
             "APP_SUNO_SKIP_SECOND_DL": "1",
             "APP_SUNO_READY_POLL": "1",
             "APP_SUNO_ONESHOT": "1",
+            "APP_SUNO_SKIP_OPTIONAL_TITLE": "1",
             "APP_PROCESS_PARALLEL": process_parallel_default(),
             "APP_CHANNEL_ID": channel_id,
             "PYTHONUNBUFFERED": "1",
@@ -335,6 +336,7 @@ def main() -> int:
             "APP_SUNO_SKIP_SECOND_DL": "1",
             "APP_SUNO_READY_POLL": "1",
             "APP_SUNO_ONESHOT": "1",
+            "APP_SUNO_SKIP_OPTIONAL_TITLE": "1",
             "APP_PROCESS_PARALLEL": process_parallel_default(),
             "APP_CHANNEL_ID": channel_id,
         }

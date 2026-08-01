@@ -57,6 +57,10 @@ def _form_wait_scale():
     return scale
 
 
+def _env_flag(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+
 def _scaled_form_wait_sec(seconds):
     return max(_FORM_WAIT_MIN_SEC, float(seconds) * _form_wait_scale())
 
@@ -118,6 +122,7 @@ def _form_metrics_snapshot(songs_ok, songs_total):
         "songs_skipped": max(0, int(songs_total) - int(songs_ok)),
         "bot_challenges": int(_FORM_METRICS["bot_challenges"]),
         "form_retries": int(_FORM_METRICS["form_retries"]),
+        "title_skipped": int(_env_flag("APP_SUNO_SKIP_OPTIONAL_TITLE")),
         "submit_phase_sec": round(elapsed, 1),
     }
 
@@ -126,7 +131,8 @@ def _format_form_metrics(metrics):
     return (
         f"FORM_METRICS scale={metrics['scale']} songs_ok={metrics['songs_ok']} "
         f"songs_skipped={metrics['songs_skipped']} bot_challenges={metrics['bot_challenges']} "
-        f"form_retries={metrics['form_retries']} submit_phase_sec={metrics['submit_phase_sec']:.1f}"
+        f"form_retries={metrics['form_retries']} title_skipped={metrics['title_skipped']} "
+        f"submit_phase_sec={metrics['submit_phase_sec']:.1f}"
     )
 
 
@@ -3073,6 +3079,8 @@ def _find_section_control(page, labels, control_selector):
 
 def _form_dom_diagnostics(page, step):
     """失敗時にフォーム周辺のouterHTMLを各500文字まで出力する。"""
+    if not _env_flag("APP_SUNO_FORM_DIAGNOSTICS"):
+        return
     try:
         snapshots = page.evaluate("""(groups) => {
             const norm = value => (value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
@@ -3312,7 +3320,8 @@ def _fill_optional_title(page, title, retries=2):
         "WARNING optional title was not set; continuing without title: "
         f"cleared={cleared} details={' | '.join(failures)}"
     )
-    _form_dom_diagnostics(page, "optional_title")
+    if _env_flag("APP_SUNO_FORM_DIAGNOSTICS"):
+        _form_dom_diagnostics(page, "optional_title")
     return False
 
 
@@ -3368,7 +3377,10 @@ def inject_into_suno(page, content):
                 errors.append(f"styles input error: {exc}")
 
     if title:
-        _fill_optional_title(page, title, retries=2)
+        if _env_flag("APP_SUNO_SKIP_OPTIONAL_TITLE"):
+            print("optional title: skipped (APP_SUNO_SKIP_OPTIONAL_TITLE=1)")
+        else:
+            _fill_optional_title(page, title, retries=2)
 
     if exclude_styles and not title:
         try:
