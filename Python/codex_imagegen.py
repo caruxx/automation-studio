@@ -10,7 +10,7 @@ CLI 例:
         --prompts-file prompts.txt
     python3 codex_imagegen.py --output-dir /path/to/Image --prompt "夜の名古屋::nagoya"
     python3 codex_imagegen.py --output-dir /path/to/Image --reference-image ref.jpg \\
-        --size 1536x1024 --quality medium --prompt "Subject: ..."
+        --aspect 16:9 --quality medium --prompt "Subject: ..."
 """
 from __future__ import annotations
 
@@ -202,9 +202,19 @@ def _build_codex_command(
             "5. 参照画像が複数ある場合は、それぞれの「効いている要素」（配色・光・ムード・構図のみ）"
             "だけを抽出して、下記の生成プロンプト本体と統合してください。\n"
         )
+    aspect_label = _size_to_aspect(size)
+    fallback_size = _standard_fallback_for_size(size)
+    fallback_note = ""
+    if fallback_size != size:
+        fallback_aspect = _size_to_aspect(fallback_size)
+        fallback_note = f"。{fallback_size} のような {fallback_aspect} で出力しないこと"
+    size_instruction = (
+        f"size={size}（アスペクト比 {aspect_label} 厳守{fallback_note}）"
+        if aspect_label else f"size={size}"
+    )
     instruction = (
         f"OpenAI の {model} 相当の画像生成として、次のプロンプトで画像を生成して。\n"
-        f"推奨設定: size={size}, quality={quality}, output_format={output_format}。\n"
+        f"推奨設定: {size_instruction}, quality={quality}, output_format={output_format}。\n"
         "⚠生成画像には文字・テキスト・キャプション・字幕・日本語/韓国語の文字・"
         "ロゴ・透かし・看板・読める文字列を**一切描き込まないこと**"
         "（後から別工程でテキストを載せるため、AI 画像側は文字ゼロが必須）。\n"
@@ -256,18 +266,197 @@ def _response_image_bytes_list(payload: dict) -> list[bytes]:
     return out
 
 
-# 16:9 / 1:1 / 9:16 / 4:3 / 3:4 → gpt-image-2 でサポートされる標準サイズ
-_ASPECT_TO_SIZE = {
-    "16:9": "1536x1024",
-    "9:16": "1024x1536",
-    "1:1":  "1024x1024",
-    "4:3":  "1536x1024",   # gpt-image-2 は 4:3 標準なしで近い 1536x1024 に倒す
-    "3:4":  "1024x1536",
+# gpt-image-2 の標準サイズには 16:9 も 4:3 も存在しない。
+# まず16の倍数の厳密サイズを要求し、APIが拒否した場合だけ標準サイズへ倒す。
+_ASPECT_SPECS = {
+    "16:9": {"exact_size": "1536x864", "fallback_size": "1536x1024", "ratio": (16, 9)},
+    "9:16": {"exact_size": "864x1536", "fallback_size": "1024x1536", "ratio": (9, 16)},
+    "1:1": {"exact_size": "1024x1024", "fallback_size": "1024x1024", "ratio": (1, 1)},
+    "4:3": {"exact_size": "1408x1056", "fallback_size": "1536x1024", "ratio": (4, 3)},
+    "3:4": {"exact_size": "1056x1408", "fallback_size": "1024x1536", "ratio": (3, 4)},
 }
 
 
 def aspect_to_size(aspect: str, fallback: str = "1536x1024") -> str:
-    return _ASPECT_TO_SIZE.get((aspect or "").strip(), fallback)
+    spec = _ASPECT_SPECS.get((aspect or "").strip())
+    return str(spec["exact_size"]) if spec else fallback
+
+
+def _parse_size(size: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"\s*(\d+)\s*[xX]\s*(\d+)\s*", size or "")
+    if not match:
+        return None
+    width, height = int(match.group(1)), int(match.group(2))
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def _reduce_ratio(width: int, height: int) -> tuple[int, int]:
+    from math import gcd
+
+    divisor = gcd(width, height)
+    return width // divisor, height // divisor
+
+
+def _size_to_aspect(size: str) -> str:
+    parsed = _parse_size(size)
+    if not parsed:
+        return ""
+    width, height = _reduce_ratio(*parsed)
+    return f"{width}:{height}"
+
+
+def _aspect_ratio_parts(aspect: str) -> tuple[int, int] | None:
+    normalized = (aspect or "").strip()
+    spec = _ASPECT_SPECS.get(normalized)
+    if spec:
+        return spec["ratio"]
+    match = re.fullmatch(r"\s*(\d+)\s*:\s*(\d+)\s*", normalized)
+    if not match:
+        return None
+    width, height = int(match.group(1)), int(match.group(2))
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def _standard_fallback_for_size(size: str) -> str:
+    for spec in _ASPECT_SPECS.values():
+        if spec["exact_size"] == size:
+            return str(spec["fallback_size"])
+    return size
+
+
+def _is_size_rejection(status_code: int, message: str) -> bool:
+    if status_code != 400:
+        return False
+    lowered = (message or "").lower()
+    return any(word in lowered for word in ("size", "dimension", "width", "height", "resolution"))
+
+
+def _probe_image_size_with_ffprobe(path: Path) -> tuple[int, int] | None:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe and Path("/opt/homebrew/bin/ffprobe").exists():
+        ffprobe = "/opt/homebrew/bin/ffprobe"
+    if not ffprobe:
+        return None
+    try:
+        proc = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        streams = json.loads(proc.stdout or "{}").get("streams") or []
+        if proc.returncode == 0 and streams:
+            return int(streams[0]["width"]), int(streams[0]["height"])
+    except Exception:
+        pass
+    return None
+
+
+def enforce_aspect(path: str | Path, aspect: str) -> dict:
+    """生成画像が目的比から1%以上ずれている場合だけ中央クロップする。"""
+    image_path = Path(path)
+    ratio = _aspect_ratio_parts(aspect)
+    result = {
+        "path": str(image_path),
+        "aspect": (aspect or "").strip(),
+        "cropped": False,
+        "original_size": "",
+        "final_size": "",
+        "processor": "",
+    }
+    if not ratio or not image_path.exists():
+        return result
+
+    target_width, target_height = ratio
+    pillow_error = ""
+    temp_path = image_path.with_name(
+        f".{image_path.stem}.aspect-{os.getpid()}-{threading.get_ident()}{image_path.suffix}"
+    )
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as source:
+            width, height = source.size
+            result["original_size"] = f"{width}x{height}"
+            result["final_size"] = result["original_size"]
+            relative_error = abs((width / height) / (target_width / target_height) - 1.0)
+            if relative_error < 0.01:
+                return result
+            factor = min(width // target_width, height // target_height)
+            crop_width, crop_height = target_width * factor, target_height * factor
+            if crop_width <= 0 or crop_height <= 0:
+                raise ValueError("目的比のクロップ領域を計算できません")
+            left = (width - crop_width) // 2
+            top = (height - crop_height) // 2
+            cropped_image = source.crop((left, top, left + crop_width, top + crop_height))
+            save_options = {}
+            if source.info.get("icc_profile"):
+                save_options["icc_profile"] = source.info["icc_profile"]
+            if source.info.get("exif"):
+                save_options["exif"] = source.info["exif"]
+            cropped_image.save(temp_path, format=source.format, **save_options)
+        os.replace(temp_path, image_path)
+        result.update(cropped=True, final_size=f"{crop_width}x{crop_height}", processor="pillow")
+    except Exception as exc:  # Pillow が無い場合や読み書き失敗は ffmpeg へ倒す
+        pillow_error = str(exc)
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        dimensions = _probe_image_size_with_ffprobe(image_path)
+        if not dimensions:
+            _log(f"[WARN] {image_path.name} のアスペクト比を補正できません: {pillow_error}")
+            return result
+        width, height = dimensions
+        result["original_size"] = f"{width}x{height}"
+        result["final_size"] = result["original_size"]
+        relative_error = abs((width / height) / (target_width / target_height) - 1.0)
+        if relative_error < 0.01:
+            return result
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg and Path("/opt/homebrew/bin/ffmpeg").exists():
+            ffmpeg = "/opt/homebrew/bin/ffmpeg"
+        if not ffmpeg:
+            _log(f"[WARN] {image_path.name} のアスペクト比を補正できません: {pillow_error}")
+            return result
+        factor = min(width // target_width, height // target_height)
+        crop_width, crop_height = target_width * factor, target_height * factor
+        if crop_width <= 0 or crop_height <= 0:
+            _log(f"[WARN] {image_path.name} のクロップ領域を計算できないため元画像を残します")
+            return result
+        left = (width - crop_width) // 2
+        top = (height - crop_height) // 2
+        try:
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-i", str(image_path), "-vf",
+                 f"crop={crop_width}:{crop_height}:{left}:{top}", "-frames:v", "1", str(temp_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+            if proc.returncode != 0 or not temp_path.exists() or temp_path.stat().st_size == 0:
+                raise RuntimeError((proc.stderr or "ffmpeg が失敗しました")[-500:])
+            os.replace(temp_path, image_path)
+            result.update(cropped=True, final_size=f"{crop_width}x{crop_height}", processor="ffmpeg")
+        except Exception as exc:
+            _log(f"[WARN] {image_path.name} のffmpegクロップに失敗したため元画像を残します: {exc}")
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return result
+
+    original_width, original_height = _parse_size(result["original_size"]) or (0, 0)
+    original_ratio = _reduce_ratio(original_width, original_height) if original_width and original_height else (0, 0)
+    _log(
+        f"[WARN] {image_path.name} が {result['original_size']} "
+        f"({original_ratio[0]}:{original_ratio[1]}) で出力されたため "
+        f"{result['final_size']} ({target_width}:{target_height}) にセンタークロップしました"
+    )
+    return result
 
 
 def _generate_with_openai_api(
@@ -310,37 +499,50 @@ def _generate_with_openai_api(
     if moderation and moderation != "auto":
         data["moderation"] = moderation
     timeout = httpx.Timeout(timeout_sec)
-    if refs:
-        if input_fidelity in ("high", "low"):
-            data["input_fidelity"] = input_fidelity
-        handles = []
-        files = []
-        try:
-            for p in refs:
-                mime = mimetypes.guess_type(p.name)[0] or "image/png"
-                fh = p.open("rb")
-                handles.append(fh)
-                files.append(("image[]", (p.name, fh, mime)))
-            resp = httpx.post(
-                OPENAI_IMAGE_EDITS_URL,
-                headers=_api_headers(api_key),
-                data=data,
-                files=files,
-                timeout=timeout,
-            )
-        finally:
-            for fh in handles:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-    else:
-        resp = httpx.post(
+
+    def _post(request_size: str):
+        request_data = {**data, "size": request_size}
+        if refs:
+            if input_fidelity in ("high", "low"):
+                request_data["input_fidelity"] = input_fidelity
+            handles = []
+            files = []
+            try:
+                for p in refs:
+                    mime = mimetypes.guess_type(p.name)[0] or "image/png"
+                    fh = p.open("rb")
+                    handles.append(fh)
+                    files.append(("image[]", (p.name, fh, mime)))
+                return httpx.post(
+                    OPENAI_IMAGE_EDITS_URL,
+                    headers=_api_headers(api_key),
+                    data=request_data,
+                    files=files,
+                    timeout=timeout,
+                )
+            finally:
+                for fh in handles:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+        return httpx.post(
             OPENAI_IMAGE_GENERATIONS_URL,
             headers=_api_headers(api_key),
-            json=data,
+            json=request_data,
             timeout=timeout,
         )
+
+    requested_size = size
+    actual_size = size
+    size_fallback = False
+    resp = _post(actual_size)
+    fallback_size = _standard_fallback_for_size(requested_size)
+    if fallback_size != requested_size and _is_size_rejection(resp.status_code, resp.text):
+        _log(f"[WARN] size={requested_size} が拒否されたため {fallback_size} で再試行します")
+        actual_size = fallback_size
+        size_fallback = True
+        resp = _post(actual_size)
     if resp.status_code >= 400:
         raise RuntimeError(f"OpenAI Image API error {resp.status_code}: {resp.text[:500]}")
     images = _response_image_bytes_list(resp.json())
@@ -357,7 +559,9 @@ def _generate_with_openai_api(
             p.write_bytes(blob)
             saved.append(str(p))
     return {"backend": "openai_api", "reference_count": len(refs),
-            "n": n_clamped, "saved_paths": saved}
+            "n": n_clamped, "saved_paths": saved,
+            "requested_size": requested_size, "actual_size": actual_size,
+            "size_fallback": size_fallback}
 
 
 def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: Path,
@@ -367,7 +571,7 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
                  backend: Literal["auto", "api", "codex"] = "auto",
                  background: str = "auto", moderation: str = "auto",
                  input_fidelity: str = "high", n: int = 1,
-                 generation_meta: dict | None = None) -> dict:
+                 generation_meta: dict | None = None, aspect: str = "") -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     dest = output_dir / filename
     # 衝突回避（安全網）: 既存ファイルがあれば -2, -3, ... を付与
@@ -412,6 +616,9 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
                     "error": str(e), "path": None}
         elapsed = int(time.time() - started)
         saved = meta.get("saved_paths") or [str(dest)]
+        crop_results = [enforce_aspect(path, aspect) for path in saved] if aspect else []
+        meta["crop_results"] = crop_results
+        meta["cropped"] = any(item.get("cropped") for item in crop_results)
         head = Path(saved[0])
         try:
             head_size = head.stat().st_size // 1024
@@ -458,10 +665,18 @@ def generate_one(codex_cli: str | None, prompt: str, filename: str, output_dir: 
     elapsed = int(time.time() - started)
     out_text = (proc.stdout or "").strip()
     if dest.exists() and dest.stat().st_size > 0:
-        _write_generation_sidecars([str(dest)], prompt, generation_meta, {"backend": "codex_cli"})
+        crop_results = [enforce_aspect(dest, aspect)] if aspect else []
+        codex_meta = {
+            "backend": "codex_cli",
+            "requested_size": size,
+            "crop_results": crop_results,
+            "cropped": any(item.get("cropped") for item in crop_results),
+        }
+        _write_generation_sidecars([str(dest)], prompt, generation_meta, codex_meta)
         _log(f"[OK] {filename} ({elapsed}s, {dest.stat().st_size // 1024}KB)")
         return {"ok": True, "filename": filename, "prompt": prompt,
-                "path": str(dest), "elapsed": elapsed, "generation_meta": generation_meta or {}}
+                "path": str(dest), "elapsed": elapsed, "generation_meta": generation_meta or {},
+                **codex_meta}
     # 失敗時は標準出力末尾を診断材料として返す
     tail = "\n".join(out_text.splitlines()[-15:]) if out_text else ""
 
@@ -506,7 +721,8 @@ def run(prompts: list[tuple[str, str]], output_dir: Path,
         backend: Literal["auto", "api", "codex"] = "auto",
         background: str = "auto", moderation: str = "auto",
         input_fidelity: str = "high", n: int = 1,
-        generation_meta: dict[str, dict] | None = None) -> list[dict]:
+        generation_meta: dict[str, dict] | None = None,
+        aspect: str = "") -> list[dict]:
     if not prompts:
         _log("[WARN] プロンプトが空です")
         return []
@@ -535,6 +751,7 @@ def run(prompts: list[tuple[str, str]], output_dir: Path,
                 generate_one, codex_cli, p, fn, output_dir, timeout_sec,
                 reference_images, model, size, quality, output_format, backend,
                 background, moderation, input_fidelity, n, _meta_for(fn),
+                aspect=aspect,
             ): (p, fn)
             for p, fn in prompts
         }
@@ -565,6 +782,8 @@ def _write_generation_sidecars(paths: list[str], prompt: str, generation_meta: d
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     for idx, raw in enumerate(paths):
         p = Path(raw)
+        crop_results = (backend_meta or {}).get("crop_results") or []
+        crop_meta = crop_results[idx] if idx < len(crop_results) else {}
         payload = {
             "schema_version": 1,
             "generated_at": now,
@@ -575,6 +794,12 @@ def _write_generation_sidecars(paths: list[str], prompt: str, generation_meta: d
             "module_ids": (generation_meta or {}).get("module_ids") or {},
             "sections": (generation_meta or {}).get("sections") or {},
             "backend": (backend_meta or {}).get("backend") or "",
+            "requested_size": (backend_meta or {}).get("requested_size") or "",
+            "api_size": (backend_meta or {}).get("actual_size") or "",
+            "size_fallback": bool((backend_meta or {}).get("size_fallback")),
+            "final_size": crop_meta.get("final_size") or "",
+            "cropped": bool(crop_meta.get("cropped")),
+            "crop_processor": crop_meta.get("processor") or "",
             "variant_index": idx + 1,
         }
         try:
@@ -643,7 +868,7 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=1,
                     help="1 リクエストあたりの生成枚数 (1-10)。複数の場合は filename-1.png, -2.png 形式")
     ap.add_argument("--aspect", default="",
-                    help="アスペクト比 (16:9 / 9:16 / 1:1 / 4:3 / 3:4)。指定時は --size より優先して標準サイズへ変換")
+                    help="アスペクト比 (16:9 / 9:16 / 1:1 / 4:3 / 3:4)。--size より優先。標準サイズに無い比は生成後のセンタークロップで担保")
     ap.add_argument("--generation-meta-json", default="",
                     help="filename stem -> structured prompt metadata の JSON ファイル")
     args = ap.parse_args()
@@ -651,6 +876,7 @@ def main() -> int:
     size = args.size
     if args.aspect:
         size = aspect_to_size(args.aspect, fallback=size)
+    enforced_aspect = args.aspect.strip() if args.aspect else _size_to_aspect(size)
 
     raw = _read_prompts(args)
     parsed = parse_prompt_lines(raw)
@@ -681,6 +907,7 @@ def main() -> int:
         input_fidelity=args.input_fidelity,
         n=args.n,
         generation_meta=generation_meta,
+        aspect=enforced_aspect,
     )
     return 0 if all(r["ok"] for r in results) else 1
 
