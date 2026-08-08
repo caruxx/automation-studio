@@ -24,6 +24,8 @@ services:
       DATABASE_URL: postgresql+psycopg2://asstudio:${POSTGRES_PASSWORD:-asstudio_dev}@db:5432/asstudio
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - /etc/automation-studio:/etc/automation-studio:ro
     depends_on:
       db:
         condition: service_healthy

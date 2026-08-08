@@ -109,3 +109,8 @@ apikey*.txt
 /backup/
 /generated_product_images/
 /test-results/
+
+# 暗号鍵（絶対にコミットしない。本番はリポジトリ外の 0600 ファイルに置く）
+keyring.json
+*keyring*.json
+*.key

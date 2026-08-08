@@ -30,7 +30,20 @@ Rows are upserted by the JSON `id`, which maps to `channel_key`. Existing rows o
 cp .env.example .env
 ```
 
-Replace every dummy secret in `.env`. Production startup rejects `SECRET_KEY` values shorter than 32 characters. Token encryption in production also requires KMS data-key settings.
+Replace every dummy secret in `.env`. Production startup rejects `SECRET_KEY` values shorter than 32 characters. Production token encryption requires an AWS KMS data-key keyring, a local keyring file, or a directly configured local keyring.
+
+The recommended production setup is a root-owned local keyring file outside the repository and any shared drive:
+
+```bash
+sudo install -d -m 0700 /etc/automation-studio
+sudo python3 scripts/generate_keyring.py --out /etc/automation-studio/keyring.json
+```
+
+Set `TOKEN_LOCAL_KEYRING_FILE=/etc/automation-studio/keyring.json` and set `TOKEN_ACTIVE_KEY_ID` to the generated key ID. Docker Compose mounts `/etc/automation-studio` read-only in the backend container. Never store the keyring inside this repository or a shared drive. Production refuses a keyring file readable by group or other users.
+
+Back up the keyring because losing it makes saved refresh tokens impossible to decrypt. Store the keyring backup and the database backup in separate locations.
+
+For key rotation, add a new `key_id` and key to the JSON object, then change `TOKEN_ACTIVE_KEY_ID` to the new ID. Existing envelopes retain their `key_id`, so keep old keys in the keyring until all values using them have been replaced.
 
 ```bash
 docker compose up --build -d

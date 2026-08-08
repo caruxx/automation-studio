@@ -1,8 +1,4 @@
-"""AES-256-GCM envelope encryption for Automation Studio credentials.
-
-Production accepts only AWS KMS-encrypted data keys. Plaintext local keyrings
-are limited to development and test environments.
-"""
+"""AES-256-GCM envelope encryption for Automation Studio credentials."""
 from __future__ import annotations
 
 from base64 import b64decode, b64encode, urlsafe_b64decode, urlsafe_b64encode
@@ -11,6 +7,8 @@ import hashlib
 import json
 import os
 import re
+import stat
+from pathlib import Path
 from typing import Any, Mapping
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -58,6 +56,32 @@ def _decode_local_key(value: Any) -> bytes:
     if len(raw) != 32 or b64encode(raw).decode("ascii") != value:
         raise TokenEncryptionConfigurationError("token_local_keyring_invalid")
     return raw
+
+
+def _load_local_keyring(values: Mapping[str, Any]) -> dict[str, bytes]:
+    keyring: dict[str, bytes] = {}
+    for key_id, value in values.items():
+        if not isinstance(key_id, str) or _KEY_ID_RE.fullmatch(key_id) is None:
+            raise TokenEncryptionConfigurationError("token_local_keyring_invalid")
+        keyring[key_id] = _decode_local_key(value)
+    return keyring
+
+
+def _read_local_keyring_file(path_text: str) -> dict[str, Any]:
+    path = Path(path_text)
+    try:
+        file_stat = path.stat()
+    except OSError:
+        raise TokenEncryptionConfigurationError("token_keyring_file_invalid") from None
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise TokenEncryptionConfigurationError("token_keyring_file_invalid")
+    if _is_production() and stat.S_IMODE(file_stat.st_mode) & 0o077:
+        raise TokenEncryptionConfigurationError("token_keyring_file_permissive")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        raise TokenEncryptionConfigurationError("token_keyring_file_invalid") from None
+    return _strict_json_object(raw, "TOKEN_LOCAL_KEYRING_FILE")
 
 
 def _load_kms_keyring(values: Mapping[str, Any]) -> dict[str, bytes]:
@@ -112,8 +136,14 @@ def load_keyring() -> tuple[str, Mapping[str, bytes]]:
             raise TokenEncryptionConfigurationError("token_active_key_invalid")
         return active, _load_kms_keyring(kms_values)
 
-    if _is_production():
-        raise TokenEncryptionConfigurationError("token_kms_data_keys_required")
+    local_file = os.getenv("TOKEN_LOCAL_KEYRING_FILE", "").strip()
+    if local_file:
+        local_values = _read_local_keyring_file(local_file)
+        if not local_values:
+            raise TokenEncryptionConfigurationError("token_local_keyring_file_invalid")
+        if _KEY_ID_RE.fullmatch(active) is None or active not in local_values:
+            raise TokenEncryptionConfigurationError("token_active_key_invalid")
+        return active, _load_local_keyring(local_values)
 
     local_values = _strict_json_object(
         os.getenv("TOKEN_LOCAL_KEYRING_JSON", "{}"),
@@ -122,10 +152,9 @@ def load_keyring() -> tuple[str, Mapping[str, bytes]]:
     if local_values:
         if _KEY_ID_RE.fullmatch(active) is None or active not in local_values:
             raise TokenEncryptionConfigurationError("token_active_key_invalid")
-        return active, {
-            key_id: _decode_local_key(value)
-            for key_id, value in local_values.items()
-        }
+        return active, _load_local_keyring(local_values)
+    if _is_production():
+        raise TokenEncryptionConfigurationError("token_keyring_required")
     return _development_keyring()
 
 
