@@ -41,9 +41,13 @@ Mac --SSH--> VPS ライブ配信 (既存 app_live.py 系統。本計画では触
    ログインAPI / ユーザー管理API。Docker で起動、pytest 同梱。
 2. **チャンネル＝アカウント化**: YouTubeChannel テーブル + get_current_channel (X-Channel-Id、
    accessible_channel_ids fail-closed、contextvar)。グローバル app_id 依存を VPS 側に持ち込まない。
-3. **認証情報の移送**: .youtube_token.json → DB 暗号化カラム。OAuth は run_local_server を廃し
-   Web redirect_uri フロー（ユーザーのブラウザで同意 → VPS が受ける）。client_secret はユーザー毎
-   登録可（quota 別枠化）。
+3. **OAuth 再同意と認証情報の登録**: OAuth は run_local_server を廃し Web redirect_uri フロー
+   （ユーザーのブラウザで同意 → VPS が受ける）。取得した refresh_token を DB の暗号化カラムへ保存。
+   **既存の .youtube_token.json は import しない**。refresh_token は発行元の client_id に紐づくため、
+   別クライアントでは使えない。VPS 側は新規の「ウェブアプリケーション」型クライアントで
+   チャンネルごとに再同意を取る（既存はデスクトップ型でループバック redirect のため流用不可）。
+   GCP プロジェクトは既存と同一（2026-08-09 ユーザー決定）。videos.insert は 100 ユニット
+   （2025-12 に 1600 から引き下げ）、10,000/日 で約 100 本相当のため並行稼働中も枠は逼迫しない。
 4. **ジョブキュー + WorkerToken**: ジョブ発行/占有(lease)/完了報告 API。完了報告に YouTube quota
    消費ユニットを同梱し VPS 側で集計。期限接近かつ未着手ジョブは Discord 通知。
    排他は DB のジョブ状態で行い、/tmp flock は単一 Mac 内の資源(Adobe/SUNO)専用に格下げ。

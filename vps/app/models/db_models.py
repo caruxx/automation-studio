@@ -104,3 +104,27 @@ class YouTubeChannel(Base):
             value,
             field="youtube_channel.oauth_refresh_token",
         )
+
+
+class OAuthState(Base):
+    __tablename__ = "oauth_states"
+
+    id = Column(Integer, primary_key=True)
+    state = Column(String(64), unique=True, index=True, nullable=False)
+    channel_id = Column(
+        Integer,
+        ForeignKey("youtube_channels.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    redirect_uri = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    consumed_at = Column(DateTime, nullable=True)
+
+    channel = relationship("YouTubeChannel")
+    user = relationship("User")

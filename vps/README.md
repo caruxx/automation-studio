@@ -4,6 +4,8 @@ Phase 1 provides the standalone FastAPI and PostgreSQL control-plane base. It in
 
 Phase 2 adds first-class YouTube channels, per-request channel resolution, access filtering through `User.accessible_channel_ids`, administrative channel management, and a one-way importer for the existing shared-drive channel configuration. OAuth credential columns and encrypted accessors are reserved for phase 3; phase 2 does not populate credentials.
 
+Phase 3 adds a VPS-hosted YouTube OAuth web flow. OAuth client secrets and refresh tokens are encrypted at rest. Access tokens are refreshed on demand and cached only in process memory. Existing `.youtube_token.json` files are not imported because refresh tokens are bound to the OAuth client that issued them.
+
 Worker tokens, the job queue, and Mac worker integration belong to later phases and are not included here.
 
 ## Channel selection
@@ -36,6 +38,26 @@ curl http://127.0.0.1:8000/api/health
 ```
 
 Both PostgreSQL and the backend bind only to `127.0.0.1`. Publish the backend through a separately configured HTTPS reverse proxy.
+
+## YouTube OAuth setup
+
+Complete these manual steps in Google Cloud Console before starting authorization:
+
+1. Select or create the Google Cloud project used for this VPS and enable YouTube Data API v3 and YouTube Analytics API.
+2. Configure the OAuth consent screen and add the Google accounts that may authorize channels while the app remains in testing mode.
+3. Open APIs and Services, Credentials, then create an OAuth client ID with application type `Web application`.
+4. Add the public HTTPS callback URL as an authorized redirect URI. It must exactly match `YOUTUBE_OAUTH_REDIRECT_URI`, including scheme, host, path, and trailing-slash behavior. The expected path is `/api/oauth/callback`, for example `https://studio.example.com/api/oauth/callback`.
+5. Set `YOUTUBE_OAUTH_REDIRECT_URI` in `.env`, then restart the backend.
+6. As an administrator, save the web client ID and client secret with `PUT /api/channels/{channel_id}/oauth-client`. This operation does not return either value and clears any refresh token previously issued for a different client.
+7. While authenticated as a user with access to that channel, call `POST /api/channels/{channel_id}/oauth/start` and open the returned `authorization_url`. Google redirects back to the VPS callback after consent.
+
+The authorization request asks for these scopes:
+
+- `https://www.googleapis.com/auth/youtube.upload`
+- `https://www.googleapis.com/auth/youtube`
+- `https://www.googleapis.com/auth/yt-analytics.readonly`
+
+Use `GET /api/channels/{channel_id}/oauth/status` to check whether authorization is present. It returns only `has_credentials` and `credentials_updated_at`. `DELETE /api/channels/{channel_id}/oauth` is administrator-only and removes the stored refresh token without removing the OAuth client configuration.
 
 ## MFA enrollment
 

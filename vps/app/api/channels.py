@@ -67,6 +67,13 @@ class UpdateChannelRequest(BaseModel):
     note: Optional[str] = None
 
 
+class OAuthClientRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    oauth_client_id: str = Field(min_length=1, max_length=128)
+    client_secret: str = Field(min_length=1)
+
+
 def _get_channel_or_404(db: Session, channel_id: int) -> YouTubeChannel:
     channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
     if channel is None:
@@ -154,3 +161,19 @@ def set_default_channel(
     db.commit()
     db.refresh(channel)
     return channel
+
+
+@router.put("/{channel_id}/oauth-client")
+def update_oauth_client(
+    channel_id: int,
+    payload: OAuthClientRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    channel = _get_channel_or_404(db, channel_id)
+    channel.oauth_client_id = payload.oauth_client_id
+    channel.oauth_client_secret = payload.client_secret
+    channel.oauth_refresh_token = None
+    channel.credentials_updated_at = None
+    db.commit()
+    return {"success": True}
