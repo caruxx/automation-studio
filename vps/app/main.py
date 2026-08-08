@@ -1,0 +1,35 @@
+"""Automation Studio VPS control-plane API."""
+import os
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from .api.auth import router as auth_router
+from .api.users import router as users_router
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="Automation Studio VPS", version="0.1.0")
+    origins = [
+        item.strip()
+        for item in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+        if item.strip()
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+    app.include_router(auth_router)
+    app.include_router(users_router)
+
+    @app.get("/api/health", tags=["system"])
+    def health():
+        return {"status": "ok"}
+
+    return app
+
+
+app = create_app()
