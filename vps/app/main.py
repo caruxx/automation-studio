@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.auth import router as auth_router
+from .api.channels import router as channels_router
 from .api.users import router as users_router
 
 
@@ -19,10 +20,11 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Channel-Id"],
     )
     app.include_router(auth_router)
+    app.include_router(channels_router)
     app.include_router(users_router)
 
     @app.get("/api/health", tags=["system"])

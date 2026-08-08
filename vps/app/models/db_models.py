@@ -1,10 +1,11 @@
-"""Database models used by the phase 1 control plane."""
+"""Database models used by the VPS control plane."""
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import relationship
 
 from ..db import Base
+from ..services.token_crypto import decrypt_json, encrypt_json
 
 
 class User(Base):
@@ -48,3 +49,58 @@ class UserInvitation(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     invited_by = relationship("User", foreign_keys=[invited_by_user_id])
+
+
+class YouTubeChannel(Base):
+    __tablename__ = "youtube_channels"
+
+    id = Column(Integer, primary_key=True)
+    channel_key = Column(String(64), unique=True, index=True, nullable=False)
+    name = Column(String(128), nullable=False)
+    handle = Column(String(128), nullable=True)
+    youtube_channel_id = Column(String(64), index=True, nullable=True)
+    prefix = Column(String(32), nullable=True)
+    folder_rel = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    is_default = Column(Boolean, nullable=False, default=False, index=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    oauth_client_id = Column(String(128), nullable=True)
+    oauth_client_secret_encrypted = Column(Text, nullable=True)
+    oauth_refresh_token_encrypted = Column(Text, nullable=True)
+    credentials_updated_at = Column(DateTime, nullable=True)
+
+    @property
+    def oauth_client_secret(self):
+        return decrypt_json(
+            self.oauth_client_secret_encrypted,
+            field="youtube_channel.oauth_client_secret",
+        )
+
+    @oauth_client_secret.setter
+    def oauth_client_secret(self, value) -> None:
+        self.oauth_client_secret_encrypted = encrypt_json(
+            value,
+            field="youtube_channel.oauth_client_secret",
+        )
+
+    @property
+    def oauth_refresh_token(self):
+        return decrypt_json(
+            self.oauth_refresh_token_encrypted,
+            field="youtube_channel.oauth_refresh_token",
+        )
+
+    @oauth_refresh_token.setter
+    def oauth_refresh_token(self, value) -> None:
+        self.oauth_refresh_token_encrypted = encrypt_json(
+            value,
+            field="youtube_channel.oauth_refresh_token",
+        )

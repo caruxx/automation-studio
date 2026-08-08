@@ -19,7 +19,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_db
 from app.main import app
-from app.models.db_models import User
+from app.models.db_models import User, YouTubeChannel
 from app.rate_limit import clear_rate_limits
 from app.security import hash_password
 
@@ -67,6 +67,7 @@ def create_user():
         password: str = "Valid!Pass9072",
         role: str = "user",
         totp_secret: str | None = None,
+        accessible_channel_ids: list[int] | None = None,
     ) -> User:
         with TestingSessionLocal() as db:
             user = User(
@@ -77,11 +78,43 @@ def create_user():
                 is_active=True,
                 totp_secret=totp_secret,
                 totp_enabled=totp_secret is not None,
+                accessible_channel_ids=accessible_channel_ids,
             )
             db.add(user)
             db.commit()
             db.refresh(user)
             db.expunge(user)
             return user
+
+    return factory
+
+
+@pytest.fixture
+def create_channel():
+    def factory(
+        *,
+        channel_key: str,
+        name: str | None = None,
+        is_active: bool = True,
+        is_default: bool = False,
+        oauth_client_id: str | None = None,
+        oauth_client_secret: str | None = None,
+        oauth_refresh_token: str | None = None,
+    ) -> YouTubeChannel:
+        with TestingSessionLocal() as db:
+            channel = YouTubeChannel(
+                channel_key=channel_key,
+                name=name or channel_key,
+                is_active=is_active,
+                is_default=is_default,
+                oauth_client_id=oauth_client_id,
+            )
+            channel.oauth_client_secret = oauth_client_secret
+            channel.oauth_refresh_token = oauth_refresh_token
+            db.add(channel)
+            db.commit()
+            db.refresh(channel)
+            db.expunge(channel)
+            return channel
 
     return factory
