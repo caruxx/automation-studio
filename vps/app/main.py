@@ -6,8 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.auth import router as auth_router
 from .api.channels import router as channels_router
+from .api.jobs import router as jobs_router
 from .api.oauth import router as oauth_router
-from .api.users import router as users_router
+from .api.users import router as users_router, worker_token_router
+from .api.worker import router as worker_router
 
 
 def create_app() -> FastAPI:
@@ -28,6 +30,9 @@ def create_app() -> FastAPI:
     app.include_router(channels_router)
     app.include_router(oauth_router)
     app.include_router(users_router)
+    app.include_router(worker_token_router)
+    app.include_router(jobs_router)
+    app.include_router(worker_router)
 
     @app.get("/api/health", tags=["system"])
     def health():

@@ -7,6 +7,9 @@ from sqlalchemy.orm import relationship
 from ..db import Base
 from ..services.token_crypto import decrypt_json, encrypt_json
 
+# ワーカートークンのうち、DB に平文で残す先頭文字数。
+WORKER_TOKEN_PREFIX_LEN = 8
+
 
 class User(Base):
     __tablename__ = "users"
@@ -128,3 +131,71 @@ class OAuthState(Base):
 
     channel = relationship("YouTubeChannel")
     user = relationship("User")
+
+
+class WorkerToken(Base):
+    __tablename__ = "worker_tokens"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label = Column(String(128), nullable=False)
+    token_hash = Column(String(255), nullable=False)
+    # 照合候補を絞るためだけの平文先頭。長くすると平文の露出が増えるので短く保つ。
+    # 8 文字(約 48bit)あれば候補は実質1件に絞れ、残り約 27 文字の秘密は保たれる。
+    token_prefix = Column(String(WORKER_TOKEN_PREFIX_LEN), nullable=False, index=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    disabled_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(
+        Integer,
+        ForeignKey("youtube_channels.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    job_type = Column(String(32), nullable=False, index=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    state = Column(String(16), nullable=False, default="queued", index=True)
+    priority = Column(Integer, nullable=False, default=0)
+    deadline_at = Column(DateTime, nullable=True, index=True)
+    leased_by_worker_token_id = Column(
+        Integer,
+        ForeignKey("worker_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    quota_units = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    channel = relationship("YouTubeChannel")
+    created_by = relationship("User")
+    leased_by_worker_token = relationship("WorkerToken")

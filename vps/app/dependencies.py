@@ -1,13 +1,16 @@
 """Authentication dependencies shared by API routers."""
+from __future__ import annotations
+
 from contextvars import ContextVar
+from datetime import datetime
 from typing import AsyncGenerator
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models.db_models import User, YouTubeChannel
-from .security import MFA_REQUIRED, decode_token_claims
+from .models.db_models import WORKER_TOKEN_PREFIX_LEN, User, WorkerToken, YouTubeChannel
+from .security import MFA_REQUIRED, decode_token_claims, verify_password
 
 
 TOKEN_COOKIE_NAME = "as_studio_token"
@@ -86,6 +89,51 @@ def get_current_user_for_auth_completion(
     db: Session = Depends(get_db),
 ) -> User:
     return _authenticated_user(request, db, allowed_states={"full", "mfa_setup"})
+
+
+def get_current_worker(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> WorkerToken:
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Worker authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    plain_token = authorization[7:].strip()
+    if not plain_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Worker authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    prefix = plain_token[:WORKER_TOKEN_PREFIX_LEN]
+    candidates = (
+        db.query(WorkerToken)
+        .join(User, WorkerToken.user_id == User.id)
+        .filter(
+            WorkerToken.token_prefix == prefix,
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+    worker = next(
+        (candidate for candidate in candidates if verify_password(plain_token, candidate.token_hash)),
+        None,
+    )
+    if worker is None or worker.disabled_at is not None or worker.user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or disabled worker token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    worker.last_seen_at = datetime.utcnow()
+    db.commit()
+    db.refresh(worker)
+    return worker
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
