@@ -6,7 +6,39 @@ Phase 2 adds first-class YouTube channels, per-request channel resolution, acces
 
 Phase 3 adds a VPS-hosted YouTube OAuth web flow. OAuth client secrets and refresh tokens are encrypted at rest. Access tokens are refreshed on demand and cached only in process memory. Existing `.youtube_token.json` files are not imported because refresh tokens are bound to the OAuth client that issued them.
 
-Worker tokens, the job queue, and Mac worker integration belong to later phases and are not included here.
+Worker tokens and the pull-based job queue allow a Mac worker to execute local jobs without accepting inbound connections.
+
+## Mac worker
+
+The worker uses only the Python standard library and runs directly with macOS `python3`. Create its configuration outside the repository:
+
+```bash
+mkdir -p ~/.config/automation-studio
+cat > ~/.config/automation-studio/worker.json <<'JSON'
+{
+  "base_url": "https://yt.caruvistar.jp",
+  "worker_token": "replace-with-issued-worker-token",
+  "poll_interval_seconds": 30,
+  "job_types": ["test", "upload"]
+}
+JSON
+chmod 600 ~/.config/automation-studio/worker.json
+```
+
+Start the worker from the `vps` directory:
+
+```bash
+python3 worker/client.py
+```
+
+Use a different configuration path or lease at most one job for diagnostics:
+
+```bash
+python3 worker/client.py --config /absolute/path/to/worker.json
+python3 worker/client.py --once
+```
+
+The worker refuses to start unless the configuration file mode is exactly `0600`. It writes logs to standard output and never logs the worker token or YouTube access token. `SIGINT` and `SIGTERM` stop polling; if a job is leased, the worker reports it as a retryable failure before exiting.
 
 ## Channel selection
 
