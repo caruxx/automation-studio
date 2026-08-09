@@ -117,7 +117,7 @@ From the `vps` directory, generate the key outside the repository:
 ```bash
 sudo install -d -m 0700 -o root -g root /etc/automation-studio
 sudo python3 scripts/generate_keyring.py --out /etc/automation-studio/keyring.json
-sudo chown root:root /etc/automation-studio/keyring.json
+sudo chown 10001:10001 /etc/automation-studio/keyring.json
 sudo chmod 0600 /etc/automation-studio/keyring.json
 sudo stat /etc/automation-studio/keyring.json
 ```

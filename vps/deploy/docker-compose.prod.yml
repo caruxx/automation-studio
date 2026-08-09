@@ -14,10 +14,12 @@ services:
     # into the image by the Dockerfile; only the external keyring is mounted.
     volumes:
       - /etc/automation-studio:/etc/automation-studio:ro
-    # The required root-owned 0600 keyring is intentionally unreadable by the
-    # image's unprivileged user. Run without Linux capabilities and with a
-    # read-only root filesystem while retaining only the ability to read it.
-    user: "0:0"
+    # 鍵ファイルはホスト側で uid/gid 10001(イメージ内の asstudio)所有・0600 にする。
+    # コンテナを root で動かして読ませる方法は取らない。インターネットに面する
+    # プロセスを不必要に root 化しないため、Dockerfile の USER asstudio をそのまま使う。
+    #   install -d -m 755 /etc/automation-studio
+    #   chown 10001:10001 /etc/automation-studio/keyring.json
+    #   chmod 600 /etc/automation-studio/keyring.json
     cap_drop:
       - ALL
     security_opt:

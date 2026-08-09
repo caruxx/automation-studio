@@ -5,7 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN addgroup --system asstudio && adduser --system --ingroup asstudio asstudio
+# uid/gid を固定する。ホスト側の鍵ファイル(/etc/automation-studio/keyring.json)を
+# この uid の所有にして 0600 で読ませるため、ベースイメージ更新で採番がずれると
+# 起動できなくなる。暗黙の採番に頼らない。
+RUN addgroup --system --gid 10001 asstudio \
+ && adduser --system --uid 10001 --ingroup asstudio asstudio
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
