@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TOTP登録 | Automation Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body data-page="totp-setup">
+  <main>
+    <section class="auth-card stack">
+      <div>
+        <h1>TOTP認証の登録</h1>
+        <p class="muted">認証アプリにシークレットまたはURIを登録してください。</p>
+      </div>
+      <div id="setup-content" class="stack" hidden>
+        <div class="copy-row">
+          <label>シークレット
+            <input id="totp-secret" type="text" readonly>
+          </label>
+          <button class="secondary" type="button" data-copy-target="totp-secret">コピー</button>
+        </div>
+        <div class="copy-row">
+          <label>otpauth URI
+            <textarea id="otpauth-uri" readonly></textarea>
+          </label>
+          <button class="secondary" type="button" data-copy-target="otpauth-uri">コピー</button>
+        </div>
+        <form id="totp-verify-form" class="stack">
+          <label>認証アプリに表示されたコード
+            <input id="verify-code" type="text" inputmode="numeric" autocomplete="one-time-code" required>
+          </label>
+          <button type="submit">登録を完了する</button>
+        </form>
+      </div>
+      <div id="recovery-content" class="stack" hidden>
+        <h2>リカバリコード</h2>
+        <p class="warning">この画面を閉じると二度と表示されません。安全な場所に保存してください。</p>
+        <ul id="recovery-codes" class="recovery-codes"></ul>
+        <button id="copy-recovery" class="secondary" type="button">すべてコピー</button>
+        <a class="button-link" href="/login.html">ログイン画面へ</a>
+      </div>
+      <p id="message" class="message" role="alert"></p>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

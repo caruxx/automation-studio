@@ -4,9 +4,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import os
 import secrets
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..db import get_db
@@ -38,6 +40,13 @@ def _accessible_channel(db: Session, channel_id: int, user: User) -> YouTubeChan
 def _redirect_uri(request: Request) -> str:
     configured = os.getenv("YOUTUBE_OAUTH_REDIRECT_URI", "").strip()
     return configured or str(request.url_for("youtube_oauth_callback"))
+
+
+def _oauth_done_redirect(error: str | None = None) -> RedirectResponse:
+    location = "/oauth-done.html"
+    if error:
+        location = f"{location}?error={quote(error, safe='')}"
+    return RedirectResponse(location, status_code=status.HTTP_302_FOUND)
 
 
 @router.post("/api/channels/{channel_id}/oauth/start")
@@ -82,7 +91,7 @@ def oauth_callback(
     db: Session = Depends(get_db),
 ):
     if not code or not state:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth callback")
+        return _oauth_done_redirect("Invalid OAuth callback")
     now = datetime.utcnow()
     oauth_state = (
         db.query(OAuthState)
@@ -95,7 +104,7 @@ def oauth_callback(
         or oauth_state.consumed_at is not None
         or oauth_state.expires_at <= now
     ):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
+        return _oauth_done_redirect("Invalid OAuth state")
 
     oauth_state.consumed_at = now
     db.commit()
@@ -105,7 +114,7 @@ def oauth_callback(
         or not channel.oauth_client_id
         or not channel.oauth_client_secret_encrypted
     ):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth client unavailable")
+        return _oauth_done_redirect("OAuth client unavailable")
 
     try:
         result = exchange_code(
@@ -115,22 +124,16 @@ def oauth_callback(
             oauth_state.redirect_uri,
         )
     except (TokenEncryptionError, YouTubeOAuthError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OAuth code exchange failed",
-        ) from None
+        return _oauth_done_redirect("OAuth code exchange failed")
     refresh_token = result.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OAuth response did not include a refresh token",
-        )
+        return _oauth_done_redirect("OAuth response did not include a refresh token")
 
     channel.oauth_refresh_token = refresh_token
     channel.credentials_updated_at = datetime.utcnow()
     db.commit()
     clear_access_token_cache()
-    return {"success": True}
+    return _oauth_done_redirect()
 
 
 @router.delete("/api/channels/{channel_id}/oauth")

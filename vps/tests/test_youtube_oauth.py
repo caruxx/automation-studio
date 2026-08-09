@@ -76,9 +76,14 @@ def test_callback_encrypts_refresh_token_and_consumes_state(
         },
     )
 
-    response = client.get("/api/oauth/callback", params={"code": "code", "state": state})
+    response = client.get(
+        "/api/oauth/callback",
+        params={"code": "code", "state": state},
+        follow_redirects=False,
+    )
 
-    assert response.status_code == 200
+    assert response.status_code == 302
+    assert response.headers["location"] == "/oauth-done.html"
     with TestingSessionLocal() as db:
         saved = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel.id).one()
         assert saved.oauth_refresh_token == "plain-refresh-token"
@@ -86,8 +91,13 @@ def test_callback_encrypts_refresh_token_and_consumes_state(
         assert "plain-refresh-token" not in saved.oauth_refresh_token_encrypted
         assert saved.credentials_updated_at is not None
 
-    reused = client.get("/api/oauth/callback", params={"code": "code", "state": state})
-    assert reused.status_code == 400
+    reused = client.get(
+        "/api/oauth/callback",
+        params={"code": "code", "state": state},
+        follow_redirects=False,
+    )
+    assert reused.status_code == 302
+    assert reused.headers["location"].startswith("/oauth-done.html?error=")
 
 
 def test_callback_rejects_expired_and_unknown_state(
@@ -116,14 +126,20 @@ def test_callback_rejects_expired_and_unknown_state(
     )
 
     expired = client.get(
-        "/api/oauth/callback", params={"code": "code", "state": "expired-state"}
+        "/api/oauth/callback",
+        params={"code": "code", "state": "expired-state"},
+        follow_redirects=False,
     )
     unknown = client.get(
-        "/api/oauth/callback", params={"code": "code", "state": "unknown-state"}
+        "/api/oauth/callback",
+        params={"code": "code", "state": "unknown-state"},
+        follow_redirects=False,
     )
 
-    assert expired.status_code == 400
-    assert unknown.status_code == 400
+    assert expired.status_code == 302
+    assert unknown.status_code == 302
+    assert "error=" in expired.headers["location"]
+    assert "error=" in unknown.headers["location"]
 
 
 def test_callback_without_refresh_token_preserves_existing_value(
@@ -144,9 +160,14 @@ def test_callback_without_refresh_token_preserves_existing_value(
         lambda *_args: {"refresh_token": None, "access_token": "access", "expires_in": 3600},
     )
 
-    response = client.get("/api/oauth/callback", params={"code": "code", "state": state})
+    response = client.get(
+        "/api/oauth/callback",
+        params={"code": "code", "state": state},
+        follow_redirects=False,
+    )
 
-    assert response.status_code == 400
+    assert response.status_code == 302
+    assert "error=" in response.headers["location"]
     with TestingSessionLocal() as db:
         saved = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel.id).one()
         assert saved.oauth_refresh_token == "existing-refresh-token"

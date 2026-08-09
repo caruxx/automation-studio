@@ -15,6 +15,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY web ./web
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 # 運用スクリプト。import_channels.py は DB に接続するためコンテナ内で実行する

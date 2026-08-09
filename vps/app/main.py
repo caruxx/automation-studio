@@ -1,8 +1,10 @@
 """Automation Studio VPS control-plane API."""
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .api.auth import router as auth_router
 from .api.channels import router as channels_router
@@ -13,7 +15,15 @@ from .api.worker import router as worker_router
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Automation Studio VPS", version="0.1.0")
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+    production = app_env in {"production", "prod"}
+    app = FastAPI(
+        title="Automation Studio VPS",
+        version="0.1.0",
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
     origins = [
         item.strip()
         for item in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -37,6 +47,9 @@ def create_app() -> FastAPI:
     @app.get("/api/health", tags=["system"])
     def health():
         return {"status": "ok"}
+
+    static_dir = Path(__file__).resolve().parent.parent / "web" / "static"
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="web")
 
     return app
 
