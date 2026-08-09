@@ -1,0 +1,27 @@
+services:
+  db:
+    restart: unless-stopped
+    mem_limit: 1g
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  backend:
+    restart: unless-stopped
+    mem_limit: 1200m
+    ports:
+      - "127.0.0.1:8000:8000"
+    # No application source bind mount is used in production. Code is copied
+    # into the image by the Dockerfile; only the external keyring is mounted.
+    volumes:
+      - /etc/automation-studio:/etc/automation-studio:ro
+    # The required root-owned 0600 keyring is intentionally unreadable by the
+    # image's unprivileged user. Run without Linux capabilities and with a
+    # read-only root filesystem while retaining only the ability to read it.
+    user: "0:0"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777

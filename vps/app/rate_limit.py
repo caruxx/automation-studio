@@ -6,6 +6,8 @@ and the other application-side limits are supplemental controls only.
 """
 from __future__ import annotations
 
+import ipaddress
+import os
 import time
 from collections import defaultdict, deque
 from threading import Lock
@@ -18,10 +20,18 @@ _lock = Lock()
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
-    return request.client.host if request.client else "unknown"
+    fallback = request.client.host if request.client else "unknown"
+    trusted_header = os.getenv("TRUSTED_CLIENT_IP_HEADER", "").strip()
+    if not trusted_header:
+        return fallback
+
+    candidate = request.headers.get(trusted_header)
+    if not candidate:
+        return fallback
+    try:
+        return str(ipaddress.ip_address(candidate.strip()))
+    except ValueError:
+        return fallback
 
 
 def check_rate_limit(

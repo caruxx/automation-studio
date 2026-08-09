@@ -52,6 +52,12 @@ curl http://127.0.0.1:8000/api/health
 
 Both PostgreSQL and the backend bind only to `127.0.0.1`. Publish the backend through a separately configured HTTPS reverse proxy.
 
+## Trusted client IP
+
+`TRUSTED_CLIENT_IP_HEADER` is empty by default. In that mode the application ignores all forwarding headers, including `X-Forwarded-For`, and uses the direct peer address from `request.client.host` for login rate limiting, account lockout auditing, and invitation throttling.
+
+For the Cloudflare deployment, set `TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip`. This is safe only when Nginx trusts `CF-Connecting-IP` from the published Cloudflare IP ranges and overwrites the upstream header after resolving the real address. The firewall should also restrict public HTTP and HTTPS traffic to Cloudflare. Never enable this setting while passing a client-supplied header through unchanged; doing so allows IP-based controls to be bypassed. A production Nginx example and the full procedure are in `deploy/`.
+
 ## YouTube OAuth setup
 
 Complete these manual steps in Google Cloud Console before starting authorization:
