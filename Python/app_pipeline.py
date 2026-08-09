@@ -1930,6 +1930,56 @@ def _backup_existing_meta(folder: Path) -> None:
                 pass
 
 
+def _load_ledger_sync():
+    """台帳同期モジュールを遅延ロードする。欠損・初期化失敗はパイプラインへ波及させない。"""
+    try:
+        import vps_ledger_sync
+        return vps_ledger_sync
+    except Exception as e:
+        print(f"[ledger-sync] モジュール読込失敗: {e}")
+        return None
+
+
+def _ledger_call(ledger_sync, method: str, *args, **kwargs):
+    """同期フック自体の例外も握り、既存パイプラインを必ず継続する。"""
+    if ledger_sync is None:
+        return None
+    try:
+        return getattr(ledger_sync, method)(*args, **kwargs)
+    except Exception as e:
+        print(f"[ledger-sync] {method} 失敗: {e}")
+        return None
+
+
+def _iso_to_epoch(value) -> float | None:
+    """VPS の ISO 時刻を UTC epoch 秒へ正規化する。"""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _vps_result_is_newer(vol_data: dict, step: str, local_path: Path) -> bool:
+    """ローカル成果物が無い、または VPS の step 更新が新しい場合に True。"""
+    if not local_path.exists():
+        return True
+    states = vol_data.get("step_states") if isinstance(vol_data, dict) else None
+    state = states.get(step) if isinstance(states, dict) else None
+    updated_at = state.get("updated_at") if isinstance(state, dict) else None
+    remote_epoch = _iso_to_epoch(updated_at)
+    if remote_epoch is None:
+        return False
+    try:
+        return remote_epoch > local_path.stat().st_mtime
+    except OSError:
+        return True
+
+
 def _channel_meta_lang_handle(cfg: dict) -> tuple:
     """per-channel 設定から (source_lang, handle) を解決。
     source_lang = youtube_upload_defaults.default_language（既定 "en"）。
@@ -2013,6 +2063,27 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
     print(f"  {STEP_LABELS['meta']}")
     print(f"{'='*60}")
 
+    ledger_sync = _load_ledger_sync()
+    remote_vol = _ledger_call(ledger_sync, "fetch_vol", vol)
+    remote_meta = remote_vol.get("meta") if isinstance(remote_vol, dict) else None
+    title_path = folder / "youtube_title.txt"
+    if isinstance(remote_meta, dict) and remote_meta and _vps_result_is_newer(remote_vol, "meta", title_path):
+        remote_title = remote_meta.get("title")
+        remote_description = remote_meta.get("description")
+        remote_tags = remote_meta.get("tags")
+        if (
+            isinstance(remote_title, str)
+            and isinstance(remote_description, str)
+            and isinstance(remote_tags, list)
+            and all(isinstance(tag, str) for tag in remote_tags)
+        ):
+            _backup_existing_meta(folder)
+            title_path.write_text(remote_title, encoding="utf-8")
+            (folder / "youtube_description.txt").write_text(remote_description, encoding="utf-8")
+            (folder / "youtube_tags.txt").write_text("\n".join(remote_tags), encoding="utf-8")
+            print("  VPS 生成メタを採用")
+            return True
+
     # ⚠ via_api の /suggest は同期LLM呼出で _api_post の10秒timeout に必ず引っかかり、
     #   タイトル/説明/タグが保存されないまま「メタ空のまま upload」する事故になる。
     #   そのため via_api 指定でも常に CLI 経路(claude_proposer 直呼)に一本化する。
@@ -2052,6 +2123,20 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
                 print(f"  ✓ タグ: {len(tags)} 件")
         except Exception as e:
             print(f"  ⚠️ タグ: {e}")
+        try:
+            local_title = (folder / "youtube_title.txt").read_text(encoding="utf-8").strip()
+            local_description = (folder / "youtube_description.txt").read_text(encoding="utf-8").strip()
+            local_tags = [
+                line.strip()
+                for line in (folder / "youtube_tags.txt").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if local_title and local_description and local_tags:
+                _ledger_call(
+                    ledger_sync, "push_meta", vol, local_title, local_description, local_tags
+                )
+        except OSError as e:
+            print(f"[ledger-sync] ローカルメタ読込失敗: {e}")
         print(f"\n {STEP_LABELS['meta']} 完了")
         return True
 
@@ -2067,6 +2152,20 @@ def step_localization(vol: int, folder: Path, via_api: bool, **kw):
     print(f"\n{'='*60}")
     print(f"  {STEP_LABELS.get('localization', '多言語メタデータ')}")
     print(f"{'='*60}")
+    ledger_sync = _load_ledger_sync()
+    remote_vol = _ledger_call(ledger_sync, "fetch_vol", vol)
+    remote_localizations = remote_vol.get("localizations") if isinstance(remote_vol, dict) else None
+    out_path = folder / "youtube_localizations.json"
+    if (
+        isinstance(remote_localizations, dict)
+        and remote_localizations
+        and _vps_result_is_newer(remote_vol, "localization", out_path)
+    ):
+        out_path.write_text(
+            json.dumps(remote_localizations, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print("  VPS 生成localizationを採用")
+        return True
     cfg = _load_dashboard_config()
     yd = cfg.get("youtube_upload_defaults") or {}
     source_lang = (yd.get("default_language") or "en").strip() or "en"
@@ -2100,8 +2199,8 @@ def step_localization(vol: int, folder: Path, via_api: bool, **kw):
     if not result:
         print("  ⚠ 翻訳結果が空 → スキップ（upload は続行可能）")
         return True
-    out_path = folder / "youtube_localizations.json"
     out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    _ledger_call(ledger_sync, "push_localizations", vol, result)
     print(f" {len(result)} 言語生成: {', '.join(result.keys())} → {out_path.name}")
     return True
 
@@ -3434,20 +3533,24 @@ def main():
     # TypeError: got multiple values for argument 'vol' を防ぐ
     _POSITIONAL_KEYS = {"vol", "folder", "via_api"}
     kw = {k: v for k, v in vars(args).items() if v is not None and k not in _POSITIONAL_KEYS}
+    ledger_sync = _load_ledger_sync()
 
     for s in steps:
         idx = steps.index(s) + 1
         print(f"\n▶ STEP {s} 開始 ({idx}/{len(steps)}) — {STEP_LABELS[s]}")
         sys.stdout.flush()
+        _ledger_call(ledger_sync, "report_step", args.vol, s, "running")
         func = STEP_FUNCS[s]
         try:
             ok = _run_step_with_retry(s, func, args.vol, folder, args.via_api, **kw)
-        except Exception as e:
+        except BaseException as e:
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "failed", str(e))
             print(f"◀ STEP {s} 結果: 例外 — {type(e).__name__}: {e}")
             sys.stdout.flush()
             raise
         # unattended_login は専用ハンドリング（Discord で「ログインが必要」と通知）
         if ok == "unattended_login":
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "failed", str(ok))
             print(f"◀ STEP {s} 結果: UNATTENDED_LOGIN_REQUIRED")
             sys.stdout.flush()
             ch_name = _load_dashboard_config().get("channel_name", "(unknown channel)")
@@ -3463,6 +3566,7 @@ def main():
             sys.exit(EXIT_UNATTENDED)
         # quota_exhausted は専用ハンドリング（24h 待機が必要、retry 無意味）
         if ok == "quota_exhausted":
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "failed", str(ok))
             print(f"◀ STEP {s} 結果: QUOTA_EXHAUSTED")
             sys.stdout.flush()
             ch_name = _load_dashboard_config().get("channel_name", "(unknown channel)")
@@ -3479,6 +3583,14 @@ def main():
             sys.exit(EXIT_QUOTA_EXHAUSTED)
         # 成功は True のみ。"retryable" / False / その他文字列はすべて最終失敗として扱う。
         succeeded = (ok is True)
+        if succeeded:
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "done")
+            if s == "rename":
+                _ledger_call(ledger_sync, "push_context", args.vol, folder)
+            elif s == "upload":
+                _ledger_call(ledger_sync, "report_upload", args.vol, folder)
+        else:
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "failed", str(ok))
         print(f"◀ STEP {s} 結果: {'OK' if succeeded else f'FAIL ({ok!r})'}")
         sys.stdout.flush()
         if not succeeded:

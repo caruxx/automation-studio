@@ -2294,6 +2294,14 @@ def api_create_video_folder(req: VideoFolderCreate):
     else:
         warnings.append("Photoshop テンプレ未設定（基本設定 → チャンネル → テンプレートで指定してください）")
 
+    # VPS 台帳同期は best effort。設定欠損や通信失敗でフォルダ作成を失敗させない。
+    try:
+        import vps_ledger_sync
+        vps_ledger_sync.ensure_vol(next_num)
+        vps_ledger_sync.push_context(next_num, new_dir)
+    except Exception as e:
+        print(f"[ledger-sync] vol 作成同期失敗: {e}")
+
     if req.open_in_finder:
         open_in_finder(new_dir)
     return {
