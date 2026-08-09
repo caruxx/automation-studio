@@ -241,7 +241,9 @@ DEFAULT_DASHBOARD_CONFIG = {
     "psd_toggle_layer": "PLAY LIST",     # 表示/非表示で 2 種類書き出すレイヤー名（WW: WORKSPACE）
     "psd_image_subdir": "image",         # 動画フォルダ内の差し替え画像置き場（{video}/image/*）
     # 文字入れ（シーンテキスト）設定（チャンネル別。空なら persona 準拠の中立生成。Harbor Notes 流用は撤去済み）
-    "scene_text_enabled": True,          # サムネに英大文字フレーズ（都市名_テキスト層）を入れるか
+    "scene_text_enabled": True,          # サムネに英語フレーズ（都市名_テキスト層）を入れるか
+    "scene_text_case": "upper",         # upper=全大文字 / sentence=自然な英文の大文字・小文字
+    "scene_text_punctuation": "none",   # none=記号なし / period=文末にピリオドを1つ
     "scene_text_tone": "",               # トーン指定（例: "chill, lo-fi, study, cozy"）
     "scene_text_examples": [],           # 語感の参考フレーズ（完全コピー禁止・style reference）
     "scene_text_forbidden": [],          # 完全一致を避けるフレーズ（ライバルの実焼込文字等）
@@ -312,7 +314,8 @@ PER_CHANNEL_KEYS = {
     "channel_icon", "template_prproj", "template_psd", "export_path",
     "export_engine",  # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(app_ffrender ループ連結方式・静止画チャンネル向け)
     "psd_base_layer", "psd_toggle_layer", "psd_image_subdir",
-    "scene_text_enabled", "scene_text_tone", "scene_text_examples",
+    "scene_text_enabled", "scene_text_case", "scene_text_punctuation",
+    "scene_text_tone", "scene_text_examples",
     "scene_text_forbidden", "scene_text_structure",  # 文字入れ（シーンテキスト）設定（チャンネル別）
     "export_ignore_list",  # AME 書き出し watcher が無視する video_name のリスト（2 PC 間自動同期）
     "publish_mode",  # P3-3: 公開方式（unlisted=限定公開 / public=即時公開 / delayed=N時間後自動公開）

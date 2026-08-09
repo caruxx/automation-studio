@@ -112,9 +112,9 @@ def _title_has_vol(title: str, vol: str) -> bool:
         return False
     n = re.escape(str(int(vol)))
     patterns = [
-        rf"\bvol\.?\s*0*{n}\b",
-        rf"\bvolume\s*0*{n}\b",
-        rf"\b#?\s*0*{n}\b",
+        rf"\bvol\.?\s*0*{n}\b(?![/:])",
+        rf"\bvolume\s*0*{n}\b(?![/:])",
+        rf"#\s*0*{n}\b(?![/:])",
     ]
     return any(re.search(p, title or "", re.IGNORECASE) for p in patterns)
 

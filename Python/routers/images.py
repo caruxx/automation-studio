@@ -172,6 +172,8 @@ def api_image_compositor_render_dual_thumbnail(req: ImageCompositorRenderRequest
                 examples=cfg.get("scene_text_examples") or [],
                 forbidden_phrases=cfg.get("scene_text_forbidden") or [],
                 structure=(cfg.get("scene_text_structure") or ""),
+                case=(cfg.get("scene_text_case") or "upper"),
+                punctuation=(cfg.get("scene_text_punctuation") or "none"),
             )
             if scene_text:
                 try:

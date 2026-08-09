@@ -1528,6 +1528,8 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
                 examples=cfg.get("scene_text_examples") or [],
                 forbidden=cfg.get("scene_text_forbidden") or [],
                 structure=(cfg.get("scene_text_structure") or ""),
+                case=(cfg.get("scene_text_case") or "upper"),
+                punctuation=(cfg.get("scene_text_punctuation") or "none"),
             )
             if scene_text:
                 try:
@@ -1637,17 +1639,20 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
 
 def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: int,
                             tone: str = "", examples=None, forbidden=None,
-                            structure: str = "") -> str:
+                            structure: str = "", case: str = "upper",
+                            punctuation: str = "none") -> str:
     """LLM に persona / フォルダ名 / vol + チャンネル別文字設定を渡して英語シーンコピーを 1 件生成。
 
     文字のトーン・例・禁止語・構文は **チャンネル設定（scene_text_*）から渡す**設計。
     旧仕様でハードコードしていた特定チャンネル（Harbor Notes）由来のルールは撤去済み。
     引数が空のときは persona 準拠の中立指示で生成（特定チャンネル色を出さない）。
 
-    Returns: 全大文字 2〜3 語の英語フレーズ（例: 'BLUE HORIZON'）。失敗時は空文字。
+    Returns: 指定形式の英語フレーズ。失敗時は空文字。
     """
     examples = examples or []
     forbidden = forbidden or []
+    case = case if case in {"upper", "sentence"} else "upper"
+    punctuation = punctuation if punctuation in {"none", "period"} else "none"
     tone_line = (tone or "").strip() or "a mood that fits the channel persona above"
     structure_line = (structure or "").strip() or "verb+noun or adjective+noun"
     examples_block = ("  - Style reference (match the register, do NOT copy verbatim): " + " / ".join(examples) + "\n") if examples else ""
@@ -1660,24 +1665,55 @@ def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: in
             learned_block = "  - Learned winning patterns from this channel's 48h reviews (adapt, do not copy blindly): " + hint.replace("\n", " / ") + "\n"
     except Exception:
         pass
+    if case == "upper" and punctuation == "none":
+        output_rule = "  - Output ONE phrase, ALL UPPERCASE, English only.\n"
+        length_rule = "  - 2 to 3 words (4 words OK only if natural).\n"
+        punctuation_rule = "  - No quotes, no surrounding punctuation, no emojis, no labels, no explanation.\n"
+    elif case == "sentence" and punctuation == "period":
+        output_rule = "  - Output ONE short English sentence using natural capitalization; do not use ALL UPPERCASE.\n"
+        length_rule = "  - 2 to 5 words.\n"
+        punctuation_rule = "  - End with exactly one period. Apostrophes are allowed. No quotes, no other punctuation, no emojis, no labels, no explanation.\n"
+    elif case == "sentence":
+        output_rule = "  - Output ONE short English phrase using natural capitalization; do not use ALL UPPERCASE.\n"
+        length_rule = "  - 2 to 5 words.\n"
+        punctuation_rule = "  - No quotes, no punctuation, no emojis, no labels, no explanation.\n"
+    else:
+        output_rule = "  - Output ONE phrase, ALL UPPERCASE, English only.\n"
+        length_rule = "  - 2 to 3 words (4 words OK only if natural).\n"
+        punctuation_rule = "  - End with exactly one period. Apostrophes are allowed. No quotes, no other punctuation, no emojis, no labels, no explanation.\n"
+
     prompt = (
         "You generate a short English scene caption for a long-form BGM YouTube thumbnail.\n"
         f"Channel persona: {persona or '(unspecified)'}\n"
         f"Folder/video name: {folder_name} (vol.{vol})\n"
         "Rules:\n"
-        "  - Output ONE phrase, ALL UPPERCASE, English only.\n"
-        "  - 2 to 3 words (4 words OK only if natural).\n"
+        f"{output_rule}"
+        f"{length_rule}"
         f"  - Structure: {structure_line}.\n"
         f"  - Tone: {tone_line}.\n"
         f"{examples_block}{forbidden_block}{learned_block}"
-        "  - No quotes, no surrounding punctuation, no emojis, no labels, no explanation.\n"
+        f"{punctuation_rule}"
         "Output only the phrase, nothing else."
     )
     try:
         from app_llm_runner import run_llm
         out = run_llm(prompt, cli_cmd=cli, timeout=120, label="thumb-phrase")
         for line in out.splitlines():
-            line = line.strip().strip('"').strip("'").rstrip(".,!?")
+            if punctuation == "none":
+                line = line.strip().strip('"').strip("'")
+            else:
+                line = line.strip()
+                if len(line) >= 2 and (line[0], line[-1]) in {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}:
+                    line = line[1:-1].strip()
+            if punctuation == "period":
+                line = re.sub(r"[^A-Za-z\s'’]", " ", line).strip()
+                line = re.sub(r"\s+", " ", line)
+                if case == "upper":
+                    line = line.upper()
+                if line:
+                    line = line.rstrip(".") + "."
+            else:
+                line = line.rstrip(".,!?")
             if line:
                 return line
         return ""

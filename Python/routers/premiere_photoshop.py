@@ -450,7 +450,7 @@ class PhotoshopGenerateSceneTextRequest(BaseModel):
 
 @router.post("/api/photoshop/generate-scene-text")
 def api_photoshop_generate_scene_text(req: PhotoshopGenerateSceneTextRequest):
-    """AI生成画像から シーンテキスト (英大文字 2-3 語) を自動生成。"""
+    """AI生成画像からチャンネル設定形式の英語シーンテキストを自動生成。"""
     try:
         from scene_text_generator import generate_scene_text_for_image
     except Exception as e:
@@ -489,6 +489,8 @@ def api_photoshop_generate_scene_text(req: PhotoshopGenerateSceneTextRequest):
             examples=_cfg.get("scene_text_examples") or [],
             forbidden_phrases=_cfg.get("scene_text_forbidden") or [],
             structure=(_cfg.get("scene_text_structure") or ""),
+            case=(_cfg.get("scene_text_case") or "upper"),
+            punctuation=(_cfg.get("scene_text_punctuation") or "none"),
         )
         return {"status": "ok", "scene_text": text, "image_path": image_path}
     except FileNotFoundError as e:
@@ -674,6 +676,8 @@ def api_photoshop_render_dual_thumbnail(req: PhotoshopRenderDualRequest):
                         examples=config.get("scene_text_examples") or [],
                         forbidden_phrases=config.get("scene_text_forbidden") or [],
                         structure=(config.get("scene_text_structure") or ""),
+                        case=(config.get("scene_text_case") or "upper"),
+                        punctuation=(config.get("scene_text_punctuation") or "none"),
                     )
                     if scene_text:
                         try:
