@@ -130,21 +130,28 @@ Back up the keyring before authorizing any YouTube channel. Losing it makes all 
 
 In Cloudflare DNS, add an `A` record named `yt` pointing to `SERVER_IP` and enable proxying so the cloud is orange. In SSL/TLS settings, select `Full (strict)`.
 
-In SSL/TLS, Origin Server, create a Cloudflare Origin Certificate for `yt.caruvistar.jp`. Choose a long validity period appropriate to the operating policy. Save the certificate and private key on the server without committing them:
+The origin certificate is issued by Let's Encrypt (adopted 2026-08-09). `Full (strict)`
+requires a publicly valid certificate on the origin, and Let's Encrypt renews itself,
+so no manual reissue is needed. A Cloudflare Origin Certificate also satisfies
+`Full (strict)`; switch the `ssl_certificate` paths in the Nginx configuration if it is
+preferred.
+
+Issue the certificate before installing the site configuration. The HTTP-01 challenge
+passes through the Cloudflare proxy, so `Always Use HTTPS` must stay off during issuance
+(the redirect happens at the edge and never reaches the origin otherwise):
 
 ```bash
-sudo install -d -m 0700 /etc/nginx/ssl/yt.caruvistar.jp
-sudoedit /etc/nginx/ssl/yt.caruvistar.jp/origin.pem
-sudoedit /etc/nginx/ssl/yt.caruvistar.jp/origin.key
-sudo chown root:root /etc/nginx/ssl/yt.caruvistar.jp/origin.pem /etc/nginx/ssl/yt.caruvistar.jp/origin.key
-sudo chmod 0644 /etc/nginx/ssl/yt.caruvistar.jp/origin.pem
-sudo chmod 0600 /etc/nginx/ssl/yt.caruvistar.jp/origin.key
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo certbot certonly --webroot -w /var/www/html -d yt.caruvistar.jp \
+  --agree-tos -m <admin-email> --non-interactive --no-eff-email
 ```
 
-Install Nginx and the site configuration:
+Certbot installs a renewal timer automatically. The port 80 server block keeps
+`/.well-known/acme-challenge/` unredirected so renewals keep working.
+
+Install the site configuration:
 
 ```bash
-sudo apt install -y nginx
 sudo cp deploy/nginx/yt.caruvistar.jp.conf /etc/nginx/sites-available/yt.caruvistar.jp.conf
 sudo ln -s /etc/nginx/sites-available/yt.caruvistar.jp.conf /etc/nginx/sites-enabled/yt.caruvistar.jp.conf
 sudo rm /etc/nginx/sites-enabled/default
