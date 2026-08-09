@@ -225,8 +225,12 @@ def report_upload(vol: int, folder: Path) -> None:
         f"/api/worker/vols/{vol_id}/upload-result",
         payload={
             "video_id": marker.get("video_id"),
-            # マーカーの実キーは scheduled_publish_at または publishAt（app.py の判定と同じ）
-            "scheduled_publish_at": marker.get("scheduled_publish_at") or marker.get("publishAt"),
+            # マーカーのキーは世代差がある: schedule(現行) / scheduled_publish_at / publishAt
+            "scheduled_publish_at": (
+                marker.get("schedule")
+                or marker.get("scheduled_publish_at")
+                or marker.get("publishAt")
+            ),
             "published_at": marker.get("published_at"),
         },
     )
