@@ -1,8 +1,10 @@
-"""SUNO の暗号化音声をページ内で復号して保持するフックと注入関数。
+"""SUNO の暗号化音声をページ内で復号し、Python へ分割転送する。
 
 拡張機能 suno-fast-v0.10.0 の page-hook.js から移植。
 参照元: ~/dev/suno-fast-ref/page-hook.js
 """
+
+import base64
 
 
 FAST_DECRYPT_HOOK: str = r"""
@@ -372,6 +374,31 @@ FAST_DECRYPT_HOOK: str = r"""
     };
   };
 
+  window.__sunoFastSendResult = async function (sessionId) {
+    const result = window.__sunoFastResults[sessionId];
+    if (result?.status !== 'done') {
+      throw new Error(result?.error || '復号結果がまだありません');
+    }
+    if (!(result.bytes instanceof Uint8Array)) {
+      throw new Error('復号結果がUint8Arrayではありません');
+    }
+    const bytes = result.bytes;
+    const size = result.size;
+    const chunkSize = 1048576;
+    // 空データでも宣言サイズを検証できるよう、1個の空chunkを送る。
+    const total = Math.max(1, Math.ceil(bytes.byteLength / chunkSize));
+    for (let index = 0; index < total; index += 1) {
+      const chunk = bytes.subarray(index * chunkSize, (index + 1) * chunkSize);
+      const parts = [];
+      for (let offset = 0; offset < chunk.byteLength; offset += 8192) {
+        parts.push(String.fromCharCode(...chunk.subarray(offset, offset + 8192)));
+      }
+      const base64 = btoa(parts.join(''));
+      await window.__sunoFastChunk({ sessionId, index, base64, total, size });
+    }
+    await window.__sunoFastChunk({ sessionId, index: -1, done: true });
+  };
+
   window.__sunoFastClear = function (sessionId) {
     const currentContext = captureContext;
     const songId = currentContext?.sessionId === sessionId ? currentContext?.songId : '';
@@ -406,3 +433,90 @@ def ensure_fast_capture(page) -> bool:
     except Exception as e:
         print(f" 復号フックの注入確認に失敗: {e}")
         return False
+
+
+def register_transfer_binding(page) -> None:
+    """ページごとに一度だけ、sessionId 別の分割転送受信を登録する。"""
+    if hasattr(page, "_suno_fast_transfers"):
+        return
+    transfers = {}
+
+    def handler(source, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("転送メッセージが辞書ではありません")
+        session_id = payload.get("sessionId")
+        if not isinstance(session_id, str) or session_id not in transfers:
+            raise ValueError("受信待ちでないsessionIdです")
+        state = transfers[session_id]
+        try:
+            if state["error"] is not None:
+                raise ValueError(state["error"])
+            if state["result"] is not None:
+                raise ValueError("完了後にchunkを受信しました")
+            index = payload.get("index")
+            if type(index) is not int:
+                raise ValueError("chunkのindexが整数ではありません")
+            if payload.get("done") is True:
+                if index != -1:
+                    raise ValueError("完了通知のindexが-1ではありません")
+                total = state["total"]
+                chunks = state["chunks"]
+                if total is None or len(chunks) != total:
+                    raise ValueError("転送chunkが不足しています")
+                combined = b"".join(chunks[i] for i in range(total))
+                if len(combined) != state["size"]:
+                    raise ValueError(
+                        f"転送サイズ不一致: size={state['size']} received={len(combined)}"
+                    )
+                state["result"] = combined
+                chunks.clear()
+                return
+            total = payload.get("total")
+            size = payload.get("size")
+            if type(total) is not int or total < 1:
+                raise ValueError("chunkのtotalが正の整数ではありません")
+            if type(size) is not int or size < 0:
+                raise ValueError("宣言サイズが非負の整数ではありません")
+            if not 0 <= index < total or index in state["chunks"]:
+                raise ValueError("chunkのindexが範囲外または重複しています")
+            if state["total"] is None:
+                state["total"], state["size"] = total, size
+            elif (state["total"], state["size"]) != (total, size):
+                raise ValueError("転送中にtotalまたはsizeが変わりました")
+            encoded = payload.get("base64")
+            if not isinstance(encoded, str):
+                raise ValueError("chunkのbase64が文字列ではありません")
+            chunk = base64.b64decode(encoded, validate=True)
+            if len(chunk) > 1048576:
+                raise ValueError("chunkが1048576バイトを超えています")
+            state["chunks"][index] = chunk
+        except Exception as e:
+            # JS側が例外を捕捉しても、失敗した転送を成功扱いしない。
+            state["error"] = str(e)
+            raise
+
+    page.expose_binding("__sunoFastChunk", handler)
+    page._suno_fast_transfers = transfers
+
+
+def fetch_result_bytes(page, session_id) -> bytes:
+    """Python から転送を開始し、完了・サイズ検証済みのバイト列を返す。"""
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("session_idには空でない文字列が必要です")
+    register_transfer_binding(page)
+    transfers = page._suno_fast_transfers
+    if session_id in transfers:
+        raise RuntimeError("同じsession_idの転送が既に進行中です")
+    state = {"chunks": {}, "total": None, "size": None, "result": None, "error": None}
+    transfers[session_id] = state
+    try:
+        # async関数のPromiseをevaluateが待つ。戻り値に音声本体は含めない。
+        page.evaluate("sessionId => window.__sunoFastSendResult(sessionId)", session_id)
+        if state["error"] is not None:
+            raise RuntimeError(state["error"])
+        if state["result"] is None:
+            raise RuntimeError("転送の完了通知を受信していません")
+        return state["result"]
+    finally:
+        # 再取得時に前回のchunkを混ぜず、成功・失敗のどちらでも解放する。
+        transfers.pop(session_id, None)
