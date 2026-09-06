@@ -5,6 +5,8 @@
 """
 
 import base64
+import time
+from typing import Callable, Dict, List, Optional
 
 
 FAST_DECRYPT_HOOK: str = r"""
@@ -520,3 +522,217 @@ def fetch_result_bytes(page, session_id) -> bytes:
     finally:
         # 再取得時に前回のchunkを混ぜず、成功・失敗のどちらでも解放する。
         transfers.pop(session_id, None)
+
+
+# content.js の rowMetadata / ページ巡回を、復号フックとは独立して使用する。
+_WORKSPACE_ROWS_DOM = r"""
+(action) => {
+  const rowSelector = '[data-testid="clip-row"]';
+  const visible = (element) => element.getClientRects().length > 0;
+  const rowNodes = [...document.querySelectorAll(rowSelector)].filter(visible)
+    .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+  const rows = rowNodes.map((row) => {
+    const links = [...row.querySelectorAll('a[href*="/song/"]')];
+    const uuidPattern = /\/song\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:[/?#]|$)/i;
+    const link = links.find((candidate) => uuidPattern.test(candidate.getAttribute('href') || ''));
+    const titleLink = links.find((candidate) => String(candidate.textContent || '').trim());
+    const title = String(titleLink?.textContent || '').trim()
+      || String(row.getAttribute('aria-label') || '').trim() || 'suno-audio';
+    return {
+      song_id: (link?.getAttribute('href')?.match(uuidPattern)?.[1] || '').toLowerCase(),
+      title: title.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+        .replace(/[. ]+$/g, '').trim().slice(0, 150) || 'suno-audio'
+    };
+  }).filter((row) => row.song_id);
+  const pageControl = [...document.querySelectorAll(
+    'input[aria-label="Current page number" i], input[aria-label="現在のページ番号"], '
+    + '[role="spinbutton"][aria-label="Current page number" i]'
+  )].find(visible);
+  const pageMatch = String(pageControl?.value || pageControl?.getAttribute('aria-valuenow') || '').match(/\d+/);
+  const pageNumber = pageMatch ? Number(pageMatch[0]) : null;
+  const button = (direction) => [...document.querySelectorAll('button, [role="button"]')].find((element) => {
+    const pattern = direction === 'next' ? /^(next page|次のページ)$/i : /^(previous page|前のページ)$/i;
+    return visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true'
+      && [element.getAttribute('aria-label'), element.textContent]
+        .some((label) => pattern.test(String(label || '').trim()));
+  });
+  if (action === 'next' || action === 'previous') {
+    const target = button(action);
+    if (!target) return false;
+    target.click();
+    return true;
+  }
+  let node = rowNodes[0];
+  let fallback = null;
+  let scroller = null;
+  while (node && node !== document.body && node !== document.documentElement) {
+    if (node.scrollHeight > node.clientHeight + 2 && node.clientHeight > 100) {
+      if (!fallback) fallback = node;
+      if (/auto|scroll|overlay/i.test(getComputedStyle(node).overflowY)) {
+        scroller = node;
+        break;
+      }
+    }
+    node = node.parentElement;
+  }
+  scroller = scroller || fallback || document.scrollingElement || document.documentElement;
+  const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  if (action === 'top') scroller.scrollTop = 0;
+  if (action === 'scroll') {
+    // ビューポートを重ねながら進め、仮想行の境界で取りこぼさない。
+    scroller.scrollTop = Math.min(maximum, scroller.scrollTop + Math.max(1, Math.floor(scroller.clientHeight * 0.72)));
+  }
+  const leaves = [...document.querySelectorAll('div, span, p, h1, h2, h3')]
+    .filter((element) => !element.children.length && visible(element)
+      && !element.closest('[role="dialog"], [role="listbox"], [role="menu"]'));
+  const noSongs = !rows.length && leaves.some((element) => {
+    if (!/^(no songs found|曲が見つかりません)$/i.test(element.textContent.trim())) return false;
+    if (!pageControl) return Boolean(element.closest('main, [role="main"], table, [role="table"]'));
+    let ancestor = element.parentElement;
+    while (ancestor && ancestor !== document.body && ancestor !== document.documentElement) {
+      if (ancestor.contains(pageControl)) return true;
+      ancestor = ancestor.parentElement;
+    }
+    return false;
+  });
+  const counts = leaves.map((element) => {
+    const match = element.textContent.trim().match(/^([\d,]+)\s+songs?$/i);
+    return match ? { element, count: Number(match[1].replace(/,/g, '')) } : null;
+  }).filter(Boolean);
+  let expected = null;
+  if (pageControl) {
+    for (const candidate of counts) {
+      let ancestor = candidate.element.parentElement;
+      for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
+        if (ancestor.contains(pageControl) && ancestor.querySelector(rowSelector)) {
+          expected = candidate.count;
+          break;
+        }
+      }
+      if (expected !== null) break;
+    }
+  }
+  if (expected === null && counts.length === 1) expected = counts[0].count;
+  return {
+    rows, page_no: pageNumber, expected, no_songs: noSongs,
+    previous: Boolean(button('previous')), next: Boolean(button('next')),
+    top: Math.round(scroller.scrollTop), client: scroller.clientHeight,
+    height: scroller.scrollHeight, maximum
+  };
+}
+"""
+
+
+def _workspace_row_ids(state: Dict) -> tuple:
+    return tuple(row["song_id"] for row in state["rows"])
+
+
+def _wait_workspace_rows_stable(page, previous_ids: Optional[tuple] = None,
+                                timeout: float = 15.0) -> Dict:
+    """行とスクロール寸法の署名が2回連続で一致するまで待つ。"""
+    started = time.monotonic()
+    last_signature = None
+    stable_polls = 0
+    while time.monotonic() - started < timeout:
+        state = page.evaluate(_WORKSPACE_ROWS_DOM, "read")
+        ids = _workspace_row_ids(state)
+        signature = (ids, tuple(row["title"] for row in state["rows"]),
+                     state["page_no"], state["top"], state["client"], state["height"],
+                     state["no_songs"])
+        # ページ番号だけが先に変わっても旧曲行を次ページの行と判定しない。
+        ready = state["no_songs"] or (ids and (previous_ids is None or ids != previous_ids))
+        if ready and signature == last_signature:
+            stable_polls += 1
+        else:
+            stable_polls = 0
+        last_signature = signature
+        if stable_polls >= 2 and time.monotonic() - started >= 0.54:
+            return state
+        page.wait_for_timeout(180)
+    raise RuntimeError("曲行の安定またはページ遷移を確認できませんでした")
+
+
+def _move_workspace_page(page, direction: str) -> Dict:
+    """ページボタンは1回だけ押し、遅い遷移でもページを飛ばさない。"""
+    # Next がスクロールだけ先に先頭へ戻しても、旧ページの別の仮想行を
+    # 新ページと誤認しないよう、比較元も先頭で安定させる。
+    page.evaluate(_WORKSPACE_ROWS_DOM, "top")
+    state = _wait_workspace_rows_stable(page)
+    if not page.evaluate(_WORKSPACE_ROWS_DOM, direction):
+        raise RuntimeError(f"ページボタンが操作前に消えました: {direction}")
+    return _wait_workspace_rows_stable(page, previous_ids=_workspace_row_ids(state))
+
+
+def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None) -> List[Dict]:
+    """開いている Workspace を先頭から全ページ走査し、重複のない曲行を返す。
+
+    同期 Playwright Page を受け取る。戻り値はページ順・行順で、page_no は1始まり。
+    Workspace の移動、再生、復号、ダウンロードは行わない。
+    読み込み失敗・巡回上限・画面総曲数との不一致は部分成功にせず例外にする。
+    """
+    state = _wait_workspace_rows_stable(page)
+    for _ in range(200):
+        if not state["previous"]:
+            if state["page_no"] is not None and state["page_no"] > 1:
+                raise RuntimeError("先頭ページへ戻るボタンがありません")
+            break
+        state = _move_workspace_page(page, "previous")
+    else:
+        raise RuntimeError("先頭ページへの移動回数が上限に達しました")
+
+    expected = state["expected"]
+    result = []
+    seen = set()
+    visited_pages = set()
+    for ordinal in range(1, 201):
+        page.evaluate(_WORKSPACE_ROWS_DOM, "top")
+        state = _wait_workspace_rows_stable(page)
+        if state["no_songs"]:
+            break
+        page_no = state["page_no"] or ordinal
+        page_key = ("page", page_no) if state["page_no"] else ("ids", _workspace_row_ids(state))
+        if page_key in visited_pages:
+            raise RuntimeError(f"同じページを再訪しました: page={page_no}")
+        visited_pages.add(page_key)
+        before_count = len(result)
+        bottom_signature = None
+        bottom_stable = 0
+        for _ in range(240):
+            if state["no_songs"] or (state["page_no"] is not None and state["page_no"] != page_no):
+                raise RuntimeError("スクロール中に曲一覧のページが変わりました")
+            found = 0
+            for row in state["rows"]:
+                if row["song_id"] not in seen:
+                    seen.add(row["song_id"])
+                    result.append(dict(row, page_no=page_no))
+                    found += 1
+            at_bottom = state["top"] >= state["maximum"] - 3
+            signature = (_workspace_row_ids(state), state["top"], state["height"])
+            if at_bottom:
+                bottom_stable = bottom_stable + 1 if not found and signature == bottom_signature else 0
+                bottom_signature = signature
+                if bottom_stable >= 2:
+                    break
+            else:
+                bottom_stable = 0
+            page.evaluate(_WORKSPACE_ROWS_DOM, "scroll")
+            state = _wait_workspace_rows_stable(page, timeout=8.0)
+        else:
+            raise RuntimeError(f"仮想スクロールの走査回数が上限に達しました: page={page_no}")
+        if status_cb:
+            status_cb(f"page={page_no} rows={len(result) - before_count} total={len(result)} expected={expected}")
+        if expected is not None and len(result) == expected:
+            break
+        # React のボタン差し替えを最終ページと即断しない。
+        deadline = time.monotonic() + 1.5
+        while not state["next"] and time.monotonic() < deadline:
+            page.wait_for_timeout(180)
+            state = page.evaluate(_WORKSPACE_ROWS_DOM, "read")
+        if not state["next"]:
+            break
+        state = _move_workspace_page(page, "next")
+    else:
+        raise RuntimeError("ページ巡回が上限に達しました")
+    if expected is not None and len(result) != expected:
+        raise RuntimeError(f"画面総曲数と取得件数が一致しません: expected={expected} rows={len(result)}")
+    return result
