@@ -968,3 +968,58 @@ def convert_to_mp3(src_bytes, dest_path) -> None:
             raise FileExistsError(f'保存先が変換中に作られました: {dest}')
         part.replace(dest)
 
+
+def download_workspace_tracks_fast(page, workspace_name, target_dir, status_cb=None) -> int:
+    """開いているWorkspaceの全曲を順次取得する。不完全取得は例外にする。"""
+    import hashlib
+    import json
+    import os
+    from pathlib import Path
+    target = Path(target_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    timeout = float(os.environ.get('APP_SUNO_CAPTURE_TIMEOUT_SEC', '30'))
+    retries = int(os.environ.get('APP_SUNO_DL_RETRIES', '2'))
+    if timeout <= 0 or retries < 0:
+        raise ValueError('取得タイムアウトは正、再試行回数は0以上が必要です')
+    def report(message, variant='info'):
+        print(message, flush=True)
+        if status_cb:
+            status_cb(message, variant)
+    if not ensure_fast_capture(page):
+        raise RuntimeError('復号フックを注入できませんでした')
+    register_transfer_binding(page)
+    rows = iter_workspace_rows(page, status_cb=lambda message: report(message))
+    if not rows:
+        raise RuntimeError('Workspaceに取得可能な曲がありません')
+    page._suno_fast_row_pages = {row['song_id']: row['page_no'] for row in rows}
+    report(f'復号方式: workspace={workspace_name} 曲数={len(rows)}')
+    used_names = set()
+    saved = []
+    failed = []
+    for index, row in enumerate(rows, 1):
+        filename = allocate_filename(target, row['title'], used_names)
+        dest = target / filename
+        for attempt in range(retries + 1):
+            try:
+                data = capture_song(page, row['song_id'], row['title'], timeout,
+                                    status_cb=status_cb, force_prime=attempt > 0)
+                convert_to_mp3(data, dest)
+                saved.append({'song_id':row['song_id'], 'title':row['title'], 'file':filename,
+                              'source_bytes':len(data), 'source_sha256':hashlib.sha256(data).hexdigest()})
+                del data
+                report(f'  [{index}/{len(rows)}] {filename} ({dest.stat().st_size / 1048576:.1f}MB)')
+                break
+            except Exception as exc:
+                report(f'  [{index}/{len(rows)}] {filename} 取得失敗 ({attempt + 1}/{retries + 1}): {exc}', 'warn')
+                if attempt == retries:
+                    failed.append(row['song_id'])
+        # 中断時も保存済み曲の対応が追える。URLや鍵は記録しない。
+        manifest = target / '.suno_fast_download.json'
+        part = target / '.suno_fast_download.json.part'
+        part.write_text(json.dumps({'workspace':workspace_name, 'expected':len(rows),
+                                    'saved':saved, 'failed':failed}, ensure_ascii=False, indent=2), encoding='utf-8')
+        part.replace(manifest)
+    report(f'完了: 成功 {len(saved)} / 失敗 {len(failed)} / 総数 {len(rows)}', 'warn' if failed else 'ok')
+    if failed:
+        raise RuntimeError(f'Workspaceの取得が未完了です: 成功{len(saved)}/{len(rows)}。保存済み曲は{target}にあります')
+    return len(saved)

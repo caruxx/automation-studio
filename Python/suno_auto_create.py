@@ -1833,6 +1833,13 @@ def download_workspace_tracks(page, workspace_name, target_dir):
         time.sleep(3)
         print(f"  ✓ Workspace 開く ({found}): {page.url}")
 
+    if os.environ.get("APP_SUNO_DL_MODE", "fast").strip().lower() != "legacy":
+        import suno_fast_dl
+        return suno_fast_dl.download_workspace_tracks_fast(
+            page, workspace_name, target_dir,
+            status_cb=lambda message, variant="info": _set_status(page, message, variant),
+        )
+
     # 2) インターセプタが既に install されているか確認（add_init_script 経由）
     #    されていない場合はこの時点で evaluate 注入する（既存タブで呼ばれた場合の救済）
     installed = page.evaluate("() => !!window.__sunoAudioInterceptorInstalled")
@@ -2354,6 +2361,9 @@ def run_browser_automation(settings):
 
         # SUNO SPA の内部 fetch/XHR を横取りして audio_url をキャッシュ + ステータスオーバーレイ
         context.add_init_script(_SUNO_AUDIO_URL_INTERCEPTOR)
+        if os.environ.get("APP_SUNO_DL_MODE", "fast").strip().lower() != "legacy":
+            from suno_fast_dl import install_fast_capture
+            install_fast_capture(context)
         # ブランド表示名を window に注入（オーバーレイのタイトルで使用）
         try:
             _dc = _load_dashboard_config_for_brand()
@@ -3903,6 +3913,9 @@ def _run_download_only(workspace_name, target_dir, settings):
             context = p.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
         # SUNO SPA の内部 fetch/XHR をインターセプトして audio_url をキャッシュ
         context.add_init_script(_SUNO_AUDIO_URL_INTERCEPTOR)
+        if os.environ.get("APP_SUNO_DL_MODE", "fast").strip().lower() != "legacy":
+            from suno_fast_dl import install_fast_capture
+            install_fast_capture(context)
         if ready_poll:
             context.add_init_script(_STATUS_OVERLAY_SCRIPT)
         page = context.pages[0] if context.pages else context.new_page()
