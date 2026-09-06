@@ -27,6 +27,7 @@ FAST_DECRYPT_HOOK: str = r"""
 
   function setError(context, error) {
     if (!context?.sessionId) return;
+    if (window.__sunoFastResults[context.sessionId]?.status === 'done') return;
     window.__sunoFastResults[context.sessionId] = {
       status: 'error',
       error: error?.message || String(error)
@@ -266,9 +267,9 @@ FAST_DECRYPT_HOOK: str = r"""
     try {
       request.prefixPromise = new Promise((resolve) => { request.resolvePrefix = resolve; });
       request.encryptedPromise = readEncryptedBody(response.clone(), request);
-      // decryptに紐付く前の読み取り失敗も状態へ残す。
+      // decryptに紐付いた読み取り失敗だけを状態へ残す。
       void request.encryptedPromise.catch((error) => {
-        if (!request.cancelled) setError(request.context, error);
+        if (request.used && !request.cancelled) setError(request.context, error);
       });
       mediaRequests.push(request);
       trimRequests();
@@ -366,7 +367,8 @@ FAST_DECRYPT_HOOK: str = r"""
       received: progress?.received || 0,
       total: progress?.total || 0,
       size: result?.size || 0,
-      error: result?.error || ''
+      error: result?.error || '',
+      clipId: getClipIdFromMediaUrl(result?.url)
     };
   };
 
