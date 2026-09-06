@@ -552,13 +552,14 @@ _WORKSPACE_ROWS_DOM = r"""
   const pageNumber = pageMatch ? Number(pageMatch[0]) : null;
   const button = (direction) => [...document.querySelectorAll('button, [role="button"]')].find((element) => {
     const pattern = direction === 'next' ? /^(next page|次のページ)$/i : /^(previous page|前のページ)$/i;
-    return visible(element) && !element.disabled && element.getAttribute('aria-disabled') !== 'true'
-      && [element.getAttribute('aria-label'), element.textContent]
+    return visible(element) && [element.getAttribute('aria-label'), element.textContent]
         .some((label) => pattern.test(String(label || '').trim()));
   });
+  const enabled = (element) => Boolean(element) && !element.disabled
+    && element.getAttribute('aria-disabled') !== 'true';
   if (action === 'next' || action === 'previous') {
     const target = button(action);
-    if (!target) return false;
+    if (!enabled(target)) return false;
     target.click();
     return true;
   }
@@ -613,9 +614,21 @@ _WORKSPACE_ROWS_DOM = r"""
     }
   }
   if (expected === null && counts.length === 1) expected = counts[0].count;
+  const loading = [...document.querySelectorAll('[aria-busy="true"], [role="progressbar"], [data-testid*="loading"], [data-testid*="spinner"]')].some(visible);
+  const rect = scroller.getBoundingClientRect();
+  const rowRects = rowNodes.map((row) => row.getBoundingClientRect());
+  // 全行がDOMにある通常リストなら、スクロールでID列が変わらなくてもよい。
+  const rowsCoverScroll = rowRects.length > 0
+    && Math.min(...rowRects.map((r) => r.top)) <= rect.top - scroller.scrollTop + 3
+    && Math.max(...rowRects.map((r) => r.bottom)) >= rect.top - scroller.scrollTop + scroller.scrollHeight - 3;
   return {
+    loading, rows_cover_scroll: rowsCoverScroll,
+    rows_cover_viewport: rowRects.length > 0
+      && Math.min(...rowRects.map((r) => r.top)) <= rect.top + 3
+      && Math.max(...rowRects.map((r) => r.bottom)) >= Math.min(rect.bottom, rect.top + scroller.scrollHeight - scroller.scrollTop) - 3,
+    next_present: Boolean(button('next')), previous_present: Boolean(button('previous')),
     rows, page_no: pageNumber, expected, no_songs: noSongs,
-    previous: Boolean(button('previous')), next: Boolean(button('next')),
+    previous: enabled(button('previous')), next: enabled(button('next')),
     top: Math.round(scroller.scrollTop), client: scroller.clientHeight,
     height: scroller.scrollHeight, maximum
   };
@@ -628,7 +641,7 @@ def _workspace_row_ids(state: Dict) -> tuple:
 
 
 def _wait_workspace_rows_stable(page, previous_ids: Optional[tuple] = None,
-                                timeout: float = 15.0) -> Dict:
+                                timeout: float = 15.0, target_page: Optional[int] = None) -> Dict:
     """行とスクロール寸法の署名が2回連続で一致するまで待つ。"""
     started = time.monotonic()
     last_signature = None
@@ -638,9 +651,14 @@ def _wait_workspace_rows_stable(page, previous_ids: Optional[tuple] = None,
         ids = _workspace_row_ids(state)
         signature = (ids, tuple(row["title"] for row in state["rows"]),
                      state["page_no"], state["top"], state["client"], state["height"],
-                     state["no_songs"])
+                     state["no_songs"], state["loading"], state["next"],
+                     state["next_present"], state["expected"])
         # ページ番号だけが先に変わっても旧曲行を次ページの行と判定しない。
-        ready = state["no_songs"] or (ids and (previous_ids is None or ids != previous_ids))
+        ready = not state["loading"] and (
+            (state["no_songs"] and previous_ids is None and target_page is None)
+            or (ids and (previous_ids is None or ids != previous_ids)))
+        if target_page is not None:
+            ready = ready and state["page_no"] == target_page
         if ready and signature == last_signature:
             stable_polls += 1
         else:
@@ -652,24 +670,39 @@ def _wait_workspace_rows_stable(page, previous_ids: Optional[tuple] = None,
     raise RuntimeError("曲行の安定またはページ遷移を確認できませんでした")
 
 
+def _scroll_workspace_rows(page, action: str) -> Dict:
+    before = page.evaluate(_WORKSPACE_ROWS_DOM, "read")
+    moved = page.evaluate(_WORKSPACE_ROWS_DOM, action)
+    require_new = (moved["top"] != before["top"] and not moved["rows_cover_scroll"]
+                   and not moved["rows_cover_viewport"])
+    return _wait_workspace_rows_stable(
+        page, previous_ids=_workspace_row_ids(before) if require_new else None, timeout=8.0)
+
+
 def _move_workspace_page(page, direction: str) -> Dict:
     """ページボタンは1回だけ押し、遅い遷移でもページを飛ばさない。"""
     # Next がスクロールだけ先に先頭へ戻しても、旧ページの別の仮想行を
     # 新ページと誤認しないよう、比較元も先頭で安定させる。
-    page.evaluate(_WORKSPACE_ROWS_DOM, "top")
-    state = _wait_workspace_rows_stable(page)
+    state = _scroll_workspace_rows(page, "top")
     if not page.evaluate(_WORKSPACE_ROWS_DOM, direction):
         raise RuntimeError(f"ページボタンが操作前に消えました: {direction}")
-    return _wait_workspace_rows_stable(page, previous_ids=_workspace_row_ids(state))
+    target = None if state["page_no"] is None else state["page_no"] + (1 if direction == "next" else -1)
+    return _wait_workspace_rows_stable(page, previous_ids=_workspace_row_ids(state), target_page=target)
 
 
-def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None) -> List[Dict]:
+def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None,
+                        expected_count: Optional[int] = None) -> List[Dict]:
     """開いている Workspace を先頭から全ページ走査し、重複のない曲行を返す。
 
     同期 Playwright Page を受け取る。戻り値はページ順・行順で、page_no は1始まり。
     Workspace の移動、再生、復号、ダウンロードは行わない。
+    expected_count にカード等で確認した総曲数を渡せる。総数不明時は
+    読み込み終了と明示的な無効Nextが必要（初期の明示的空表示を除く）。
     読み込み失敗・巡回上限・画面総曲数との不一致は部分成功にせず例外にする。
     """
+    if expected_count is not None and (
+            isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 0):
+        raise ValueError("expected_count は0以上の整数にしてください")
     state = _wait_workspace_rows_stable(page)
     for _ in range(200):
         if not state["previous"]:
@@ -680,14 +713,26 @@ def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None)
     else:
         raise RuntimeError("先頭ページへの移動回数が上限に達しました")
 
-    expected = state["expected"]
+    expected = expected_count
+
+    def update_expected(current):
+        nonlocal expected
+        observed = current["expected"]
+        if observed is not None:
+            if expected is not None and expected != observed:
+                raise RuntimeError(f"総曲数が変化または指定件数と不一致です: expected={expected} observed={observed}")
+            expected = observed
+
+    update_expected(state)
     result = []
     seen = set()
     visited_pages = set()
     for ordinal in range(1, 201):
-        page.evaluate(_WORKSPACE_ROWS_DOM, "top")
-        state = _wait_workspace_rows_stable(page)
+        state = _scroll_workspace_rows(page, "top")
+        update_expected(state)
         if state["no_songs"]:
+            if result or state["next"] or (expected is not None and expected != 0):
+                raise RuntimeError("全曲取得を確認する前に空表示になりました")
             break
         page_no = state["page_no"] or ordinal
         page_key = ("page", page_no) if state["page_no"] else ("ids", _workspace_row_ids(state))
@@ -698,6 +743,7 @@ def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None)
         bottom_signature = None
         bottom_stable = 0
         for _ in range(240):
+            update_expected(state)
             if state["no_songs"] or (state["page_no"] is not None and state["page_no"] != page_no):
                 raise RuntimeError("スクロール中に曲一覧のページが変わりました")
             found = 0
@@ -715,19 +761,34 @@ def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None)
                     break
             else:
                 bottom_stable = 0
-            page.evaluate(_WORKSPACE_ROWS_DOM, "scroll")
-            state = _wait_workspace_rows_stable(page, timeout=8.0)
+            state = _scroll_workspace_rows(page, "scroll")
         else:
             raise RuntimeError(f"仮想スクロールの走査回数が上限に達しました: page={page_no}")
         if status_cb:
             status_cb(f"page={page_no} rows={len(result) - before_count} total={len(result)} expected={expected}")
         if expected is not None and len(result) == expected:
             break
-        # React のボタン差し替えを最終ページと即断しない。
-        deadline = time.monotonic() + 1.5
-        while not state["next"] and time.monotonic() < deadline:
-            page.wait_for_timeout(180)
-            state = page.evaluate(_WORKSPACE_ROWS_DOM, "read")
+        # ボタンの消失を最終ページとみなさない。無効Nextが継続し、
+        # 読み込み表示が消えたことを確認する。総数不明の単一ページは拒否する。
+        end_signature = (_workspace_row_ids(state), state["top"], state["height"])
+        deadline = time.monotonic() + 8.0
+        terminal_since = None
+        while time.monotonic() < deadline:
+            state = _wait_workspace_rows_stable(page, timeout=8.0)
+            update_expected(state)
+            if end_signature != (_workspace_row_ids(state), state["top"], state["height"]):
+                raise RuntimeError("終端確認中に曲一覧が更新されました。再走査が必要です")
+            if state["next"]:
+                break
+            terminal = state["next_present"] and not state["loading"]
+            if terminal:
+                terminal_since = terminal_since or time.monotonic()
+                if time.monotonic() - terminal_since >= 1.5:
+                    break
+            else:
+                terminal_since = None
+        else:
+            raise RuntimeError("一覧の終端を確認できません。総曲数または明示的なNext無効状態が必要です")
         if not state["next"]:
             break
         state = _move_workspace_page(page, "next")

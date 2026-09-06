@@ -81,7 +81,8 @@ def main() -> int:
             })();""")
             opened = _open_workspace(page, args.workspace)
             print(f"WORKSPACE={args.workspace} CARD_SONGS={opened['card_count']}", flush=True)
-            rows = iter_workspace_rows(page, status_cb=lambda message: print(message, flush=True))
+            rows = iter_workspace_rows(page, status_cb=lambda message: print(message, flush=True),
+                                       expected_count=opened["card_count"])
             play_events = page.evaluate("() => window.__rowsCheckPlayEvents")
             if play_events != 0:
                 raise RuntimeError(f"検証中に再生イベントを検出しました: {play_events}")
