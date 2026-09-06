@@ -262,6 +262,7 @@ def bootstrap_vps(vps: dict) -> dict:
     qbase = shlex.quote(base)
     script = (
         "set -e\n"
+        f'export PATH={qbase}/bin:"$PATH"\n'
         "export DEBIAN_FRONTEND=noninteractive\n"
         "if ! command -v ffmpeg >/dev/null || ! command -v screen >/dev/null; then\n"
         "  apt-get update -qq\n"

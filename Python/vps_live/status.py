@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+os.environ["PATH"] = str(BASE / "bin") + os.pathsep + os.environ.get("PATH", "")
 
 
 def read_props(p: Path) -> dict:

@@ -18,6 +18,7 @@
 set -u
 CH="${1:?usage: stream.sh <stream_id>}"
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PATH="$BASE/bin:$PATH"
 ENVF="$BASE/channels/$CH.env"
 LOG="$BASE/logs/$CH.log"
 STATUSF="$BASE/status/$CH.props"
