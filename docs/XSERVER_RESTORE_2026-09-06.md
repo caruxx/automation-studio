@@ -10,7 +10,8 @@
 - nginx 設定検証成功、公開ログイン画面 HTTP 200、未認証 `/api/channels` HTTP 401、既存 EC health HTTP 200 を確認。
 - 暗号鍵が欠落していたため新規生成。`/etc/automation-studio/keyring.json`、所有者 10001:10001、mode 0600。鍵の値はこの記録・Git に保存しない。
 - 空の DB にチャンネル定義 9 件を投入。名前・フォルダ対応のみで、旧 OAuth トークンは復旧していない。
-- 管理者は未作成。利用するメールアドレスの回答待ち。管理者作成後に MFA 設定、YouTube OAuth の再同意、Mac worker の再接続が必要。
+- ユーザー指定の `info@caruvistar.jp` で管理者（id=1、role=admin、active）を作成済み。初期パスワードは Mac の非共有・本人専用ファイル（0600）に保存し、Git・ログには記録していない。
+- 公開ログイン API が HTTP 200 と MFA setup required を返し、設定前のセッションでは `/api/channels` が HTTP 403 になることを確認。MFA 必須設定は維持。ユーザーの認証アプリで MFA 設定後、YouTube OAuth の再同意、Mac worker の再接続が必要。
 - 新しい暗号鍵の別媒体バックアップは未実施。旧 Hetzner の DB / 暗号鍵は回収できていない。
 
 ## ライブ受け取り環境
