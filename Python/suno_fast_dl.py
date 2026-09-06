@@ -690,12 +690,66 @@ def _move_workspace_page(page, direction: str) -> Dict:
     return _wait_workspace_rows_stable(page, previous_ids=_workspace_row_ids(state), target_page=target)
 
 
+def _clear_workspace_filters(page, status_cb=None) -> None:
+    """全曲列挙の前に、明示的に選択済みと表示されるフィルターだけを解除する。"""
+    import re
+
+    selector = 'button[aria-label^="Filters"]:visible'
+
+    def read_filter_count():
+        button = page.locator(selector)
+        if not button.count():
+            return None
+        if button.count() != 1:
+            raise RuntimeError("曲一覧のFiltersを一意に特定できません")
+        label = button.get_attribute("aria-label") or ""
+        match = re.fullmatch(r"Filters(?:\s*\((\d+)\))?", label)
+        if not match:
+            raise RuntimeError(f"Filtersの状態を確認できません: {label}")
+        return int(match.group(1) or 0)
+
+    count = read_filter_count()
+    if not count:
+        return
+    for _ in range(30):
+        before = count
+        button = page.locator(selector)
+        if button.get_attribute("aria-expanded") != "true":
+            button.click(timeout=5000)
+        menus = page.locator('[role="listbox"]:visible')
+        if menus.count() != 1:
+            raise RuntimeError("Filtersの選択メニューを一意に確認できません")
+        selected = menus.locator('[role="option"][aria-selected="true"]')
+        if selected.count() != before:
+            raise RuntimeError(f"Filters件数と選択済み項目が一致しません: filters={before} selected={selected.count()}")
+        label = selected.first.inner_text().strip()
+        selected.first.click(timeout=5000)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            count = read_filter_count()
+            if count == before - 1:
+                break
+            page.wait_for_timeout(180)
+        else:
+            raise RuntimeError("フィルター解除の反映を確認できません")
+        if status_cb:
+            status_cb(f"フィルター解除: {label} / 残り{count}")
+        if count == 0:
+            if page.locator(selector).get_attribute("aria-expanded") == "true":
+                page.locator(selector).click(timeout=5000)
+            # 一覧の再取得が始まってから既存の安定待ちへ渡す。
+            page.wait_for_timeout(1000)
+            _wait_workspace_rows_stable(page)
+            return
+    raise RuntimeError("全曲表示へのフィルター解除が上限に達しました")
+
+
 def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None,
                         expected_count: Optional[int] = None) -> List[Dict]:
     """開いている Workspace を先頭から全ページ走査し、重複のない曲行を返す。
 
     同期 Playwright Page を受け取る。戻り値はページ順・行順で、page_no は1始まり。
-    Workspace の移動、再生、復号、ダウンロードは行わない。
+    選択済み一覧フィルターを解除する。Workspace移動、再生、復号、DLは行わない。
     expected_count にカード等で確認した総曲数を渡せる。総数不明時は
     読み込み終了と明示的な無効Nextが必要（初期の明示的空表示を除く）。
     読み込み失敗・巡回上限・画面総曲数との不一致は部分成功にせず例外にする。
@@ -703,6 +757,8 @@ def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None,
     if expected_count is not None and (
             isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count < 0):
         raise ValueError("expected_count は0以上の整数にしてください")
+    state = _wait_workspace_rows_stable(page)
+    _clear_workspace_filters(page, status_cb)
     state = _wait_workspace_rows_stable(page)
     for _ in range(200):
         if not state["previous"]:
