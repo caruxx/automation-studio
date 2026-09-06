@@ -18,10 +18,10 @@
 - `/opt/ytlive/{bin,scripts,channels,videos,logs,status,licenses}` を準備。
 - BtbN の FFmpeg 9 系 Linux GPL build を公式ダウンロード案内から取得し、配布 SHA-256 と照合。ffmpeg / ffprobe を専用 bin に配置。RTMP / RTMPS 対応を確認。
 - `stream.sh`、`ytlive.sh`、`status.py` を scripts に配置。専用 bin を参照する PATH 対応をローカルソースにも追加。
-- status は `ok=true`、`ffmpeg_installed=true`、登録配信なし。
+- status は `ok=true`、`ffmpeg_installed=true`。5 配信ともキー設定あり・停止中・動画未配置を確認。
 - 動画転送と配信開始は実施していない。
-- 既存 5 配信の STREAM_KEY を Xserver の channels に保存する操作は、自動承認レビューに拒否されたため未実施。具体的な転送先を示してユーザーの承認待ち。
-- ローカル `config/live_config.json` の VPS 接続先も未変更。配信キー移行の回答後に接続先更新・必要な設定の配置・読み戻しを実施する。
+- 転送先を示した確認に対しユーザーから保存承認を得て、既存 5 配信（orzz / orzz_2 / orzz_3 / sukima / rw_1）の設定を `/opt/ytlive/channels/` に保存済み。SSH 標準入力で転送し、保存後のファイル内容の SHA-256 一致、root:root / 0600、親ディレクトリ 0700 を確認。キーの値は画面・ログ・Git に記録していない。
+- ローカル `config/live_config.json` の接続先を Xserver（210.131.213.137）、鍵を `~/.ssh/xserver_vps.pem` に更新し、読み戻しで確認。既存の配信キー・動画指定・その他の配信設定は維持。動画の受け取り先 `videos/orzz` / `videos/sukima` / `videos/rw` も準備済み。
 
 ## SUNO
 
