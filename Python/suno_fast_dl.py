@@ -797,3 +797,174 @@ def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None,
     if expected is not None and len(result) != expected:
         raise RuntimeError(f"画面総曲数と取得件数が一致しません: expected={expected} rows={len(result)}")
     return result
+
+
+_PLAY_BUTTON = 'button[aria-label^="Play " i], [role="button"][aria-label^="Play " i]'
+_PAUSE_BUTTON = 'button[aria-label^="Pause " i], [role="button"][aria-label^="Pause " i]'
+
+
+def _song_row(page, song_id):
+    from uuid import UUID
+    song_id = str(UUID(song_id))
+    return page.locator('[data-testid="clip-row"]').filter(
+        has=page.locator(f'a[href*="/song/{song_id}"]')
+    ).first
+
+
+def _locate_song(page, song_id):
+    """列挙時のページを復元し、仮想行はIDで毎回引き直す。"""
+    wanted_page = getattr(page, '_suno_fast_row_pages', {}).get(song_id)
+    state = _wait_workspace_rows_stable(page)
+    if wanted_page is not None and state['page_no'] is not None:
+        for _ in range(200):
+            if state['page_no'] == wanted_page:
+                break
+            state = _move_workspace_page(page, 'next' if state['page_no'] < wanted_page else 'previous')
+        else:
+            raise RuntimeError('対象曲のページへ移動できませんでした')
+    row = _song_row(page, song_id)
+    if row.count() and row.is_visible():
+        return row
+    state = _scroll_workspace_rows(page, 'top')
+    for _ in range(240):
+        row = _song_row(page, song_id)
+        if row.count() and row.is_visible():
+            return row
+        if state['top'] >= state['maximum'] - 3:
+            break
+        state = _scroll_workspace_rows(page, 'scroll')
+    raise RuntimeError(f'対象曲の行が見つかりません: {song_id}')
+
+
+_MUTE_CAPTURE = r"""(action) => {
+  if (action === 'start') {
+    window.__sunoFastMuteStates = new Map();
+    window.__sunoFastMuteAudio = () => {
+      for (const audio of document.querySelectorAll('audio')) {
+        if (!window.__sunoFastMuteStates.has(audio)) window.__sunoFastMuteStates.set(audio, audio.muted);
+        audio.muted = true;
+      }
+    };
+    window.__sunoFastMuteObserver = new MutationObserver(window.__sunoFastMuteAudio);
+    window.__sunoFastMuteObserver.observe(document.documentElement, {childList:true, subtree:true});
+    document.addEventListener('play', window.__sunoFastMuteAudio, true);
+  }
+  if (action === 'finish') {
+    window.__sunoFastMuteObserver?.disconnect();
+    document.removeEventListener('play', window.__sunoFastMuteAudio, true);
+    for (const [audio, muted] of window.__sunoFastMuteStates || []) {
+      audio.pause(); audio.muted = muted;
+    }
+    delete window.__sunoFastMuteStates;
+    delete window.__sunoFastMuteAudio;
+    delete window.__sunoFastMuteObserver;
+  } else {
+    window.__sunoFastMuteAudio();
+  }
+}"""
+
+
+def _capture_play(page, row, song_id, title, timeout_sec, transfer):
+    from uuid import uuid4
+    session_id = str(uuid4())
+    try:
+        page.evaluate('(context) => window.__sunoFastSetContext(context)',
+                      {'sessionId': session_id, 'songId': song_id, 'title': title})
+        page.evaluate(_MUTE_CAPTURE, 'mute')
+        row.locator(_PLAY_BUTTON).first.click(timeout=10000)
+        page._suno_fast_last_played = song_id
+        page.evaluate(_MUTE_CAPTURE, 'mute')
+        started = last_progress = time.monotonic()
+        received = 0
+        while True:
+            state = page.evaluate('(id) => window.__sunoFastGetState(id)', session_id)
+            if state['status'] == 'error':
+                raise RuntimeError(state['error'])
+            if state['status'] == 'done':
+                if state.get('clipId', '').lower() != song_id.lower():
+                    raise RuntimeError(f'取得曲IDが不一致です: expected={song_id} actual={state.get("clipId")}')
+                return fetch_result_bytes(page, session_id) if transfer else b''
+            if state['received'] > received:
+                received = state['received']
+                last_progress = time.monotonic()
+            if time.monotonic() - last_progress > timeout_sec:
+                raise TimeoutError(f'復号取得が{timeout_sec:g}秒間進みませんでした: {song_id}')
+            if time.monotonic() - started > max(180, timeout_sec * 10):
+                raise TimeoutError(f'復号取得の総待機時間を超えました: {song_id}')
+            page.wait_for_timeout(250)
+    finally:
+        # 現contextが残っている間に同じ曲の遅延リクエストも解放する。
+        page.evaluate('(id) => { window.__sunoFastClear(id); window.__sunoFastSetContext(null); }', session_id)
+        page.evaluate('() => document.querySelectorAll("audio").forEach(a => a.pause())')
+
+
+def capture_song(page, song_id, title, timeout_sec=30, status_cb=None, force_prime=False) -> bytes:
+    """ミュート再生で全体復号し、曲IDを確認してからバイト列を返す。"""
+    if timeout_sec <= 0:
+        raise ValueError('timeout_secは正の値が必要です')
+    if not ensure_fast_capture(page):
+        raise RuntimeError('復号フックを注入できませんでした')
+    register_transfer_binding(page)
+    row = _locate_song(page, song_id)
+    page.evaluate(_MUTE_CAPTURE, 'start')
+    try:
+        prime = force_prime or row.locator(_PAUSE_BUTTON).count() or getattr(page, '_suno_fast_last_played', None) == song_id
+        if prime:
+            state = page.evaluate(_WORKSPACE_ROWS_DOM, 'read')
+            alternate = next((item for item in state['rows'] if item['song_id'] != song_id
+                              and _song_row(page, item['song_id']).locator(_PLAY_BUTTON).count()), None)
+            if alternate is None:
+                raise RuntimeError('再取得の準備に必要な別曲が表示されていません')
+            if status_cb:
+                status_cb('別曲を再生して取得を準備しています', 'info')
+            _capture_play(page, _song_row(page, alternate['song_id']), alternate['song_id'],
+                          alternate['title'], timeout_sec, False)
+            page.wait_for_timeout(150)
+        row = _locate_song(page, song_id)
+        return _capture_play(page, row, song_id, title, timeout_sec, True)
+    finally:
+        page.evaluate(_MUTE_CAPTURE, 'finish')
+
+
+def allocate_filename(target_dir, title, used_names) -> str:
+    import re
+    from pathlib import Path
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', title or '').strip().rstrip('.') or 'suno-audio'
+    # APFSの255バイト上限に対し拡張子と連番の余白を確保する。
+    while len(base.encode('utf-8')) > 220:
+        base = base[:-1]
+    name = f'{base}.mp3'
+    number = 2
+    while name in used_names or (Path(target_dir) / name).exists():
+        name = f'{base}_{number}.mp3'
+        number += 1
+    used_names.add(name)
+    return name
+
+
+def convert_to_mp3(src_bytes, dest_path) -> None:
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    dest = Path(dest_path)
+    if dest.exists():
+        raise FileExistsError(f'保存先が既に存在します: {dest}')
+    if src_bytes[4:8] != b'ftyp' or b'moov' not in src_bytes:
+        raise ValueError('復号結果が音声MP4形式ではありません')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # 同じボリュームで一時出力し、失敗時に未完成MP3を残さない。
+    with tempfile.TemporaryDirectory(prefix='.suno-fast-', dir=str(dest.parent)) as tmp:
+        src = Path(tmp) / 'source.mp4'
+        part = Path(tmp) / 'audio.part'
+        src.write_bytes(src_bytes)
+        result = subprocess.run(['ffmpeg', '-y', '-v', 'error', '-xerror', '-i', str(src),
+                                 '-vn', '-c:a', 'libmp3lame', '-b:a', '320k', '-map_metadata', '-1',
+                                 '-f', 'mp3', str(part)], capture_output=True, text=True, timeout=300)
+        if result.returncode:
+            raise RuntimeError(f'MP3変換失敗: {result.stderr[-1200:]}')
+        if not part.exists() or part.stat().st_size < 100 * 1024:
+            raise RuntimeError('MP3出力が100KB未満です')
+        if dest.exists():
+            raise FileExistsError(f'保存先が変換中に作られました: {dest}')
+        part.replace(dest)
+
