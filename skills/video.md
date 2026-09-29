@@ -1,5 +1,7 @@
 # video: Premiere / AME / ffmpeg 書き出しドメイン
 
+`production_mode=ffmpeg_only` の新チャンネルは画像加工も含めAdobeを使わない。FFmpegで動画・字幕・タイムスタンプを生成し、Premiere preflightとAMEキューを経由しない。詳細は `docs/music/beat-soul-ffmpeg-workflow.md`。以下のAdobe前提は従来の構成用。
+
 ## 目的
 Premiere プロジェクトを自動オープンし、音声・背景・字幕を配置し、AME または ffmpeg engine で MP4 を書き出す。
 

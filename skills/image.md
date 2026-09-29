@@ -3,6 +3,8 @@
 ## 目的
 ベンチマーク分析と参照画像から背景画像を作り、Photoshop PSD 合成で `vol{N}.jpg` と `サムネイル.jpg` を出す。PSD が使えない場合は AI サムネをフォールバック生成する。
 
+`production_mode=ffmpeg_only` の新チャンネルではPhotoshopを使用しない。`psd_composite` は `app_image_composite.py` → 既存のPillow合成へ分岐する。手直しはImage2 Layout Studio。詳しくは `docs/music/beat-soul-ffmpeg-workflow.md`。以下のPhotoshop前提は従来の `standard` 構成に適用する。
+
 ## 入口コマンド
 - 背景: `python3 Python/studio.py bgimage --vol <N> --dry-run`
 - PSD: `python3 Python/studio.py psd --vol <N> --dry-run`

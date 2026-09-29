@@ -420,6 +420,23 @@
       "category": "production"
     },
     {
+      "key": "channel.production_mode",
+      "label_ja": "制作構成",
+      "description_ja": "ffmpeg_onlyは画像エディタとFFmpegで制作し、Photoshop・Premiere・AMEを使用しない。standardは従来の構成。",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "production_mode"
+      },
+      "type": "string",
+      "choices": [
+        "standard",
+        "ffmpeg_only"
+      ],
+      "category": "production"
+    },
+    {
       "key": "channel.export_engine",
       "label_ja": "書き出しエンジン",
       "description_ja": "Premiere/AMEまたはffmpegの選択",

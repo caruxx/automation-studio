@@ -101,6 +101,19 @@ STEP_LABELS = {
 }
 
 
+def _step_label(step: str) -> str:
+    if _load_dashboard_config().get("production_mode") == "ffmpeg_only":
+        labels = {
+            "psd_composite": "4/11 画像合成（画像エディタ・Adobeなし）",
+            "premiere": "5/11 動画構成（FFmpeg書き出しへ引き継ぎ）",
+            "export": "6/11 FFmpeg書き出し・曲名・タイムスタンプ生成",
+            "thumbnail": "10/11 サムネイル確認（画像合成出力を利用）",
+        }
+        if step in labels:
+            return labels[step]
+    return STEP_LABELS[step]
+
+
 _CHANNEL_CONFIG_FILENAME = ".app_channel_config.json"
 # 共有側 config/channels.json が canonical（app_core.CHANNELS_CONFIG と同じ解決）。
 # 旧来のローカル ~/.config/{app_id}/channels.json はフォールバックとして残す。
@@ -1408,7 +1421,10 @@ def _overlay_thumbnail_script(out_thumb: Path, cfg: dict, out_bg: Path = None) -
 
 
 def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
-    """PSD テンプレで vol{N}.jpg + サムネイル.jpg を 2 枚出し（背景画像 + サムネ）。
+    """vol{N}.jpg + サムネイル.jpg を2枚出す画像合成。
+
+    production_mode=ffmpeg_onlyでは既存のPillow合成を使用し、Adobeを呼ばない。
+    以下はstandard構成のPSDテンプレ合成仕様。
 
     bgimage step で AI 生成した <vol_folder>/vol{N}.png を per-channel テンプレ
     PSD の base スマートオブジェクト層に流し込み、LLM で生成した英語シーンコピーを
@@ -1429,8 +1445,13 @@ def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
       APP_SCENE_TEXT_REGEN=1        scene_en.txt / scene_ja.txt も作り直す（既定: 既存を再利用）
     """
     print(f"\n{'='*60}")
-    print(f"  {STEP_LABELS.get('psd_composite', '4/10 PSD 合成')}")
+    print(f"  {_step_label('psd_composite')}")
     print(f"{'='*60}")
+
+    if _load_dashboard_config().get("production_mode") == "ffmpeg_only":
+        from app_image_composite import compose_images
+        force = os.environ.get("APP_IMAGE_COMPOSITE_FORCE", os.environ.get("APP_PSD_COMPOSITE_FORCE", "")).strip() in ("1", "true", "yes")
+        return compose_images(folder, vol, _load_dashboard_config(), force=force)
 
     if os.environ.get("APP_PSD_COMPOSITE_DISABLE", "").strip() in ("1", "true", "yes"):
         print("  ⊘ APP_PSD_COMPOSITE_DISABLE=1 によりスキップ")
@@ -1809,6 +1830,8 @@ def _export_engine() -> str:
     "ffmpeg" は app_ffrender.py（ループ連結方式）で premiere+export を置換する。
     静止画ベースのチャンネル向け。Premiere/AME の物理シリアル制約と無関係なので
     render_queue を経由せず CPU 並列で書き出せる。"""
+    if _load_dashboard_config().get("production_mode") == "ffmpeg_only":
+        return "ffmpeg"
     eng = (_load_dashboard_config().get("export_engine") or "ame").strip().lower()
     return eng if eng in ("ame", "ffmpeg") else "ame"
 
@@ -1834,7 +1857,7 @@ def step_premiere(vol: int, folder: Path, via_api: bool, **kw):
     if gate:
         return gate
     if _export_engine() == "ffmpeg":
-        print(" export_engine=ffmpeg → premiere step スキップ"
+        print(" FFmpeg構成 → 動画配置をFFmpeg書き出しへ引き継ぎ"
               "（ffrender が export 時に 音声/映像/字幕(SRT)/チャプター(TC) を一括生成）")
         return True
     duration = _resolve_target_duration(kw)
@@ -3532,7 +3555,7 @@ def main():
     # 計画表示
     print("\n実行計画:")
     for i, s in enumerate(steps, 1):
-        print(f"  [{i}] {STEP_LABELS[s]}")
+        print(f"  [{i}] {_step_label(s)}")
     print()
 
     if args.dry_run:
@@ -3570,7 +3593,7 @@ def main():
 
     for s in steps:
         idx = steps.index(s) + 1
-        print(f"\n▶ STEP {s} 開始 ({idx}/{len(steps)}) — {STEP_LABELS[s]}")
+        print(f"\n▶ STEP {s} 開始 ({idx}/{len(steps)}) — {_step_label(s)}")
         sys.stdout.flush()
         _ledger_call(ledger_sync, "report_step", args.vol, s, "running")
         func = STEP_FUNCS[s]
@@ -3593,12 +3616,12 @@ def main():
             sys.stdout.flush()
             ch_name = _load_dashboard_config().get("channel_name", "(unknown channel)")
             _notify_line(
-                f"⚠️ [{ch_name}] vol.{args.vol} の {STEP_LABELS[s]} が中断しました\n"
+                f"⚠️ [{ch_name}] vol.{args.vol} の {_step_label(s)} が中断しました\n"
                 f"原因: ブラウザの手動ログインが必要 (~/.flow-playwright-profile が切れている可能性)\n"
                 f"対応: 該当サービスにブラウザでログインし、再開: python3 app_pipeline.py {args.vol} --from {s}"
             )
             print(f"\n{'='*60}")
-            print(f" {STEP_LABELS[s]} で中断しました（手動ログイン要求）")
+            print(f" {_step_label(s)} で中断しました（手動ログイン要求）")
             print(f"  再開: python3 app_pipeline.py {args.vol} --from {s}")
             print(f"{'='*60}")
             sys.exit(EXIT_UNATTENDED)
@@ -3609,13 +3632,13 @@ def main():
             sys.stdout.flush()
             ch_name = _load_dashboard_config().get("channel_name", "(unknown channel)")
             _notify_line(
-                f" [{ch_name}] vol.{args.vol} の {STEP_LABELS[s]} が中断しました\n"
+                f" [{ch_name}] vol.{args.vol} の {_step_label(s)} が中断しました\n"
                 f"原因: YouTube Data API の 24h クオータを使い切りました\n"
                 f"対応: ~24h 後に自動再投入されるか、手動で再開: "
                 f"python3 app_pipeline.py {args.vol} --from {s}"
             )
             print(f"\n{'='*60}")
-            print(f" {STEP_LABELS[s]} で中断しました（YouTube quota 枯渇）")
+            print(f" {_step_label(s)} で中断しました（YouTube quota 枯渇）")
             print(f"  再開: python3 app_pipeline.py {args.vol} --from {s}")
             print(f"{'='*60}")
             sys.exit(EXIT_QUOTA_EXHAUSTED)
@@ -3636,13 +3659,13 @@ def main():
             reason = "retry 上限に到達" if ok == "retryable" else "失敗"
             # QA 等、その工程を再実行しても直らない工程は前段へ差し戻す（_RESUME_OVERRIDE）。
             resume_stage = _RESUME_OVERRIDE.get(s, s)
-            rollback_note = f"（{STEP_LABELS[s]} 不良 → {resume_stage} から再実行）" if resume_stage != s else ""
+            rollback_note = f"（{_step_label(s)} 不良 → {resume_stage} から再実行）" if resume_stage != s else ""
             _notify_line(
-                f"❌ [{ch_name}] vol.{args.vol} の {STEP_LABELS[s]} で{reason}しました{rollback_note}\n"
+                f"❌ [{ch_name}] vol.{args.vol} の {_step_label(s)} で{reason}しました{rollback_note}\n"
                 f"再開: python3 app_pipeline.py {args.vol} --from {resume_stage}"
             )
             print(f"\n{'='*60}")
-            print(f"  ⛔ {STEP_LABELS[s]} で停止しました ({reason}){rollback_note}")
+            print(f"  ⛔ {_step_label(s)} で停止しました ({reason}){rollback_note}")
             print(f"  再開: python3 app_pipeline.py {args.vol} --from {resume_stage}")
             print(f"{'='*60}")
             sys.exit(1)

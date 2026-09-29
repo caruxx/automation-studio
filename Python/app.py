@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, HTTPException, UploadFile, File, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 # ─── 土台は app_core へ分離（D9 第1段）。foundation シンボルを取り込む ───
 import app_core  # noqa: F401  （app_core.X 直接参照用）
@@ -449,6 +449,8 @@ class DashboardConfigUpdate(BaseModel):
     reference_image: Optional[str] = None        # step_bgimage: 固定参照画像（空文字でクリア）
     reference_image_mix_mode: Optional[str] = None  # fixed_only / identity_plus_benchmark / benchmark_only
     default_duration_sec: Optional[int] = None   # Premiere 自動配置の規定尺（秒）。0/空でクリア（10800 にフォールバック）
+    production_mode: Optional[Literal["standard", "ffmpeg_only"]] = None
+    thumbnail_composition: Optional[dict] = None
     export_engine: Optional[str] = None          # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(ループ連結方式)
 
 @app.put("/api/config/dashboard")
@@ -528,6 +530,8 @@ def api_update_dashboard_config(update: DashboardConfigUpdate):
             config["export_engine"] = eng if eng in ("ame", "ffmpeg") else "ame"
         else:
             config[k] = v
+    if config.get("production_mode") == "ffmpeg_only":
+        config["export_engine"] = "ffmpeg"
     save_dashboard_config_smart(config)
     if update.file_prefix is not None and config.get("channel_folder"):
         channels = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
@@ -1463,6 +1467,7 @@ def api_channels_resolve_url(req: ChannelResolveRequest):
     return _resolve_youtube_channel_meta(req.url)
 
 class ChannelCreate(BaseModel):
+    production_mode: Literal["standard", "ffmpeg_only"] = "standard"
     name: str
     folder: str
     prefix: str = ""
@@ -1828,6 +1833,10 @@ def _create_empty_channel_config(folder: Path, req: ChannelCreate) -> None:
         "spreadsheet_growth_tracking_url": "",
         "template_prproj": req.template_prproj or "",
         "template_psd": req.template_psd or "",
+        "production_mode": req.production_mode,
+        **({"export_engine": "ffmpeg", "template_prproj": "", "template_psd": "",
+            "scene_text_enabled": False, "thumbnail_composition": {"title": ""}}
+           if req.production_mode == "ffmpeg_only" else {}),
         "_schema_version": 1,
         "_created_at": datetime.utcnow().isoformat() + "Z",
         "_created_for_channel": req.name or "",
@@ -1866,7 +1875,9 @@ def api_create_channel(req: ChannelCreate):
     prefix = sanitize_file_prefix(req.prefix or inferred_prefix or req.name, fallback="vol")
     new_channel = {
         "id": channel_id, "name": req.name, "folder": str(folder),
-        "prefix": prefix, "template_prproj": req.template_prproj, "template_psd": req.template_psd,
+        "prefix": prefix, "production_mode": req.production_mode,
+        "template_prproj": "" if req.production_mode == "ffmpeg_only" else req.template_prproj,
+        "template_psd": "" if req.production_mode == "ffmpeg_only" else req.template_psd,
         "youtube_url": (req.youtube_url or "").strip(),
         "youtube_channel_id": "",
         "handle": "",
@@ -2267,6 +2278,8 @@ def api_create_video_folder(req: VideoFolderCreate):
     # テンプレートコピー（未配置時は warnings に積んで UI に通知）
     tpl_prproj = config.get("template_prproj") or ""
     tpl_psd = config.get("template_psd") or ""
+    if config.get("production_mode") == "ffmpeg_only":
+        tpl_prproj = tpl_psd = ""
     warnings: List[str] = []
     created: List[str] = []
 
@@ -2297,7 +2310,7 @@ def api_create_video_folder(req: VideoFolderCreate):
                 warnings.append(f".prproj コピー失敗: {e}")
         else:
             warnings.append(f"Premiere テンプレが見つかりません: {tpl_prproj}（基本設定 → チャンネル → テンプレートで指定してください）")
-    else:
+    elif config.get("production_mode") != "ffmpeg_only":
         warnings.append("Premiere テンプレ未設定（基本設定 → チャンネル → テンプレートで指定してください）")
 
     if tpl_psd:
@@ -2311,7 +2324,7 @@ def api_create_video_folder(req: VideoFolderCreate):
                 warnings.append(f".psd コピー失敗: {e}")
         else:
             warnings.append(f"Photoshop テンプレが見つかりません: {tpl_psd}（基本設定 → チャンネル → テンプレートで指定してください）")
-    else:
+    elif config.get("production_mode") != "ffmpeg_only":
         warnings.append("Photoshop テンプレ未設定（基本設定 → チャンネル → テンプレートで指定してください）")
 
     # VPS 台帳同期は best effort。設定欠損や通信失敗でフォルダ作成を失敗させない。

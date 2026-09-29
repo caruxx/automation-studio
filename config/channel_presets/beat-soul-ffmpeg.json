@@ -1,0 +1,19 @@
+{
+  "production_mode": "ffmpeg_only",
+  "export_engine": "ffmpeg",
+  "template_prproj": "",
+  "template_psd": "",
+  "reference_image_mix_mode": "fixed_only",
+  "reference_image": "",
+  "reference_image_dir": "",
+  "scene_text_enabled": false,
+  "thumbnail_composition": {
+    "title": "",
+    "headline": "",
+    "darken": 0,
+    "vignette": 0
+  },
+  "autopilot_enabled": false,
+  "publish_mode": "unlisted",
+  "persona": "American luxury audience. Refined contemporary visual atmosphere for continuous beat-driven psychedelic electronic soul and electronic funk BGM. Preserve the energetic groove and immediate vocal hook; avoid interpreting luxury as slow jazz or a ballad. Create original imagery without copying a competitor scene, slogan, logo, or composition."
+}

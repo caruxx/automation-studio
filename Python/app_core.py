@@ -302,6 +302,8 @@ def get_dashboard_config():
     # 各所の `ch.get("folder")==config.get("channel_folder")` 比較を揃える。保存先はローカルのみ＝安全。
     if config.get("channel_folder"):
         config["channel_folder"] = _resolve_to_current_host(config["channel_folder"])
+    if config.get("production_mode") == "ffmpeg_only":
+        config["export_engine"] = "ffmpeg"
     return config
 
 
@@ -313,6 +315,7 @@ PER_CHANNEL_KEYS = {
     "spreadsheet_channel_detail_url", "spreadsheet_growth_tracking_url",
     "benchmark_pinned_names", "benchmark_filter", "benchmark_extra_urls",
     "channel_icon", "template_prproj", "template_psd", "export_path",
+    "production_mode", "thumbnail_composition",  # FFmpegのみの制作構成と画像合成設定
     "export_engine",  # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(app_ffrender ループ連結方式・静止画チャンネル向け)
     "psd_base_layer", "psd_toggle_layer", "psd_image_subdir",
     "scene_text_enabled", "scene_text_case", "scene_text_punctuation",

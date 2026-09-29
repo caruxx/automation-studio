@@ -2698,8 +2698,9 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           <div class="fh">大容量の書き出し動画を外部ストレージに保存する場合。「参照」ボタンで <code>/Volumes</code>（外付けHDD）から選択できます。</div>
         </div>
 
+        <div class="ff"><label class="fl">制作構成</label><select class="fi" id="cfgProductionMode" onchange="syncProductionModeUi()"><option value="standard">従来の制作構成</option><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select><div class="fh">Adobeなしでは、画像エディタで加工し、FFmpegで動画・曲名表示・タイムスタンプを作成します。</div></div>
         <!-- 書き出しエンジン（per-channel）。ame=Premiere/AME（既定） / ffmpeg=ループ連結方式（静止画チャンネル向け） -->
-        <div class="ff">
+        <div class="ff" data-adobe-only>
           <label class="fl"><span class="product-icon sm adobe-me">Me</span> 書き出しエンジン</label>
           <select class="fi" id="cfgExportEngine" style="max-width:320px" title="ame=Premiere/AME（既定）。ffmpeg=静止画ベースのチャンネル向けのループ連結方式。Premiere/AME 不要・render_queue を経由せず CPU 並列で書き出します。詳細は SPEC.md の「書き出しエンジン切替」節。">
             <option value="ame">Premiere / AME（既定）</option>
@@ -2712,6 +2713,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
 
         <!-- 新動画フォルダ作成時のテンプレート（.prproj / .psd）選択 -->
         <div style="margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-default)">
+          <div data-adobe-only>
           <div class="fl" style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2)">
             新規動画作成時のテンプレートファイル
             <button class="btn btn-ghost btn-sm" onclick="loadTemplateOptions()" title="チャンネルフォルダを再スキャン">再読込</button>
@@ -2761,9 +2763,10 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
             </div>
           </div>
 
-          <!-- Premiere 自動配置の規定尺（チャンネル別） -->
+          </div>
+          <!-- 動画の規定尺（チャンネル別） -->
           <div class="ff" style="border-top:1px dashed var(--border-default);padding-top:var(--space-3);margin-top:var(--space-3)">
-            <label class="fl"><span class="product-icon sm adobe-pr">Pr</span> 規定尺（秒）</label>
+            <label class="fl">動画の規定尺（秒）</label>
             <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
               <input type="number" class="fi" id="cfgDefaultDurationSec" min="0" step="60" placeholder="10800" style="max-width:160px">
               <span class="fh" style="margin:0">秒（空欄/0 で既定 10800 = 3時間にフォールバック）</span>
@@ -2773,7 +2776,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
             </div>
             <details style="margin-top:4px"><summary class="fh" style="cursor:pointer;display:inline">技術詳細（適用される優先順位）</summary>
               <div class="fh" style="margin-top:4px">
-                Premiere 自動配置（<code>app_pipeline.py --only premiere</code> / <code>POST /api/premiere/run</code>）の目標時間。<br>
+                FFmpeg書き出し・従来の動画配置に使う目標時間。<br>
                 <strong>優先順位</strong>: API 引数 <code>duration_h/m/s</code> &gt; env <code>APP_DURATION_SEC</code> &gt; ここで設定したチャンネル別規定尺 &gt; 10800。
               </div>
             </details>
@@ -2901,7 +2904,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
               <div class="fh" id="newChNamingPreview">既存動画がある場合は <code>1_WW_260327</code> などから自動推定します。</div>
             </div>
             <div class="btns" style="margin:0">
-              <button class="btn btn-primary" onclick="addChannel()">追加</button>
+              <select class="fi" id="newChProductionMode" aria-label="新規チャンネルの制作構成"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option><option value="standard">従来の制作構成</option></select><button class="btn btn-primary" onclick="addChannel()">追加</button>
             </div>
           </div>
         </details>
@@ -3386,9 +3389,9 @@ const DETAIL_TABS=[
 const WORKFLOW_STEPS=[
   {key:'suno',short:'楽曲',label:'SUNO生成',test:v=>v.has_music},
   {key:'bgimage',short:'背景',label:'背景画像',test:v=>v.has_bg_image || v.has_images_selected || v.has_thumb},
-  {key:'psd_composite',short:'合成',label:'PSD合成',test:v=>v.has_thumb},
+  {key:'psd_composite',short:'合成',label:'画像合成',test:v=>v.has_thumb},
   {key:'images',short:'画像',label:'画像選択',test:v=>v.has_images_selected || v.has_thumb},
-  {key:'jsx',short:'配置',label:'JSX配置',test:v=>v.has_srt},
+  {key:'jsx',short:'配置',label:'動画構成',test:v=>v.has_srt},
   {key:'export',short:'書出',label:'書き出し',test:v=>v.has_mp4},
   {key:'meta',short:'メタ',label:'動画メタ',test:v=>v.has_desc && v.has_tags},
   {key:'upload',short:'公開',label:'アップロード',test:v=>v.has_upload}
@@ -3815,7 +3818,8 @@ document.addEventListener('click',e=>{
 });
 async function loadChannelSwitcher(){
   try{
-    const[cr,cfgr]=await Promise.all([fetch('/api/channels'),fetch('/api/config')]);
+    // 全画面で必要なチャンネル状態はページ遷移で中断しない。
+    const[cr,cfgr]=await Promise.all([_nativeFetch('/api/channels'),_nativeFetch('/api/config')]);
     const cd=await cr.json(),cfg=await cfgr.json();_channels=cd.channels||[];
     const active=cfg.dashboard;
     if(_uiChannelId!=='all'&&!_channels.some(c=>c.id===_uiChannelId))_uiChannelId='all';
@@ -3979,7 +3983,7 @@ async function addChannel(){
   if(!folder){toast('フォルダを指定してください','w');return}
   if(!name && !url){toast('チャンネル名 or YouTube URL のいずれかを入力','w');return}
   try{
-    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'New Channel',folder,prefix,youtube_url:url,create_folder:true,open_in_finder:false})});
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'New Channel',folder,prefix,production_mode:document.getElementById('newChProductionMode')?.value||'standard',youtube_url:url,create_folder:true,open_in_finder:false})});
     if(!r.ok){const e=await r.json().catch(()=>({}));toast('追加失敗: '+(e.detail||r.status),'e');return}
     document.getElementById('newChYoutubeUrl').value='';
     document.getElementById('newChName').value='';
@@ -4030,6 +4034,7 @@ async function openChannelOnboardingWizard(){
       <div class="ff"><label class="fl">チャンネル名</label><input type="text" class="fi" id="onboardName" placeholder="例: Night Jazz Room"></div>
       <div class="ff"><label class="fl">動画フォルダ prefix</label><input type="text" class="fi" id="onboardPrefix" placeholder="例: NJ"></div>
     </div>
+    <div class="ff"><label class="fl">制作構成</label><select class="fi" id="onboardProductionMode"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option><option value="standard">従来の制作構成</option></select></div>
     <div class="ff">
       <label class="fl">チャンネルフォルダ</label>
       <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
@@ -4112,7 +4117,7 @@ async function createChannelFromOnboardingWizard(){
   if(!folder){toast('フォルダを指定してください','w');return}
   if(status)status.textContent='チャンネル作成中...';
   try{
-    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,folder,prefix,youtube_url,create_folder:true,open_in_finder:false})});
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,folder,prefix,production_mode:document.getElementById('onboardProductionMode')?.value||'standard',youtube_url,create_folder:true,open_in_finder:false})});
     if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||r.status)}
     const d=await r.json();
     _onboardingWizardChannelId=d.channel?.id||'';
@@ -4215,20 +4220,10 @@ async function switchCh(id, skipNavigate=false){
   if(!skipNavigate)navigate({..._routeState},{replace:true});
 }
 
-/* ドロップダウンから直接「新規チャンネル追加」フォームを展開してスクロール */
+/* ドロップダウンから新規チャンネル作成画面を開く */
 function openAddChannelFlow(){
-  go('settings');
-  setTimeout(()=>{
-    // channel-management カード内の details を強制 open
-    const card=document.querySelector('[data-cfg-card="channel-management"]');
-    const det=card?.querySelector('details');
-    if(det)det.open=true;
-    // settings-group も open
-    const grp=card?.closest('details.settings-group');
-    if(grp)grp.open=true;
-    (det||card)?.scrollIntoView({behavior:'smooth',block:'center'});
-    document.getElementById('newChYoutubeUrl')?.focus();
-  },300);
+  // 全チャンネル表示からも、既存チャンネルの選択なしで登録できる。
+  openChannelOnboardingWizard();
 }
 
 /* ドロップダウンから「全チャンネルを管理」→ 一元管理モーダル（横断ビュー） */
@@ -4296,6 +4291,15 @@ async function editChannelPersona(id){
 
 /* ==== Config ==== */
 let _lastConfig=null;
+function isAdobeFree(){return _lastConfig?.dashboard?.production_mode==='ffmpeg_only'}
+function syncProductionModeUi(){
+  const free=document.getElementById('cfgProductionMode')?.value==='ffmpeg_only';
+  const engine=document.getElementById('cfgExportEngine');
+  if(engine){if(free)engine.value='ffmpeg';engine.disabled=free}
+  document.querySelectorAll('[data-adobe-only]').forEach(el=>el.style.display=free?'none':'');
+  const nav=document.querySelector('.nav-btn[data-p="premiere"]');if(nav)nav.style.display=isAdobeFree()?'none':'';
+}
+
 /* ブランド表記は「Automation Studio」固定（チャンネル別ブランド名は廃止） */
 function applyBrand(_dc){
   if(document.title!=='Automation Studio')document.title='Automation Studio';
@@ -4303,8 +4307,9 @@ function applyBrand(_dc){
   if(bt && bt.textContent!=='Automation Studio')bt.textContent='Automation Studio';
 }
 async function loadConfig(){try{
-  const r=await fetch('/api/config'),d=await r.json(),s=d.suno||{},dc=d.dashboard||{};
+  const r=await _nativeFetch('/api/config'),d=await r.json(),s=d.suno||{},dc=d.dashboard||{};
   _lastConfig=d;
+  if(document.getElementById("cfgProductionMode"))document.getElementById("cfgProductionMode").value=dc.production_mode||"standard";
   applyBrand(dc);
   // SUNO 設定（設定タブ）
   const $=id=>document.getElementById(id);
@@ -4334,6 +4339,7 @@ async function loadConfig(){try{
     const eng=(dc.export_engine||'ame').toString().trim().toLowerCase();
     $('cfgExportEngine').value=['ame','ffmpeg'].includes(eng)?eng:'ame';
   }
+  syncProductionModeUi();
   if($('cfgApiKey'))$('cfgApiKey').value=s.api_key||'';
   if($('cfgClaudeCli'))$('cfgClaudeCli').value=s.claude_cli||'claude';
   if($('cfgCodexCli'))$('cfgCodexCli').value=s.codex_cli||'codex';
@@ -4647,6 +4653,7 @@ async function _autoSaveSettingsNow(){
       channel_name:$('cfgName')?.value||'',
       channel_folder:$('cfgFolder')?.value||'',
       export_path:$('cfgExport')?.value||'',
+      production_mode:$('cfgProductionMode')?.value||'standard',
       export_engine:$('cfgExportEngine')?.value||'ame',
       persona,
       rival_channels:rivals,
@@ -4827,6 +4834,7 @@ async function saveSettings(){
     channel_name:document.getElementById('cfgName').value,
     channel_folder:document.getElementById('cfgFolder').value,
     export_path:document.getElementById('cfgExport').value,
+    production_mode:document.getElementById('cfgProductionMode')?.value||'standard',
     export_engine:document.getElementById('cfgExportEngine')?.value||'ame',
     persona:persona,
     rival_channels:rivals,
@@ -6110,7 +6118,7 @@ async function showVideoDetail(name, fromRouter=false){
           <div class="tab-panel on" data-t="edit">
             <div id="assemblyTimeline" class="atl" role="region" aria-label="編集タイムライン"><div class="empty">タイムラインを読み込み中...</div></div>
             <!-- Premiere 連携は互換機能として編集画面の末尾へ統合。既定は閉じた状態。 -->
-            <details class="card" id="premiereIntegration" style="margin-top:var(--space-3)">
+            <details class="card" id="premiereIntegration" style="margin-top:var(--space-3);${isAdobeFree()?'display:none;':''}">
               <summary style="cursor:pointer;user-select:none;font-weight:var(--font-semibold);color:var(--text-primary);display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
                 <span class="product-icon adobe-pr sm">Pr</span>
                 Premiere 連携（自動配置）
@@ -6259,19 +6267,19 @@ async function showVideoDetail(name, fromRouter=false){
             <div class="card" id="mkThumbCard_${esc(name)}" style="margin-bottom:var(--space-3);border:1px solid var(--accent-primary)">
               <div class="card-header">
                 <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
-                  サムネを制作（背景 → 文字入れ）
+                  サムネを制作（背景 → ${isAdobeFree()?'画像エディタ':'文字入れ'}）
                   <span class="badge badge-info" style="font-size:var(--text-2xs)">正規フロー・一気通貫</span>
                 </div>
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:var(--space-2)">
-                <span>① ベンチマーク参照</span><span style="opacity:.5">→</span><span>② 背景画像生成</span><span style="opacity:.5">→</span><span>③ 候補から自動採用</span><span style="opacity:.5">→</span><span>④ Photoshop文字入れ</span>
+                <span>① ベンチマーク参照</span><span style="opacity:.5">→</span><span>② 背景画像生成</span><span style="opacity:.5">→</span><span>③ 候補から自動採用</span><span style="opacity:.5">→</span><span>④ ${isAdobeFree()?'画像合成':'Photoshop文字入れ'}</span>
               </div>
               <div style="font-size:12px;color:var(--text-secondary);margin-bottom:var(--space-2);line-height:1.7">
-                ベンチマーク参照で背景を生成 → 続けて PSD テンプレで文字入れまで一括実行します（<code>vol{N}.png</code> → <code>vol{N}.jpg</code> + <code>サムネイル.jpg</code>）。<strong>Photoshop を起動</strong>しておいてください。既存ファイルがある工程は自動スキップされます（やり直しは下の「個別実行」から）。
+                ${isAdobeFree()?'背景を生成 → 画像エディタの合成処理で動画背景とサムネを作成します。':'ベンチマーク参照で背景を生成 → PSDテンプレで文字入れします。Photoshopを起動しておいてください。'} 既存の背景・サムネは再利用します。
               </div>
               <div class="btns" style="margin:0">
-                <button class="btn btn-primary" id="mkThumbBtn_${esc(name)}" onclick="makeThumbnail('${esc(name)}')">▶ サムネを制作（背景→文字入れ）</button>
-                <button class="btn btn-secondary btn-sm" onclick="makeThumbnail('${esc(name)}','psd_composite')" title="背景はそのまま、Photoshop文字入れ(PSD合成)だけ再実行">文字だけ再合成</button>
+                <button class="btn btn-primary" id="mkThumbBtn_${esc(name)}" onclick="makeThumbnail('${esc(name)}')">▶ サムネを制作（背景→${isAdobeFree()?'画像エディタ':'文字入れ'}）</button>
+                <button class="btn btn-secondary btn-sm" onclick="makeThumbnail('${esc(name)}','psd_composite')" title="背景はそのまま、画像合成だけ再実行">文字だけ再合成</button>
               </div>
               <div id="mkThumbLog_${esc(name)}" style="margin-top:var(--space-2);padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);max-height:220px;overflow-y:auto;display:none"></div>
             </div>
@@ -6853,7 +6861,7 @@ async function showVideoDetail(name, fromRouter=false){
               </div>
               <div class="btns">
                 <button class="btn btn-primary btn-sm" onclick="_confirmAndRunPipeline('${esc(name)}',['export'])">▶ 書き出しを実行</button>
-                <button class="btn btn-secondary btn-sm" onclick="go('premiere')">Premiere ログを確認</button>
+                ${isAdobeFree()?'':'<button class="btn btn-secondary btn-sm" onclick="go(\'premiere\')">Premiere ログを確認</button>'}
                 ${d.mp4_file?`<button class="btn btn-secondary btn-sm" onclick="openF('${esc(d.mp4_file)}')">MP4を開く</button>`:''}
                 <button class="btn btn-secondary btn-sm" onclick="loadMp4Info('${esc(name)}')" title="mp4 の場所・サイズ・解像度・尺・コーデックを表示">MP4 詳細</button>
               </div>
@@ -7466,7 +7474,7 @@ function runAutoExec(name){
 // 今いるタブから最後まで（公開準備タブは meta+upload を連結）
 /* SUNO が含まれる時は現行フォームの値を確認モーダルで要約して送信 */
 function _confirmAndRunPipeline(name,steps){
-  const stepLabels={suno:'楽曲',rename:'楽曲加工',bgimage:'背景画像',psd_composite:'PSD合成',images:'画像',premiere:'自動配置',export:'書き出し',meta:'公開準備',upload:'アップロード'};
+  const stepLabels={suno:'楽曲',rename:'楽曲加工',bgimage:'背景画像',psd_composite:'画像合成',images:'画像',premiere:'自動配置',export:'書き出し',meta:'公開準備',upload:'アップロード'};
   const stepList=steps.map(s=>`・${stepLabels[s]||s}`).join('\n');
   let sunoBlock='';
   let sunoParams=null;
@@ -8610,7 +8618,7 @@ async function bulkRunPipeline(){
 async function bulkMakeThumbnails(){
   const names=_bulkSelectedNames();
   if(names.length===0){toast('フォルダを選択してください','w');return}
-  if(!confirm(`${names.length} 件のサムネを順次制作します（背景生成 → Photoshop文字入れ）。\nPhotoshop を起動しておいてください。\n各フォルダ数分かかります。`))return;
+  if(!confirm(`${names.length} 件のサムネを順次制作します（背景生成 → 画像合成）。${isAdobeFree()?'':'\nPhotoshop を起動しておいてください。'}\n各フォルダ数分かかります。`))return;
   bulkProgressModal(`サムネ一括制作 (${names.length}件)`,names);
   let ok=0,ng=0;
   for(const n of names){
@@ -12673,8 +12681,8 @@ async function checkOnboardingState(){
     if(!(dc.persona||'').trim())missing.push({label:'ペルソナ（ベンチマーク分析ページ）',target:'cfgPersona'});
     if(!(dc.file_prefix||'').trim()&&dc.file_prefix!=='vol')missing.push({label:'動画フォルダ prefix',target:'cfgFilePrefix'});
     if(!((s.api_key||'').trim()||(s.claude_cli||'').trim()||(s.codex_cli||'').trim()))missing.push({label:'LLM API キー or CLI',target:'cfgApiKey'});
-    if(!(dc.template_prproj||'').trim())missing.push({label:'Premiere テンプレ',target:'cfgTemplatePrproj'});
-    if(!(dc.template_psd||'').trim())missing.push({label:'Photoshop テンプレ',target:'cfgTemplatePsd'});
+    if(dc.production_mode!=='ffmpeg_only'&&!(dc.template_prproj||'').trim())missing.push({label:'Premiere テンプレ',target:'cfgTemplatePrproj'});
+    if(dc.production_mode!=='ffmpeg_only'&&!(dc.template_psd||'').trim())missing.push({label:'Photoshop テンプレ',target:'cfgTemplatePsd'});
     // 未設定フィールドに data-required-empty 属性を付ける（CSS でハイライト）
     _highlightMissingFields(missing.map(m=>m.target));
     if(missing.length){
@@ -12990,9 +12998,9 @@ function _mkThumbLog(name, msg, type){
 }
 async function makeThumbnail(name, only){
   const steps = only ? [only] : ['bgimage','psd_composite'];
-  const label = only==='psd_composite' ? '文字入れ(PSD合成)' : (only==='bgimage' ? '背景画像生成' : 'サムネ制作（背景→文字入れ）');
+  const label = only==='psd_composite' ? (isAdobeFree()?'画像合成（Adobeなし）':'文字入れ(PSD合成)') : (only==='bgimage' ? '背景画像生成' : 'サムネ制作（背景→文字入れ）');
   if(_mkThumbPoll){toast('実行中です。完了までお待ちください','w');return;}
-  if(steps.includes('psd_composite') && !confirm('Photoshop を起動していますか？\nPSD合成（文字入れ）には Photoshop の起動が必要です。\n\nこのまま実行しますか？'))return;
+  if(!isAdobeFree() && steps.includes('psd_composite') && !confirm('Photoshop を起動していますか？\nPSD合成（文字入れ）には Photoshop の起動が必要です。\n\nこのまま実行しますか？'))return;
   const btn=document.getElementById('mkThumbBtn_'+name);
   if(btn){btn.disabled=true;btn.dataset._t=btn.textContent;btn.textContent='⏳ 実行中...';}
   _mkThumbLog(name,`▶ ${label} 開始（steps=${steps.join(' → ')}）`,'info');
@@ -13758,7 +13766,7 @@ const YT_LANG_PRESET_RECOMMENDED=['ja','zh-Hans','zh-Hant','ko','es','es-419','p
 /* ==== YouTube アップロード詳細設定（テンプレート） ==== */
 async function loadYtUploadDefaults(){
   try{
-    const r=await fetch('/api/youtube/upload-defaults'),d=await r.json();
+    const r=await _nativeFetch('/api/youtube/upload-defaults'),d=await r.json();
     const s=d.defaults||{};
     const $=id=>document.getElementById(id);
     if($('ytdCategory'))$('ytdCategory').value=s.category_id||'10';
