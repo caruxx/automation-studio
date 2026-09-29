@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "name": "Beat Soul / Four-minute Groove",
+  "approved_date": "2026-09-29",
+  "purpose": "アメリカのラグジュアリー層向け。上質な音の質感と継続するビート、冒頭の歌フックを両立した長時間BGM。",
+  "recipe": "../../docs/music/beat-soul-recipe.md",
+  "generation_controls": {
+    "model": "v6",
+    "mode": "Advanced",
+    "duration_mode": "Custom",
+    "duration_seconds": 240,
+    "style_influence": 80,
+    "weirdness": 50,
+    "variety": 0,
+    "max_mode": "Off",
+    "vocal_gender": "unspecified",
+    "voice_persona": "none",
+    "notes": "duration_secondsはStudio本体が適用。他のコントロールは送信前に実UIまたは使用ツールの対応機能で設定・検証する。metadataだけでは適用されない。"
+  },
+  "tempo_range_bpm": [
+    102,
+    107
+  ],
+  "reference_examples": [
+    {
+      "title": "Come Around - Synth Groove",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 104 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, rubbery analog synth bass, filter-envelope bass attack, repeating muted guitar riff, filtered synth stabs, stereo psychedelic synth textures, saturated drum-loop production",
+      "lyrics": "[Chorus - immediate stacked voices, short rhythmic phrases]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Verse - clipped phrases over the same beat]\nCity moves\nWindows glow\nWe fall in\nAnd let it go\n\n[Chorus - layered male and female unison]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Verse - clipped phrases over the same beat]\nTurn your head\nCatch my eye\nCircle back\nWalk on by\n\n[Chorus - overlapping stacked voices]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Groove Break - four bars, bass riff stays active]\n\n[Final Chorus - full beat, stacked voices]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Ending - short rhythmic vocal tag]\nCome around\nFeel it now",
+      "mode": "lyrics_styles",
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Come Around - String Groove",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 104 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, driving electric bass loop, repeating clipped guitar riff, rhythmic string-loop accents, short brass stabs, flute response phrases over a persistent beat, textured psychedelic production",
+      "lyrics": "[Chorus - immediate stacked voices, short rhythmic phrases]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Verse - clipped phrases over the same beat]\nCity moves\nWindows glow\nWe fall in\nAnd let it go\n\n[Chorus - layered male and female unison]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Verse - clipped phrases over the same beat]\nTurn your head\nCatch my eye\nCircle back\nWalk on by\n\n[Chorus - overlapping stacked voices]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Groove Break - four bars, bass riff stays active]\n\n[Final Chorus - full beat, stacked voices]\nCome around\nCome around\nFeel it now\nFeel it now\nCome around\nCome around\nFeel it now\nFeel it now\n\n[Ending - short rhythmic vocal tag]\nCome around\nFeel it now",
+      "mode": "lyrics_styles",
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    }
+  ],
+  "songs": [
+    {
+      "title": "Neon Current",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 104 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, rubbery analog synth bass, filter-envelope bass attack, repeating muted guitar riff, filtered synth stabs, stereo psychedelic synth textures, saturated drum-loop production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nBlue on the pavement\nRed on your sleeve\nA train in the distance\nA turn of the keys\nWe slip through the doorway\nYou fall into step\nThe pulse of the city\nIs all that we kept\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne spark\nOne line\nYour step\nWith mine\n\n[Chorus - 16 bars, rhythmic layered responses]\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nA light in the stairwell\nA mark on the wall\nThe street keeps a secret\nWe follow the call\nYour hand on my shoulder\nThe room opens wide\nWe catch the same current\nAnd move with the tide\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne spark\nOne line\nYour step\nWith mine\n\n[Chorus - 16 bars, rhythmic layered responses]\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nLet it cross the ceiling\nLet it touch the floor\nCarry what we're feeling\nThrough the open door\nKeep the current moving\nKeep it running bright\nEvery little movement\nFinds another light\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\nLet it run\nThrough the night\nLet it run\nTill we get it right\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nLet it run\nThrough the night\nLet it run\nTill we get it right\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Glasshouse",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 103 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, driving electric bass loop, repeating clipped guitar riff, rhythmic string-loop accents, short brass stabs, flute response phrases over a persistent beat, textured psychedelic production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nGlass over the garden\nRain on the leaves\nYou draw a small circle\nIn mist with your sleeve\nThe room catches daylight\nIt lands on your shoes\nYou turn to the rhythm\nI turn there with you\n\n[Pre-Chorus - 4 bars, groove stays active]\nLet it through\nLet it shine\nRoom for you\nRoom for mine\n\n[Chorus - 16 bars, rhythmic layered responses]\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nFootsteps in the hallway\nA voice at the gate\nYou wave through the window\nThey never come late\nWe pull up another chair\nWe make a little space\nThe sun moves between us\nAnd lights every face\n\n[Pre-Chorus - 4 bars, groove stays active]\nLet it through\nLet it shine\nRoom for you\nRoom for mine\n\n[Chorus - 16 bars, rhythmic layered responses]\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nNo curtain between us\nNo shadow to keep\nThe garden is waking\nThe roots running deep\nWe leave every window\nA little more wide\nAnd carry the daylight\nFrom outside inside\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\nLight comes in\nLight comes in\nWe don't hide\nWe begin\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nLight comes in\nLight comes in\nWe don't hide\nWe begin\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Turn the Corner",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 106 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, rubbery analog synth bass, filter-envelope bass attack, repeating muted guitar riff, filtered synth stabs, stereo psychedelic synth textures, saturated drum-loop production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nYou leave by the side door\nI wait by the curb\nA smile says the whole thing\nYou don't need a word\nWe pass the old corner\nThe paint has gone blue\nYou point to the next street\nI follow with you\n\n[Pre-Chorus - 4 bars, groove stays active]\nNew street\nNew view\nOne step\nThen two\n\n[Chorus - 16 bars, rhythmic layered responses]\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nThe shop on the crossroad\nIs closing its shade\nA song from a taxi\nComes into the lane\nWe catch it a moment\nThen let it move on\nYou laugh at the timing\nThe trouble is gone\n\n[Pre-Chorus - 4 bars, groove stays active]\nNew street\nNew view\nOne step\nThen two\n\n[Chorus - 16 bars, rhythmic layered responses]\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nA turn in the story\nA turn in the road\nWe keep what can carry\nAnd lighten the load\nThe place we were going\nCan wait till we know\nWhich corner is calling\nAnd where we will go\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\nTurn it round\nTurn it round\nSomething good\nIs coming now\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nTurn it round\nTurn it round\nSomething good\nIs coming now\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Magnetic Hours",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 104 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, driving electric bass loop, repeating clipped guitar riff, rhythmic string-loop accents, short brass stabs, flute response phrases over a persistent beat, textured psychedelic production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nYou stand by the speaker\nA hand on the rail\nA look through the bodies\nA smile through the haze\nThe floor keeps on turning\nWe fall into time\nYou move just a little\nThe movement is mine\n\n[Pre-Chorus - 4 bars, groove stays active]\nIn close\nThen wide\nOne pull\nOne tide\n\n[Chorus - 16 bars, rhythmic layered responses]\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nA touch at the elbow\nA tilt of the head\nWe speak in the rhythm\nOf words never said\nThe room has a center\nIt shifts where you stand\nYou leave me a signal\nI catch it by hand\n\n[Pre-Chorus - 4 bars, groove stays active]\nIn close\nThen wide\nOne pull\nOne tide\n\n[Chorus - 16 bars, rhythmic layered responses]\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nWe find the same orbit\nWe break it apart\nA step at the edge of\nThe beat and the heart\nNo line drawn between us\nNo place we must stay\nThe hours keep pulling\nWe give them away\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\nDraw me in\nLet me go\nDraw me in\nTo the undertow\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nDraw me in\nLet me go\nDraw me in\nTo the undertow\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Satin Signal",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 105 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, rubbery analog synth bass, filter-envelope bass attack, repeating muted guitar riff, filtered synth stabs, stereo psychedelic synth textures, saturated drum-loop production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nYou tap on the tabletop\nI answer with two\nA pattern is forming\nIt travels to you\nA ring on your finger\nA flash in the room\nYou pass me the rhythm\nI know what to do\n\n[Pre-Chorus - 4 bars, groove stays active]\nYour turn\nMy turn\nOne spark\nWe learn\n\n[Chorus - 16 bars, rhythmic layered responses]\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nA hand from the far end\nA foot by the door\nThe pattern goes onward\nWe add a little more\nIt slips past the glasses\nIt climbs up the stair\nA signal between us\nIs filling the air\n\n[Pre-Chorus - 4 bars, groove stays active]\nYour turn\nMy turn\nOne spark\nWe learn\n\n[Chorus - 16 bars, rhythmic layered responses]\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nPass it to the left side\nPass it to the right\nKeep a little space there\nLet the answer bite\nNothing has to hurry\nNothing has to stop\nGive it to another\nAnd let the next one talk\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\nSend it out\nSend it back\nLet it ride\nAlong the track\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nSend it out\nSend it back\nLet it ride\nAlong the track\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Afterimage",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 102 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, driving electric bass loop, repeating clipped guitar riff, rhythmic string-loop accents, short brass stabs, flute response phrases over a persistent beat, textured psychedelic production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nA flash in the doorway\nYou turn out of sight\nYour shape in the mirror\nIs caught in the light\nI pass through the hallway\nThe picture moves too\nA trace on the glass there\nIs giving me clues\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne flash\nOne frame\nNew light\nSame flame\n\n[Chorus - 16 bars, rhythmic layered responses]\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nWe meet by the far wall\nYou turn with the beat\nA line through the shadows\nA shift of your feet\nThe room keeps its colors\nWe change where we stand\nYou leave me a picture\nAnd reach for my hand\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne flash\nOne frame\nNew light\nSame flame\n\n[Chorus - 16 bars, rhythmic layered responses]\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nThe image keeps changing\nThe feeling holds on\nI see where you stood here\nA second is gone\nThe light makes a circle\nYou step into view\nWe let every angle\nShow something that's new\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\nStill see you\nStill see you\nEvery turn\nA different view\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nStill see you\nStill see you\nEvery turn\nA different view\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Little Detour",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 107 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, rubbery analog synth bass, filter-envelope bass attack, repeating muted guitar riff, filtered synth stabs, stereo psychedelic synth textures, saturated drum-loop production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nYour coat in the back seat\nMy hand on the wheel\nThe avenue opens\nWe follow the feel\nA bridge to the water\nA road to the right\nYou change the direction\nI follow the light\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne mile\nOne more\nNew street\nNew door\n\n[Chorus - 16 bars, rhythmic layered responses]\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nThe diner is closing\nThe street is still wide\nA laugh from the sidewalk\nWe catch as we drive\nYou point to a corner\nWe haven't been through\nThe city is hiding\nA table for two\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne mile\nOne more\nNew street\nNew door\n\n[Chorus - 16 bars, rhythmic layered responses]\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nThe way that we came here\nCan wait where it lies\nA line on the dashboard\nThe blue of your eyes\nWe find a small turning\nThat nobody planned\nYou open the window\nAnd reach for my hand\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\nTake that turn\nTake that turn\nOne more block\nBefore we return\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nTake that turn\nTake that turn\nOne more block\nBefore we return\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Silver Avenue",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 104 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, driving electric bass loop, repeating clipped guitar riff, rhythmic string-loop accents, short brass stabs, flute response phrases over a persistent beat, textured psychedelic production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nThe crowd at the crossing\nThe light turning green\nYour shoes on the sidewalk\nA bright silver sheen\nWe pass by the market\nThe stalls folding in\nA beat from the doorway\nGets under our skin\n\n[Pre-Chorus - 4 bars, groove stays active]\nYour pace\nMy pace\nSame beat\nNew place\n\n[Chorus - 16 bars, rhythmic layered responses]\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nThe street bends around us\nThe buses roll by\nYou turn at the corner\nA laugh in your eye\nWe move past the windows\nReflected in pairs\nOur steps make a pattern\nWe carry it there\n\n[Pre-Chorus - 4 bars, groove stays active]\nYour pace\nMy pace\nSame beat\nNew place\n\n[Chorus - 16 bars, rhythmic layered responses]\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nWe follow the pavement\nWe follow the sound\nThe light from the windows\nFalls onto the ground\nThe avenue widens\nThe night opens through\nI keep to the rhythm\nI find there with you\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\nUp the street\nDown the line\nKeep your step\nIn time with mine\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nUp the street\nDown the line\nKeep your step\nIn time with mine\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Open Circuit",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 105 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, rubbery analog synth bass, filter-envelope bass attack, repeating muted guitar riff, filtered synth stabs, stereo psychedelic synth textures, saturated drum-loop production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nA friend in the kitchen\nA call from the stairs\nThe door is still open\nWe bring extra chairs\nA song in the speakers\nA hand on the dial\nYou look through the doorway\nAnd give me a smile\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne voice\nThen two\nIt moves\nThrough you\n\n[Chorus - 16 bars, rhythmic layered responses]\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nThe sound finds a neighbor\nThe neighbor comes through\nA coat on the banister\nA place in the room\nWe make a small circle\nThen open it wide\nThe feeling goes onward\nWe carry the tide\n\n[Pre-Chorus - 4 bars, groove stays active]\nOne voice\nThen two\nIt moves\nThrough you\n\n[Chorus - 16 bars, rhythmic layered responses]\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nGive a little rhythm\nLeave a little room\nLet another answer\nFind a way through\nEvery little circle\nOpens to the next\nWe can keep it moving\nAnd see where it connects\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nPass it on\nPass it on\nFeel it rise\nUntil the dawn\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    },
+    {
+      "title": "Last Light Moving",
+      "styles": "psychedelic electronic soul, beat-driven electronic funk, 103 BPM, syncopated drum-loop groove, punchy dry backbeat, busy sixteenth-note percussion, repeating two-bar bass ostinato, short rhythmic layered falsetto phrases, blended male and female unison, sampled-vocal texture, clipped syllables, immediate vocal hook, full beat from first bar, hypnotic looping arrangement, buoyant rhythmic momentum, chorus layers without tempo changes, driving electric bass loop, repeating clipped guitar riff, rhythmic string-loop accents, short brass stabs, flute response phrases over a persistent beat, textured psychedelic production, 4 minutes, 100-bar arrangement, immediate eight-bar vocal hook, two rhythmic verses, sixteen-bar repeating choruses, eight-bar groove break, clipped syllables without sustained crooning",
+      "lyrics": "[Opening Chorus - 8 bars, immediate stacked vocal hook]\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\n\n[Verse 1 - 8 bars, clipped rhythmic phrases]\nThe sun at the roofline\nYour keys in the bowl\nA shade on the window\nA story half told\nYou turn on the speakers\nI roll up my sleeves\nThe room finds its color\nThe day takes its leave\n\n[Pre-Chorus - 4 bars, groove stays active]\nDay goes\nNight grows\nWe turn\nIt flows\n\n[Chorus - 16 bars, rhythmic layered responses]\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\n\n[Verse 2 - 8 bars, clipped rhythmic phrases]\nThe plates on the table\nThe light in the hall\nA voice from the doorway\nA friend comes to call\nWe pull back the curtains\nThe city comes through\nThe evening is moving\nWe move with it too\n\n[Pre-Chorus - 4 bars, groove stays active]\nDay goes\nNight grows\nWe turn\nIt flows\n\n[Chorus - 16 bars, rhythmic layered responses]\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\n\n[Bridge - 8 bars, short sung phrases over the same beat]\nCarry it through the room\nCarry it past the door\nGive it another turn\nGive it a little more\nNothing is standing still\nNothing is out of time\nWe take the last of the light\nAnd let the next one shine\n\n[Groove Break - 8 bars, bass and drum loop remain active]\n\n[Final Chorus - 16 bars, stacked voices and full beat]\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\nHere we go\nHere we go\nLast light falls\nWe let it flow\n\n[Outro - 4 bars, rhythmic vocal tag and clean ending]\nHere we go\nHere we go\nLast light falls\nWe let it flow\n",
+      "mode": "lyrics_styles",
+      "duration_seconds": 240,
+      "exclude_styles": "ballad, piano ballad, acoustic ballad, jazz lounge, crooning soloist, legato lead vocal, melisma, excessive vibrato, sentimental orchestral swell, sparse half-time drums, long intro, EDM build and drop"
+    }
+  ],
+  "source_artifacts": {
+    "approved_base": "output/suno-beat-soul-20260929",
+    "ten_tracks": "output/suno-groove-ten-20260929"
+  },
+  "selected_tracks": [
+    {
+      "title": "Neon Current",
+      "source_song_url": "https://suno.com/song/c550bf10-b66d-49e9-b5ed-6a7163b254f8",
+      "source_file": "Neon Current.mp3",
+      "final_duration_seconds": 238.6935,
+      "postprocess": null
+    },
+    {
+      "title": "Glasshouse",
+      "source_song_url": "https://suno.com/song/fa9cc103-bfd2-47c4-a9be-d2640823e1c3",
+      "source_file": "Glasshouse_2.mp3",
+      "final_duration_seconds": 240.0135,
+      "postprocess": null
+    },
+    {
+      "title": "Turn the Corner",
+      "source_song_url": "https://suno.com/song/d3eed490-58cf-4109-9737-07b1ad9ffe37",
+      "source_file": "Turn the Corner_2.mp3",
+      "final_duration_seconds": 234.645208,
+      "postprocess": {
+        "intro_trim_seconds": 4.528301886792453,
+        "reason": "冒頭５秒に歌詞がない導入を短縮し、歌のフックが先に入るよう調整。原本保持。",
+        "fade_in_seconds": 0.008
+      }
+    },
+    {
+      "title": "Magnetic Hours",
+      "source_song_url": "https://suno.com/song/da411d65-5ec4-434c-b24b-aa55ec50f858",
+      "source_file": "Magnetic Hours.mp3",
+      "final_duration_seconds": 239.9735,
+      "postprocess": null
+    },
+    {
+      "title": "Satin Signal",
+      "source_song_url": "https://suno.com/song/aa25c02c-ca21-42a3-a734-9e0a4a101833",
+      "source_file": "Satin Signal.mp3",
+      "final_duration_seconds": 238.6935,
+      "postprocess": null
+    },
+    {
+      "title": "Afterimage",
+      "source_song_url": "https://suno.com/song/46f379d8-8de4-401c-b9c9-1c1162496fc2",
+      "source_file": "Afterimage_2.mp3",
+      "final_duration_seconds": 239.6135,
+      "postprocess": null
+    },
+    {
+      "title": "Little Detour",
+      "source_song_url": "https://suno.com/song/390f2781-d043-42f9-b6f2-bcdaaa275bb4",
+      "source_file": "Little Detour.mp3",
+      "final_duration_seconds": 239.2135,
+      "postprocess": null
+    },
+    {
+      "title": "Silver Avenue",
+      "source_song_url": "https://suno.com/song/0ebfc8fd-2b5a-4c28-8aca-914d54b7ef15",
+      "source_file": "Silver Avenue.mp3",
+      "final_duration_seconds": 239.9735,
+      "postprocess": null
+    },
+    {
+      "title": "Open Circuit",
+      "source_song_url": "https://suno.com/song/2cca2e2d-be56-49b5-a35d-338954496f4e",
+      "source_file": "Open Circuit.mp3",
+      "final_duration_seconds": 239.8535,
+      "postprocess": null
+    },
+    {
+      "title": "Last Light Moving",
+      "source_song_url": "https://suno.com/song/32e28749-7ac9-48fd-8805-e7524475f7f0",
+      "source_file": "Last Light Moving_2.mp3",
+      "final_duration_seconds": 239.6135,
+      "postprocess": null
+    }
+  ]
+}
