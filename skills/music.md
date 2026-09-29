@@ -24,6 +24,10 @@ SUNO で楽曲を生成し、Workspace から動画フォルダへダウンロ�
 3. `suno_auto_create.py --batch` で一括起草し、Workspace 名を vol 別にする。
 4. DL 後に `app_process_tracks.py <folder>` で `music/` へ整備。
 
+### 長さをCustomで指定する場合
+
+`python3 Python/suno_auto_create.py --duration-seconds 240 ...` で、各曲のフォーム投入時にDurationをCustom・4:00へ設定する。設定JSONでは `duration_seconds: 240`、事前原稿の各曲でも `duration_seconds` を指定できる。入力欄とDurationスライダーの秒数を両方読み戻し、不一致ならその曲を送信しない。Stylesへの「4 minutes」記述だけで代用せず、ダウンロード後もffprobeで実際の尺を確認する。
+
 ## 失敗時の対処
 - ログイン要求: ブラウザで手動ログインして再実行。
 - cache miss: Playwright コンテキストを閉じ、`--download-workspace` を再実行。

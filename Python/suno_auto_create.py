@@ -2510,6 +2510,8 @@ def run_browser_automation(settings):
                     continue
 
             # 2. SUNO フォームに入力
+            if settings.get("duration_seconds") is not None:
+                content = dict(content, duration_seconds=settings["duration_seconds"])
             try:
                 if not inject_into_suno(page, content):
                     progress.update(page, phase="form_validation_error",
@@ -3631,11 +3633,48 @@ def inject_into_suno(page, content):
     elif exclude_styles:
         errors.append("exclude styles input missing")
 
+    if content.get("duration_seconds") is not None:
+        try:
+            _set_custom_duration(page, content["duration_seconds"])
+        except Exception as exc:
+            errors.append(f"custom duration validation error: {exc}")
+
     if errors:
         print(f"フォーム入力検証失敗: {errors}")
         _form_dom_diagnostics(page, "form_validation")
         return False
     return True
+
+
+def _set_custom_duration(page, seconds):
+    """指定時だけDurationをCustomへ切り替え、秒数を読み戻して送信を守る。"""
+    if isinstance(seconds, bool) or int(seconds) != float(seconds) or int(seconds) <= 0:
+        raise ValueError("duration_secondsは正の整数秒で指定してください")
+    seconds = int(seconds)
+    # v6のボタン名には現在の設定サマリが付くため、旧UIの完全一致を避ける。
+    options = page.get_by_role("button", name=re.compile(r"^(More Options|その他のオプション)", re.I))
+    duration_slider = page.get_by_role("slider", name="Duration", exact=True)
+    custom = page.get_by_role("button", name="Custom", exact=True)
+    if not duration_slider.count() and not custom.count():
+        options.click(timeout=_form_timeout_ms(5000))
+    field = page.get_by_role("textbox", name="Duration", exact=True)
+    if not field.count() or not field.is_visible():
+        custom = page.get_by_role("button", name="Custom", exact=True)
+        if custom.count() != 1:
+            raise SunoSubmissionError("duration_custom", "DurationのCustomボタンが見つかりません")
+        custom.click(timeout=_form_timeout_ms(5000))
+    field.wait_for(state="visible", timeout=_form_timeout_ms(5000))
+    display = f"{seconds // 60}:{seconds % 60:02d}"
+    field.fill(display, timeout=_form_timeout_ms(5000))
+    field.press("Tab", timeout=_form_timeout_ms(5000))
+    slider = page.get_by_role("slider", name="Duration", exact=True)
+    actual = slider.get_attribute("aria-valuenow")
+    if field.input_value() != display or actual is None or float(actual) != seconds:
+        raise SunoSubmissionError(
+            "duration_validation", f"Custom Durationが指定と一致しません: input={field.input_value()!r}, seconds={actual!r}",
+        )
+    print(f"Custom Durationを検証: {display} ({seconds}秒)")
+    return seconds
 
 
 _BRACKET_LINE_RE = re.compile(r'^\s*\[[^\]]+\]\s*$')
@@ -4107,6 +4146,8 @@ def main():
     parser.add_argument("--prompt", "-p", help="生成プロンプト")
     parser.add_argument("--count", "-n", type=int, help="生成回数")
     parser.add_argument("--interval", "-i", type=int, help="ループ間隔（秒）")
+    parser.add_argument("--duration-seconds", type=int,
+                        help="各曲の送信前にSUNO DurationをCustomへ切り替え、指定秒数を検証（例: 240 = 4:00）")
     parser.add_argument("--provider", choices=["gemini", "chatgpt", "claude", "codex"], help="AIプロバイダー")
     parser.add_argument("--model", "-m", help="モデル名")
     parser.add_argument("--api-key", "-k", help="APIキー")
@@ -4145,6 +4186,10 @@ def main():
         settings["loop_count"] = args.count
     if args.interval:
         settings["loop_interval_sec"] = args.interval
+    if args.duration_seconds is not None:
+        if args.duration_seconds <= 0:
+            parser.error("--duration-secondsは正の整数で指定してください")
+        settings["duration_seconds"] = args.duration_seconds
     if args.provider:
         settings["provider"] = args.provider
     if args.model:
