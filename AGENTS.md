@@ -72,6 +72,8 @@ curl -s -X POST http://localhost:8888/api/videos/create \
 ```
 
 ### SUNO 楽曲生成（Claude CLI、一括モード、20曲）
+
+承認済みのビート系ソウルを再制作する場合は、先に [制作レシピ](docs/music/beat-soul-recipe.md) を読む。Stylesの保存だけでなく、初期案の問題、修正の考え方、歌詞の設計、設定の読み戻し、完成音源の検証までを引き継ぐ。Fable・Claude・Codex・他ツール共通の手順で、[原稿集](docs/music/beat-soul-inputs.md) と [プリセット](config/music_presets/beat-soul-4min.json) を使用する。
 ```bash
 python3 suno_auto_create.py \
   --prompt "lounge jazz BGM, elegant cafe atmosphere" \

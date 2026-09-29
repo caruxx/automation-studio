@@ -3,6 +3,10 @@
 ## 目的
 SUNO で楽曲を生成し、Workspace から動画フォルダへダウンロードし、リネーム・フェード・ゲイン正規化までつなぐ。
 
+## 承認済みビート系ソウルを再制作する場合
+
+先に [制作レシピ](../docs/music/beat-soul-recipe.md) を読む。ユーザーの修正指示から採用された音楽性へ至った過程、Stylesの判断根拠、歌詞構成、SUNO設定、検証・修正、他ツールへ渡す共通指示を含む。正確な入力は [原稿集](../docs/music/beat-soul-inputs.md)、機械可読データは [プリセット](../config/music_presets/beat-soul-4min.json)。Fable・Claude・Codexで同じ記録を基準にする。「ラグジュアリーBGM」を静かなジャズやバラードへ読み替えない。
+
 ## 入口コマンド
 - 正規確認: `python3 Python/studio.py suno-auto --vol <N> --dry-run`
 - 実行: `python3 Python/studio.py suno-auto --vol <N> --prompt "<prompt>" --count <count>`
