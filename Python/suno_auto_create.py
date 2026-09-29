@@ -3377,9 +3377,13 @@ def _ensure_advanced_mode(page):
 
 
 def _ensure_write_mode(page):
-    """Playwrightの実クリックでWriteを選びaria-checkedを検証する。"""
+    """旧UIはWriteを選択し、新UIは直接編集できる歌詞欄を確認する。"""
     radio = _find_text_locator(page, 'button[role="radio"]', _WRITE_RADIO_TEXTS)
     if radio is None:
+        # v6のAdvancedではWrite切替がなく、歌詞欄へ直接入力する。
+        editor = _find_lyrics_editor(page)
+        if editor is not None and editor.is_editable():
+            return True
         _form_dom_diagnostics(page, "write_radio")
         raise SunoSubmissionError("write_radio", "Write/書く ラジオが見つかりません")
     if str(radio.get_attribute("aria-checked") or "").lower() != "true":
@@ -3434,7 +3438,7 @@ def _ensure_more_options_open(page):
     """More optionsを閉じている場合だけ開き、aria-expanded=trueを確認する。"""
     toggle = _find_text_locator(
         page,
-        '[aria-expanded], button, [role="button"], summary, div, span, h1, h2, h3, h4',
+        '[aria-expanded]',
         _MORE_OPTIONS_TEXTS,
         visible_only=True,
     )
@@ -3477,7 +3481,7 @@ def _title_placeholder_match(value):
 
 def _title_inputs_in_create_panel(page):
     """Createボタンとの最小共通祖先から曲名inputだけを返す。"""
-    create_button = _find_text_locator(page, "button", ("作成", "Create"), visible_only=True)
+    create_button = _find_create_button(page)
     if create_button is None:
         return []
     node = create_button
@@ -3503,8 +3507,10 @@ def _fill_optional_title(page, title, retries=2):
     failures = []
     for attempt in range(1, attempts + 1):
         try:
-            _ensure_more_options_open(page)
             candidates = _title_inputs_in_create_panel(page)
+            if not candidates:
+                _ensure_more_options_open(page)
+                candidates = _title_inputs_in_create_panel(page)
             if not candidates:
                 raise RuntimeError("作成フォームパネル内に曲名inputが見つかりません")
             candidate_errors = []
@@ -3750,13 +3756,23 @@ def dismiss_error_toasts(page):
         pass
 
 
+def _find_create_button(page):
+    """新UIの明示ラベルを優先し、旧UIのボタン文言へフォールバックする。"""
+    button = _find_attribute_locator(
+        page, "button[aria-label]", "aria-label", ("Create song", "曲を作成"),
+    )
+    if button is not None:
+        return button
+    return _find_text_locator(page, "button", ("作成", "Create"), visible_only=True)
+
+
 def click_create_button(page):
     """日本語・英語のCreateボタンをPlaywright実イベントでクリックする。"""
     _form_wait(1)
 
     # テキスト候補集合から探し、locator.clickで実イベントを発生させる。
     try:
-        button = _find_text_locator(page, "button", ("作成", "Create"), visible_only=True)
+        button = _find_create_button(page)
         if button is not None:
             button.click(timeout=_form_timeout_ms(5000))
             _mark_create_clicked()

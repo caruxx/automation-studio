@@ -808,6 +808,10 @@ def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None,
                     seen.add(row["song_id"])
                     result.append(dict(row, page_no=page_no))
                     found += 1
+            # 表示総数を満たした小さな一覧では、余白のスクロールを
+            # 仮想行の切替と誤認して新しいIDを待ち続けない。
+            if expected is not None and len(result) == expected:
+                break
             at_bottom = state["top"] >= state["maximum"] - 3
             signature = (_workspace_row_ids(state), state["top"], state["height"])
             if at_bottom:
