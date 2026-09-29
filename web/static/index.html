@@ -2231,6 +2231,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <div class="page-head">
       <div>
         <div class="section-heading"><span class="product-icon service suno lg"><img src="https://www.google.com/s2/favicons?sz=64&domain=suno.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">Su</span></span><div class="page-title">SUNO 自動生成</div></div>
+        <a class="btn btn-secondary" href="/static/music-review.html">楽曲を聴き比べてハートで採用</a>
         <div class="fh" style="margin-top:2px">vol単位の生成は 制作 → vol詳細 → 楽曲タブ から。このページは一括生成・復旧用です</div>
       </div>
     </div>
@@ -2259,6 +2260,8 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
             <div class="fh">読み込み中...</div>
           </div>
           <div class="btns" style="margin-top:var(--space-3)">
+            <label class="fl" for="sunoDurationSeconds">曲の長さ</label>
+            <select class="fi" id="sunoDurationSeconds" style="width:auto"><option value="240" selected>4:00（カスタム）</option><option value="210">3:30（カスタム）</option><option value="">設定の長さを使う</option></select>
             <button class="btn btn-primary" id="btnStart" onclick="startSuno()">生成開始</button>
             <button class="btn btn-destructive hidden" id="btnStop" onclick="stopSuno()">停止</button>
           </div>
@@ -6787,7 +6790,7 @@ async function showVideoDetail(name, fromRouter=false){
                 </div>
               </div>
               <div class="btns">
-                <button class="btn btn-success btn-sm" onclick="runSunoFullFlow('${esc(name)}')" title="生成 → DL → リネーム + フェード + ゲイン正規化 → music/ へ格納 まで無停止で実行">▶ 全自動（生成→DL→後処理）</button>
+                <button class="btn btn-success btn-sm" onclick="runSunoFullFlow('${esc(name)}')" title="生成・２テイクの取得は自動。ハートで選んでから採用曲だけ後処理">生成・取得 → ハートで選曲</button>
                 <button class="btn btn-secondary btn-sm" id="miniStartBtn" onclick="startSunoForVideo('${esc(name)}')" title="生成のみ（DL・後処理は手動）">生成のみ</button>
                 <button class="btn btn-primary btn-sm" id="miniDraftBtn" onclick="generateSunoDrafts('${esc(name)}')" title="SUNOを起動せずLLMだけで歌詞・Styleのドラフトを生成 → 確認・編集してから投入（Claude/Codex のみ）">ドラフト生成（確認してから投入）</button>
                 <button class="btn btn-destructive btn-sm hidden" id="miniStopBtn" onclick="stopSuno()">停止</button>
@@ -11056,11 +11059,14 @@ async function startSuno(){
     provider:(cfg.provider==='gemini'?'claude':cfg.provider)||'claude',
     model:cfg.model||'',
     batch:!!cfg.loop_batch,
+    auto_download:true,
   };
+  const customDuration=document.getElementById('sunoDurationSeconds')?.value;
+  if(customDuration)body.duration_seconds=parseInt(customDuration);
   const ws=document.getElementById('sunoWorkspace')?.value?.trim();
   const vn=document.getElementById('sunoVideo')?.value;
   if(ws)body.workspace=ws;
-  else if(vn)body.video_name=vn;
+  if(vn)body.video_name=vn;
   try{
     const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(r.ok){
@@ -11247,7 +11253,9 @@ async function loadTrackList(name){
     }
     _lastTrackList=tracks;
     if(_pl.name===name)_pl.tracks=tracks;
-    listEl.innerHTML=tracks.map((t,i)=>renderTrackRow(name,t,i)).join('');
+    const review=d.review;
+    const selectionNote=review?`<p>${review.selected_count} / ${review.group_count}タイトルを選択済み。各タイトルから１テイクをハートで採用します。 <a href="/static/music-review.html?batch=${encodeURIComponent(review.id)}">並べて聴き比べる</a></p>`:'';
+    listEl.innerHTML=selectionNote+tracks.map((t,i)=>renderTrackRow(name,t,i)).join('');
   }catch(e){console.error(e);listEl.innerHTML='<div class="empty">読み込み失敗</div>'}
 }
 function _fmtDur(sec){
@@ -11262,21 +11270,22 @@ function renderTrackRow(name,t,idx){
   const likes=Math.min(t.likes||0,3);
   const rowClass=t.is_bad?'bad':(likes===3?'liked-3':likes===2?'liked-2':likes===1?'liked':'');
   const prefix=t.is_bad?'<span style="color:var(--text-tertiary);font-weight:700">x_</span>':(likes>0?`<span style="color:var(--accent-danger);font-weight:700">${'z'.repeat(likes)}_</span>`:'');
-  const nextLikes=(likes>=3)?0:likes+1;
+  const semi=t.selection_mode==='heart';
+  const nextLikes=semi?(likes?0:1):(likes>=3?0:likes+1);
   const deleteKey=_trackDeleteKey(name,t.rel_path);
   const pending=_trackDeleteTimers.get(deleteKey);
   const pendingClass=pending?' pending-delete':'';
-  const deleteAction=pending
+  const deleteAction=semi?'':pending
     ?`<button class="btn btn-secondary btn-sm tr-undo-btn" onclick="event.stopPropagation();undoTrackDelete('${esc(name)}','${relEsc}')">元に戻す</button>`
     :`<button class="tr-bad-btn" onclick="event.stopPropagation();toggleBad('${esc(name)}','${relEsc}')" title="5秒後に完全削除">削除</button>`;
   return `<div class="tr-row ${rowClass}${pendingClass}" data-rel="${esc(t.rel_path)}" data-idx="${idx}" onclick="_trRowClick(event,'${esc(name)}','${relEsc}',${idx})">
     <div class="tr-idx">${idx+1}</div>
     <div class="tr-info">
       <div class="tr-name">${prefix}${esc(t.base_name)}</div>
-      <div class="tr-sub"><span class="tr-location-badge ${locClass}">${locLabel}</span></div>
+      <div class="tr-sub"><span class="tr-location-badge ${locClass}">${locLabel}</span>${semi?' '+esc(t.filename):''}</div>
     </div>
     <div class="tr-dur">${_fmtDur(t.duration)}</div>
-    <div class="tr-like">${pending?`<span class="tr-delete-state">削除まで <span class="tr-delete-countdown">${Math.max(1,Math.ceil((pending.deadline-Date.now())/1000))}</span>秒</span>`:`<button class="tr-heart ${likes?`on-${likes}`:''}" onclick="event.stopPropagation();setLikeTrack('${esc(name)}','${relEsc}',${nextLikes})" title="優先度アップ(ファイル名にzを追記)">優先度 ${likes}/3</button>`}</div>
+    <div class="tr-like">${pending?`<span class="tr-delete-state">削除まで <span class="tr-delete-countdown">${Math.max(1,Math.ceil((pending.deadline-Date.now())/1000))}</span>秒</span>`:`<button class="tr-heart ${likes?`on-${likes}`:''}" onclick="event.stopPropagation();setLikeTrack('${esc(name)}','${relEsc}',${nextLikes})" title="${semi?'ハートでこのテイクを採用':'優先度アップ(ファイル名にzを追記)'}">${semi?(likes?'♥ 採用中':'♡ 採用'):`優先度 ${likes}/3`}</button>`}</div>
     ${deleteAction}
   </div>`;
 }
@@ -11373,12 +11382,13 @@ async function bulkDeleteShort(name){
 async function setLikeTrack(name,relPath,targetLikes){
   try{
     const r=await fetch(`/api/videos/${encodeURIComponent(name)}/track-like`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rel_path:relPath,set_likes:targetLikes})});
-    if(r.ok){const d=await r.json();_patchTrackRow(name,relPath,d)}
+    if(r.ok){const d=await r.json();if(d.review)loadTrackList(name);else _patchTrackRow(name,relPath,d)}
     else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
   }catch(e){toast('接続エラー','e')}
 }
 async function processTracks(name){
-  if(!confirm(`フォルダ内の MP3 を後処理しますか？
+  const semi=_lastTrackList.some(t=>t.selection_mode==='heart');
+  if(!semi&&!confirm(`フォルダ内の MP3 を後処理しますか？
 ・サムネ画像から Claude CLI が楽曲名を提案してリネーム
 ・いいね数（z プレフィックス）は保持
 ・original_music/ にバックアップ
@@ -11406,7 +11416,7 @@ async function pollProcessStatus(name){
   try{
     const r=await fetch('/api/process/status'),d=await r.json();
     if(d.running){setTimeout(()=>pollProcessStatus(name),2000)}
-    else{loadTrackList(name);toast('後処理完了','s')}
+    else{loadTrackList(name);if(d.exit_code===0)toast('後処理完了','s');else toast('後処理が完了していません。ログを確認してください','e')}
   }catch(e){}
 }
 
@@ -11628,7 +11638,7 @@ async function submitSunoDrafts(name){
   const body={
     prompt:prompt, provider:p.provider, generation_mode:p.generation_mode,
     interval:p.interval, headless:p.headless, video_name:name,
-    songs_draft_json:songs,
+    songs_draft_json:songs,auto_download:true,duration_seconds:p.duration_seconds||240,
   };
   try{
     const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -11643,17 +11653,15 @@ async function submitSunoDrafts(name){
 async function runSunoFullFlow(name){
   const p=_collectMiniSunoParams();
   if(!p.prompt){toast('プロンプトを入力してください','e');return}
-  const summary=`プロンプト: ${p.prompt.slice(0,80)}${p.prompt.length>80?'…':''}\n生成数: ${p.count}曲 / 間隔 ${p.interval}秒\nモード: ${p.generation_mode}${p.batch?' + batch':''} / プロバイダー: ${p.provider}\nDL 待機: ${p.dl_wait_sec}秒\n\n完了後に以下まで自動実行:\n  Workspace DL\n  Claude でタイトル提案 + リネーム\n  8秒フェードアウト + -16 LUFS ゲイン正規化\n  music/ へ格納（original_music/ にバックアップ）\n\nブラウザ: ${p.headless?'非表示':'表示'}`;
-  if(!confirm(`▶ SUNO 全自動フロー を実行します\n\n${summary}\n\n実行しますか？`))return;
-  const body={...p,video_name:name,auto_download:true};
+  const summary=`${p.count}タイトルを生成し、各２テイクを自動ダウンロードします。\n聴き比べてハートで１テイクを選んだ後、採用曲だけを後処理します。\n曲の長さ: カスタム4:00`;
+  if(!confirm(`SUNO 生成・取得を開始します\n\n${summary}`))return;
+  const body={...p,video_name:name,auto_download:true,duration_seconds:p.duration_seconds||240};
   try{
     const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok){const e=await r.json();toast(e.detail||'失敗','e');return}
-    toast('全自動フロー開始','s');
-    _plAppend(`▶ SUNO 全自動フロー: ${p.count}曲 → DL → 後処理`);
-    pollStatus();
-    _startSunoLogRelay();
-    _watchSunoThenDownload(name,p);
+    toast('生成・２テイクの取得を開始しました','s');
+    _plAppend(`SUNO: ${p.count}タイトル生成 → 全テイク取得 → ハート選択待ち`);
+    pollStatus();_startSunoLogRelay();_watchSunoThenDownload(name,p);
   }catch(e){toast('接続エラー','e')}
 }
 async function _watchSunoThenDownload(name,p){
@@ -11661,42 +11669,14 @@ async function _watchSunoThenDownload(name,p){
     try{
       const r=await fetch('/api/suno/status'),d=await r.json();
       if(d.running){setTimeout(poll,3000);return}
-      _plAppend(`✓ SUNO 生成完了 → ${p.dl_wait_sec}秒 待機後 DL 開始`);
-      _setPlStatus(`DL 待機中 (${p.dl_wait_sec}秒)`);
-      setTimeout(async()=>{
-        _plAppend(`Workspace DL 開始`);
-        _setPlStatus('DL 実行中');
-        const dr=await fetch('/api/suno/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name})});
-        if(!dr.ok){const e=await dr.json().catch(()=>({}));toast(e.detail||'DL失敗','e');_plAppend('✗ DL 失敗');return}
-        const dlPoll=async()=>{
-          try{
-            const sr=await fetch('/api/suno/status'),sd=await sr.json();
-            if(sd.running){setTimeout(dlPoll,3000);return}
-            _plAppend(`✓ DL 完了 → 後処理（リネーム + フェード + ゲイン）開始`);
-            _setPlStatus('後処理 実行中');
-            loadTrackList(name);
-            // 後処理を自動起動
-            try{
-              const pr=await fetch(`/api/videos/${encodeURIComponent(name)}/process-tracks`,{method:'POST'});
-              if(!pr.ok){const e=await pr.json().catch(()=>({}));_plAppend(`✗ 後処理開始失敗: ${e.detail||''}`);toast('後処理失敗','e');return}
-              _plAppend(`後処理ジョブ開始`);
-              const postPoll=async()=>{
-                try{
-                  const ps=await fetch('/api/process/status'),pd=await ps.json();
-                  if(pd.running){setTimeout(postPoll,2500);return}
-                  _plAppend(`✓ 後処理完了 → music/ に格納済み`);
-                  _setPlStatus('完了');
-                  _plAppend('▶ 全自動フロー 完了');
-                  loadTrackList(name);
-                  toast('SUNO 全自動フロー完了','s');
-                }catch(e){setTimeout(postPoll,3000)}
-              };
-              setTimeout(postPoll,2500);
-            }catch(e){_plAppend(`✗ 後処理接続エラー`)}
-          }catch(e){setTimeout(dlPoll,3000)}
-        };
-        setTimeout(dlPoll,2000);
-      },(p.dl_wait_sec||30)*1000);
+      const tr=await fetch(`/api/videos/${encodeURIComponent(name)}/tracks`);
+      const tracks=await tr.json(),review=tracks.review;
+      loadTrackList(name);
+      if(!review){_setPlStatus('取得状態の確認が必要です');_plAppend('SUNOログと保存済み音声を確認してください。生成の再投入は不要です。');return}
+      if(!review.download_complete){_setPlStatus('テイク取得不足');_plAppend(`取得済み ${review.takes.filter(t=>t.available).length}/${review.expected}テイク。取得を完了してください。`);return}
+      _setPlStatus('ハート選択待ち');
+      _plAppend('全テイクの取得完了。各タイトルから１テイクをハートで選び、採用曲の後処理へ進んでください。');
+      toast('取得完了。聴き比べてハートで採用してください','s');
     }catch(e){setTimeout(poll,3000)}
   };
   setTimeout(poll,2500);

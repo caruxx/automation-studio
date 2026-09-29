@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from app_track_title import public_timecode_line
 from typing import Any, Optional
 
 
@@ -899,7 +900,7 @@ def _read_tracklist_for_description(folder: Path) -> str:
         for line in lines:
             if "LOOP" in line.upper():
                 continue
-            out_lines.append(line.rstrip())
+            out_lines.append(public_timecode_line(line.rstrip()))
         return "\n".join(out_lines).strip()
     return ""
 

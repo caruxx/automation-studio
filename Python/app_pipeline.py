@@ -71,6 +71,17 @@ EXIT_QUOTA_EXHAUSTED = 77
 # preflight チェック（Premiere Pro / CEP パネルが未起動など）に失敗した場合の sentinel。
 # pipeline 開始前に判明するので、各 step を一切実行せず早期終了する。
 EXIT_PREFLIGHT_FAIL = 78
+EXIT_SELECTION_PENDING = 79
+
+
+def _music_selection_gate(folder, processed=False):
+    from app_music_catalog import require_selection, SelectionPending
+    try:
+        require_selection(folder, processed=processed)
+    except SelectionPending as exc:
+        print(str(exc), flush=True)
+        return "awaiting_selection"
+    return None
 
 STEPS = ["suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
 STEPS_WITH_PLAN = ["plan", "suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
@@ -295,6 +306,8 @@ def _run(cmd, label, timeout=None, env_overrides=None):
         run_kwargs["env"] = {**os.environ, **env_overrides}
     try:
         proc = subprocess.run(cmd, **run_kwargs)
+        if proc.returncode == EXIT_SELECTION_PENDING:
+            return "awaiting_selection"
         if proc.returncode == EXIT_UNATTENDED:
             print(f"\n {label} 中断: ブラウザ手動ログインが必要です (exit={proc.returncode})")
             return "unattended_login"
@@ -689,6 +702,7 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
     div_threshold = _norm_num(os.environ.get("APP_SUNO_DIVERSITY_THRESHOLD") or _cfg("diversity_threshold"), False)
     div_retry = _norm_num(os.environ.get("APP_SUNO_DIVERSITY_RETRY") or _cfg("diversity_retry"), True)
     hist_limit = _norm_num(os.environ.get("APP_SUNO_HISTORY_LIMIT") or _cfg("history_limit"), True)
+    song_duration = _norm_num(os.environ.get("APP_SUNO_DURATION_SECONDS") or _cfg("duration_seconds"), True)
 
     ch_cfg = _load_dashboard_config()
     ch_name = re.sub(r"[^A-Za-z0-9_-]+", "_", ch_cfg.get("channel_name", "orzz")).strip("_") or "orzz"
@@ -710,6 +724,8 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             body["diversity_retry"] = div_retry
         if hist_limit is not None:
             body["history_limit"] = hist_limit
+        if song_duration is not None:
+            body["duration_seconds"] = song_duration
         r = _api_post("/api/suno/start", body, "SUNO 生成開始")
         if not r:
             return False
@@ -748,6 +764,8 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             cmd += ["--diversity-retry", str(div_retry)]
         if hist_limit is not None:
             cmd += ["--history-limit", str(hist_limit)]
+        if song_duration is not None:
+            cmd += ["--duration-seconds", str(song_duration)]
         oneshot = os.environ.get("APP_SUNO_ONESHOT", "").strip().lower() in ("1", "true", "yes")
         ready_poll = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
         render_wait_timeout = int(os.environ.get("APP_SUNO_AUTO_DOWNLOAD_TIMEOUT_SEC") or "2700")
@@ -841,6 +859,9 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             return False
 
         # リネーム + フェード（既存の step_rename ロジックを subprocess で利用）
+        if _music_selection_gate(folder):
+            # suno工程は全テイクDLで完了。次のrename工程で手動選択待ちに止める。
+            return True
         print(f"\n   リネーム + フェード処理")
         process_cmd = [
             sys.executable, str(BASE / "app_process_tracks.py"),
@@ -897,6 +918,9 @@ def _tag_args_from_channel(vol: int, folder: Path):
 
 
 def step_rename(vol: int, folder: Path, via_api: bool, **kw):
+    gate = _music_selection_gate(folder)
+    if gate:
+        return gate
     tag_cli, tag_query = _tag_args_from_channel(vol, folder)
     if via_api:
         if tag_query:
@@ -1806,6 +1830,9 @@ def _resolve_target_duration(kw: dict) -> int:
 
 
 def step_premiere(vol: int, folder: Path, via_api: bool, **kw):
+    gate = _music_selection_gate(folder, processed=True)
+    if gate:
+        return gate
     if _export_engine() == "ffmpeg":
         print(" export_engine=ffmpeg → premiere step スキップ"
               "（ffrender が export 時に 音声/映像/字幕(SRT)/チャプター(TC) を一括生成）")
@@ -2022,6 +2049,9 @@ def _run_ffrender_export(vol: int, folder: Path, kw: dict) -> bool:
 
 
 def step_export(vol: int, folder: Path, via_api: bool, **kw):
+    gate = _music_selection_gate(folder, processed=True)
+    if gate:
+        return gate
     if _export_engine() == "ffmpeg":
         return _run_ffrender_export(vol, folder, kw)
     if _use_render_queue():
@@ -3218,6 +3248,9 @@ def _local_upload_marker_allows_skip(folder: Path) -> tuple[bool, dict]:
 
 
 def step_upload(vol: int, folder: Path, via_api: bool, **kw):
+    gate = _music_selection_gate(folder, processed=True)
+    if gate:
+        return gate
     cfg = _load_dashboard_config()
     schedule = resolve_publish_at_iso(folder, cfg)
     privacy = "private" if schedule else kw.get("privacy", "private")
@@ -3548,6 +3581,11 @@ def main():
             print(f"◀ STEP {s} 結果: 例外 — {type(e).__name__}: {e}")
             sys.stdout.flush()
             raise
+        if ok == "awaiting_selection":
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "pending", "楽曲のハート選択待ち")
+            print(f"◀ STEP {s} 結果: MUSIC_SELECTION_PENDING")
+            print(f"ハート選択・後処理後に再開: python3 app_pipeline.py {args.vol} --from rename")
+            sys.exit(EXIT_SELECTION_PENDING)
         # unattended_login は専用ハンドリング（Discord で「ログインが必要」と通知）
         if ok == "unattended_login":
             _ledger_call(ledger_sync, "report_step", args.vol, s, "failed", str(ok))

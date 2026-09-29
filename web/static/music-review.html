@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>楽曲の聴き比べ — Automation Studio</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#111318;color:#eef0f5}
+body{margin:0}main{max-width:1080px;margin:auto;padding:32px 24px 80px}a{color:#b7c6ff}
+h1{font-size:28px;margin:24px 0 8px}p{color:#b7bbc8;line-height:1.7}
+header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+select,button{font:inherit;padding:10px 14px;border:1px solid #454a59;border-radius:8px;background:#20242d;color:inherit}
+select{max-width:100%}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}
+.summary{position:sticky;top:0;background:#111318f5;padding:18px 0;border-bottom:1px solid #323644;display:flex;gap:16px;align-items:center;justify-content:space-between;z-index:1}
+#process{background:#cad4ff;color:#172036;font-weight:600}#status{line-height:1.6}
+.group{border:1px solid #323644;border-radius:12px;padding:20px;margin-top:20px}h2{font-size:19px;margin:0 0 16px}
+.takes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.take{min-width:0;padding:16px;background:#1b1e26;border:1px solid transparent;border-radius:8px}.take.chosen{border-color:#db8fa1}
+.take-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.duration{color:#b7bbc8;font-size:13px;margin-top:5px}
+audio{width:100%}.heart{display:flex;align-items:center;gap:7px}.heart svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.7}.chosen .heart{color:#ffb0c0}.chosen .heart svg{fill:currentColor}
+#message{min-height:24px;color:#d8b984;margin-top:14px;white-space:pre-line}.hint{font-size:13px}.resume{color:#afc4af}
+@media(max-width:640px){main{padding:20px 16px 60px}.takes{grid-template-columns:1fr}.summary{align-items:flex-start}h1{font-size:24px}}
+</style>
+<main>
+<header><a href="/">Automation Studioへ戻る</a><select id="batch" aria-label="聴き比べる楽曲セット"></select></header>
+<h1>楽曲の聴き比べ</h1>
+<p>同じタイトルの２テイクを聴いて、採用する方にハートを付けてください。<br>各タイトルから１曲を採用します。もう一方も原本として残ります。</p>
+<div class="summary"><div id="status" role="status">読み込み中…</div><button id="process" disabled>採用曲の後処理へ</button></div>
+<div id="message" role="alert"></div><div id="groups"></div>
+<p class="hint">生成・２テイクのダウンロードは自動。曲の採用は手動です。選択はすぐに保存されます。<br>ハートを選び直したときは、採用曲の後処理をもう一度行ってください。</p>
+</main>
+<script>
+'use strict';
+let state=null,busy=false,operation=false;
+const $=id=>document.getElementById(id);
+const heartSvg='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.8a5.5 5.5 0 0 0-7.8 0L12 5.9l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.4a5.5 5.5 0 0 0 0-7.8Z"/></svg>';
+async function api(path,options){const r=await fetch(path,options);const d=await r.json();if(!r.ok)throw new Error(d.detail||'操作に失敗しました');return d}
+function endpoint(suffix=''){return `/api/music/reviews/${encodeURIComponent(state.id)}${suffix}`}
+function format(sec){return `${Math.floor(sec/60)}:${String(Math.floor(sec%60)).padStart(2,'0')}`}
+function update(){
+  $('status').textContent=state.processed?`${state.group_count}曲を採用・後処理済み。動画制作へ進めます。`:
+    !state.download_complete?`テイクの取得待ちです（${state.takes.filter(t=>t.available).length} / ${state.expected}テイク）。SUNOからの取得を完了してください。`:
+    busy?'採用曲の後処理中…':state.ready?`${state.selected_count} / ${state.group_count}タイトルを選択済み。後処理へ進めます。`:
+    `${state.selected_count} / ${state.group_count}タイトルを選択済み。各タイトルから１テイクを選んでください。`;
+  $('process').disabled=!state.ready||state.processed||busy||operation;
+  $('batch').disabled=busy||operation;
+  for(const take of state.takes){
+    const card=document.querySelector(`[data-clip="${CSS.escape(take.clip_id)}"]`);if(!card)continue;
+    card.classList.toggle('chosen',Boolean(take.selected));
+    const button=card.querySelector('.heart');button.setAttribute('aria-pressed',String(Boolean(take.selected)));
+    button.lastChild.textContent=take.selected?'採用中':'採用';button.disabled=busy||operation||!take.available;
+  }
+}
+function render(){
+  const groups=new Map();for(const t of state.takes){if(!groups.has(t.title_key))groups.set(t.title_key,[]);groups.get(t.title_key).push(t)}
+  $('groups').replaceChildren();
+  for(const takes of groups.values()){
+    const section=document.createElement('section');section.className='group';const title=document.createElement('h2');title.textContent=takes[0].title;section.append(title);
+    const pair=document.createElement('div');pair.className='takes';section.append(pair);
+    takes.forEach((take,index)=>{
+      const card=document.createElement('div');card.className='take';card.dataset.clip=take.clip_id;
+      const head=document.createElement('div');head.className='take-head';
+      const label=document.createElement('div');label.textContent=`テイク ${index+1}`;
+      const duration=document.createElement('div');duration.className='duration';duration.textContent=take.available?format(take.duration):'取得待ち';label.append(duration);head.append(label);
+      const button=document.createElement('button');button.className='heart';button.innerHTML=heartSvg;button.append(document.createTextNode('採用'));button.setAttribute('aria-label',`${take.title} テイク ${index+1}を採用`);
+      button.addEventListener('click',()=>choose(take.clip_id));head.append(button);card.append(head);
+      if(take.available){const audio=document.createElement('audio');audio.controls=true;audio.preload='none';audio.src=endpoint(`/audio/${encodeURIComponent(take.clip_id)}`);audio.setAttribute('aria-label',`${take.title} テイク ${index+1}`);audio.addEventListener('play',()=>document.querySelectorAll('audio').forEach(a=>{if(a!==audio)a.pause()}));card.append(audio)}
+      pair.append(card);
+    });$('groups').append(section);
+  }update();
+}
+async function choose(clip){
+  if(operation||busy)return;operation=true;update();$('message').textContent='';
+  try{
+    const take=state.takes.find(t=>t.clip_id===clip);
+    const updated=await api(endpoint('/heart'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clip_id:clip,selected:!take.selected})});
+    for(const t of updated.takes)t.duration=state.takes.find(old=>old.clip_id===t.clip_id)?.duration||0;
+    state=updated;
+  }catch(e){$('message').textContent=e.message}finally{operation=false;update()}
+}
+async function load(id){
+  try{document.querySelectorAll('audio').forEach(a=>a.pause());state=await api(`/api/music/reviews/${encodeURIComponent(id)}`);busy=Boolean(state.processing);render();history.replaceState(null,'',`?batch=${encodeURIComponent(id)}`);if(busy)poll()}
+  catch(e){$('message').textContent=e.message;$('status').textContent='読み込みに失敗しました'}
+}
+async function poll(){
+  try{
+    const status=await api('/api/process/status');
+    const fresh=await api(endpoint());state=fresh;
+    if(status.running){busy=true;update();setTimeout(poll,2000);return}
+    busy=false;update();
+    $('message').textContent=state.processed?'採用曲を music/ に保存しました。動画の楽曲タブ・制作工程から続けられます。':`後処理が完了していません。ログを確認して再実行してください。\n${(status.logs||[]).slice(-4).join('\n')}`;
+  }catch(e){busy=false;update();$('message').textContent=e.message}
+}
+$('process').addEventListener('click',async()=>{
+  if(busy||operation)return;busy=true;update();$('message').textContent='';
+  try{await api(endpoint('/process'),{method:'POST'});setTimeout(poll,700)}catch(e){busy=false;update();$('message').textContent=e.message}
+});
+$('batch').addEventListener('change',()=>load($('batch').value));
+(async()=>{
+  try{const data=await api('/api/music/reviews');for(const b of data.batches){const option=document.createElement('option');option.value=b.id;option.textContent=`${b.workspace}（${b.group_count}曲）`;$('batch').append(option)}
+    const requested=new URLSearchParams(location.search).get('batch');const id=data.batches.some(b=>b.id===requested)?requested:data.batches[0]?.id;
+    if(id){$('batch').value=id;await load(id)}else{$('status').textContent='聴き比べ用の楽曲がありません。SUNOで生成・取得するとここに表示されます。'}
+  }catch(e){$('message').textContent=e.message}
+})();
+</script>
+</html>

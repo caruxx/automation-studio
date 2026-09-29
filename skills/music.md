@@ -8,6 +8,8 @@ SUNO で楽曲を生成し、Workspace から動画フォルダへダウンロ�
 先に [制作レシピ](../docs/music/beat-soul-recipe.md) を読む。ユーザーの修正指示から採用された音楽性へ至った過程、Stylesの判断根拠、歌詞構成、SUNO設定、検証・修正、他ツールへ渡す共通指示を含む。正確な入力は [原稿集](../docs/music/beat-soul-inputs.md)、機械可読データは [プリセット](../config/music_presets/beat-soul-4min.json)。Fable・Claude・Codexで同じ記録を基準にする。「ラグジュアリーBGM」を静かなジャズやバラードへ読み替えない。
 
 ## 入口コマンド
+
+新規SUNOセットは[セミオート選曲の契約](../docs/music/semi-auto-selection.md)に従う。２テイクを両方取得し、Automation Studioのハートで１テイクを採用。短い方の自動採用・不採用原本の削除をしない。未選択は終了コード79で停止し、SUNOを再生成せず選択後にrenameから再開する。タイトルは`app_music_catalog`の永久台帳で全経路のCreate前に予約する。
 - 正規確認: `python3 Python/studio.py suno-auto --vol <N> --dry-run`
 - 実行: `python3 Python/studio.py suno-auto --vol <N> --prompt "<prompt>" --count <count>`
 - 直接: `python3 Python/app_pipeline.py <N> --only suno`

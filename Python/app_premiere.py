@@ -17,6 +17,7 @@ import tempfile
 import time
 import atexit
 from pathlib import Path
+from app_track_title import public_track_title
 from typing import Optional
 
 from resource_lock import ResourceBusyError, ResourceLock
@@ -274,6 +275,9 @@ def run_jsx(target_duration=10800, video_folder=None):
         except Exception:
             video_folder = ""
     lk = _load_channel_luma_key_values(video_folder)
+    if video_folder:
+        from app_music_catalog import require_selection
+        require_selection(Path(video_folder), processed=True)
     luma_threshold = lk.get("threshold", LUMA_THRESHOLD_DEFAULT)
     luma_cutoff = lk.get("cutoff", LUMA_CUTOFF_DEFAULT)
     src = "channel config" if lk else "default"
@@ -360,7 +364,7 @@ def get_timeline_clips():
                 clips.append({
                     "start": float(parts[0]),
                     "end": float(parts[1]),
-                    "title": parts[2],
+                    "title": public_track_title(parts[2]),
                 })
     clips.sort(key=lambda c: c["start"])
     return clips
@@ -384,7 +388,7 @@ def generate_srt(clips, output_path):
                 continue
             f.write(f"{i + 1}\r\n")
             f.write(f"{to_srt_time(clip['start'])} --> {to_srt_time(clip['end'])}\r\n")
-            f.write(f"{clip['title']}\r\n")
+            f.write(f"{public_track_title(clip['title'])}\r\n")
             f.write("\r\n")
 
     print(f" SRT 生成: {output_path} ({len(clips)} エントリ)")
@@ -414,7 +418,7 @@ def generate_timecode(clips, output_path, total_songs=None):
         # ループ境界にマーカーを挿入
         if i > 0 and i % total_songs == 0:
             lines.append(f"{to_hhmmss(clip['start'])} - LOOP")
-        lines.append(f"{to_hhmmss(clip['start'])} - {clip['title']}")
+        lines.append(f"{to_hhmmss(clip['start'])} - {public_track_title(clip['title'])}")
 
     with open(output_path, 'w', encoding='utf-8') as f:
         for line in lines:

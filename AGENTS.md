@@ -32,6 +32,8 @@ curl -fsS http://localhost:8888/api/config/migration-status >/dev/null
 
 ## 正規入口
 
+SUNO新規セットの採用は[ハートで選ぶセミオート方式](docs/music/semi-auto-selection.md)。生成・全テイク取得は自動、採用は人が各タイトルから１テイクを決める。未選択の終了コード79を失敗として再生成・自動再投入しない。タイトルは`Python/app_music_catalog.py`の永久台帳を使い、`--songs-file`でもCreate前の予約を通す。原本を削除して短いテイクを採用する旧処理へ戻さない。
+
 AI / 人間の正規の入口は `_claude` ルートから `python3 Python/studio.py`。
 個別コマンドを直接実行する前に、まず `python3 Python/studio.py <intent> --vol <N> --dry-run` で解決結果と実行コマンドを確認する。
 機械可読な真実は `Python/routes.json`。下の自然言語対応表は概要として残す。

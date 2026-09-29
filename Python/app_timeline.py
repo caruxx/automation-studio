@@ -12,6 +12,7 @@ import re
 import random
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from app_track_title import public_track_title
 
 TIMELINE_NAME = "vol_timeline.json"
 VERSION = 2
@@ -218,7 +219,7 @@ def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
 
 def display_title(filename: str) -> str:
     stem = Path(str(filename or "")).stem
-    return re.sub(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", "", stem, flags=re.I).strip() or stem
+    return public_track_title(re.sub(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", "", stem, flags=re.I).strip() or stem)
 
 
 def probe_duration(path: Path) -> float:
@@ -266,6 +267,8 @@ def _selected_images(folder: Path) -> tuple[Path | None, list[Path]]:
 
 
 def _audio_files(folder: Path) -> list[Path]:
+    from app_music_catalog import require_selection
+    require_selection(folder, processed=True)
     processed = folder / "music"
     original = folder / "original_music"
     root = processed if processed.is_dir() and any(processed.glob("*.mp3")) else original

@@ -135,6 +135,8 @@ SUNOは１リクエスト２テイク。10曲の制作なら20候補から各曲
 
 ## 実行と確認の手順
 
+2026-09-29追記：選曲は[ハートによるセミオート方式](semi-auto-selection.md)へ変更。生成・２テイクのダウンロードまで自動化し、人が聴き比べて各タイトルから１テイクを採用する。下記の過去の尺・歌入りによる10曲選定は制作検証の記録で、今後の自動採用ルールではない。採用の正本は各セットの`.music_review.json`。生成タイトルは永久台帳へ予約し、使用済みタイトルの再利用を防ぐ。
+
 1. Workspaceのローカル指示を読み、SUNO処理が走っていないこと、対象チャンネルと保存先を確認する。この音楽プリセットを別チャンネルの既定へ無断で上書きしない。
 2. 正規入口 `python3 Python/studio.py suno-auto --vol <対象vol> --dry-run` で解決結果を確認。今回、active channelの既定はSUKIMA・instrumental_fillerだったため、歌付きのこの制作は独立Workspaceで実行した。
 3. 新しい日付・企画名のWorkspaceと出力先を用意する。保存した10曲を再利用する場合、`--songs-file config/music_presets/beat-soul-4min.json --mode lyrics_styles --duration-seconds 240` を使える。タイトル・歌詞を変える場合は別の原稿JSONを作り、基準を上書きしない。

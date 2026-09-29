@@ -705,8 +705,8 @@
     },
     {
       "key": "channel.suno.keep_both_takes",
-      "label_ja": "SUNO 2テイク両採用",
-      "description_ja": "2テイク両方をmusicに採用しユニークタイトル付与",
+      "label_ja": "旧形式：SUNO 2テイク両採用",
+      "description_ja": "取得台帳のない旧素材に適用。新規SUNOセットはハートで1テイクを採用する。",
       "tier": "easy",
       "scope": "channel",
       "storage": {

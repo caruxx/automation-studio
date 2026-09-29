@@ -62,7 +62,7 @@ DB_PATH = CONFIG_DIR / "runs.db"
 DEFAULT_STALE_AFTER_SEC = int(os.environ.get("APP_RUN_LEDGER_STALE_SEC", "21600"))  # 6h
 
 VALID_KINDS = ("vol_create", "spot_create", "auto_resume", "manual", "reconstructed")
-VALID_STATUSES = ("in_progress", "done", "failed", "cancelled", "reconstructed")
+VALID_STATUSES = ("in_progress", "done", "failed", "cancelled", "reconstructed", "waiting_selection")
 
 
 def _now_iso() -> str:

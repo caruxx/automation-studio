@@ -1784,7 +1784,7 @@ def _parallel_download_candidates(page, uuids, cache, target):
             fname = f"{base}_{counter}.mp3"
             counter += 1
         used_names.add(fname)
-        items.append({"idx": idx, "uuid": uuid, "audio_url": audio_url, "fname": fname})
+        items.append({"idx": idx, "uuid": uuid, "title": title or uuid, "audio_url": audio_url, "fname": fname})
     return items, missing
 
 
@@ -1894,6 +1894,7 @@ def download_workspace_tracks(page, workspace_name, target_dir):
     failed = 0
     used_names = set()
     ctx_request = page.context.request  # Cookie 共有済の APIRequestContext
+    saved_takes = []
 
     parallel_workers = _parallel_dl_workers()
     if parallel_workers > 1:
@@ -1929,6 +1930,10 @@ def download_workspace_tracks(page, workspace_name, target_dir):
                 else:
                     print(f"  [{item['idx']}/{len(uuids)}] {item['fname']} failed: {status}")
             failed = missing + len(items) - parallel_success
+            from app_music_catalog import register_download
+            succeeded = {item["idx"] for item in parallel_results if item.get("status") == 200}
+            register_download(target, [{"song_id": item["uuid"], "title": item["title"], "file": item["fname"]}
+                                      for item in items if item["idx"] in succeeded], workspace_name, len(uuids))
             print(f"\n   完了: 成功 {parallel_success} / 失敗 {failed} / 総数 {len(uuids)}")
             _set_status(
                 page,
@@ -2006,6 +2011,7 @@ def download_workspace_tracks(page, workspace_name, target_dir):
                 print(f"  ✓ [{idx}/{len(uuids)}] {fname} ({size_mb:.1f}MB)")
                 _set_status(page, f"DL {idx}/{len(uuids)}: {fname} ({size_mb:.1f}MB)", "ok")
                 success += 1
+                saved_takes.append({"song_id": uuid, "title": title or uuid, "file": fname})
             except Exception as e:
                 print(f"  ⚠️ [{idx}/{len(uuids)}] {fname} 取得エラー: {e}")
                 failed += 1
@@ -2015,6 +2021,8 @@ def download_workspace_tracks(page, workspace_name, target_dir):
 
     print(f"\n   完了: 成功 {success} / 失敗 {failed} / 総数 {len(uuids)}")
     _set_status(page, f" 完了: 成功 {success} / 失敗 {failed}", "ok" if failed == 0 else "warn")
+    from app_music_catalog import register_download
+    register_download(target, saved_takes, workspace_name, len(uuids))
     return success
 
 
@@ -2510,6 +2518,8 @@ def run_browser_automation(settings):
                     continue
 
             # 2. SUNO フォームに入力
+            from app_music_catalog import prepare_submission, mark_submitted
+            content = prepare_submission(content)
             if settings.get("duration_seconds") is not None:
                 content = dict(content, duration_seconds=settings["duration_seconds"])
             try:
@@ -2576,6 +2586,7 @@ def run_browser_automation(settings):
                 if not detect_copyright_error(page):
                     print(f" Create ボタンをクリックしました")
                     create_ok = True
+                    mark_submitted(content)
                     progress.update(page, phase="submitted", submitted=i,
                                     last_action=f"clicked Create for song {i}/{loop_count}", emit=True)
                     progress.overlay(page, "ok")
@@ -2681,10 +2692,17 @@ def run_browser_automation(settings):
                 progress.update(page, phase="auto_download_done", audio_ready=max(ready_count, downloaded or 0),
                                 detected_tracks=max(ready_count, downloaded or 0),
                                 last_action=f"downloaded {downloaded}/{expected_ready}", emit=True)
+                from app_music_catalog import review_state
+                review = review_state(auto_download_dir)
+                if review and not review["ready"]:
+                    progress.update(page, phase="awaiting_selection", last_action="waiting for hearts in Automation Studio", emit=True)
                 process_vol = (settings.get("process_vol") or "").strip()
                 if process_vol:
                     code = _run_auto_postprocess(process_vol, auto_download_dir)
-                    if code:
+                    if code == 79:
+                        print("  全テイクのダウンロード完了。Automation Studioでハートを選択してください")
+                        progress.update(page, phase="awaiting_selection", last_action="waiting for hearts in Automation Studio", emit=True)
+                    elif code:
                         print(f"  ⚠️ 後処理が失敗しました (exit={code})")
                     else:
                         print("  ✓ 後処理完了")
@@ -3543,10 +3561,10 @@ def _fill_optional_title(page, title, retries=2):
         except Exception:
             continue
 
-    # SUNO上のタイトルは任意。未設定clipはDL時にUUID名へフォールバックし、
-    # app_process_tracks.pyが後処理時にタイトルを再生成してkeep_both_takesも一意化する。
+    # SUNOの任意入力欄でも、永久台帳で予約したタイトルは必須として扱う。
+    # 呼び出し元が戻り値を検査し、入力失敗時にはCreateを止める。
     print(
-        "WARNING optional title was not set; continuing without title: "
+        "WARNING title was not set; reserved titles must stop submission: "
         f"cleared={cleared} details={' | '.join(failures)}"
     )
     if _env_flag("APP_SUNO_FORM_DIAGNOSTICS"):
@@ -3606,10 +3624,12 @@ def inject_into_suno(page, content):
                 errors.append(f"styles input error: {exc}")
 
     if title:
-        if _env_flag("APP_SUNO_SKIP_OPTIONAL_TITLE"):
+        if _env_flag("APP_SUNO_SKIP_OPTIONAL_TITLE") and not content.get("_music_request_id"):
             print("optional title: skipped (APP_SUNO_SKIP_OPTIONAL_TITLE=1)")
         else:
-            _fill_optional_title(page, title, retries=2)
+            title_ok = _fill_optional_title(page, title, retries=2)
+            if content.get("_music_request_id") and not title_ok:
+                errors.append("reserved title was not set; generation stopped to prevent duplicate titles")
 
     if exclude_styles and not title:
         try:
@@ -3838,7 +3858,8 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
     instrumental_filler は必ず既定の [instrumental] 充填へ正規化する。
     フォーム読み戻し検証が失敗した場合は、同じ実績経路で再投入する。
     """
-    prepared = dict(content or {})
+    from app_music_catalog import prepare_submission, mark_submitted
+    prepared = prepare_submission(content or {})
     mode = str(prepared.get("mode") or "styles_title_only")
     prepared["mode"] = mode
     if mode == "instrumental_filler":
@@ -3907,6 +3928,7 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
 
         # 既存経路と同じく、クリック後の著作権エラー検出を送信後検証とする。
         if not detect_copyright_error(page):
+            mark_submitted(prepared)
             return prepared
 
         dismiss_error_toasts(page)

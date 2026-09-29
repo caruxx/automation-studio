@@ -198,5 +198,14 @@
       "final_duration_seconds": 239.6135,
       "postprocess": null
     }
-  ]
+  ],
+  "selection_policy": {
+    "mode": "human_heart",
+    "automation": "generate_and_download_all_takes",
+    "guide": "../../docs/music/semi-auto-selection.md",
+    "canonical_selection": ".music_review.json",
+    "auto_adopt_by_duration": false,
+    "preserve_original_takes": true
+  },
+  "selected_tracks_note": "selected_tracksは2026-09-29の機械的な候補選定の履歴。現在の採用はAutomation Studioのハートで決め、.music_review.jsonを正本とする。"
 }

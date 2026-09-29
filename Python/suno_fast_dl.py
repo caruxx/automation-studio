@@ -1079,6 +1079,8 @@ def download_workspace_tracks_fast(page, workspace_name, target_dir, status_cb=N
         part.write_text(json.dumps({'workspace':workspace_name, 'expected':len(rows),
                                     'saved':saved, 'failed':failed}, ensure_ascii=False, indent=2), encoding='utf-8')
         part.replace(manifest)
+        from app_music_catalog import register_download
+        register_download(target, saved, workspace_name, len(rows))
     report(f'完了: 成功 {len(saved)} / 失敗 {len(failed)} / 総数 {len(rows)}', 'warn' if failed else 'ok')
     if failed:
         raise RuntimeError(f'Workspaceの取得が未完了です: 成功{len(saved)}/{len(rows)}。保存済み曲は{target}にあります')

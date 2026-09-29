@@ -809,6 +809,37 @@ def process_folder(folder: Path, cli_cmd: str = DEFAULT_CLI,
     if not rename_only:
         ensure_ffmpeg()
 
+    # SUNOの原本は2テイクとも残し、採用台帳で選ばれた曲だけをmusic/へ出す。
+    from app_music_catalog import review_state, process_selected, require_selection, SelectionPending, EXIT_SELECTION_PENDING
+    if review_state(folder) is not None:
+        try:
+            require_selection(folder)
+            if rename_only:
+                print("ハート選曲では生成時のタイトルを保持します")
+                return 0
+            kind_map, _, _ = _load_tag_draft(folder, draft_path) if not skip_tagging else ({}, {}, None)
+            def process_review_track(src, dst):
+                process_mp3(src, dst)
+                if skip_tagging:
+                    return
+                # 原本と採用タイトルを保持し、公開用タグだけを一時出力へ付ける。
+                kind = kind_map.get(dst.stem.lower(), "")
+                eff_genre = (genre_by_kind or {}).get(kind, genre or "Bossa Nova")
+                tagged = dst.with_name(dst.stem + ".tagged.mp3")
+                subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(dst),
+                                "-map_metadata", "-1", "-metadata", f"title={dst.stem}",
+                                "-metadata", f"artist={artist}", "-metadata", f"album={album or folder.name}",
+                                "-metadata", f"genre={eff_genre}", "-c", "copy", str(tagged)],
+                               capture_output=True, text=True, timeout=FFMPEG_TIMEOUT, check=True)
+                tags = _probe_format_tags(tagged)
+                if tags.get("title") != dst.stem or tags.get("artist") != artist:
+                    raise RuntimeError("採用曲の公開用タグを検証できませんでした")
+                tagged.replace(dst)
+            return process_selected(folder, process_review_track, dry_run=dry_run, force=not skip_tagging)
+        except SelectionPending as exc:
+            print(str(exc))
+            return EXIT_SELECTION_PENDING
+
     suno_settings = _load_channel_suno_settings(folder)
     keep_both_takes = bool(suno_settings.get("keep_both_takes", False))
     used_title_keys = _collect_used_title_keys(folder) if keep_both_takes else set()

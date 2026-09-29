@@ -23,7 +23,7 @@ from resource_lock import ResourceLock
 import suno_auto_create as suno
 
 
-TERMINAL_STATES = {"done", "failed"}
+TERMINAL_STATES = {"done", "failed", "awaiting_selection"}
 VALID_MODES = {"lyrics", "lyrics_styles", "styles_title_only", "instrumental_filler"}
 WID_RE = re.compile(
     r"[?&]wid=([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
@@ -147,6 +147,8 @@ def load_jobs(path: Path) -> list[Job]:
 
         settings = suno.load_config()
         settings.update(channel_config)
+        if item.get("duration_seconds") is not None:
+            settings["duration_seconds"] = int(item["duration_seconds"])
         settings.update(
             {
                 "workspace": workspace,
@@ -296,6 +298,8 @@ def submit_job(page: Any, job: Job) -> None:
             },
         )
         job.step = f"song_{index + 1}_submission"
+        if job.settings.get("duration_seconds") is not None:
+            content = dict(content, duration_seconds=job.settings["duration_seconds"])
         call_existing(suno.submit_song_to_suno, page, content, form_retries=2)
         job.submitted_count += 1
         emit(
@@ -350,6 +354,14 @@ def download_job(page: Any, job: Job) -> None:
     if job.downloaded_count < expected:
         raise RuntimeError(f"ダウンロード数が不足しています: {job.downloaded_count}/{expected}")
     emit(job.label, job.state, {"downloaded": job.downloaded_count, "expected": expected})
+    from app_music_catalog import review_state
+    review = review_state(job.download_dir)
+    if review and not review["ready"]:
+        job.state = "awaiting_selection"
+        job.step = "music_selection"
+        emit(job.label, job.state, {"downloaded": job.downloaded_count,
+             "review_url": f"/static/music-review.html?batch={review['id']}"})
+        return
     job.step = "postprocess"
     postprocess(job)
     job.state = "done"
@@ -390,6 +402,7 @@ def emit_summary(jobs: list[Job]) -> None:
         {
             "total": len(jobs),
             "done": sum(job.state == "done" for job in jobs),
+            "awaiting_selection": sum(job.state == "awaiting_selection" for job in jobs),
             "failed": len(failed),
             "failed_jobs": [job.label for job in failed],
         },
@@ -434,7 +447,11 @@ def run_scheduler(jobs: list[Job], page: Any, final_wait_sec: int) -> int:
 
     failed = [job for job in jobs if job.state == "failed"]
     emit_summary(jobs)
-    return 1 if failed else 0
+    if failed:
+        return 1
+    if any(job.state == "awaiting_selection" for job in jobs):
+        return 79
+    return 0
 
 
 def parse_args() -> argparse.Namespace:

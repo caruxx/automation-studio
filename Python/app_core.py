@@ -25,6 +25,7 @@ import unicodedata
 import time
 import threading
 from pathlib import Path
+from app_track_title import public_timecode_line
 from datetime import datetime, timezone
 from collections import deque
 
@@ -1434,7 +1435,7 @@ def _read_matching_timecodes_until_loop(folder: Path, vol: str = "") -> tuple[st
         for line in lines:
             if "LOOP" in line.upper():
                 continue
-            out.append(line.rstrip())
+            out.append(public_timecode_line(line.rstrip()))
         return "\n".join(out).strip(), p
     return "", None
 

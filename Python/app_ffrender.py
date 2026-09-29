@@ -36,6 +36,7 @@ import sys
 import time
 import wave
 from pathlib import Path
+from app_track_title import public_track_title
 from typing import Optional
 
 from PIL import Image, ImageDraw
@@ -185,7 +186,7 @@ def probe_duration(path) -> float:
 def _title_from(name: str) -> str:
     noext = re.sub(r"\.[^.]+$", "", name)
     noext = re.sub(r"^z+_", "", noext)
-    return re.sub(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", "", noext, flags=re.I).strip() or noext
+    return public_track_title(re.sub(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", "", noext, flags=re.I).strip() or noext)
 
 
 def _finite_float(value, default: float = 0.0, *, minimum: Optional[float] = None,
@@ -794,12 +795,14 @@ def build_audio(clips: list, target: float, out: Path, *,
                 use_cache: bool = True, fade: float = FADE_SEC,
                 intro_audio: Optional[Path] = None) -> Path:
     names = [c["path"].name for c in clips]
+    sources = [(str(c["path"].resolve()), c["path"].stat().st_size,
+                c["path"].stat().st_mtime_ns) for c in clips]
     intro_sig = None
     if intro_audio:
         intro_audio = Path(intro_audio)
         intro_sig = [str(intro_audio), intro_audio.stat().st_size, intro_audio.stat().st_mtime_ns]
     key = hashlib.sha1(json.dumps(
-        {"o": names, "intro": intro_sig, "t": round(target, 2), "f": fade, "b": bitrate, "lim": LIMITER},
+        {"o": names, "sources": sources, "intro": intro_sig, "t": round(target, 2), "f": fade, "b": bitrate, "lim": LIMITER},
         ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
     cached = cache_dir / f"audio_{key}.m4a"
     if use_cache and cached.exists() and probe_duration(cached) >= target - 5:
@@ -838,12 +841,14 @@ def build_audio_mp3_copy(clips: list, target: float, out: Path, *,
     """処理済みMP3を再エンコードせず連結する高速モード。
     前段 app_process_tracks.py / 素材側で loudnorm・フェード・リミッター済みのチャンネル向け。"""
     names = [c["path"].name for c in clips]
+    sources = [(str(c["path"].resolve()), c["path"].stat().st_size,
+                c["path"].stat().st_mtime_ns) for c in clips]
     intro_sig = None
     if intro_audio:
         intro_audio = Path(intro_audio)
         intro_sig = [str(intro_audio), intro_audio.stat().st_size, intro_audio.stat().st_mtime_ns]
     key = hashlib.sha1(json.dumps(
-        {"mode": "mp3_copy", "o": names, "intro": intro_sig, "t": round(target, 2)},
+        {"mode": "mp3_copy", "o": names, "sources": sources, "intro": intro_sig, "t": round(target, 2)},
         ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
     cached = cache_dir / f"audio_{key}.mp3"
     if use_cache and cached.exists() and probe_duration(cached) >= target - 5:
@@ -1264,7 +1269,7 @@ def generate_display_timecode(clips: list, output_path: Path, cfg: dict, *, tota
             break
         if include_loop and total_songs and i > 0 and i % total_songs == 0:
             lines.append(f"{to_hhmmss(clip['start'] - origin)} - LOOP")
-        lines.append(f"{to_hhmmss(clip['start'] - origin)} - {clip['title']}")
+        lines.append(f"{to_hhmmss(clip['start'] - origin)} - {public_track_title(clip['title'])}")
 
     Path(output_path).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     print(f" タイムコード生成(表示調整): {output_path} ({len(lines)} 行, origin=clip#{zero_at})")
@@ -3060,6 +3065,8 @@ def render(vol_folder: Path, *, target: Optional[float] = None,
            use_audio_cache: bool = True,
            burn_mode: Optional[str] = None) -> Optional[Path]:
     global WIDTH, HEIGHT
+    from app_music_catalog import require_selection
+    require_selection(Path(vol_folder), processed=True)
     resolution = _export_resolution(Path(vol_folder))
     scale = 2 if resolution == "2160p" else 1
     previous = WIDTH, HEIGHT

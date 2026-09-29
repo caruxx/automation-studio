@@ -21,7 +21,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, HTTPException, UploadFile, File, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 # ─── 土台は app_core へ分離（D9 第1段）。foundation シンボルを取り込む ───
@@ -29,6 +29,7 @@ import app_core  # noqa: F401  （app_core.X 直接参照用）
 from app_core import *  # noqa: F401,F403  土台の全シンボル
 import app_updater
 from settings_service import config_get, config_set, load_catalog
+import app_music_catalog as music_catalog
 
 APP_STARTED_AT = time.time()
 
@@ -580,6 +581,7 @@ class SunoConfigUpdate(BaseModel):
     loop_count: Optional[int] = None
     loop_interval_sec: Optional[int] = None
     loop_batch: Optional[bool] = None
+    duration_seconds: Optional[int] = Field(default=None, gt=0)
 
 @app.put("/api/config/suno")
 def api_update_suno_config(update: SunoConfigUpdate):
@@ -924,6 +926,7 @@ class SunoRunRequest(BaseModel):
     # 合意済みドラフト投入経路: ここに [{title,styles,lyrics,mode}, ...] を渡すと
     # LLM 再生成をスキップし、そのまま SUNO に投入する（--songs-file 起動）。
     songs_draft_json: Optional[List[dict]] = None
+    duration_seconds: Optional[int] = Field(default=None, gt=0)
 
 
 # ─── 設定→suno_auto_create.generate_content_batch 用 settings 組み立て ───
@@ -1067,6 +1070,8 @@ async def api_suno_start(req: SunoRunRequest):
                 "styles": styles,
                 "lyrics": str(s.get("lyrics", "")).strip(),
                 "mode": str(s.get("mode", "") or (req.generation_mode or "")).strip(),
+                "exclude_styles": str(s.get("exclude_styles") or s.get("excluded_styles") or "").strip(),
+                **({"duration_seconds": int(s["duration_seconds"])} if s.get("duration_seconds") is not None else {}),
             })
         import tempfile as _tempfile
         fd, songs_file_path = _tempfile.mkstemp(prefix="suno_draft_", suffix=".json")
@@ -1106,6 +1111,19 @@ async def api_suno_start(req: SunoRunRequest):
         cmd += ["--diversity-retry", str(req.diversity_retry)]
     if req.history_limit is not None:
         cmd += ["--history-limit", str(req.history_limit)]
+    duration_seconds = req.duration_seconds or get_suno_config().get("duration_seconds")
+    if duration_seconds:
+        cmd += ["--duration-seconds", str(duration_seconds)]
+    if req.auto_download:
+        if req.video_name:
+            target = resolve_video_folder(req.video_name)
+        else:
+            target = SHARED_BASE / "output" / ("suno-review-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(4))
+            target.mkdir(parents=True)
+            if not workspace:
+                workspace = target.name
+                cmd += ["--workspace", workspace]
+        cmd += ["--auto-download", str(target)]
     # 起動時ログ先頭に prompt 全文を出して、後追いでも何で作ったか確認できるようにする
     task_logs["suno"] = [
         "─" * 60,
@@ -1131,7 +1149,9 @@ async def api_suno_start(req: SunoRunRequest):
     # Cloudflare Bot 判定対策: 既定で APP_KEEP_BROWSER=1 を立てる（vol.7 で実証、vol.6 で再発）
     # 明示的に "0" が立っていればユーザー意図を尊重して上書きしない
     suno_env = {**os.environ}
-    if suno_env.get("APP_KEEP_BROWSER", "").strip() not in ("0", "false", "no"):
+    if req.auto_download:
+        suno_env["APP_KEEP_BROWSER"] = "0"
+    elif suno_env.get("APP_KEEP_BROWSER", "").strip() not in ("0", "false", "no"):
         suno_env["APP_KEEP_BROWSER"] = "1"
     reservation = await _ensure_not_running("suno", "SUNO は既に実行中です")
     resource = None
@@ -3286,6 +3306,18 @@ def api_video_tracks(video_name: str):
     folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
+    review = music_catalog.review_state(folder)
+    if review:
+        tracks = []
+        for index, take in enumerate(review["takes"]):
+            if not take["available"]:
+                continue
+            path = music_catalog.safe_file(folder, take["file"])
+            tracks.append({"filename": path.name, "base_name": take["title"],
+                "likes": int(take["selected"]), "is_bad": False, "duration": round(_get_duration(path), 1),
+                "size": path.stat().st_size, "location": "root", "rel_path": take["file"],
+                "clip_id": take["clip_id"], "selection_mode": "heart"})
+        return {"tracks": tracks, "review": review}
     _purge_stale_deleted_tracks(folder)
 
     tracks = []
@@ -3351,6 +3383,22 @@ def api_video_track_like(video_name: str, req: TrackLikeRequest):
     folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404)
+    review = music_catalog.review_state(folder)
+    if review:
+        if req.toggle_bad is not None:
+            raise HTTPException(409, "聴き比べの原本は残します。採用はハートで変更してください")
+        take = next((t for t in review["takes"] if t["file"] == req.rel_path), None)
+        if not take:
+            raise HTTPException(404, "テイクが見つかりません")
+        selected = req.set_likes if req.set_likes is not None else req.set_to
+        if selected is None:
+            selected = int(take["selected"]) + req.delta
+        try:
+            updated = music_catalog.choose_take(review["id"], take["clip_id"], selected > 0)
+        except music_catalog.SelectionPending as exc:
+            raise HTTPException(409, str(exc))
+        return {"status": "ok", "likes": int(selected > 0), "is_bad": False,
+                "filename": Path(take["file"]).name, "rel_path": take["file"], "review": updated}
 
     src = (folder / req.rel_path).resolve()
     try:
@@ -3422,6 +3470,8 @@ def api_video_tracks_bulk_delete(video_name: str, req: BulkDeleteRequest):
     """条件に合う楽曲を一括削除"""
     config = get_dashboard_config()
     folder = resolve_video_folder(video_name)
+    if music_catalog.review_state(folder):
+        raise HTTPException(409, "聴き比べの原本は保持します。採用はハートで変更してください")
     if not folder.exists():
         raise HTTPException(404)
 
@@ -3464,6 +3514,8 @@ def api_video_track_delete(video_name: str, rel_path: str):
     """楽曲ファイルを物理削除"""
     config = get_dashboard_config()
     folder = resolve_video_folder(video_name)
+    if music_catalog.review_state(folder):
+        raise HTTPException(409, "聴き比べの原本は保持します。採用はハートで変更してください")
     if not folder.exists():
         raise HTTPException(404)
     if ".." in rel_path.split("/"):
@@ -3508,6 +3560,10 @@ async def api_video_process_tracks(video_name: str, rename_only: bool = False,
     folder = resolve_video_folder(video_name)
     if not folder.exists():
         raise HTTPException(404, "フォルダが見つかりません")
+    try:
+        music_catalog.require_selection(folder)
+    except music_catalog.SelectionPending as exc:
+        raise HTTPException(409, str(exc))
 
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
@@ -3560,7 +3616,74 @@ async def api_video_process_tracks(video_name: str, rename_only: bool = False,
 def api_process_status():
     proc = active_tasks.get("process")
     running = proc is not None and proc.returncode is None
-    return {"running": running, "logs": task_logs.get("process", [])[-500:]}
+    return {"running": running, "exit_code": proc.returncode if proc else None,
+            "logs": task_logs.get("process", [])[-500:]}
+
+
+class MusicHeartRequest(BaseModel):
+    clip_id: str
+    selected: bool
+
+
+def _music_review(batch_id):
+    try:
+        return music_catalog.get_review(batch_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/music/reviews")
+def api_music_reviews():
+    return {"batches": [{k: s[k] for k in ("id", "workspace", "group_count", "selected_count", "ready", "processed", "processing")}
+                        for s in music_catalog.list_reviews()]}
+
+
+@app.get("/api/music/reviews/{batch_id}")
+def api_music_review(batch_id: str):
+    state = _music_review(batch_id)
+    for take in state["takes"]:
+        take["duration"] = round(_get_duration(music_catalog.safe_file(state["folder"], take["file"])), 1) if take["available"] else 0
+    return state
+
+
+@app.get("/api/music/reviews/{batch_id}/audio/{clip_id}")
+def api_music_review_audio(batch_id: str, clip_id: str):
+    state = _music_review(batch_id)
+    take = next((t for t in state["takes"] if t["clip_id"] == clip_id and t["available"]), None)
+    if not take:
+        raise HTTPException(404, "MP3が見つかりません")
+    return FileResponse(music_catalog.safe_file(state["folder"], take["file"]), media_type="audio/mpeg")
+
+
+@app.post("/api/music/reviews/{batch_id}/heart")
+def api_music_review_heart(batch_id: str, req: MusicHeartRequest):
+    _music_review(batch_id)
+    try:
+        return music_catalog.choose_take(batch_id, req.clip_id, req.selected)
+    except (ValueError, music_catalog.SelectionPending) as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/api/music/reviews/{batch_id}/process")
+async def api_music_review_process(batch_id: str):
+    state = _music_review(batch_id)
+    if not state["ready"]:
+        raise HTTPException(409, "各タイトルからハートで1テイクを選んでください。取得不足の曲は再取得が必要です")
+    if state["processed"]:
+        return {"status": "completed"}
+    reservation = await _ensure_not_running("process", "楽曲の後処理が実行中です")
+    task_logs["process"] = []
+    task_meta["process"] = {"started_at": datetime.now().isoformat(), "batch_id": batch_id}
+    try:
+        proc = subprocess.Popen([sys.executable, "-u", str(PROCESS_TRACKS_SCRIPT), state["folder"], "--keep-names"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        _register_active_task("process", proc, reservation)
+    except BaseException:
+        _release_task_reservation("process", reservation)
+        raise
+    _stream_subprocess(proc, "process", timeout=7200)
+    return {"status": "started"}
 
 
 # ─── API: 画像選択（JSX 連動）───
@@ -7762,7 +7885,7 @@ def _schedule_publish(*, video_name: str, channel_folder: str, channel_name: str
 # 必ず出すので、それから stage を抽出する。
 
 # 手動介入が必要で resume しても無意味な exit code（P1-1/P1-4/P1-5 の sentinel）
-_NO_AUTO_RESUME_CODES = {75, 77, 78}
+_NO_AUTO_RESUME_CODES = {75, 77, 78, 79}
 
 
 def _parse_failed_stage(stdout: str) -> str:
@@ -7856,7 +7979,7 @@ async def _job_auto_resume(payload: dict):
         if run_id:
             try:
                 import app_run_ledger as _ledger
-                _ledger.finish_run(run_id, status="failed",
+                _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
                                    exit_code=proc.returncode,
                                    failed_stage=next_stage,
                                    summary=f"resume vol.{vol} 失敗 (attempt {attempt}, next={next_stage})")
@@ -7990,7 +8113,7 @@ async def _job_vol_create(job: dict):
             if run_id:
                 try:
                     import app_run_ledger as _ledger
-                    _ledger.finish_run(run_id, status="failed",
+                    _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
                                        exit_code=proc.returncode,
                                        failed_stage=failed_stage,
                                        summary=f"vol.{next_vol} 失敗 ({failed_stage or 'unknown'})")
@@ -8106,7 +8229,7 @@ async def _job_spot_create(job: dict):
             if run_id:
                 try:
                     import app_run_ledger as _ledger
-                    _ledger.finish_run(run_id, status="failed",
+                    _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
                                        exit_code=proc.returncode,
                                        failed_stage=failed_stage,
                                        summary=f"spot vol.{vol} 失敗 ({failed_stage or 'unknown'})")
