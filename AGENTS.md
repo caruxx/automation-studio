@@ -1,5 +1,9 @@
 # Automation Studio — Claude Code 向け運用ガイド
 
+## Wobble Dayの楽曲依頼
+
+「Wobble Dayの曲を作って」等は、最初に [skills/wobble-day-music.md](skills/wobble-day-music.md) と [専用制作仕様](docs/music/wobble-day-production.md) を読む。最新Notion brief・既存の選択画像・気分・希望尺・指定音源数を引き継ぎ、Mac正式Chrome CUAで生成からダウンロード実ファイル検証まで扱う。音源数未指定で生成しない。Wobbleには下記の旧Playwright経路・20テイク標準・beat-soul歌入りpresetを自動適用しない。楽曲依頼だけで画像・動画制作へ進めない。
+
 ## Codex 単独実行モード
 
 `codex exec "vol3を作って"` のような短い指示でも、Codex は会話履歴に頼りすぎず、次の順番でローカル文書を確認してから実行する。

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "kind": "wobble_day_music_request",
+  "request_id": null,
+  "project": "Wobble Day",
+  "mode": "documentation_only",
+  "authorization": {
+    "generate_authorized": false,
+    "user_instruction": null,
+    "authorized_audio_count": null,
+    "extra_takes_authorized": false
+  },
+  "brief": {
+    "source_url": "https://app.notion.com/p/3ed83149ac8d81fcbc37fb5c15ce71bd",
+    "source_last_edited_at": null,
+    "retrieved_at": null,
+    "decisions_excerpt": null
+  },
+  "mood": null,
+  "duration_seconds_per_audio": null,
+  "duration_tolerance_seconds": null,
+  "count": {
+    "requested_audio_count": null,
+    "requested_title_count": null,
+    "outputs_per_create_observed": null,
+    "ui_evidence": null,
+    "planned_create_count": null
+  },
+  "visual_references": {
+    "style_reference": "Notion内の採用A改訂版",
+    "performance_library_file_id": "libfile_faced43b52b08191a6439ff2dd88835f",
+    "performance_reference_version": 0,
+    "selected_thumbnail_reference": null,
+    "selection_evidence": null,
+    "viewed_by": null,
+    "viewed_at": null,
+    "expected_feeling_and_instruments": null
+  },
+  "browser_route": "official_chrome_cua",
+  "workspace_url": null,
+  "existing_clip_ids": [],
+  "download_staging_dir": null,
+  "delivery_dir": null,
+  "songs": [],
+  "settings": {
+    "model": null,
+    "ui_mode": null,
+    "instrumental": true,
+    "lyrics": "",
+    "duration_mode": null,
+    "style_influence": null,
+    "variety": null,
+    "weirdness": null,
+    "max_mode": null,
+    "other_visible_settings": {}
+  },
+  "cost": {
+    "credits_before": null,
+    "planned_credit_cost": null,
+    "source": null
+  },
+  "scope": {
+    "new_images": false,
+    "new_video": false,
+    "publish": false,
+    "new_subscription": false,
+    "resume_cloud_twenty": false,
+    "background_monitor": false
+  },
+  "status": "needs_input"
+}
