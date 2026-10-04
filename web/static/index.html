@@ -4621,12 +4621,28 @@ function onCfgSunoBrowserModeChange(){
 function sunoBrowserPatch(){
   const modeEl=document.getElementById('cfgSunoBrowserMode');
   if(!modeEl)return {};
-  const port=parseInt(document.getElementById('cfgSunoCdpPort')?.value||'9222');
-  return {
+  const portValue=document.getElementById('cfgSunoCdpPort')?.value||'';
+  const port=parseInt(portValue,10);
+  const patch={
     browser_mode:modeEl.value||'chrome',
     browser_profile_dir:(document.getElementById('cfgSunoBrowserProfile')?.value||'').trim(),
-    cdp_port:Number.isFinite(port)?port:9222,
   };
+  if(Number.isInteger(port)&&port===Number(portValue)&&port>=1024&&port<=65535)patch.cdp_port=port;
+  return patch;
+}
+async function putSunoConfig(patch){
+  try{
+    const r=await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+    if(r.ok)return true;
+    const body=await r.json().catch(()=>({}));
+    const d=body.detail;
+    const msg=Array.isArray(d)?d.map(x=>x&&x.msg?x.msg:String(x)).join(' / '):(d||('HTTP '+r.status));
+    toast('SUNO 設定を保存できませんでした: '+msg,'e');
+    return false;
+  }catch(e){
+    toast('SUNO 設定を保存できませんでした: '+(e&&e.message?e.message:'通信エラー'),'e');
+    return false;
+  }
 }
 function onMiniModeChange(){
   _syncInstrumentalUI('miniMode','miniInstrumentalFill',null);
@@ -4746,10 +4762,8 @@ async function _autoSaveSettingsNow(){
     if(k)sunoPatch.api_key=k;
     if(cli)sunoPatch.claude_cli=cli;
     if(codexCli)sunoPatch.codex_cli=codexCli;
-    try{
-      const sr=await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)});
-      if(!sr.ok){const detail=await sr.json().catch(()=>({}));toast('SUNO 設定を保存できませんでした: '+(detail.detail||('HTTP '+sr.status)),'e')}
-    }catch(e){}
+    const sunoSaved=await putSunoConfig(sunoPatch);
+    if(!sunoSaved){_setAutoSaveIndicator('注意: 保存失敗 (SUNO 設定)','var(--accent-danger)');return}
     // 正規化されたスプシ URL を表示に反映
     try{
       const d=await r.json();
@@ -4967,10 +4981,8 @@ async function saveSettings(){
   if(k)sunoPatch.api_key=k;
   if(cli)sunoPatch.claude_cli=cli;
   if(codexCli)sunoPatch.codex_cli=codexCli;
-  try{
-    const sr=await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)});
-    if(!sr.ok){const detail=await sr.json().catch(()=>({}));toast('SUNO 設定を保存できませんでした: '+(detail.detail||('HTTP '+sr.status)),'e')}
-  }catch(e){}
+  const sunoSaved=await putSunoConfig(sunoPatch);
+  if(!sunoSaved)return;
   await loadChannelSwitcher();
   await loadConfig();
   refreshQuickSetup();
