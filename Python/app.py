@@ -586,10 +586,19 @@ class SunoConfigUpdate(BaseModel):
     loop_interval_sec: Optional[int] = None
     loop_batch: Optional[bool] = None
     duration_seconds: Optional[int] = Field(default=None, gt=0)
+    browser_mode: Optional[Literal["chrome", "chromium", "cdp"]] = None
+    browser_profile_dir: Optional[str] = None
+    cdp_port: Optional[int] = Field(default=None, ge=1024, le=65535)
 
 @app.put("/api/config/suno")
 def api_update_suno_config(update: SunoConfigUpdate):
     patch = {k: v for k, v in update.dict(exclude_none=True).items()}
+    if any(k in patch for k in ("browser_mode", "browser_profile_dir", "cdp_port")):
+        from suno_browser import BrowserConfigError, resolve_browser_settings
+        try:
+            resolve_browser_settings({**get_suno_config(), **patch})
+        except BrowserConfigError as exc:
+            raise HTTPException(422, str(exc))
     save_suno_config_smart(patch)
     return {"status": "ok", "config": get_suno_config()}
 

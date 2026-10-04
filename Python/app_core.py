@@ -836,9 +836,15 @@ def folder_name_pattern() -> "re.Pattern":
     """
     return VIDEO_FOLDER_RE
 
+# グローバル（マシン別）に保つキー。provider/model は per-channel 保存可（D11）。
+# ブラウザ接続先はプロファイルパスやポートが実行マシンに依存するためマシン別。
+_SUNO_GLOBAL_KEYS = {"api_key", "claude_cli", "codex_cli", "headless",
+                     "browser_mode", "browser_profile_dir", "cdp_port"}
+
+
 def get_suno_config():
     """SUNO 設定を返す。
-    - api_key / claude_cli / codex_cli / headless はグローバル（マシン別、~/.config/{app_id}/suno_config.json）
+    - api_key / claude_cli / codex_cli / headless / browser_mode / browser_profile_dir / cdp_port はグローバル（マシン別、~/.config/{app_id}/suno_config.json）
     - provider / model は per-channel を反映（D11: ch ごとに LLM を選べる。per-ch 未設定なら
       グローバル suno_config の値がフォールバックとして残る）
     - prompt / mode / count / batch 等のチャンネル依存パラメータは per-channel
@@ -853,21 +859,17 @@ def get_suno_config():
     cc = load_channel_config()
     suno_cc = cc.get("suno") or {}
     for k, v in suno_cc.items():
-        # api_key / CLI コマンド / headless はマシン別（実行環境依存）なので per-channel を無視。
+        # api_key / CLI コマンド / headless / ブラウザ接続先はマシン別なので per-channel を無視。
         # provider / model はあえて除外しない＝per-channel 値で base を上書き（D11）。
-        if k in ("api_key", "claude_cli", "codex_cli", "headless"):
+        if k in _SUNO_GLOBAL_KEYS:
             continue
         base[k] = v
     return base
 
 
-# グローバル（マシン別）に保つキー。provider/model は per-channel 保存可（D11）。
-_SUNO_GLOBAL_KEYS = {"api_key", "claude_cli", "codex_cli", "headless"}
-
-
 def save_suno_config_smart(patch: dict):
     """SUNO 設定の部分更新を per-channel と global に振り分け保存。
-    - api_key / claude_cli / codex_cli / headless → ~/.config/{app_id}/suno_config.json（マシン別）
+    - api_key / claude_cli / codex_cli / headless / browser_mode / browser_profile_dir / cdp_port → ~/.config/{app_id}/suno_config.json（マシン別）
     - provider / model / prompt / generation_mode / loop_count / loop_interval_sec / loop_batch / loop_instrumental_fill 等 → per-channel（D11: provider/model も ch 別）
     patch は変更したいキーだけを含む dict。
     """
