@@ -136,6 +136,74 @@ class FormControlsTests(unittest.TestCase):
     def slider_value(self, name):
         return self.page.get_by_role("slider", name=name, exact=True).get_attribute("aria-valuenow")
 
+    def load_login_page(self, html):
+        self.page.route("https://suno.com/**", lambda route: route.fulfill(
+            status=200, content_type="text/html; charset=utf-8", body=html))
+        self.page.goto("https://suno.com/create")
+
+    def test_login_landing_create_button_does_not_mean_logged_in(self):
+        self.load_login_page("""
+            <button>Create</button><a href="/login">Log in</a>
+            <button>Sign Up</button>
+        """)
+        self.assertFalse(suno.is_suno_logged_in(self.page))
+
+    def test_login_profile_menu_confirms_logged_in_before_other_controls(self):
+        for other_controls in (
+            '<button aria-label="Create song">Create</button><textarea></textarea>',
+            '',
+            '<a href="/login">Log in</a>',
+        ):
+            with self.subTest(other_controls=other_controls):
+                self.load_login_page(
+                    '<button data-testid="profile-menu-button" '
+                    'aria-label="Profile menu button"></button>' + other_controls)
+                self.assertTrue(suno.is_suno_logged_in(self.page))
+
+    def test_login_falls_back_to_create_button_or_textarea(self):
+        for html in ('<button>Create</button>', '<textarea></textarea>'):
+            with self.subTest(html=html):
+                self.load_login_page(html)
+                self.assertTrue(suno.is_suno_logged_in(self.page))
+
+    def test_login_japanese_login_button_overrides_create_button(self):
+        self.load_login_page('<button>ログイン</button><button>作成</button>')
+        self.assertFalse(suno.is_suno_logged_in(self.page))
+
+    def test_login_rejects_non_suno_url_even_with_profile_menu(self):
+        self.page.route("https://example.com/**", lambda route: route.fulfill(
+            status=200, content_type="text/html; charset=utf-8", body='''
+                <button data-testid="profile-menu-button"></button>
+                <button>Create</button><textarea></textarea>
+            '''))
+        self.page.goto("https://example.com/create")
+        self.assertFalse(suno.is_suno_logged_in(self.page))
+
+    def test_login_controls_match_normalized_text_for_all_supported_labels(self):
+        for control in (
+            '<a href="/login">  LOG   IN  </a>',
+            '<div role="button">  Sign\n in  </div>',
+            '<button> Ｓｉｇｎ　Ｕｐ </button>',
+            '<button> ログイン </button>',
+            '<a href="/login"> サインイン </a>',
+            '<div role="button"> 新規登録 </div>',
+        ):
+            with self.subTest(control=control):
+                self.load_login_page(control + '<button>Create</button><textarea></textarea>')
+                self.assertFalse(suno.is_suno_logged_in(self.page))
+
+    def test_login_ignores_hidden_partial_and_noninteractive_login_text(self):
+        for control in (
+            '<button style="display:none">Log in</button>',
+            '<a href="/login" style="visibility:hidden">Sign Up</a>',
+            '<div role="button" hidden>ログイン</div>',
+            '<button>Log in to continue</button>',
+            '<span>Log in</span>',
+        ):
+            with self.subTest(control=control):
+                self.load_login_page(control + '<button>Create</button>')
+                self.assertTrue(suno.is_suno_logged_in(self.page))
+
     def test_more_options_ignores_song_menus_and_only_opens_once(self):
         self.assertEqual(self.page.locator('button[aria-label="More options"]').count(), 17)
         for _ in range(2):

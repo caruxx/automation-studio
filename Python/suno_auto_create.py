@@ -2277,10 +2277,18 @@ def _collect_all_song_uuids(page, from_top: bool = False):
 
 
 def is_suno_logged_in(page):
-    """Create ボタンまたは曲作成 UI から SUNO のログイン状態を確認する。"""
+    """プロフィール・ログイン UI を優先し、曲作成 UI を保険にログイン状態を確認する。"""
     try:
         if "suno.com" not in page.url:
             return False
+        if page.query_selector('[data-testid="profile-menu-button"]'):
+            return True
+        for control in page.query_selector_all('button, a, [role="button"]'):
+            if control.is_visible() and _ui_text_match(
+                control.inner_text(),
+                ("Log in", "Sign in", "Sign Up", "ログイン", "サインイン", "新規登録"),
+            ):
+                return False
         buttons = page.query_selector_all('button')
         for btn in buttons:
             try:
