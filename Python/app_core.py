@@ -891,6 +891,36 @@ def save_suno_config_smart(patch: dict):
         cc["suno"] = suno
         save_channel_config(cc)
 
+
+def clear_suno_channel_keys(keys):
+    """指定した SUNO キーをチャンネル設定からだけ削除する。"""
+    if not keys:
+        return
+    cc = load_channel_config()
+    suno = cc.get("suno") or {}
+    for key in keys:
+        suno.pop(key, None)
+    if "suno" in cc:
+        cc["suno"] = suno
+        save_channel_config(cc)
+
+
+def _suno_numeric_cli_args(req_values: dict, config: dict) -> list:
+    """数値設定をリクエスト優先で解決し、指定された CLI 引数だけ返す。"""
+    args = []
+    for key, flag in (
+        ("duration_seconds", "--duration-seconds"),
+        ("weirdness", "--weirdness"),
+        ("style_influence", "--style-influence"),
+        ("variety", "--variety"),
+    ):
+        value = req_values.get(key)
+        if value is None:
+            value = config.get(key)
+        if value is not None:
+            args.extend([flag, str(value)])
+    return args
+
 # ─── ベンチマーク設定（グローバル既定 + チャンネル別 override）───
 DEFAULT_BENCHMARK_CONFIG = {
     "pinned_names": [],

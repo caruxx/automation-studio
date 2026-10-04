@@ -2971,6 +2971,33 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           <div class="ff"><label class="fl">間隔（秒）</label><input type="number" class="fi" id="cfgSunoInterval" value="180" min="30"></div>
         </div>
         <div class="ff">
+          <div class="fl">SUNO の数値設定</div>
+          <div class="fr">
+            <div class="ff">
+              <label class="fl" for="cfgSunoDuration">曲の長さ（秒）</label>
+              <input type="number" class="fi" id="cfgSunoDuration" min="10" max="360" placeholder="指定しない">
+              <div class="fh">10〜360 秒。空欄なら SUNO の Auto のまま。</div>
+            </div>
+            <div class="ff">
+              <label class="fl" for="cfgSunoWeirdness">Weirdness</label>
+              <input type="number" class="fi" id="cfgSunoWeirdness" min="0" max="100" placeholder="変更しない">
+              <div class="fh">0〜100。空欄なら SUNO 側の現在値のまま。</div>
+            </div>
+          </div>
+          <div class="fr">
+            <div class="ff">
+              <label class="fl" for="cfgSunoStyleInfluence">Style Influence</label>
+              <input type="number" class="fi" id="cfgSunoStyleInfluence" min="0" max="100" placeholder="変更しない">
+              <div class="fh">0〜100。空欄なら SUNO 側の現在値のまま。</div>
+            </div>
+            <div class="ff">
+              <label class="fl" for="cfgSunoVariety">Variety</label>
+              <input type="number" class="fi" id="cfgSunoVariety" min="0" max="4" placeholder="変更しない">
+              <div class="fh">0〜4（0 は Off）。空欄なら SUNO 側の現在値のまま。</div>
+            </div>
+          </div>
+        </div>
+        <div class="ff">
           <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer">
             <input type="checkbox" id="cfgSunoBatch" style="width:16px;height:16px;accent-color:var(--accent-primary)"> 一括生成モード（Claude を1回だけ呼んでN曲分まとめて作成）
           </label>
@@ -4346,6 +4373,10 @@ async function loadConfig(){try{
     $('cfgSunoPrompt').value=s.prompt||'';
     $('cfgSunoCount').value=s.loop_count||5;
     $('cfgSunoInterval').value=s.loop_interval_sec||180;
+    if($('cfgSunoDuration'))$('cfgSunoDuration').value=s.duration_seconds??'';
+    if($('cfgSunoWeirdness'))$('cfgSunoWeirdness').value=s.weirdness??'';
+    if($('cfgSunoStyleInfluence'))$('cfgSunoStyleInfluence').value=s.style_influence??'';
+    if($('cfgSunoVariety'))$('cfgSunoVariety').value=s.variety??'';
     if($('cfgSunoBatch'))$('cfgSunoBatch').checked=!!s.loop_batch;
     if($('cfgSunoBrowserMode')){
       $('cfgSunoBrowserMode').value=s.browser_mode||'chrome';
@@ -4630,6 +4661,29 @@ function sunoBrowserPatch(){
   if(Number.isInteger(port)&&port===Number(portValue)&&port>=1024&&port<=65535)patch.cdp_port=port;
   return patch;
 }
+function sunoNumericPatch(){
+  const patch={};
+  const clearKeys=[];
+  const fields=[
+    ['cfgSunoDuration','duration_seconds',10,360],
+    ['cfgSunoWeirdness','weirdness',0,100],
+    ['cfgSunoStyleInfluence','style_influence',0,100],
+    ['cfgSunoVariety','variety',0,4],
+  ];
+  for(const [id,key,min,max] of fields){
+    const el=document.getElementById(id);
+    if(!el||el.validity?.badInput)continue;
+    const raw=el.value.trim();
+    if(raw===''){
+      clearKeys.push(key);
+      continue;
+    }
+    const value=Number(raw);
+    if(Number.isInteger(value)&&value>=min&&value<=max)patch[key]=value;
+  }
+  if(clearKeys.length)patch.clear_keys=clearKeys;
+  return patch;
+}
 async function putSunoConfig(patch){
   try{
     const r=await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
@@ -4759,6 +4813,7 @@ async function _autoSaveSettingsNow(){
       loop_batch:!!$('cfgSunoBatch')?.checked,
     };
     Object.assign(sunoPatch,sunoBrowserPatch());
+    Object.assign(sunoPatch,sunoNumericPatch());
     if(k)sunoPatch.api_key=k;
     if(cli)sunoPatch.claude_cli=cli;
     if(codexCli)sunoPatch.codex_cli=codexCli;
@@ -4798,6 +4853,7 @@ function wireSettingsAutoSave(){
     // SUNO
     'cfgSunoProvider','cfgSunoModel','cfgSunoMode','cfgSunoPrompt',
     'cfgSunoCount','cfgSunoInterval','cfgSunoBatch','cfgSunoInstrumentalFill',
+    'cfgSunoDuration','cfgSunoWeirdness','cfgSunoStyleInfluence','cfgSunoVariety',
     'cfgSunoBrowserMode','cfgSunoBrowserProfile','cfgSunoCdpPort',
     'cfgApiKey','cfgClaudeCli',
   ];
@@ -4978,6 +5034,7 @@ async function saveSettings(){
     loop_batch:!!$('cfgSunoBatch')?.checked,
   };
   Object.assign(sunoPatch,sunoBrowserPatch());
+  Object.assign(sunoPatch,sunoNumericPatch());
   if(k)sunoPatch.api_key=k;
   if(cli)sunoPatch.claude_cli=cli;
   if(codexCli)sunoPatch.codex_cli=codexCli;

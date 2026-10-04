@@ -585,7 +585,11 @@ class SunoConfigUpdate(BaseModel):
     loop_count: Optional[int] = None
     loop_interval_sec: Optional[int] = None
     loop_batch: Optional[bool] = None
-    duration_seconds: Optional[int] = Field(default=None, gt=0)
+    duration_seconds: Optional[int] = Field(default=None, ge=10, le=360)
+    weirdness: Optional[int] = Field(default=None, ge=0, le=100)
+    style_influence: Optional[int] = Field(default=None, ge=0, le=100)
+    variety: Optional[int] = Field(default=None, ge=0, le=4)
+    clear_keys: Optional[List[Literal["duration_seconds", "weirdness", "style_influence", "variety"]]] = None
     browser_mode: Optional[Literal["chrome", "chromium", "cdp"]] = None
     browser_profile_dir: Optional[str] = None
     cdp_port: Optional[int] = Field(default=None, ge=1024, le=65535)
@@ -593,6 +597,10 @@ class SunoConfigUpdate(BaseModel):
 @app.put("/api/config/suno")
 def api_update_suno_config(update: SunoConfigUpdate):
     patch = {k: v for k, v in update.dict(exclude_none=True).items()}
+    clear_keys = patch.pop("clear_keys", [])
+    conflicts = set(clear_keys).intersection(patch)
+    if conflicts:
+        raise HTTPException(422, "patch と clear_keys に同じキーがあります: " + ", ".join(sorted(conflicts)))
     if any(k in patch for k in ("browser_mode", "browser_profile_dir", "cdp_port")):
         from suno_browser import BrowserConfigError, resolve_browser_settings
         try:
@@ -600,6 +608,7 @@ def api_update_suno_config(update: SunoConfigUpdate):
         except BrowserConfigError as exc:
             raise HTTPException(422, str(exc))
     save_suno_config_smart(patch)
+    clear_suno_channel_keys(clear_keys)
     return {"status": "ok", "config": get_suno_config()}
 
 # ─── API: ベンチマーク設定（チャンネル横断） ───
@@ -939,7 +948,10 @@ class SunoRunRequest(BaseModel):
     # 合意済みドラフト投入経路: ここに [{title,styles,lyrics,mode}, ...] を渡すと
     # LLM 再生成をスキップし、そのまま SUNO に投入する（--songs-file 起動）。
     songs_draft_json: Optional[List[dict]] = None
-    duration_seconds: Optional[int] = Field(default=None, gt=0)
+    duration_seconds: Optional[int] = Field(default=None, ge=10, le=360)
+    weirdness: Optional[int] = Field(default=None, ge=0, le=100)
+    style_influence: Optional[int] = Field(default=None, ge=0, le=100)
+    variety: Optional[int] = Field(default=None, ge=0, le=4)
 
 
 # ─── 設定→suno_auto_create.generate_content_batch 用 settings 組み立て ───
@@ -1124,9 +1136,12 @@ async def api_suno_start(req: SunoRunRequest):
         cmd += ["--diversity-retry", str(req.diversity_retry)]
     if req.history_limit is not None:
         cmd += ["--history-limit", str(req.history_limit)]
-    duration_seconds = req.duration_seconds or get_suno_config().get("duration_seconds")
-    if duration_seconds:
-        cmd += ["--duration-seconds", str(duration_seconds)]
+    cmd += _suno_numeric_cli_args({
+        "duration_seconds": req.duration_seconds,
+        "weirdness": req.weirdness,
+        "style_influence": req.style_influence,
+        "variety": req.variety,
+    }, get_suno_config())
     if req.auto_download:
         if req.video_name:
             target = resolve_video_folder(req.video_name)
