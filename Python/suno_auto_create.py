@@ -2333,11 +2333,7 @@ def run_browser_automation(settings):
             print(f"  ポート: {browser_cfg['cdp_port']}")
         else:
             print(f"  プロファイル: {browser_cfg['profile_dir']}")
-        try:
-            session = open_suno_context(p, settings)
-        except BrowserLaunchError as exc:
-            print(f"ブラウザを起動できませんでした: {exc}")
-            return
+        session = open_suno_context(p, settings)
         context = session.context
 
         # SUNO SPA の内部 fetch/XHR を横取りして audio_url をキャッシュ + ステータスオーバーレイ
@@ -3949,7 +3945,7 @@ def _run_download_only(workspace_name, target_dir, settings):
     from playwright.sync_api import sync_playwright
     ready_poll = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
     with sync_playwright() as p:
-        session = open_suno_context(p, settings)
+        session = open_suno_context(p, {**settings, "headless": False})
         context = session.context
         # SUNO SPA の内部 fetch/XHR をインターセプトして audio_url をキャッシュ
         context.add_init_script(_SUNO_AUDIO_URL_INTERCEPTOR)
@@ -4291,6 +4287,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except BrowserLaunchError as e:
+        print(f"\nブラウザを起動できませんでした: {e}", flush=True)
+        sys.exit(1)
     except UnattendedLoginRequired as e:
         # app_pipeline.py が exit code 75 を「ログイン要」サインとして検知する
         # （sentinel は stderr ではなく stdout に出力。pipeline は stdout を tail する）

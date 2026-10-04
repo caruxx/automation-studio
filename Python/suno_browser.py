@@ -80,16 +80,27 @@ class BrowserSession:
         self.context = context
         self.mode = mode
         self.owned = owned
+        self._pages = []
 
     def page(self) -> Any:
         # cdp は利用者が開いているタブを奪わない。
         if self.owned and self.context.pages:
             return self.context.pages[0]
-        return self.context.new_page()
+        page = self.context.new_page()
+        if not self.owned:
+            self._pages.append(page)
+        return page
 
     def close(self) -> None:
         if self.owned:
             self.context.close()
+        else:
+            for page in self._pages:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+            self._pages.clear()
 
 
 def open_suno_context(playwright: Any, settings: dict) -> BrowserSession:

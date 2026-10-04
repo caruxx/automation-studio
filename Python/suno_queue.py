@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from resource_lock import ResourceLock
-from suno_browser import MODES as BROWSER_MODES, apply_cli_overrides, open_suno_context
+from suno_browser import MODES as BROWSER_MODES, apply_cli_overrides, open_suno_context, resolve_browser_settings
 import suno_auto_create as suno
 
 
@@ -454,6 +454,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
+        browser_settings = suno.load_config()
+        browser_settings["headless"] = bool(args.headless)
+        apply_cli_overrides(browser_settings, mode=args.browser_mode,
+                            profile_dir=args.browser_profile_dir, cdp_port=args.cdp_port)
+        resolve_browser_settings(browser_settings)
+    except ValueError as exc:
+        emit("queue", "failed", {"error": str(exc)})
+        return 1
+
+    try:
         jobs = load_jobs(args.jobs_file)
     except ValueError as exc:
         emit("queue", "failed", {"error": str(exc)})
@@ -478,11 +488,6 @@ def main() -> int:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
-            browser_settings = suno.load_config()
-            if args.headless:
-                browser_settings["headless"] = True
-            apply_cli_overrides(browser_settings, mode=args.browser_mode,
-                                profile_dir=args.browser_profile_dir, cdp_port=args.cdp_port)
             session = open_suno_context(playwright, browser_settings)
             context = session.context
             context.add_init_script(suno._SUNO_AUDIO_URL_INTERCEPTOR)

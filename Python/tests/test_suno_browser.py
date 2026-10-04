@@ -5,9 +5,19 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import suno_browser as sb  # noqa: E402
+
+
+class FakePage:
+    def __init__(self, name):
+        self.name = name
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
 
 class FakeContext:
@@ -18,7 +28,9 @@ class FakeContext:
 
     def new_page(self):
         self.new_pages += 1
-        return "new-page-%d" % self.new_pages
+        page = FakePage("new-page-%d" % self.new_pages)
+        self.pages.append(page)
+        return page
 
     def close(self):
         self.closed = True
@@ -40,7 +52,7 @@ class FakeChromium:
         self.cdp_fail = cdp_fail
         self.launch_calls = []
         self.cdp_calls = []
-        self.context = FakeContext(pages=["existing-page"])
+        self.context = FakeContext(pages=[FakePage("existing-page")])
 
     def launch_persistent_context(self, **kwargs):
         self.launch_calls.append(kwargs)
@@ -124,7 +136,7 @@ class OpenTests(unittest.TestCase):
         self.assertTrue(call["accept_downloads"])
         self.assertEqual(call["viewport"], {"width": 1280, "height": 900})
         self.assertTrue(session.owned)
-        self.assertEqual(session.page(), "existing-page")
+        self.assertIs(session.page(), chromium.context.pages[0])
 
     def test_chromium_has_no_channel(self):
         chromium = FakeChromium()
@@ -147,15 +159,56 @@ class OpenTests(unittest.TestCase):
         session.close()
         self.assertTrue(chromium.context.closed)
 
-    def test_cdp_connects_and_never_closes_or_reuses_tabs(self):
-        context = FakeContext(pages=["users-own-tab"])
+    def test_owned_without_pages_creates_new_page(self):
+        chromium = FakeChromium()
+        chromium.context = FakeContext()
+        session = sb.open_suno_context(FakePlaywright(chromium), {"browser_mode": "chrome"})
+        page = session.page()
+        self.assertEqual(chromium.context.new_pages, 1)
+        self.assertEqual(page.name, "new-page-1")
+        self.assertIs(page, chromium.context.pages[0])
+
+    def test_cdp_connects_without_reusing_existing_tabs(self):
+        existing_page = FakePage("users-own-tab")
+        context = FakeContext(pages=[existing_page])
         chromium = FakeChromium(cdp_contexts=[context])
         session = sb.open_suno_context(
             FakePlaywright(chromium), {"browser_mode": "cdp", "cdp_port": 9333})
         self.assertEqual(chromium.cdp_calls, ["http://127.0.0.1:9333"])
         self.assertFalse(session.owned)
-        self.assertEqual(session.page(), "new-page-1")
+        page = session.page()
+        self.assertIsNot(page, existing_page)
+        self.assertEqual(page.name, "new-page-1")
+        self.assertEqual(context.new_pages, 1)
         session.close()
+        self.assertFalse(context.closed)
+        self.assertFalse(existing_page.closed)
+
+    def test_cdp_close_closes_only_session_pages(self):
+        existing_pages = [FakePage("users-own-tab-1"), FakePage("users-own-tab-2")]
+        context = FakeContext(pages=existing_pages)
+        session = sb.open_suno_context(
+            FakePlaywright(FakeChromium(cdp_contexts=[context])), {"browser_mode": "cdp"})
+        first = session.page()
+        second = session.page()
+        self.assertIsNot(first, second)
+        self.assertEqual(context.new_pages, 2)
+        session.close()
+        self.assertTrue(first.closed)
+        self.assertTrue(second.closed)
+        self.assertFalse(context.closed)
+        self.assertTrue(all(not page.closed for page in existing_pages))
+
+    def test_cdp_close_continues_after_page_close_error(self):
+        context = FakeContext()
+        session = sb.open_suno_context(
+            FakePlaywright(FakeChromium(cdp_contexts=[context])), {"browser_mode": "cdp"})
+        first = session.page()
+        second = session.page()
+        with patch.object(first, "close", side_effect=RuntimeError("page already closed")) as close:
+            session.close()
+        close.assert_called_once_with()
+        self.assertTrue(second.closed)
         self.assertFalse(context.closed)
 
     def test_cdp_unreachable_explains_how_to_start_chrome(self):
