@@ -7,6 +7,7 @@
 
 import base64
 import hashlib
+import json
 import os
 import re
 import time
@@ -22,18 +23,41 @@ class HookLoadError(RuntimeError):
     """拡張の page-hook.js を読み込めない。"""
 
 
+def _hook_candidates() -> List[Path]:
+    candidates = []
+    drive_base = os.environ.get("STUDIO_DRIVE_BASE") or os.environ.get("APP_DRIVE_BASE")
+    if drive_base:
+        candidates.append(
+            Path(drive_base).expanduser().parent / "Script" / "suno_fast_m4a_monomono" / "page-hook.js")
+    candidates.append(DEFAULT_HOOK_PATH)
+    return candidates
+
+
 def load_page_hook(path=None) -> dict:
-    hook_path = Path(path or os.environ.get("APP_SUNO_HOOK_PATH") or DEFAULT_HOOK_PATH)
+    override = path or os.environ.get("APP_SUNO_HOOK_PATH")
+    if override:
+        hook_path = Path(override)
+    else:
+        candidates = _hook_candidates()
+        hook_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if hook_path is None:
+            raise HookLoadError(
+                "拡張の page-hook.js が見つかりません。調べた候補: %s。"
+                "APP_SUNO_HOOK_PATH で場所を指定できます" % ", ".join(map(str, candidates)))
     key = str(hook_path)
     try:
         raw = hook_path.read_bytes()
     except OSError as exc:
-        raise HookLoadError("拡張の page-hook.js を読めません: %s (%s)" % (hook_path, exc))
+        raise HookLoadError("拡張の page-hook.js を読めません: %s (%s)" % (hook_path, exc)) from exc
     digest = hashlib.sha256(raw).hexdigest()
     cached = _hook_cache.get(key)
     if cached and cached["sha256"] == digest:
         return cached
-    source = raw.decode("utf-8")
+    try:
+        source = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HookLoadError(
+            "拡張の page-hook.js を UTF-8 として読めません: %s (%s)" % (hook_path, exc)) from exc
     match = _SOURCE_PATTERN.search(source)
     if not match:
         raise HookLoadError(
@@ -86,7 +110,12 @@ _FAST_CAPTURE_ADAPTER = r"""
     const data = event.data;
     if (!data || data.source !== SOURCE) return;
     if (data.kind === 'capture-context-ready') {
-      for (const waiter of readyWaiters.splice(0)) waiter(data.sessionId || '');
+      for (let index = readyWaiters.length - 1; index >= 0; index -= 1) {
+        const waiter = readyWaiters[index];
+        if (waiter.sessionId !== (data.sessionId || '')) continue;
+        readyWaiters.splice(index, 1);
+        waiter.resolve();
+      }
       return;
     }
     const sessionId = data.context?.sessionId;
@@ -110,7 +139,12 @@ _FAST_CAPTURE_ADAPTER = r"""
   // フックが対象を受理してから解決する。直後の再生クリックと順序が入れ替わらない。
   window.__sunoFastSetContext = function (context) {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('復号フックが応答しません')), 3000);
+      let waiter = null;
+      const timer = setTimeout(() => {
+        const index = readyWaiters.indexOf(waiter);
+        if (index >= 0) readyWaiters.splice(index, 1);
+        reject(new Error('復号フックが応答しません'));
+      }, 3000);
       if (!context) {
         currentContext = null;
         post('mse-capture-off');
@@ -119,11 +153,11 @@ _FAST_CAPTURE_ADAPTER = r"""
       }
       currentContext = { ...context };
       cleared.delete(currentContext.sessionId);
-      readyWaiters.push((sessionId) => {
-        if (sessionId !== currentContext?.sessionId) return;
-        clearTimeout(timer);
-        resolve();
-      });
+      waiter = {
+        sessionId: currentContext.sessionId,
+        resolve: () => { clearTimeout(timer); resolve(); }
+      };
+      readyWaiters.push(waiter);
       post('mse-capture-on');
       post('capture-context', { context: currentContext });
     });
@@ -180,7 +214,6 @@ _FAST_CAPTURE_ADAPTER = r"""
 
 
 def build_capture_script(path=None) -> str:
-    import json
     hook = load_page_hook(path)
     return hook["source"] + "\n" + _FAST_CAPTURE_ADAPTER.replace(
         "__MESSAGE_SOURCE__", json.dumps(hook["message_source"]))

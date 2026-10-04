@@ -37,6 +37,13 @@ _PLAY = """async (url) => {
 
 
 class LoadHookTests(unittest.TestCase):
+    def setUp(self):
+        env = mock.patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for key in ("STUDIO_DRIVE_BASE", "APP_DRIVE_BASE", "APP_SUNO_HOOK_PATH"):
+            os.environ.pop(key, None)
+
     def test_default_hook_is_loaded_verbatim(self):
         hook = fd.load_page_hook()
         raw = fd.DEFAULT_HOOK_PATH.read_bytes()
@@ -59,10 +66,68 @@ class LoadHookTests(unittest.TestCase):
                 hook = fd.load_page_hook()
         self.assertEqual(hook["message_source"], "alt-source")
 
+    def test_drive_base_hook_is_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            drive_base = Path(tmp) / "_claude"
+            drive_base.mkdir()
+            hook_path = Path(tmp) / "Script" / "suno_fast_m4a_monomono" / "page-hook.js"
+            hook_path.parent.mkdir(parents=True)
+            hook_path.write_text("const SOURCE = 'drive-source';", encoding="utf-8")
+            for env_values in (
+                {"STUDIO_DRIVE_BASE": str(drive_base), "APP_DRIVE_BASE": "/nonexistent/_claude"},
+                {"APP_DRIVE_BASE": str(drive_base)},
+            ):
+                with self.subTest(env_values=env_values), mock.patch.dict(os.environ, env_values):
+                    hook = fd.load_page_hook()
+                    self.assertEqual(hook["message_source"], "drive-source")
+                    self.assertEqual(hook["path"], str(hook_path))
+
+    def test_missing_default_candidates_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            drive_base = Path(tmp) / "missing" / "_claude"
+            drive_hook = drive_base.parent / "Script" / "suno_fast_m4a_monomono" / "page-hook.js"
+            default_hook = Path(tmp) / "missing-default.js"
+            with mock.patch.dict(os.environ, {"STUDIO_DRIVE_BASE": str(drive_base)}), \
+                    mock.patch.object(fd, "DEFAULT_HOOK_PATH", default_hook):
+                with self.assertRaises(fd.HookLoadError) as caught:
+                    fd.load_page_hook()
+            self.assertIn(str(drive_hook), str(caught.exception))
+            self.assertIn(str(default_hook), str(caught.exception))
+            self.assertIn("APP_SUNO_HOOK_PATH", str(caught.exception))
+
+    def test_missing_drive_hook_falls_back_to_default(self):
+        with mock.patch.dict(os.environ, {"STUDIO_DRIVE_BASE": "/nonexistent/_claude"}):
+            self.assertEqual(fd.load_page_hook()["path"], str(fd.DEFAULT_HOOK_PATH))
+
+    def test_path_argument_takes_priority_over_env_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hook_path = Path(tmp) / "page-hook.js"
+            hook_path.write_text("const SOURCE = 'path-source';", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"APP_SUNO_HOOK_PATH": "/nonexistent/page-hook.js"}):
+                hook = fd.load_page_hook(hook_path)
+            self.assertEqual(hook["message_source"], "path-source")
+            self.assertEqual(hook["path"], str(hook_path))
+
+    def test_missing_env_override_does_not_fall_back(self):
+        with mock.patch.dict(os.environ, {"APP_SUNO_HOOK_PATH": "/nonexistent/page-hook.js"}):
+            with self.assertRaises(fd.HookLoadError) as caught:
+                fd.load_page_hook()
+        self.assertIn("/nonexistent/page-hook.js", str(caught.exception))
+
     def test_missing_file_fails_before_download(self):
         with self.assertRaises(fd.HookLoadError) as caught:
             fd.load_page_hook("/nonexistent/page-hook.js")
         self.assertIn("/nonexistent/page-hook.js", str(caught.exception))
+        self.assertIsInstance(caught.exception.__cause__, OSError)
+
+    def test_invalid_utf8_raises_hook_load_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "page-hook.js"
+            broken.write_bytes(b"\xff\xfe const SOURCE = 'x';")
+            with self.assertRaises(fd.HookLoadError) as caught:
+                fd.load_page_hook(broken)
+            self.assertIn(str(broken), str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, UnicodeDecodeError)
 
     def test_hook_without_source_constant_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -91,6 +156,11 @@ class AdapterRoundTripTests(unittest.TestCase):
         cls._pw.stop()
 
     def setUp(self):
+        env = mock.patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for key in ("STUDIO_DRIVE_BASE", "APP_DRIVE_BASE", "APP_SUNO_HOOK_PATH"):
+            os.environ.pop(key, None)
         self.context = self._browser.new_context()
         self.addCleanup(self.context.close)
         fd.install_fast_capture(self.context)
@@ -132,6 +202,16 @@ class AdapterRoundTripTests(unittest.TestCase):
         self._wait_state("s1", "done")
         other = self.page.evaluate("(id) => window.__sunoFastGetState(id)", "s2")
         self.assertEqual(other["status"], "pending")
+
+    def test_consecutive_contexts_resolve_without_timeout(self):
+        elapsed_ms = self.page.evaluate("""async (songId) => {
+          const started = performance.now();
+          window.__sunoFastSetContext({sessionId:'A', songId}).catch(() => {});
+          const second = window.__sunoFastSetContext({sessionId:'B', songId});
+          await second;
+          return performance.now() - started;
+        }""", SONG_ID)
+        self.assertLess(elapsed_ms, 1000)
 
     def test_result_arriving_after_clear_is_dropped(self):
         self.page.evaluate("(c) => window.__sunoFastSetContext(c)",
