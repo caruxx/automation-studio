@@ -4351,8 +4351,13 @@ function applyBrand(_dc){
   const bt=document.querySelector('.topbar-brand .brand-text');
   if(bt && bt.textContent!=='Automation Studio')bt.textContent='Automation Studio';
 }
-async function loadConfig(){try{
-  const r=await _nativeFetch('/api/config'),d=await r.json(),s=d.suno||{},dc=d.dashboard||{};
+let _settingsLoaded=false;
+async function loadConfig(){
+  _settingsLoaded=false;
+  try{
+  const r=await _nativeFetch('/api/config');
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  const d=await r.json(),s=d.suno||{},dc=d.dashboard||{};
   _lastConfig=d;
   if(document.getElementById("cfgProductionMode"))document.getElementById("cfgProductionMode").value=dc.production_mode||"standard";
   applyBrand(dc);
@@ -4455,6 +4460,7 @@ async function loadConfig(){try{
   // SUNO タブのサマリ更新
   renderSunoSummary(s);
   setEasySettingsFromConfig(dc,s);
+  _settingsLoaded=true;
 }catch(e){console.error('loadConfig:',e)}}
 
 function onEasyPublishModeChange(){
@@ -4635,9 +4641,9 @@ function onCfgSunoModeChange(){
   _syncInstrumentalUI('cfgSunoMode','cfgSunoInstrumentalFill','cfgSunoModeHint');
 }
 const SUNO_BROWSER_HINTS={
-  chrome:'Google Chrome を専用プロファイル（既定 ~/.config/orzz/chrome_profile）で起動します。初回だけ、開いたウィンドウで SUNO にログインしてください。',
+  chrome:'Google Chrome を専用プロファイル（既定 ~/.config/orzz/chrome_profile）で起動します。初回だけ、開いたウィンドウで SUNO にログインしてください。このフォルダを普段の Chrome や手動で起動した Chrome で開くとログインが消えます。',
   chromium:'Playwright 同梱の Chromium を従来のプロファイル（既定 ~/.config/orzz/chromium_profile）で起動します。',
-  cdp:'Chrome を --remote-debugging-port=<ポート> --user-data-dir=<専用フォルダ> で起動しておく必要があります。普段使いのプロファイルには接続できません。終了してもブラウザは閉じません。'
+  cdp:'Chrome を --remote-debugging-port=<ポート> --user-data-dir=<接続専用フォルダ> で起動し、その Chrome で SUNO にログインしておく必要があります。フォルダは上の専用プロファイルとは別のものにしてください（同じフォルダを使うとログインが消えます）。普段使いのプロファイルには接続できません。終了してもブラウザは閉じません。'
 };
 function onCfgSunoBrowserModeChange(){
   const mode=document.getElementById('cfgSunoBrowserMode')?.value||'chrome';
@@ -4656,7 +4662,7 @@ function sunoBrowserPatch(){
   const port=parseInt(portValue,10);
   const patch={
     browser_mode:modeEl.value||'chrome',
-    browser_profile_dir:(document.getElementById('cfgSunoBrowserProfile')?.value||'').trim(),
+    ...(document.getElementById('cfgSunoBrowserProfile')?{browser_profile_dir:(document.getElementById('cfgSunoBrowserProfile').value||'').trim()}:{}),
   };
   if(Number.isInteger(port)&&port===Number(portValue)&&port>=1024&&port<=65535)patch.cdp_port=port;
   return patch;
@@ -4779,7 +4785,7 @@ function _setAutoSaveIndicator(text,color){
 }
 async function _autoSaveSettingsNow(){
   const $=id=>document.getElementById(id);
-  if(!$('cfgPersona'))return; // 設定ページ未ロード
+  if(!_settingsLoaded||!$('cfgName'))return; // 設定の読み込み完了前は保存しない
   _setAutoSaveIndicator('保存中...','var(--accent-warning)');
   try{
     // ダッシュボード関連
@@ -4788,27 +4794,27 @@ async function _autoSaveSettingsNow(){
     const filePrefix=($('cfgFilePrefix')?.value||'').trim().replace(/[^A-Za-z0-9_-]/g,'');
     // app_id は自動保存しない（変更時は手動で「全保存」ボタンを使う）
     const body={
-      channel_name:$('cfgName')?.value||'',
-      channel_folder:$('cfgFolder')?.value||'',
-      export_path:$('cfgExport')?.value||'',
-      production_mode:$('cfgProductionMode')?.value||'standard',
-      export_engine:$('cfgExportEngine')?.value||'ame',
-      persona,
-      rival_channels:rivals,
-      spreadsheet_channel_detail_url:($('cfgSheetDetail')?.value||'').trim(),
-      spreadsheet_growth_tracking_url:($('cfgSheetGrowth')?.value||'').trim(),
-      youtube_api_key:($('cfgYtApiKey')?.value||'').trim(),
-      sheets_api_key:($('cfgSheetsApiKey')?.value||'').trim(),
-      reference_image:($('cfgReferenceImage')?.value||'').trim(),
-      reference_image_dir:($('cfgReferenceImageDir')?.value||'').trim(),
-      scene_text_enabled: $('cfgSceneTextEnabled') ? !!$('cfgSceneTextEnabled').checked : true,
-      scene_text_tone:($('cfgSceneTextTone')?.value||'').trim(),
-      scene_text_examples:($('cfgSceneTextExamples')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean),
-      scene_text_forbidden:($('cfgSceneTextForbidden')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean),
-      scene_text_structure:($('cfgSceneTextStructure')?.value||'').trim(),
+      ...($('cfgName')?{channel_name:$('cfgName').value||''}:{}),
+      ...($('cfgFolder')?{channel_folder:$('cfgFolder').value||''}:{}),
+      ...($('cfgExport')?{export_path:$('cfgExport').value||''}:{}),
+      ...($('cfgProductionMode')?{production_mode:$('cfgProductionMode').value||'standard'}:{}),
+      ...($('cfgExportEngine')?{export_engine:$('cfgExportEngine').value||'ame'}:{}),
+      ...($('cfgPersona')?{persona}:{}),
+      ...($('cfgRivals')?{rival_channels:rivals}:{}),
+      ...($('cfgSheetDetail')?{spreadsheet_channel_detail_url:($('cfgSheetDetail').value||'').trim()}:{}),
+      ...($('cfgSheetGrowth')?{spreadsheet_growth_tracking_url:($('cfgSheetGrowth').value||'').trim()}:{}),
+      ...($('cfgYtApiKey')?{youtube_api_key:($('cfgYtApiKey').value||'').trim()}:{}),
+      ...($('cfgSheetsApiKey')?{sheets_api_key:($('cfgSheetsApiKey').value||'').trim()}:{}),
+      ...($('cfgReferenceImage')?{reference_image:($('cfgReferenceImage').value||'').trim()}:{}),
+      ...($('cfgReferenceImageDir')?{reference_image_dir:($('cfgReferenceImageDir').value||'').trim()}:{}),
+      ...($('cfgSceneTextEnabled')?{scene_text_enabled:!!$('cfgSceneTextEnabled').checked}:{}),
+      ...($('cfgSceneTextTone')?{scene_text_tone:($('cfgSceneTextTone').value||'').trim()}:{}),
+      ...($('cfgSceneTextExamples')?{scene_text_examples:($('cfgSceneTextExamples').value||'').split('\n').map(s=>s.trim()).filter(Boolean)}:{}),
+      ...($('cfgSceneTextForbidden')?{scene_text_forbidden:($('cfgSceneTextForbidden').value||'').split('\n').map(s=>s.trim()).filter(Boolean)}:{}),
+      ...($('cfgSceneTextStructure')?{scene_text_structure:($('cfgSceneTextStructure').value||'').trim()}:{}),
     };
     // Premiere 規定尺（チャンネル別）。空欄/0/負数なら 0 を送信して per-channel から削除（フォールバック 10800 復帰）
-    {
+    if($('cfgDefaultDurationSec')){
       const raw=$('cfgDefaultDurationSec')?.value;
       if(raw==null||String(raw).trim()===''){
         body.default_duration_sec=0;
@@ -4823,13 +4829,13 @@ async function _autoSaveSettingsNow(){
     // SUNO
     const k=$('cfgApiKey')?.value||'',cli=$('cfgClaudeCli')?.value||'',codexCli=$('cfgCodexCli')?.value||'';
     const sunoPatch={
-      provider:$('cfgSunoProvider')?.value||'claude',
-      model:$('cfgSunoModel')?.value||'',
-      generation_mode:$('cfgSunoMode')?.value||'styles_title_only',
-      prompt:$('cfgSunoPrompt')?.value||'',
-      loop_count:parseInt($('cfgSunoCount')?.value||'5'),
-      loop_interval_sec:parseInt($('cfgSunoInterval')?.value||'180'),
-      loop_batch:!!$('cfgSunoBatch')?.checked,
+      ...($('cfgSunoProvider')?{provider:$('cfgSunoProvider').value||'claude'}:{}),
+      ...($('cfgSunoModel')?{model:$('cfgSunoModel').value||''}:{}),
+      ...($('cfgSunoMode')?{generation_mode:$('cfgSunoMode').value||'styles_title_only'}:{}),
+      ...($('cfgSunoPrompt')?{prompt:$('cfgSunoPrompt').value||''}:{}),
+      ...($('cfgSunoCount')?{loop_count:parseInt($('cfgSunoCount').value||'5')}:{}),
+      ...($('cfgSunoInterval')?{loop_interval_sec:parseInt($('cfgSunoInterval').value||'180')}:{}),
+      ...($('cfgSunoBatch')?{loop_batch:!!$('cfgSunoBatch').checked}:{}),
     };
     Object.assign(sunoPatch,sunoBrowserPatch());
     Object.assign(sunoPatch,sunoNumericPatch());
@@ -4953,6 +4959,8 @@ async function suggestSceneText(mode){
 }
 
 async function saveSettings(){
+  if(!_settingsLoaded){toast('設定の読み込みが完了していないため保存できません','e');return}
+  const $=id=>document.getElementById(id);
   const persona=document.getElementById('cfgPersona')?.value||'';
   const rivals=(document.getElementById('cfgRivals')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
   // ブランド設定（v2 配布化）
@@ -4980,27 +4988,27 @@ async function saveSettings(){
   const referenceImage=(document.getElementById('cfgReferenceImage')?.value || '').trim();
   const referenceImageDir=(document.getElementById('cfgReferenceImageDir')?.value || '').trim();
   const body={
-    channel_name:document.getElementById('cfgName').value,
-    channel_folder:document.getElementById('cfgFolder').value,
-    export_path:document.getElementById('cfgExport').value,
-    production_mode:document.getElementById('cfgProductionMode')?.value||'standard',
-    export_engine:document.getElementById('cfgExportEngine')?.value||'ame',
-    persona:persona,
-    rival_channels:rivals,
-    spreadsheet_channel_detail_url:document.getElementById('cfgSheetDetail').value.trim(),
-    spreadsheet_growth_tracking_url:document.getElementById('cfgSheetGrowth').value.trim(),
-    youtube_api_key:document.getElementById('cfgYtApiKey').value.trim(),
-    sheets_api_key:document.getElementById('cfgSheetsApiKey').value.trim(),
-    template_prproj:tplPrproj,
-    template_psd:tplPsd,
-    psd_base_layer:psdBaseLayer,
-    psd_toggle_layer:psdToggleLayer,
-    psd_image_subdir:psdImageSubdir,
-    reference_image:referenceImage,
-    reference_image_dir:referenceImageDir,
+    ...($('cfgName')?{channel_name:$('cfgName').value}:{}),
+    ...($('cfgFolder')?{channel_folder:$('cfgFolder').value}:{}),
+    ...($('cfgExport')?{export_path:$('cfgExport').value}:{}),
+    ...($('cfgProductionMode')?{production_mode:$('cfgProductionMode').value||'standard'}:{}),
+    ...($('cfgExportEngine')?{export_engine:$('cfgExportEngine').value||'ame'}:{}),
+    ...($('cfgPersona')?{persona}:{}),
+    ...($('cfgRivals')?{rival_channels:rivals}:{}),
+    ...($('cfgSheetDetail')?{spreadsheet_channel_detail_url:$('cfgSheetDetail').value.trim()}:{}),
+    ...($('cfgSheetGrowth')?{spreadsheet_growth_tracking_url:$('cfgSheetGrowth').value.trim()}:{}),
+    ...($('cfgYtApiKey')?{youtube_api_key:$('cfgYtApiKey').value.trim()}:{}),
+    ...($('cfgSheetsApiKey')?{sheets_api_key:$('cfgSheetsApiKey').value.trim()}:{}),
+    ...($('cfgTemplatePrproj')||$('cfgTemplatePrprojCustom')?{template_prproj:tplPrproj}:{}),
+    ...($('cfgTemplatePsd')||$('cfgTemplatePsdCustom')?{template_psd:tplPsd}:{}),
+    ...($('cfgPsdBaseLayer')?{psd_base_layer:psdBaseLayer}:{}),
+    ...($('cfgPsdToggleLayer')?{psd_toggle_layer:psdToggleLayer}:{}),
+    ...($('cfgPsdImageSubdir')?{psd_image_subdir:psdImageSubdir}:{}),
+    ...($('cfgReferenceImage')?{reference_image:referenceImage}:{}),
+    ...($('cfgReferenceImageDir')?{reference_image_dir:referenceImageDir}:{}),
   };
   // Premiere 規定尺（チャンネル別）。空欄/0/負数なら 0 を送信してクリア
-  {
+  if($('cfgDefaultDurationSec')){
     const raw=document.getElementById('cfgDefaultDurationSec')?.value;
     if(raw==null||String(raw).trim()===''){
       body.default_duration_sec=0;
@@ -5016,11 +5024,11 @@ async function saveSettings(){
   if(publishMode && ['unlisted','public','delayed'].includes(publishMode)){
     body.publish_mode=publishMode;
     // delayed のときだけ遅延時間を送る。delayed 以外は 0 にして公開ゲートを無効化。
-    if(publishMode==='delayed'){
+    if($('cfgPublishDelayHours')&&publishMode==='delayed'){
       const publishDelayRaw=document.getElementById('cfgPublishDelayHours')?.value;
       const v=parseFloat(publishDelayRaw);
       body.publish_delay_hours=(!isNaN(v)&&v>0)?v:24;  // 未入力なら推奨値 24h
-    }else{
+    }else if($('cfgPublishDelayHours')){
       body.publish_delay_hours=0;
     }
   }
@@ -5047,16 +5055,15 @@ async function saveSettings(){
   }catch(e){toast('設定保存エラー: '+e.message,'e');return}
 
   // SUNO セクション（プロバイダー / モデル / モード / プロンプト / 回数 / 間隔 / Batch / API Key / CLI）
-  const $=id=>document.getElementById(id);
   const k=$('cfgApiKey')?.value||'',cli=$('cfgClaudeCli')?.value||'',codexCli=$('cfgCodexCli')?.value||'';
   const sunoPatch={
-    provider:$('cfgSunoProvider')?.value||'claude',
-    model:$('cfgSunoModel')?.value||'',
-    generation_mode:$('cfgSunoMode')?.value||'styles_title_only',
-    prompt:$('cfgSunoPrompt')?.value||'',
-    loop_count:parseInt($('cfgSunoCount')?.value||'5'),
-    loop_interval_sec:parseInt($('cfgSunoInterval')?.value||'180'),
-    loop_batch:!!$('cfgSunoBatch')?.checked,
+    ...($('cfgSunoProvider')?{provider:$('cfgSunoProvider').value||'claude'}:{}),
+    ...($('cfgSunoModel')?{model:$('cfgSunoModel').value||''}:{}),
+    ...($('cfgSunoMode')?{generation_mode:$('cfgSunoMode').value||'styles_title_only'}:{}),
+    ...($('cfgSunoPrompt')?{prompt:$('cfgSunoPrompt').value||''}:{}),
+    ...($('cfgSunoCount')?{loop_count:parseInt($('cfgSunoCount').value||'5')}:{}),
+    ...($('cfgSunoInterval')?{loop_interval_sec:parseInt($('cfgSunoInterval').value||'180')}:{}),
+    ...($('cfgSunoBatch')?{loop_batch:!!$('cfgSunoBatch').checked}:{}),
   };
   Object.assign(sunoPatch,sunoBrowserPatch());
   Object.assign(sunoPatch,sunoNumericPatch());
@@ -5070,7 +5077,7 @@ async function saveSettings(){
   await loadChannelSwitcher();
   await loadConfig();
   refreshQuickSetup();
-  toast(`保存しました (ペルソナ: ${persona?persona.slice(0,20)+'...':'空'}, ライバル: ${rivals.length}件)`,'s');
+  toast($('cfgPersona')&&$('cfgRivals')?`保存しました (ペルソナ: ${persona?persona.slice(0,20)+'...':'空'}, ライバル: ${rivals.length}件)`:'保存しました','s');
 }
 
 /* ==== 参照画像フォルダ（step_bgimage 用 / per-channel） ==== */

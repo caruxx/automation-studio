@@ -217,6 +217,7 @@ class OpenTests(unittest.TestCase):
             sb.open_suno_context(FakePlaywright(chromium), {"browser_mode": "cdp"})
         self.assertIn("--remote-debugging-port=9222", str(caught.exception))
         self.assertIn("--user-data-dir", str(caught.exception))
+        self.assertIn("接続専用フォルダ（chrome モードのプロファイルとは別）", str(caught.exception))
 
     def test_cdp_without_context_fails(self):
         chromium = FakeChromium(cdp_contexts=[])

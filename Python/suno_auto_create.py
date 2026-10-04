@@ -2332,6 +2332,11 @@ def _login_required_message(browser_cfg):
     )
 
 
+def _exit_code_for_submission(ok: int, total: int) -> int:
+    """投入対象がある場合は、少なくとも1件の送信成功を必要とする。"""
+    return 1 if total > 0 and ok == 0 else 0
+
+
 def run_browser_automation(settings):
     """Playwright でブラウザを操作"""
     from playwright.sync_api import sync_playwright
@@ -2752,6 +2757,11 @@ def run_browser_automation(settings):
                 session.close()
             except Exception:
                 pass
+
+        exit_code = _exit_code_for_submission(submit_ok_count, loop_count)
+        if exit_code:
+            print("送信に成功した曲がありません")
+        return exit_code
 
 
 def _legacy_ensure_custom_mode(page):
@@ -4433,12 +4443,12 @@ def main():
     print("=" * 50)
 
     # ブラウザ自動操作開始
-    run_browser_automation(settings)
+    return run_browser_automation(settings)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except BrowserLaunchError as e:
         print(f"\nブラウザを起動できませんでした: {e}", flush=True)
         sys.exit(1)

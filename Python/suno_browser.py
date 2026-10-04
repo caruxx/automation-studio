@@ -114,7 +114,7 @@ def open_suno_context(playwright: Any, settings: dict) -> BrowserSession:
             raise BrowserLaunchError(
                 "起動済み Chrome へ接続できません (mode=cdp, %s): %s\n"
                 "Chrome を次の引数で起動してください: "
-                "--remote-debugging-port=%d --user-data-dir=<自動化専用フォルダ>"
+                "--remote-debugging-port=%d --user-data-dir=<接続専用フォルダ（chrome モードのプロファイルとは別）>"
                 % (endpoint, exc, resolved["cdp_port"]))
         if not browser.contexts:
             raise BrowserLaunchError(
