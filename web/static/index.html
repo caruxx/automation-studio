@@ -2975,6 +2975,24 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
             <input type="checkbox" id="cfgSunoBatch" style="width:16px;height:16px;accent-color:var(--accent-primary)"> 一括生成モード（Claude を1回だけ呼んでN曲分まとめて作成）
           </label>
         </div>
+        <div class="ff" style="border-top:1px solid var(--border-default);padding-top:var(--space-3);margin-top:var(--space-3)">
+          <label class="fl">ブラウザ接続先</label>
+          <select class="fs" id="cfgSunoBrowserMode" onchange="onCfgSunoBrowserModeChange()">
+            <option value="chrome">Google Chrome（自動化専用プロファイル）</option>
+            <option value="chromium">同梱 Chromium（従来の方式）</option>
+            <option value="cdp">起動済みの Chrome へ接続</option>
+          </select>
+          <div class="fh" id="cfgSunoBrowserModeHint" style="margin-top:var(--space-1)"></div>
+        </div>
+        <div class="ff" id="cfgSunoBrowserProfileRow">
+          <label class="fl">プロファイルフォルダ</label>
+          <input type="text" class="fi" id="cfgSunoBrowserProfile" placeholder="空欄で既定のフォルダを使用">
+          <div class="fh">このマシンだけの設定です。チャンネルを切り替えても変わりません。</div>
+        </div>
+        <div class="ff" id="cfgSunoCdpPortRow" style="display:none">
+          <label class="fl">接続ポート</label>
+          <input type="number" class="fi" id="cfgSunoCdpPort" value="9222" min="1024" max="65535" style="width:140px">
+        </div>
       </div>
       <div class="card" data-cfg-group="benchmark" data-cfg-card="bm-source">
         <div class="sec-title">競合分析データソース (Google Spreadsheet)</div>
@@ -4329,6 +4347,12 @@ async function loadConfig(){try{
     $('cfgSunoCount').value=s.loop_count||5;
     $('cfgSunoInterval').value=s.loop_interval_sec||180;
     if($('cfgSunoBatch'))$('cfgSunoBatch').checked=!!s.loop_batch;
+    if($('cfgSunoBrowserMode')){
+      $('cfgSunoBrowserMode').value=s.browser_mode||'chrome';
+      $('cfgSunoBrowserProfile').value=s.browser_profile_dir||'';
+      $('cfgSunoCdpPort').value=s.cdp_port||9222;
+      onCfgSunoBrowserModeChange();
+    }
   }
   // チャンネル基本
   if($('cfgName'))$('cfgName').value=dc.channel_name||'';
@@ -4579,6 +4603,31 @@ function _syncInstrumentalUI(modeSelectId, checkboxId, hintId){
 function onCfgSunoModeChange(){
   _syncInstrumentalUI('cfgSunoMode','cfgSunoInstrumentalFill','cfgSunoModeHint');
 }
+const SUNO_BROWSER_HINTS={
+  chrome:'Google Chrome を専用プロファイル（既定 ~/.config/orzz/chrome_profile）で起動します。初回だけ、開いたウィンドウで SUNO にログインしてください。',
+  chromium:'Playwright 同梱の Chromium を従来のプロファイル（既定 ~/.config/orzz/chromium_profile）で起動します。',
+  cdp:'Chrome を --remote-debugging-port=<ポート> --user-data-dir=<専用フォルダ> で起動しておく必要があります。普段使いのプロファイルには接続できません。終了してもブラウザは閉じません。'
+};
+function onCfgSunoBrowserModeChange(){
+  const mode=document.getElementById('cfgSunoBrowserMode')?.value||'chrome';
+  const cdp=mode==='cdp';
+  const profileRow=document.getElementById('cfgSunoBrowserProfileRow');
+  const portRow=document.getElementById('cfgSunoCdpPortRow');
+  const hint=document.getElementById('cfgSunoBrowserModeHint');
+  if(profileRow)profileRow.style.display=cdp?'none':'';
+  if(portRow)portRow.style.display=cdp?'':'none';
+  if(hint)hint.textContent=SUNO_BROWSER_HINTS[mode]||'';
+}
+function sunoBrowserPatch(){
+  const modeEl=document.getElementById('cfgSunoBrowserMode');
+  if(!modeEl)return {};
+  const port=parseInt(document.getElementById('cfgSunoCdpPort')?.value||'9222');
+  return {
+    browser_mode:modeEl.value||'chrome',
+    browser_profile_dir:(document.getElementById('cfgSunoBrowserProfile')?.value||'').trim(),
+    cdp_port:Number.isFinite(port)?port:9222,
+  };
+}
 function onMiniModeChange(){
   _syncInstrumentalUI('miniMode','miniInstrumentalFill',null);
 }
@@ -4693,10 +4742,14 @@ async function _autoSaveSettingsNow(){
       loop_interval_sec:parseInt($('cfgSunoInterval')?.value||'180'),
       loop_batch:!!$('cfgSunoBatch')?.checked,
     };
+    Object.assign(sunoPatch,sunoBrowserPatch());
     if(k)sunoPatch.api_key=k;
     if(cli)sunoPatch.claude_cli=cli;
     if(codexCli)sunoPatch.codex_cli=codexCli;
-    try{await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)})}catch(e){}
+    try{
+      const sr=await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)});
+      if(!sr.ok){const detail=await sr.json().catch(()=>({}));toast('SUNO 設定を保存できませんでした: '+(detail.detail||('HTTP '+sr.status)),'e')}
+    }catch(e){}
     // 正規化されたスプシ URL を表示に反映
     try{
       const d=await r.json();
@@ -4731,6 +4784,7 @@ function wireSettingsAutoSave(){
     // SUNO
     'cfgSunoProvider','cfgSunoModel','cfgSunoMode','cfgSunoPrompt',
     'cfgSunoCount','cfgSunoInterval','cfgSunoBatch','cfgSunoInstrumentalFill',
+    'cfgSunoBrowserMode','cfgSunoBrowserProfile','cfgSunoCdpPort',
     'cfgApiKey','cfgClaudeCli',
   ];
   ids.forEach(id=>{
@@ -4909,10 +4963,14 @@ async function saveSettings(){
     loop_interval_sec:parseInt($('cfgSunoInterval')?.value||'180'),
     loop_batch:!!$('cfgSunoBatch')?.checked,
   };
+  Object.assign(sunoPatch,sunoBrowserPatch());
   if(k)sunoPatch.api_key=k;
   if(cli)sunoPatch.claude_cli=cli;
   if(codexCli)sunoPatch.codex_cli=codexCli;
-  try{await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)})}catch(e){}
+  try{
+    const sr=await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)});
+    if(!sr.ok){const detail=await sr.json().catch(()=>({}));toast('SUNO 設定を保存できませんでした: '+(detail.detail||('HTTP '+sr.status)),'e')}
+  }catch(e){}
   await loadChannelSwitcher();
   await loadConfig();
   refreshQuickSetup();
