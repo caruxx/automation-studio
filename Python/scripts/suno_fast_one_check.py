@@ -33,7 +33,6 @@ def main():
             data = capture_song(page, row['song_id'], row['title'])
             dest = Path(args.target) / allocate_filename(args.target, row['title'], set())
             convert_to_mp3(data, dest)
-            print('KEY_EXPORTABLE=' + str(page.evaluate('() => window.__sunoFastKeyExportable')))
             print(f'ONE OK file={dest} bytes={dest.stat().st_size}', flush=True)
         finally:
             context.close()

@@ -9,7 +9,7 @@ import sys
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from suno_fast_dl import FAST_DECRYPT_HOOK, fetch_result_bytes, register_transfer_binding
+from suno_fast_dl import build_capture_script, fetch_result_bytes, register_transfer_binding
 
 
 def main() -> int:
@@ -30,7 +30,7 @@ def main() -> int:
                 }
             }
             """)
-            page.evaluate(FAST_DECRYPT_HOOK)
+            page.evaluate(build_capture_script())
             register_transfer_binding(page)
             page.evaluate("""({sessionId, size}) => {
                 window.__sunoFastResults[sessionId] = {
