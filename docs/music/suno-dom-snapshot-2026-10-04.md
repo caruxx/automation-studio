@@ -134,3 +134,138 @@ URL: `https://suno.com/me/workspaces`。Library 内の Workspaces タブ選択�
 - 未確認 **9行**: Simple/Soundsの専用経路、Prompt/Instrumentalの専用経路、Custom尺入力/slider、SUNOモデル選択経路、アーカイブ展開、Pause状態、日本語の指定3項目群。属性未採取・実装不存在・言語未確認の理由は各行に記載。
 - 旧UIfallbackの0件（Write radio、lyrics data-lexical、Create testid、workspace cover alt）は上表に記載済み。現在の主経路/代替経路が成立するので修正必須の3件には含めない。
 - 最小の修正候補は、Createフォーム内に限定したオプション見出しhelperの共用、および曲名候補の可視・編集可能1件への限定。ソース修正・生成・設定変更は実施していない。Task 7の承認取得・実装は司令塔の担当。
+
+## 5. 数値調整項目（追加採取）
+
+### 5.1 採取条件・開始状態
+
+- Task 6b、2026-10-04 17:28 JST開始。このMacの正式Google Chrome、CUA Chrome extension接続、新規調査タブ `1448698493`、URL `https://suno.com/create`。既存の節1–4は保持。
+- `tab.playwright.evaluate` のDOM `getAttribute` / inputの `.value` とPlaywright locatorの操作・countで採取。属性を画像から推測しない。`∅`=属性なし、`""`=空文字。動的ID/CSSハッシュは観測用。
+- 開始状態: `lang=en`、Songs/Advanced選択、モデル`v6`、More Optionsの`aria-expanded=false`、モデルメニュー`aria-expanded=false`。ログイン画面なし（email/password input数0、profile-menu-button数1。値・プロフィール本文は非採取）。
+- 調査対象は作成フォームの数値項目。曲一覧ページ番号、playbar、拡張機能の項目は対象外。Create・再生・DLなし、本文欄への入力なし、モデル変更なし。
+- 開始時の設定値は各項目で記録し、最小限の変更直後に復元・DOM読み戻しを行う。モデル/モード別の表示条件は切り替えず、観測できた範囲のみ記載。
+
+### 5.2 More Optionsと数値項目の初期採取（17:29 JST）
+
+- 実操作した一意な見出し: `page.locator('div[role="button"][aria-expanded]').filter(has_text=re.compile(r'^More Options'))`。CUA JSでは`filter({hasText:/^More Options/})`、count=1、click成功、`aria-expanded=false → true`。曲行のbuttonと区別できる。既存ソースのrole/name前方一致の問題は節末尾で再照合。
+- DurationのAuto/Customは共通親`div.css-o6pnyv.eodlc7e2`、祖父`div.css-gwrmef.eodlc7e0`内の別子に表示ラベルDuration。`button`、明示role/aria-label/data-testid=∅、type=button、tabindex=0。開始時`Auto[data-selected="true"]`、`Custom[data-selected="false"]`。Duration textboxは0件。
+- Weirdness開始50、Style Influence開始50、Variety開始0（Off）。各`get_by_role('slider', name=項目名, exact=True)`=1件。
+- raw DOMの`[role="slider"][aria-label="Variety"]`は2件（もう1件はNormal/1、Background musicと同じ親）。ロールlocatorでは1件となるため、raw CSSの先頭や件数だけで操作しない。別モードへの切替は未実施。
+
+|項目|タグ名 / role / aria-label|aria-valuemin / max / now / text|type / min / max / step / placeholder / data-testid|開始表示|
+|---|---|---|---|---|
+|Weirdness|div / slider / Weirdness|0 / 100 / 50 / ∅|すべて∅|50%、slider内補助文Expected results|
+|Style Influence|div / slider / Style Influence|0 / 100 / 50 / ∅|すべて∅|50%、slider内補助文Moderate|
+|Variety（操作対象）|div / slider / Variety|0 / 4 / 0 / Off|すべて∅|Off、slider内補助文Exact style|
+
+3スライダーとも`tabindex=0`、`aria-labelledby=∅`。各親は`div.css-gwrmef.eodlc7e0`で、子の順序は①ラベルspanと補助svgを含むdiv、②`div[role=slider][aria-label=項目名]`、③表示値div（50%/Off）。CSSクラスはハッシュを含むため固定推奨しない。ラベルとの位置関係は共有親内の兄弟で、明示aria-labelによる単独特定が可能。作成フォームのMore Options展開が表示条件。現在Songs/Advanced/v6のみを確認。
+
+### 5.3 Duration（Custom尺、17:29–17:31 JST）
+
+開始状態はAuto。`get_by_role('button', name='Custom', exact=True)`=1をclickするとAuto/Custom両ボタンがDOMから消え、入力とスライダーが各1件出現した。Custom直後の初期表示は`3:00`、180秒。
+
+|要素|表示ラベル|タグ / role / aria-label|aria-valuemin / max / now / text（Custom直後）|type / min / max / step / placeholder / data-testid|その他|
+|---|---|---|---|---|---|---|
+|尺入力|Duration|input / ∅（暗黙textbox）/ Duration|すべて∅|text / ∅ / ∅ / ∅ / ∅ / ∅|inputmode=decimal、valueプロパティ=`3:00`、pattern/maxlength/tabindex/aria-labelledby=∅|
+|尺スライダー|Duration|div / slider / Duration|10 / 360 / 180 / 3 minutes|すべて∅|tabindex=0、aria-disabled=false、aria-labelledby=∅|
+
+- 親`div.css-gwrmef.eodlc7e0`の直接の子は、①Durationのspanとsvgを含むdiv、②Duration slider、③Duration input。inputとsliderは兄弟で、単独のaria-labelでは2件になる。roleとnameの組を使う。inputにmin/max/step属性はなく、範囲はsliderのARIAで**10–360秒（0:10–6:00）**と確認。上下限・範囲外の実入力は未検証。
+- 実測: `fill('4:01')`直後はinput.value=`4:01`だがsliderは`aria-valuenow=180`、`aria-valuetext='3 minutes'`のまま。`press('Tab')`後に241 / `4 minutes, 1 second`へ更新し、input.value=`4:01`を保持。秒の生数値入力やEnter確定は未検証。今回の表記は分をゼロ埋めしない`m:ss`。
+- 設定手順（実操作済み、Python表記）: More Optionsを5.2の一意なselectorで展開 → `page.get_by_role('button', name='Custom', exact=True).click()` → `field = page.get_by_role('textbox', name='Duration', exact=True)` → `field.fill('4:01')` → `field.press('Tab')`。既にCustomならボタンは存在しないため、まず可視textboxの有無を読む。
+- 読み戻し（実操作済み）: `input[aria-label="Duration"]`のDOM `.value`と`get_by_role('slider', name='Duration', exact=True).get_attribute('aria-valuenow')` / `aria-valuetext`。CUAではread-only evaluateで`.value`取得。標準Playwrightの`input_value()`へ置換するコード自体は今回未実行だが、同じDOMプロパティを読む現行ソースの目的と整合する。値241秒との二重照合に成功。
+- **復元済み**: Duration固有のリセットsvgへクリックイベントを送り、`Auto[data-selected=true]`、`Custom[data-selected=false]`、Duration input=0 / slider=0を17:31:19 JSTに読み戻した。Weirdness/Style Influence/Varietyは50/50/0のまま。
+
+復元経路の注意（実測を区別）:
+
+1. Custom状態ではAutoボタンがない。リセット対象は `div:has(> input[aria-label="Duration"]) > div > svg[data-base-ui-tooltip-trigger]`（count=1）。タグsvg、role/aria-label/tabindex/data-testid=∅。動的idは`base-ui-_r_3j_`で固定利用しない。
+2. 通常のlocator `.click()`は今回**復元不成立**。既存拡張パネルがアイコンに重なり、`elementFromPoint`でも別要素を確認。フォーム値は4:01/241のままで、同じクリックの再試行はしていない。拡張の設定変更・パネル開閉は行っていない。
+3. 復元を目的に`field.fill('')` → Tabを1回試したが4:01/241へ戻り、空欄でAutoにはならなかった。試験尺の投入は4:01の1回だけ。
+4. CUAの調査タブ限定CDP capability `Runtime.evaluate` で、上記の一意なsvgに `dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}))` を送る方法でAutoに戻った。DOM要素へのUIイベントのみで、内部アプリ状態・storage・Cookieはアクセスしていない。標準Playwrightの`locator.dispatch_event('click')`相当は**未検証**として扱う。通常クリックが遮られていない環境での復元も未検証。
+5. Durationスライダー自体の矢印/ドラッグ操作、step、任意値全域、生成結果への反映は未検証。今回の設定検証はinput→Tab→sliderの読み戻しまで。
+
+### 5.4 Weirdness（17:32 JST）
+
+- DOM属性・構造は5.2の表のとおり。開始`aria-valuenow=50`、表示`50%`、範囲0–100%。`step`属性なし。実測の矢印1回は**1ポイント**。
+- 検証済みselector: `s = page.get_by_role('slider', name='Weirdness', exact=True)`、count=1。`s.press('ArrowRight')`でフォーカスされ、**50→51**、表示`51%`に即時更新。Enter/blurなしでDOMに反映した。
+- 読み戻し: `s.get_attribute('aria-valuenow')`（数値文字列）、`aria-valuetext`は∅なので数値として使わない。DOMで`e.nextElementSibling.textContent`の`51%`も確認。
+- 復元: `s.press('ArrowLeft')`で**51→50**、表示`50%`を17:32:03 JSTに確認。復元成功。
+- 実証できた設定は1ステップ増減。任意の目標値へ差分回数だけpressする方式、Home/End、ドラッグ、直接value設定は未検証。表示条件はSongs/Advanced/v6、More Options展開中。他モデル・別モード・音声追加時は未検証。
+
+### 5.5 Style Influence（17:32 JST）
+
+- DOM属性・構造は5.2の表のとおり。開始`aria-valuenow=50`、表示`50%`、範囲0–100%。`step`属性なし。実測の矢印1回は**1ポイント**。
+- 検証済みselector: `s = page.get_by_role('slider', name='Style Influence', exact=True)`、count=1。`s.press('ArrowRight')`でフォーカスされ、**50→51**、表示`51%`に即時更新。Enter/blurは不要だった。
+- 読み戻し: `s.get_attribute('aria-valuenow')`とDOMの`e.nextElementSibling.textContent`。`aria-valuetext`は∅。
+- 復元: `s.press('ArrowLeft')`で**51→50**、表示`50%`を17:32:20 JSTに確認。復元成功。
+- 任意目標までの複数press、Home/End、ドラッグ、直接value設定は未検証。表示条件はSongs/Advanced/v6、More Options展開中。他モデル・別モード・音声追加時は未検証。
+
+### 5.6 Variety（17:32 JST）
+
+- DOM属性・構造は5.2の表のとおり。開始`aria-valuenow=0`、`aria-valuetext=Off`、表示`Off`。範囲は**0–4の段階値**。%ではない。`step`属性なしだが矢印1回の実測差は1。
+- 検証済みselector: `s = page.get_by_role('slider', name='Variety', exact=True)`、count=1。`s.press('ArrowRight')`で**0/Off→1/Normal**。Enter/blurなしでDOMと表示の両方に反映。
+- 読み戻し: `s.get_attribute('aria-valuenow')` + `s.get_attribute('aria-valuetext')`、DOMの`e.nextElementSibling.textContent`もNormalで一致。
+- 復元: `s.press('ArrowLeft')`で**1/Normal→0/Off**、17:32:37 JSTに数値・aria-valuetext・表示Offの一致を確認。復元成功。
+- 2–4の表示名、Home/End、ドラッグ、任意値への直接設定は未検証。初期非対象のVariety（raw DOMでNormal/1）は操作していない。表示条件はSongs/Advanced/v6、More Options展開中。他モデル・別モード・音声追加時は未検証。
+
+### 5.7 非表示DOM内の補足数値項目（17:33 JST、設定操作なし）
+
+作成フォーム共通祖先`div.css-1ofqeah.e1kr3w888`内を追加点検した。現在表示されている4種類とは別に、以下の非表示コントロールがDOMに存在する。表示モード・モデルを変えていないため、存在の採取と設定の動作検証を区別する。
+
+|項目|ラベル / タグ / role / aria-label|aria-valuemin / max / now / text|type / min / max / step / placeholder / data-testid|採取時の値と可視性|
+|---|---|---|---|---|---|
+|BPM（非表示）|祖父内のBPM / input / ∅（暗黙spinbutton）/ ∅|すべて∅|number / 1 / 300 / ∅ / Auto / ∅|`.value=""`、isVisible=false。placeholderはAuto、1–300 BPMが属性上の範囲|
+|別フォームのVariety（非表示）|Variety / div / slider / Variety|0 / 4 / 1 / Normal|すべて∅|Normal/1、isVisible=false|
+
+- BPM: inputの親は`div.css-o6pnyv.eodlc7e2`、祖父`div.css-gwrmef.eodlc7e0`の別子にラベルBPM。aria-labelledby/tabindex=∅。採取用CSS候補は `input[type="number"][placeholder="Auto"][min="1"][max="300"]`。**設定・確定・復元・値変化は未検証**。非表示のため操作せず、表示条件も未確定。`.value`で空文字を読めたことだけ確認済み。
+- 非表示Variety: 表示中のVarietyと同じラベル構造、共通上位にVocal Gender / Background music / Varietyを含む別コンテナ。どのモードに属するかは切替未実施で未確定。開始時から1/Normalで変更なし。**設定手順は未検証**。raw CSS全件採取時は対象の取り違えに注意。
+- raw CSSのVarietyをDOM順で`isVisible()`確認すると`[true,false]`。`get_by_role('slider', name='Variety', exact=True)`は可視側1件のみ。フォーム内のその他の`input[type=number/range]`・`[role=spinbutton/slider]`は、Autoに復元した状態ではWeirdness/Style Influence/可視Variety/BPM/非表示Varietyの5要素だった。Durationのtext入力とsliderはCustom時だけ出現。
+- フォーム外のnumber inputは拡張パネル内、rangeはplaybarだったため対象から除外。値は取得せず、操作なし。Vocal Gender、Max Mode、Personalizeは選択ボタンで、今回の数値設定対象外。
+
+### 5.8 モデルメニュー（17:33 JST、選択変更なし）
+
+`get_by_role('button', name='v6', exact=True).click()`で開き、`role=menu`/`role=menuitemradio`の表示テキストを採取。モデル項目は次の3件。`role=menuitemradio`、タグdiv、v6のみ`aria-checked=true`、他false。
+
+|モデル|同じ項目内の補助表示|
+|---|---|
+|v6|Pro / Powerful. Versatile. Refined. Our best model yet.|
+|v6-wild|Pro / Best for experimental ideas.|
+|v6-mini|A free, more efficient version of premium v6 models.|
+
+別項目として`Create Custom Model` / `Beta` / `Create a model based on your uploads (100 Credits)`（role=menuitem）が存在。開いた時点で読むことのできた一覧であり、選択やモデル作成は行っていない。`get_by_role('menu').press('Escape')`で閉じ、モデル表示v6・`aria-expanded=false`を確認。モデル別数値項目の出現条件は未検証。
+
+### 5.9 項目一覧・検証状態
+
+|項目|範囲と単位|開始時の値|設定手順|読み戻し|表示条件|検証状態|
+|---|---|---|---|---|---|---|
+|Duration（Custom入力）|ARIA上10–360秒、入力m:ss|Auto。Custom切替直後3:00/180秒|一意なMore Options→Custom→textbox Durationにfill('4:01')→Tab|input.value=4:01とslider aria-valuenow=241、valuetextも一致|Songs/Advanced/v6、More Options展開、Custom選択|設定・Tab確定・Auto復元済み。Enter、生秒入力、境界外、標準Playwrightのリセットdispatch_eventは未検証|
+|Duration（連動slider）|10–360秒|Custom直後180|上のtextbox経由で241へ同期。sliderへの直接操作は未検証|role=slider/name=Durationのaria-valuenow / aria-valuetext|同上|同期読み戻し済み。直接矢印/ドラッグ/step未検証|
+|Weirdness|0–100%、矢印実測1ポイント|50%|slider/name exact→ArrowRightで51→ArrowLeftで50|aria-valuenowと次の兄弟の表示値|Songs/Advanced/v6、More Options展開|1ステップ設定・即時反映・復元済み。任意値への一括設定は未検証|
+|Style Influence|0–100%、矢印実測1ポイント|50%|slider/name exact→ArrowRightで51→ArrowLeftで50|aria-valuenowと次の兄弟の表示値|同上|1ステップ設定・即時反映・復元済み。任意値への一括設定は未検証|
+|Variety（表示中）|0–4段階、矢印実測1|0/Off|slider/name exact→ArrowRightで1/Normal→ArrowLeftで0/Off|aria-valuenowとaria-valuetext、表示値|同上|1ステップ設定・復元済み。2–4の表示名と直接設定は未検証|
+|BPM（非表示）|min/max属性上1–300 BPM|空文字、placeholder Auto|未検証。現在の非表示欄に入力しない|CSS候補count=1、DOM .value空文字を採取|現在Songs/Advanced/v6では非表示。出現条件未確定|属性と空値のみ採取。操作・確定・範囲挙動は未検証|
+|Variety（別フォーム・非表示）|0–4段階|1/Normal|未検証。raw CSSで可視側と重複|aria-valuenow / aria-valuetextを採取|現在非表示。Background musicと共通上位、モード未確定|属性のみ、変更なし|
+
+### 5.10 `_set_custom_duration`現行セレクタとの突合
+
+|ファイル:行|現行処理 / セレクタ|今回の事実と判定|修正案（未実装）|
+|---|---|---|---|
+|`Python/suno_auto_create.py:3644`|role=button、name前方一致More Options/その他のオプション|**不一致（一意性）**。同条件18件、今回も再確認|`div[role=button][aria-expanded]`をMore Options接頭辞textで絞ると1件・展開成功。可能ならフォーム内にスコープしcount=1を要求。日本語値は未確認|
+|`Python/suno_auto_create.py:3647`|Duration sliderとCustomの両countが0ならoptions.click|**分岐条件は観測状態と整合**。閉状態で両role locator=0。失敗原因はクリック先18件の一意性|一意な見出しのaria-expanded=false時だけclickし、trueを読み戻す。変更は未実装|
+|`Python/suno_auto_create.py:3649`|`get_by_role('textbox', name='Duration', exact=True)`|**一致**。Custom時input type=text、aria-label=Duration、count=1|維持可能。Auto時0件、Custom時可視を検証する|
+|`Python/suno_auto_create.py:3651`|`get_by_role('button', name='Custom', exact=True)`、1件要求後click|**一致**。Auto時1件、click後textbox/slider出現。Custom選択後はAuto/Customボタンが消える|現在の可視textbox有無で分岐を維持。復元用にAutoボタンを探す方法は成立しない|
+|`Python/suno_auto_create.py:3656`|`f'{seconds // 60}:{seconds % 60:02d}'`→fill|**一致**。241秒に対応する4:01を受理。分の先頭0なし|今回の範囲では表示形式変更不要。全範囲・0分表記の正規化は未検証|
+|`Python/suno_auto_create.py:3658`|field.press('Tab')|**一致、今回の試行では確定に必要**。fill直後slider180、Tab後241|blur前に成功と判定しない。Enter代替は未検証|
+|`Python/suno_auto_create.py:3659`|`get_by_role('slider', name='Duration', exact=True)`|**一致**。Custom時1件、Auto時0件、aria-valuenowが秒数|維持可能。input側はm:ss、slider側は秒で二重照合|
+|`Python/suno_auto_create.py:3660`|aria-valuenow取得|**一致**。Tab後241、aria-valuetext='4 minutes, 1 second'|数値比較を維持。valuetextは補助に限定|
+|`Python/suno_auto_create.py:3661`|input_value()==displayかつfloat(aria-valuenow)==seconds|**DOM値の照合内容は一致**。今回input.value=4:01と241を確認。関数全体・Python input_value()自体は未実行|今回の実測から文字列比較の変更は不要。将来表記正規化が異なる場合のみ秒換算を検討|
+|`Python/suno_auto_create.py:3640`|bool除外、正の整数秒のみ検証|**不足候補**。現行UIの下限10/上限360を入力前に検証していない|sliderのaria-valuemin/maxから事前検証を追加する案。境界外入力は未実施のためクランプ/エラー挙動は断定しない|
+|`Python/suno_auto_create.py:3428`|共用helper `_ensure_more_options_open` は正規化完全一致|**不一致（前回所見継続）**。見出しにVariety等のサマリが付く|共用するならhelper側もフォームに限定した一意な見出し判定へ修正。既存helperへの置換だけでは解決しない|
+
+この調査では関数・ソースの変更や生成を行っていない。DOMに対する個々の操作を検証したもので、`_set_custom_duration`全体の実行成功や生成結果の尺を保証するものではない。
+
+### 5.11 最終復元・タブ閉鎖
+
+- 17:34 JST、More Optionsを閉じる前の最終読取: Auto=true / Custom=false、Duration inputなし、Weirdness50、Style Influence50、Variety0/Off、Advanced=true、モデルv6・menu expanded=false。非表示項目は操作していない。
+- 17:34:15 JST、More Optionsを開始時の閉状態へ復元し、aria-expanded=false、可視Custom=0、Duration textbox=0 / slider=0、可視Weirdness slider=0を確認。
+- 17:34:19 JST、調査タブ1448698493を`close()`で閉鎖。既存の他タブは選択・操作していない。
+- **元へ戻せなかった項目: なし。**
