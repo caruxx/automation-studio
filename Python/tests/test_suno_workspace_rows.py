@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import suno_fast_dl as fd
@@ -150,6 +151,87 @@ class WorkspaceRowsTests(unittest.TestCase):
                         "(el, label) => el.setAttribute('aria-label', label)", paused)
                     self.assertEqual(row.locator(fd._PAUSE_BUTTON).count(), 1)
                     self.assertEqual(row.locator(fd._PLAY_BUTTON).count(), 0)
+
+    def set_row_title_and_button(self, song_id, title, label):
+        row = fd._song_row(self.page, song_id)
+        row.evaluate("(el, title) => el.setAttribute('aria-label', title)", title)
+        row.locator(".clip-image-container").evaluate(
+            "(el, label) => el.setAttribute('aria-label', label)", label)
+        return row
+
+    def test_row_playback_buttons_match_whole_title(self):
+        cases = (
+            ("Play of Light", "Play of Lightを一時停止", 0, 1),
+            ("Pause for Breath", "Pause for Breathを再生", 1, 0),
+            ("朝を再生", "Pause 朝を再生", 0, 1),
+            ("朝を一時停止", "Play 朝を一時停止", 1, 0),
+        )
+        for title, label, plays, pauses in cases:
+            with self.subTest(label=label):
+                row = self.set_row_title_and_button(SONGS[0]["song_id"], title, label)
+                self.assertEqual(fd._row_play_button(row).count(), plays)
+                self.assertEqual(fd._row_pause_button(row).count(), pauses)
+
+    def test_row_playback_buttons_escape_title_and_ignore_english_case(self):
+        title = 'Light "[Moon]" \\ Night'
+        for label, plays, pauses in (("pLaY " + title.upper(), 1, 0),
+                                     ("pAuSe " + title.upper(), 0, 1)):
+            with self.subTest(label=label):
+                row = self.set_row_title_and_button(SONGS[0]["song_id"], title, label)
+                self.assertEqual(fd._row_play_button(row).count(), plays)
+                self.assertEqual(fd._row_pause_button(row).count(), pauses)
+
+    def test_row_playback_buttons_fallback_only_without_title(self):
+        row = fd._song_row(self.page, SONGS[0]["song_id"])
+        for title in (None, ""):
+            for label, plays, pauses in (("Unknownを再生", 1, 0), ("Pause Unknown", 0, 1)):
+                with self.subTest(title=title, label=label):
+                    row.evaluate("(el, title) => title === null ? el.removeAttribute('aria-label') : el.setAttribute('aria-label', title)", title)
+                    row.locator(".clip-image-container").evaluate(
+                        "(el, label) => el.setAttribute('aria-label', label)", label)
+                    self.assertEqual(fd._row_play_button(row).count(), plays)
+                    self.assertEqual(fd._row_pause_button(row).count(), pauses)
+        row = self.set_row_title_and_button(SONGS[0]["song_id"], "Known", "Play Different")
+        self.assertEqual(fd._row_play_button(row).count(), 0)
+        with mock.patch.object(row, "get_attribute", side_effect=RuntimeError("unavailable")):
+            self.assertEqual(fd._row_play_button(row).count(), 1)
+
+    def test_song_title_leaf_is_not_a_song_count(self):
+        for (lang, html), title in zip(WORKSPACES, ("3曲", "10 songs")):
+            with self.subTest(lang=lang, title=title):
+                self.page.set_content(html)
+                row = fd._song_row(self.page, SONGS[0]["song_id"])
+                row.locator('a[href*="/song/"]').evaluate("""(el, title) => {
+                    const leaf = document.createElement('span');
+                    leaf.textContent = title;
+                    el.replaceChildren(leaf);
+                }""", title)
+                state = self.page.evaluate(fd._WORKSPACE_ROWS_DOM, "read")
+                self.assertEqual(state["rows"][0]["title"], title)
+                self.assertEqual(state["expected"], 2)
+
+    def test_stopped_single_song_does_not_prime_from_title(self):
+        song_id = SONGS[0]["song_id"]
+        title = "Pause for Breath"
+        self.set_row_title_and_button(song_id, title, title + "を再生")
+        fd._song_row(self.page, SONGS[1]["song_id"]).evaluate("el => el.remove()")
+        with mock.patch.object(fd, "ensure_fast_capture", return_value=True), \
+                mock.patch.object(fd, "register_transfer_binding"), \
+                mock.patch.object(fd, "_capture_play", return_value=b"fixture audio") as capture:
+            self.assertEqual(fd.capture_song(self.page, song_id, title), b"fixture audio")
+            self.assertEqual(capture.call_count, 1)
+            self.assertEqual(capture.call_args.args[2], song_id)
+
+    def test_paused_song_is_not_selected_as_playable_alternate(self):
+        song_id = SONGS[0]["song_id"]
+        self.set_row_title_and_button(song_id, "Target", "Targetを一時停止")
+        self.set_row_title_and_button(SONGS[1]["song_id"], "Play of Light", "Play of Lightを一時停止")
+        with mock.patch.object(fd, "ensure_fast_capture", return_value=True), \
+                mock.patch.object(fd, "register_transfer_binding"), \
+                mock.patch.object(fd, "_capture_play", return_value=b"fixture audio") as capture:
+            with self.assertRaisesRegex(RuntimeError, "再取得の準備に必要な別曲が表示されていません"):
+                fd.capture_song(self.page, song_id, "Target")
+            capture.assert_not_called()
 
     def test_iter_workspace_rows_in_both_languages(self):
         for lang, html in WORKSPACES:

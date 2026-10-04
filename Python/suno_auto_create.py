@@ -3735,6 +3735,8 @@ def _visible_numeric_controls(page, role, name):
 
 def _set_custom_duration(page, seconds):
     """指定時だけDurationをCustomへ切り替え、秒数を読み戻して送信を守る。"""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
     if isinstance(seconds, bool) or int(seconds) != float(seconds):
         raise ValueError("duration_secondsは整数秒で指定してください")
     seconds = int(seconds)
@@ -3743,18 +3745,30 @@ def _set_custom_duration(page, seconds):
     if not field.count():
         custom = _visible_numeric_controls(page, "button", "Custom")
         if custom.count() != 1:
-            raise SunoSubmissionError("duration_custom", "DurationのCustomボタンが見つかりません")
+            raise SunoSubmissionError(
+                "duration_custom",
+                f"DurationのCustomボタンが見つかりません、候補={_NUMERIC_CONTROL_NAMES['Custom']!r}",
+            )
         custom.click(timeout=_form_timeout_ms(5000))
     # 出現を待ってから件数を検証し、複数候補の先頭へ入力しない。
-    field.first.wait_for(state="visible", timeout=_form_timeout_ms(5000))
+    try:
+        field.first.wait_for(state="visible", timeout=_form_timeout_ms(5000))
+    except PlaywrightTimeoutError:
+        pass
     if field.count() != 1:
         raise SunoSubmissionError(
-            "duration_validation", f"Durationの可視入力欄は1件必要です: {field.count()}件",
+            "duration_validation",
+            f"Durationの可視入力欄は1件必要です: {field.count()}件、候補={_NUMERIC_CONTROL_NAMES['Duration']!r}",
         )
     slider = _visible_numeric_controls(page, "slider", "Duration")
+    try:
+        slider.first.wait_for(state="visible", timeout=_form_timeout_ms(5000))
+    except PlaywrightTimeoutError:
+        pass
     if slider.count() != 1:
         raise SunoSubmissionError(
-            "duration_validation", f"Durationの可視スライダーは1件必要です: {slider.count()}件",
+            "duration_validation",
+            f"Durationの可視スライダーは1件必要です: {slider.count()}件、候補={_NUMERIC_CONTROL_NAMES['Duration']!r}",
         )
     try:
         minimum = int(slider.get_attribute("aria-valuemin"))
@@ -3785,7 +3799,9 @@ def _set_slider_value(page, name, target):
     slider = _visible_numeric_controls(page, "slider", name)
     if slider.count() != 1:
         raise SunoSubmissionError(
-            "slider_validation", f"{name}の可視スライダーは1件必要です: {slider.count()}件、指定値={target!r}",
+            "slider_validation",
+            f"{name}の可視スライダーは1件必要です: {slider.count()}件、指定値={target!r}、"
+            f"候補={_NUMERIC_CONTROL_NAMES.get(name, (name,))!r}",
         )
     actual = slider.get_attribute("aria-valuenow")
     try:

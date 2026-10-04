@@ -387,6 +387,7 @@ _WORKSPACE_ROWS_DOM = r"""
   }
   const leaves = [...document.querySelectorAll('div, span, p, h1, h2, h3')]
     .filter((element) => !element.children.length && visible(element)
+      && !element.closest(rowSelector)
       && !element.closest('[role="dialog"], [role="listbox"], [role="menu"]'));
   const noSongs = !rows.length && leaves.some((element) => {
     if (!/^(no songs found|曲が見つかりません)$/i.test(element.textContent.trim())) return false;
@@ -679,6 +680,30 @@ def _song_row(page, song_id):
     ).first
 
 
+def _row_playback_button(row, action, suffix, fallback):
+    try:
+        title = row.get_attribute('aria-label')
+    except Exception:
+        title = None
+    if not title:
+        return row.locator(fallback)
+    selectors = []
+    for label, flag in ((f'{action} {title}', ' i'), (f'{title}{suffix}', '')):
+        # 曲名に引用符や改行が含まれてもCSS属性値を壊さない。
+        escaped = re.sub(r'["\\\x00-\x1f\x7f]', lambda match: '\\%x ' % ord(match[0]), label)
+        selectors.extend(f'{tag}[aria-label="{escaped}"{flag}]'
+                         for tag in ('button', '[role="button"]'))
+    return row.locator(', '.join(selectors))
+
+
+def _row_play_button(row):
+    return _row_playback_button(row, 'Play', 'を再生', _PLAY_BUTTON)
+
+
+def _row_pause_button(row):
+    return _row_playback_button(row, 'Pause', 'を一時停止', _PAUSE_BUTTON)
+
+
 def _locate_song(page, song_id):
     """列挙時のページを復元し、仮想行はIDで毎回引き直す。"""
     wanted_page = getattr(page, '_suno_fast_row_pages', {}).get(song_id)
@@ -739,7 +764,7 @@ def _capture_play(page, row, song_id, title, timeout_sec, transfer):
         page.evaluate('(context) => window.__sunoFastSetContext(context)',
                       {'sessionId': session_id, 'songId': song_id, 'title': title})
         page.evaluate(_MUTE_CAPTURE, 'mute')
-        row.locator(_PLAY_BUTTON).first.click(timeout=10000)
+        _row_play_button(row).first.click(timeout=10000)
         page._suno_fast_last_played = song_id
         page.evaluate(_MUTE_CAPTURE, 'mute')
         started = last_progress = time.monotonic()
@@ -776,11 +801,11 @@ def capture_song(page, song_id, title, timeout_sec=30, status_cb=None, force_pri
     row = _locate_song(page, song_id)
     page.evaluate(_MUTE_CAPTURE, 'start')
     try:
-        prime = force_prime or row.locator(_PAUSE_BUTTON).count() or getattr(page, '_suno_fast_last_played', None) == song_id
+        prime = force_prime or _row_pause_button(row).count() or getattr(page, '_suno_fast_last_played', None) == song_id
         if prime:
             state = page.evaluate(_WORKSPACE_ROWS_DOM, 'read')
             alternate = next((item for item in state['rows'] if item['song_id'] != song_id
-                              and _song_row(page, item['song_id']).locator(_PLAY_BUTTON).count()), None)
+                              and _row_play_button(_song_row(page, item['song_id'])).count()), None)
             if alternate is None:
                 raise RuntimeError('再取得の準備に必要な別曲が表示されていません')
             if status_cb:

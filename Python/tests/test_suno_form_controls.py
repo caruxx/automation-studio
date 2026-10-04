@@ -623,6 +623,50 @@ class FormControlsTests(unittest.TestCase):
         self.assertEqual(self.slider_value("長さ"), "180")
         self.assertEqual(self.page.evaluate("window.optionClicks"), 1)
 
+    def test_custom_duration_waits_for_slider_rendered_after_input(self):
+        for html, custom_label, duration_label in (
+            (FORM_HTML, "Custom", "Duration"),
+            (JAPANESE_FORM_HTML, "カスタム", "長さ"),
+        ):
+            with self.subTest(duration_label=duration_label):
+                self.page.set_content(html)
+                self.page.get_by_role("button", name=custom_label, exact=True, include_hidden=True).evaluate("""button => {
+                  button.addEventListener('click', () => {
+                    const slider = document.querySelector('[role="slider"][aria-valuemax="360"]');
+                    const parent = slider.parentElement;
+                    slider.remove();
+                    window.durationSliderRendered = false;
+                    setTimeout(() => {
+                      parent.append(slider);
+                      window.durationSliderRendered = true;
+                    }, 300);
+                  });
+                }""")
+                with mock.patch.dict(os.environ, {"APP_SUNO_FORM_WAIT_SCALE": "0.2"}):
+                    self.assertEqual(suno._set_custom_duration(self.page, 200), 200)
+                self.assertTrue(self.page.evaluate("window.durationSliderRendered"))
+                self.assertEqual(self.slider_value(duration_label), "200")
+                self.assertEqual(self.page.get_by_role("textbox", name=duration_label, exact=True)
+                                 .input_value(), "3:20")
+
+    def test_missing_duration_controls_report_searched_candidates(self):
+        for role in ("textbox", "slider"):
+            with self.subTest(role=role):
+                self.page.set_content(JAPANESE_FORM_HTML)
+                self.page.get_by_role("button", name="カスタム", exact=True, include_hidden=True).evaluate("""(button, role) => {
+                  button.addEventListener('click', () => {
+                    const selector = role === 'textbox'
+                      ? 'input[inputmode="decimal"]' : '[role="slider"][aria-valuemax="360"]';
+                    document.querySelector(selector).setAttribute('aria-label', '長さ extra');
+                  });
+                }""", role)
+                with self.assertRaises(suno.SunoSubmissionError) as caught:
+                    suno._set_custom_duration(self.page, 200)
+                self.assertEqual(caught.exception.step, "duration_validation")
+                self.assertIn("0件", str(caught.exception))
+                self.assertIn("候補=('Duration', '長さ')", str(caught.exception))
+                self.assertEqual(self.page.locator('input[inputmode="decimal"]').input_value(), "3:00")
+
     def test_japanese_out_of_range_duration_is_rejected_before_input(self):
         for seconds in (9, 361):
             with self.subTest(seconds=seconds):
@@ -645,6 +689,7 @@ class FormControlsTests(unittest.TestCase):
                 with self.assertRaises(suno.SunoSubmissionError) as caught:
                     suno._set_slider_value(self.page, "Weirdness", 35)
                 self.assertIn("Weirdnessの可視スライダーは1件必要です: 0件", str(caught.exception))
+                self.assertIn("候補=('Weirdness', '奇抜さ')", str(caught.exception))
                 self.assertEqual(self.page.evaluate("window.arrowKeys"), [])
 
     def test_japanese_slider_rejects_visible_candidates_across_languages(self):
@@ -671,6 +716,7 @@ class FormControlsTests(unittest.TestCase):
                 with self.assertRaises(suno.SunoSubmissionError) as caught:
                     suno._set_custom_duration(self.page, 200)
                 self.assertEqual(caught.exception.step, "duration_custom")
+                self.assertIn("候補=('Custom', 'カスタム')", str(caught.exception))
                 self.assertEqual(self.page.get_by_role("textbox", name="長さ", exact=True).count(), 0)
 
     def test_japanese_duration_requires_one_exact_visible_input_and_slider(self):
