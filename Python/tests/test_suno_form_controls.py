@@ -104,6 +104,21 @@ for (let i = 0; i < 17; i++) {
 """
 
 
+JAPANESE_FORM_HTML = '<html lang="ja">' + (
+    FORM_HTML.replace("More Options", "その他のオプション")
+    .replace("Custom", "カスタム")
+    .replace("Duration", "長さ")
+    .replace("Weirdness", "奇抜さ")
+    .replace("Style Influence", "スタイルの影響")
+    .replace("Variety", "バリエーション")
+    .replace("3 minutes", "3 分")
+    .replace("Off", "オフ")
+    .replace("Normal", "標準")
+    .replace("Song Title (Optional)", "曲名(任意)")
+    .replace("Create song", "曲を作成")
+) + '</html>'
+
+
 COOKIE_BANNER_HTML = """
 <style>
   button[aria-label="Create song"] {
@@ -561,6 +576,134 @@ class FormControlsTests(unittest.TestCase):
     def test_inject_stops_when_numeric_validation_fails(self):
         with mock.patch.object(suno, "_ensure_advanced_mode", return_value=True):
             self.assertFalse(suno.inject_into_suno(self.page, {"weirdness": 101}))
+
+
+    def test_japanese_sliders_move_by_unit_arrows_and_ignore_hidden_variety(self):
+        self.page.set_content(JAPANESE_FORM_HTML)
+        self.open_options()
+        for name, label, target, key, count in (
+            ("Weirdness", "奇抜さ", 35, "ArrowLeft", 15),
+            ("Style Influence", "スタイルの影響", 65, "ArrowRight", 15),
+            ("Variety", "バリエーション", 2, "ArrowRight", 2),
+        ):
+            with self.subTest(name=name):
+                self.page.evaluate("window.arrowKeys = []")
+                self.assertEqual(suno._set_slider_value(self.page, name, target), target)
+                self.assertEqual(self.slider_value(label), str(target))
+                self.assertEqual(self.page.evaluate("window.arrowKeys"), [key] * count)
+        self.assertEqual(self.page.locator('[role="slider"][aria-label="バリエーション"]').nth(1)
+                         .get_attribute("aria-valuenow"), "1")
+
+    def test_japanese_numeric_options_only_touch_requested_values_and_log_english_names(self):
+        for content, expected in (
+            ({"weirdness": 35, "style_influence": None, "variety": 2}, ["35", "50", "2"]),
+            ({"style_influence": 65}, ["50", "65", "0"]),
+        ):
+            with self.subTest(content=content):
+                self.page.set_content(JAPANESE_FORM_HTML)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    suno._apply_numeric_options(self.page, content)
+                self.assertEqual([self.slider_value(n) for n in ("奇抜さ", "スタイルの影響", "バリエーション")],
+                                 expected)
+                for key, name in (("weirdness", "Weirdness"), ("style_influence", "Style Influence"),
+                                  ("variety", "Variety")):
+                    if content.get(key) is not None:
+                        self.assertIn(f"{name} を検証: {content[key]}", out.getvalue())
+                    else:
+                        self.assertNotIn(name, out.getvalue())
+
+    def test_japanese_custom_duration_commits_with_tab_and_reads_back(self):
+        self.page.set_content(JAPANESE_FORM_HTML)
+        self.assertEqual(suno._set_custom_duration(self.page, 200), 200)
+        self.assertEqual(self.page.get_by_role("textbox", name="長さ", exact=True).input_value(), "3:20")
+        self.assertEqual(self.slider_value("長さ"), "200")
+        self.assertEqual(self.page.get_by_role("button", name="カスタム", exact=True).count(), 0)
+        self.assertEqual(suno._set_custom_duration(self.page, 180), 180)
+        self.assertEqual(self.slider_value("長さ"), "180")
+        self.assertEqual(self.page.evaluate("window.optionClicks"), 1)
+
+    def test_japanese_out_of_range_duration_is_rejected_before_input(self):
+        for seconds in (9, 361):
+            with self.subTest(seconds=seconds):
+                self.page.set_content(JAPANESE_FORM_HTML)
+                with self.assertRaises(suno.SunoSubmissionError) as caught:
+                    suno._set_custom_duration(self.page, seconds)
+                self.assertEqual(caught.exception.step, "duration_validation")
+                for value in (str(seconds), "10", "360"):
+                    self.assertIn(value, str(caught.exception))
+                self.assertEqual(self.page.get_by_role("textbox", name="長さ", exact=True).input_value(), "3:00")
+                self.assertEqual(self.slider_value("長さ"), "180")
+
+    def test_japanese_slider_candidates_require_exact_names(self):
+        for label in ("奇抜さ", "Weirdness"):
+            with self.subTest(label=label):
+                self.page.set_content(JAPANESE_FORM_HTML)
+                self.open_options()
+                self.page.get_by_role("slider", name="奇抜さ", exact=True).evaluate(
+                    "(el, label) => el.setAttribute('aria-label', label + ' extra')", label)
+                with self.assertRaises(suno.SunoSubmissionError) as caught:
+                    suno._set_slider_value(self.page, "Weirdness", 35)
+                self.assertIn("Weirdnessの可視スライダーは1件必要です: 0件", str(caught.exception))
+                self.assertEqual(self.page.evaluate("window.arrowKeys"), [])
+
+    def test_japanese_slider_rejects_visible_candidates_across_languages(self):
+        self.page.set_content(JAPANESE_FORM_HTML)
+        self.open_options()
+        self.page.get_by_role("slider", name="奇抜さ", exact=True).evaluate("""el => {
+          const other = el.cloneNode(true); other.setAttribute('aria-label', 'Weirdness');
+          el.after(other);
+        }""")
+        with self.assertRaises(suno.SunoSubmissionError) as caught:
+            suno._set_slider_value(self.page, "Weirdness", 35)
+        self.assertIn("Weirdnessの可視スライダーは1件必要です: 2件", str(caught.exception))
+        self.assertEqual(self.page.evaluate("window.arrowKeys"), [])
+
+    def test_japanese_custom_button_requires_one_exact_visible_candidate(self):
+        for script in (
+            "el => el.textContent = 'カスタム extra'",
+            "el => { const other = el.cloneNode(true); other.textContent = 'Custom'; el.after(other); }",
+        ):
+            with self.subTest(script=script):
+                self.page.set_content(JAPANESE_FORM_HTML)
+                self.open_options()
+                self.page.get_by_role("button", name="カスタム", exact=True).evaluate(script)
+                with self.assertRaises(suno.SunoSubmissionError) as caught:
+                    suno._set_custom_duration(self.page, 200)
+                self.assertEqual(caught.exception.step, "duration_custom")
+                self.assertEqual(self.page.get_by_role("textbox", name="長さ", exact=True).count(), 0)
+
+    def test_japanese_duration_requires_one_exact_visible_input_and_slider(self):
+        for role in ("textbox", "slider"):
+            for change in ("duplicate", "partial"):
+                with self.subTest(role=role, change=change):
+                    self.page.set_content(JAPANESE_FORM_HTML)
+                    self.open_options()
+                    self.page.get_by_role("button", name="カスタム", exact=True).click()
+                    self.page.get_by_role(role, name="長さ", exact=True).evaluate("""(el, change) => {
+                      if (change === 'duplicate') {
+                        const other = el.cloneNode(true); other.setAttribute('aria-label', 'Duration');
+                        el.after(other);
+                      } else { el.setAttribute('aria-label', '長さ extra'); }
+                    }""", change)
+                    with self.assertRaises(suno.SunoSubmissionError):
+                        suno._set_custom_duration(self.page, 200)
+                    self.assertEqual(self.page.locator('input[inputmode="decimal"]').first.input_value(), "3:00")
+                    self.assertEqual(self.page.locator('[role="slider"][aria-valuemax="360"]').first
+                                     .get_attribute("aria-valuenow"), "180")
+
+    def test_japanese_duration_ignores_hidden_candidates(self):
+        self.page.set_content(JAPANESE_FORM_HTML)
+        self.page.evaluate("""() => document.body.insertAdjacentHTML('beforeend', `
+          <div style="display:none">
+            <button>Custom</button><button>カスタム</button>
+            <input aria-label="Duration"><input aria-label="長さ">
+            <div role="slider" aria-label="Duration"></div>
+            <div role="slider" aria-label="長さ"></div>
+          </div>`)""")
+        self.assertEqual(suno._set_custom_duration(self.page, 200), 200)
+        self.assertEqual(self.slider_value("長さ"), "200")
+        self.assertEqual(self.page.locator('div[style="display:none"] input[aria-label="長さ"]').input_value(), "")
 
 
 class DownloadLoginTests(unittest.TestCase):

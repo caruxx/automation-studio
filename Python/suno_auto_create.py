@@ -3263,6 +3263,13 @@ _MORE_OPTIONS_TEXTS = ("その他のオプション", "More options")
 _TITLE_PLACEHOLDERS = ("曲名(任意)", "曲名（任意）", "Song title (optional)")
 _EXCLUDE_STYLE_PLACEHOLDERS = ("スタイルを除外", "Exclude styles")
 _LYRICS_ARIA_LABELS = ("歌詞エディタ", "Lyrics editor")
+_NUMERIC_CONTROL_NAMES = {
+    "Custom": ("Custom", "カスタム"),
+    "Duration": ("Duration", "長さ"),
+    "Weirdness": ("Weirdness", "奇抜さ"),
+    "Style Influence": ("Style Influence", "スタイルの影響"),
+    "Variety": ("Variety", "バリエーション"),
+}
 _SIMPLE_SOUND_PLACEHOLDER_PARTS = (
     "欲しいサウンドを説明",
     "Describe the sound you want",
@@ -3717,20 +3724,38 @@ def inject_into_suno(page, content):
     return True
 
 
+def _visible_numeric_controls(page, role, name):
+    """日英の候補名に完全一致するroleをまとめ、可視の要素だけ返す。"""
+    names = _NUMERIC_CONTROL_NAMES.get(name, (name,))
+    controls = page.get_by_role(role, name=names[0], exact=True)
+    for candidate in names[1:]:
+        controls = controls.or_(page.get_by_role(role, name=candidate, exact=True))
+    return controls.and_(page.locator(":visible"))
+
+
 def _set_custom_duration(page, seconds):
     """指定時だけDurationをCustomへ切り替え、秒数を読み戻して送信を守る。"""
     if isinstance(seconds, bool) or int(seconds) != float(seconds):
         raise ValueError("duration_secondsは整数秒で指定してください")
     seconds = int(seconds)
     _ensure_more_options_open(page)
-    field = page.get_by_role("textbox", name="Duration", exact=True)
-    if not field.count() or not field.is_visible():
-        custom = page.get_by_role("button", name="Custom", exact=True)
+    field = _visible_numeric_controls(page, "textbox", "Duration")
+    if not field.count():
+        custom = _visible_numeric_controls(page, "button", "Custom")
         if custom.count() != 1:
             raise SunoSubmissionError("duration_custom", "DurationのCustomボタンが見つかりません")
         custom.click(timeout=_form_timeout_ms(5000))
-    field.wait_for(state="visible", timeout=_form_timeout_ms(5000))
-    slider = page.get_by_role("slider", name="Duration", exact=True)
+    # 出現を待ってから件数を検証し、複数候補の先頭へ入力しない。
+    field.first.wait_for(state="visible", timeout=_form_timeout_ms(5000))
+    if field.count() != 1:
+        raise SunoSubmissionError(
+            "duration_validation", f"Durationの可視入力欄は1件必要です: {field.count()}件",
+        )
+    slider = _visible_numeric_controls(page, "slider", "Duration")
+    if slider.count() != 1:
+        raise SunoSubmissionError(
+            "duration_validation", f"Durationの可視スライダーは1件必要です: {slider.count()}件",
+        )
     try:
         minimum = int(slider.get_attribute("aria-valuemin"))
     except (TypeError, ValueError):
@@ -3757,14 +3782,11 @@ def _set_custom_duration(page, seconds):
 
 def _set_slider_value(page, name, target):
     """可視スライダーを矢印キーで設定し、残差の再調整は1回までにする。"""
-    sliders = page.get_by_role("slider", name=name, exact=True)
-    visible = [sliders.nth(index) for index in range(sliders.count())
-               if sliders.nth(index).is_visible()]
-    if len(visible) != 1:
+    slider = _visible_numeric_controls(page, "slider", name)
+    if slider.count() != 1:
         raise SunoSubmissionError(
-            "slider_validation", f"{name}の可視スライダーは1件必要です: {len(visible)}件、指定値={target!r}",
+            "slider_validation", f"{name}の可視スライダーは1件必要です: {slider.count()}件、指定値={target!r}",
         )
-    slider = visible[0]
     actual = slider.get_attribute("aria-valuenow")
     try:
         minimum = int(slider.get_attribute("aria-valuemin"))

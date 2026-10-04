@@ -269,3 +269,27 @@ URL: `https://suno.com/me/workspaces`。Library 内の Workspaces タブ選択�
 - 17:34:15 JST、More Optionsを開始時の閉状態へ復元し、aria-expanded=false、可視Custom=0、Duration textbox=0 / slider=0、可視Weirdness slider=0を確認。
 - 17:34:19 JST、調査タブ1448698493を`close()`で閉鎖。既存の他タブは選択・操作していない。
 - **元へ戻せなかった項目: なし。**
+
+
+## 6. 日本語表示での数値項目（2026-10-05 追加採取）
+
+以下はユーザーが2026-10-05に実機の日本語表示（`lang=ja`）で追加採取した事実。Task 13ではSUNOへの接続や実機での再確認は行っていない。
+
+|項目|英語表示|日本語表示|
+|---|---|---|
+|尺の切替ボタン|`Auto` / `Custom`|`Auto` / `カスタム`。`Auto`は日本語表示でも`Auto`|
+|尺の入力欄（`input type=text, inputmode=decimal`）の`aria-label`|`Duration`|`長さ`|
+|尺のスライダー（`role=slider`）の`aria-label`|`Duration`|`長さ`。`aria-valuemin=10` / `aria-valuemax=360`、Custom切替直後の`aria-valuenow=180`、`aria-valuetext="3 分"`|
+|Weirdnessスライダーの`aria-label`|`Weirdness`|`奇抜さ`（0–100）|
+|Style Influenceスライダーの`aria-label`|`Style Influence`|`スタイルの影響`（0–100）|
+|Varietyスライダーの`aria-label`|`Variety`|`バリエーション`（0–4）。`aria-valuetext`は`オフ` / `標準`など。不可視の同名スライダーがもう1件ある点は英語表示と同じ|
+
+日本語表示で動作確認済みの項目（ユーザー提供の採取結果）:
+
+- 「その他のオプション」の開閉。
+- 曲名入力（`placeholder="曲名(任意)"`）。
+- Styles入力。
+- Createボタン（`aria-label="曲を作成"`）。
+- ログイン判定。
+
+上記の動作確認済み項目はTask 13の変更対象外。数値項目は表示言語を判定せず、各項目の英語名・日本語名のいずれかに完全一致するrole要素のうち、可視のものがちょうど1件であることを要求する。
