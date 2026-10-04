@@ -104,6 +104,34 @@ for (let i = 0; i < 17; i++) {
 """
 
 
+COOKIE_BANNER_HTML = """
+<style>
+  button[aria-label="Create song"] {
+    position: fixed; bottom: 20px; left: 20px; width: 160px; height: 40px;
+  }
+  #cmp-banner-container .cmp-layer {
+    display: none; position: fixed; bottom: 0; left: 0; right: 0;
+    height: 120px; z-index: 10; background: white;
+  }
+  #cmp-banner-container .cmp-layer.cmp-visible { display: block; }
+</style>
+<button aria-label="Create song" onclick="window.created += 1">Create</button>
+<div id="cmp-banner-container">
+  <div id="cmp-first-layer"
+       class="cmp-layer cmp-first-layer cmp-layout-bottom cmp-visible">
+    <button id="cmp-first-layer-btn-customize">Customize</button>
+    <button id="cmp-first-layer-btn-deny-all" onclick="
+      window.rejected += 1;
+      document.getElementById('cmp-first-layer').classList.remove('cmp-visible');
+    ">Reject All</button>
+    <button id="cmp-first-layer-btn-accept-all"
+            onclick="window.accepted += 1">Accept All</button>
+  </div>
+</div>
+<script>window.created = 0; window.rejected = 0; window.accepted = 0;</script>
+"""
+
+
 class FormControlsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -135,6 +163,132 @@ class FormControlsTests(unittest.TestCase):
 
     def slider_value(self, name):
         return self.page.get_by_role("slider", name=name, exact=True).get_attribute("aria-valuenow")
+
+    def test_cookie_banner_is_dismissed_by_reject_only(self):
+        self.page.set_content(COOKIE_BANNER_HTML)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertTrue(suno._dismiss_cookie_banner(self.page))
+        self.assertEqual(self.page.evaluate("[window.rejected, window.accepted, window.created]"),
+                         [1, 0, 0])
+        self.assertFalse(self.page.locator("#cmp-first-layer").is_visible())
+        self.assertIn("Cookie 同意バナーを拒否で閉じました", out.getvalue())
+
+    def test_cookie_banner_absent_or_hidden_does_nothing(self):
+        for script in (
+            "document.getElementById('cmp-banner-container').remove()",
+            "document.getElementById('cmp-first-layer').style.display = 'none'",
+        ):
+            with self.subTest(script=script):
+                self.page.set_content(COOKIE_BANNER_HTML)
+                self.page.evaluate(script)
+                self.assertFalse(suno._dismiss_cookie_banner(self.page))
+                self.assertEqual(self.page.evaluate(
+                    "[window.rejected, window.accepted, window.created]"), [0, 0, 0])
+
+    def test_cookie_banner_without_reject_requires_manual_dismissal(self):
+        self.page.set_content(COOKIE_BANNER_HTML)
+        self.page.locator("#cmp-first-layer-btn-deny-all").evaluate("el => el.remove()")
+        with self.assertRaises(suno.SunoSubmissionError) as caught:
+            suno._dismiss_cookie_banner(self.page)
+        self.assertEqual(caught.exception.step, "cookie_banner")
+        self.assertIn("ブラウザで Cookie 同意バナーを閉じてから再実行", str(caught.exception))
+        self.assertEqual(self.page.evaluate("window.accepted"), 0)
+
+    def test_cookie_banner_reject_failure_requires_manual_dismissal(self):
+        for script, rejected in (("el => el.disabled = true", 0),
+                                 ("el => el.onclick = () => window.rejected += 1", 1)):
+            with self.subTest(script=script):
+                self.page.set_content(COOKIE_BANNER_HTML)
+                self.page.locator("#cmp-first-layer-btn-deny-all").evaluate(script)
+                with self.assertRaises(suno.SunoSubmissionError) as caught:
+                    suno._dismiss_cookie_banner(self.page)
+                self.assertEqual(caught.exception.step, "cookie_banner")
+                self.assertIn("ブラウザで Cookie 同意バナーを閉じてから再実行", str(caught.exception))
+                self.assertIsNotNone(caught.exception.__cause__)
+                self.assertTrue(self.page.locator("#cmp-first-layer").is_visible())
+                self.assertEqual(self.page.evaluate("[window.rejected, window.accepted]"),
+                                 [rejected, 0])
+
+    def test_create_click_dismisses_overlapping_cookie_banner(self):
+        self.page.set_content(COOKIE_BANNER_HTML)
+        self.assertTrue(self.page.locator('button[aria-label="Create song"]').evaluate("""el => {
+          const rect = el.getBoundingClientRect();
+          return !!document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+            .closest('#cmp-banner-container');
+        }"""))
+        suno.click_create_button(self.page)
+        self.assertEqual(self.page.evaluate("[window.rejected, window.accepted, window.created]"),
+                         [1, 0, 1])
+        self.assertFalse(self.page.locator("#cmp-first-layer").is_visible())
+
+    def test_create_click_reports_obstruction_instead_of_missing_button(self):
+        self.page.set_content(COOKIE_BANNER_HTML)
+        self.page.locator("#cmp-banner-container").evaluate("el => el.remove()")
+        self.page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
+          '<div id="overlay" style="position:fixed;inset:0;z-index:20"></div>')""")
+        with self.assertRaises(Exception) as caught:
+            suno.click_create_button(self.page)
+        self.assertIn("Create ボタンをクリックできません", str(caught.exception))
+        self.assertNotIn("見つかりません", str(caught.exception))
+        self.assertIsNotNone(caught.exception.__cause__)
+        self.assertIn(str(caught.exception.__cause__).splitlines()[0], str(caught.exception))
+        self.assertEqual(self.page.evaluate("window.created"), 0)
+
+    def test_create_click_reports_missing_button(self):
+        self.page.set_content("<main>No controls</main>")
+        with self.assertRaisesRegex(Exception, "Create ボタンが見つかりません"):
+            suno.click_create_button(self.page)
+
+    def test_inject_dismisses_cookie_banner_before_advanced_mode(self):
+        self.page.set_content(COOKIE_BANNER_HTML)
+
+        def ensure_advanced(page):
+            self.assertEqual(page.evaluate("window.rejected"), 1)
+            self.assertFalse(page.locator("#cmp-first-layer").is_visible())
+            return True
+
+        with mock.patch.object(suno, "_ensure_advanced_mode", side_effect=ensure_advanced):
+            self.assertTrue(suno.inject_into_suno(self.page, {}))
+        self.assertEqual(self.page.evaluate("[window.accepted, window.created]"), [0, 0])
+
+    def test_cookie_banner_error_propagates_from_both_entry_points(self):
+        for entry, args in ((suno.inject_into_suno, ({},)), (suno.click_create_button, ())):
+            with self.subTest(entry=entry.__name__):
+                self.page.set_content(COOKIE_BANNER_HTML)
+                self.page.locator("#cmp-first-layer-btn-deny-all").evaluate("el => el.remove()")
+                with self.assertRaises(suno.SunoSubmissionError) as caught:
+                    entry(self.page, *args)
+                self.assertEqual(caught.exception.step, "cookie_banner")
+                self.assertIn("ブラウザで Cookie 同意バナーを閉じてから再実行", str(caught.exception))
+                self.assertEqual(self.page.evaluate("[window.accepted, window.created]"), [0, 0])
+
+    def test_submission_retries_log_cookie_failure_and_preserve_step(self):
+        import app_music_catalog
+
+        self.page.set_content(COOKIE_BANNER_HTML)
+        self.page.locator("#cmp-first-layer-btn-deny-all").evaluate("el => el.remove()")
+        out = io.StringIO()
+        with mock.patch.object(app_music_catalog, "prepare_submission", side_effect=dict), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(suno.SunoSubmissionError) as caught:
+                suno._submit_song_to_suno_impl(self.page, {}, form_retries=1)
+        self.assertEqual(caught.exception.step, "cookie_banner")
+        self.assertIn("ブラウザで Cookie 同意バナーを閉じてから再実行", out.getvalue())
+        self.assertEqual(self.page.evaluate("[window.accepted, window.created]"), [0, 0])
+
+    def test_submission_preserves_cookie_failure_after_form_injection(self):
+        import app_music_catalog
+
+        self.page.set_content(COOKIE_BANNER_HTML)
+        self.page.locator("#cmp-first-layer-btn-deny-all").evaluate("el => el.remove()")
+        with mock.patch.object(app_music_catalog, "prepare_submission", side_effect=dict), \
+                mock.patch.object(suno, "inject_into_suno", return_value=True):
+            with self.assertRaises(suno.SunoSubmissionError) as caught:
+                suno._submit_song_to_suno_impl(self.page, {})
+        self.assertEqual(caught.exception.step, "cookie_banner")
+        self.assertIn("ブラウザで Cookie 同意バナーを閉じてから再実行", str(caught.exception))
+        self.assertEqual(self.page.evaluate("[window.accepted, window.created]"), [0, 0])
 
     def load_login_page(self, html):
         self.page.route("https://suno.com/**", lambda route: route.fulfill(

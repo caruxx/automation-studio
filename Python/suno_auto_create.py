@@ -2557,7 +2557,7 @@ def run_browser_automation(settings):
                 try:
                     click_create_button(page)
                 except Exception as e:
-                    print(f"  ❌ Create ボタンが見つかりません: {e}")
+                    print(f"  ❌ Create ボタンの操作に失敗しました: {e}")
                     break
 
                 # 3-a. Bot チャレンジ検出
@@ -3592,8 +3592,28 @@ def _compact_form_value(value):
     return re.sub(r"\s+", "", str(value or ""))
 
 
+def _dismiss_cookie_banner(page) -> bool:
+    """可視のCookie同意バナーを拒否で閉じ、閉じられなければ送信を止める。"""
+    if page.locator("#cmp-banner-container .cmp-layer.cmp-visible:visible").count() == 0:
+        return False
+    try:
+        page.locator("#cmp-first-layer-btn-deny-all").click(timeout=_form_timeout_ms(3000))
+        page.locator("#cmp-banner-container .cmp-layer:visible").first.wait_for(
+            state="hidden", timeout=_form_timeout_ms(3000),
+        )
+    except Exception as exc:
+        raise SunoSubmissionError(
+            "cookie_banner",
+            "Cookie 同意バナーを拒否で閉じられません。"
+            f"ブラウザで Cookie 同意バナーを閉じてから再実行してください: {exc}",
+        ) from exc
+    print("Cookie 同意バナーを拒否で閉じました")
+    return True
+
+
 def inject_into_suno(page, content):
     """2026-07新Create UIへPlaywright実イベントで入力し、各値を読み戻す。"""
+    _dismiss_cookie_banner(page)
     _mark_form_started()
     mode = str(content.get("mode") or "styles_title_only")
     title = str(content.get("title") or "")
@@ -3908,28 +3928,33 @@ def _find_create_button(page):
 
 def click_create_button(page):
     """日本語・英語のCreateボタンをPlaywright実イベントでクリックする。"""
+    _dismiss_cookie_banner(page)
     _form_wait(1)
+    last_click_error = None
 
     # テキスト候補集合から探し、locator.clickで実イベントを発生させる。
-    try:
-        button = _find_create_button(page)
-        if button is not None:
+    button = _find_create_button(page)
+    if button is not None:
+        try:
             button.click(timeout=_form_timeout_ms(5000))
             _mark_create_clicked()
             return
-    except Exception:
-        pass
+        except Exception as exc:
+            last_click_error = exc
 
     # テキストが消えた場合に備えた既存data-testidフォールバック。
-    try:
-        btn = page.locator('button[data-testid="create-button"]').first
-        if btn.count() > 0:
+    btn = page.locator('button[data-testid="create-button"]').first
+    if btn.count() > 0:
+        try:
             btn.click(timeout=_form_timeout_ms(3000))
             _mark_create_clicked()
             return
-    except Exception:
-        pass
+        except Exception as exc:
+            last_click_error = exc
 
+    if last_click_error is not None:
+        summary = (str(last_click_error) or type(last_click_error).__name__).splitlines()[0]
+        raise Exception(f"Create ボタンをクリックできません: {summary}") from last_click_error
     raise Exception("Create ボタンが見つかりません")
 
 
@@ -3961,7 +3986,7 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
         if form_attempt < max_form_attempts:
             print(
                 f"  フォーム投入を再試行します "
-                f"(attempt {form_attempt + 1}/{max_form_attempts})"
+                f"(attempt {form_attempt + 1}/{max_form_attempts}): {last_form_error}"
             )
             _count_form_retry()
             _form_wait(2)
@@ -3976,6 +4001,8 @@ def _submit_song_to_suno_impl(page, content, form_retries=2):
     for create_attempt in range(3):
         try:
             click_create_button(page)
+        except SunoSubmissionError:
+            raise
         except Exception as exc:
             raise SunoSubmissionError(
                 "create_click", f"Create ボタンのクリックに失敗しました: {exc}"
