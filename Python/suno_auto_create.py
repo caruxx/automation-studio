@@ -25,6 +25,7 @@ import urllib.request
 from pathlib import Path
 
 from resource_lock import ResourceBusyError, ResourceLock
+from suno_browser import BrowserLaunchError, MODES as BROWSER_MODES, apply_cli_overrides, open_suno_context, resolve_browser_settings
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -2301,7 +2302,6 @@ def run_browser_automation(settings):
     _reset_form_metrics()
     loop_count = settings.get("loop_count", 1)
     loop_interval = settings.get("loop_interval_sec", 180)
-    headless = settings.get("headless", False)
     progress = SunoProgress(settings)
     progress.update(phase="launching", last_action="launching browser", emit=True)
 
@@ -2324,48 +2324,21 @@ def run_browser_automation(settings):
         draft_thread = threading.Thread(target=_draft_worker, name="suno-draft", daemon=True)
         draft_thread.start()
 
-    profile_dir = str(Path.home() / ".config/orzz/chromium_profile")
+    browser_cfg = resolve_browser_settings(settings)
 
     with sync_playwright() as p:
         print("\nブラウザを起動中...")
-        print(f"  プロファイル: {profile_dir}")
-
-        # ブラウザ起動: Playwright管理のChromium → システムChrome の順でフォールバック
-        launch_kwargs = dict(
-            user_data_dir=profile_dir,
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-            ],
-            viewport={"width": 1280, "height": 900},
-            ignore_default_args=["--enable-automation"],
-        )
-
-        context = None
-
-        # 方法1: Playwright 管理の Chromium（ポータブル・推奨）
+        print(f"  接続先: {browser_cfg['mode']}")
+        if browser_cfg["mode"] == "cdp":
+            print(f"  ポート: {browser_cfg['cdp_port']}")
+        else:
+            print(f"  プロファイル: {browser_cfg['profile_dir']}")
         try:
-            context = p.chromium.launch_persistent_context(**launch_kwargs)
-            print("  Playwright Chromium で起動しました")
-        except Exception as e1:
-            print(f"  Playwright Chromium 失敗: {e1}")
-
-            # 方法2: システムの Chrome を使用（フォールバック）
-            try:
-                context = p.chromium.launch_persistent_context(
-                    channel="chrome", **launch_kwargs
-                )
-                print("  システム Chrome で起動しました")
-            except Exception as e2:
-                print(f"  システム Chrome も失敗: {e2}")
-                print("")
-                print("=" * 50)
-                print("  ブラウザが見つかりません！")
-                print("  以下を実行してください:")
-                print("    python3 -m playwright install chromium")
-                print("=" * 50)
-                return
+            session = open_suno_context(p, settings)
+        except BrowserLaunchError as exc:
+            print(f"ブラウザを起動できませんでした: {exc}")
+            return
+        context = session.context
 
         # SUNO SPA の内部 fetch/XHR を横取りして audio_url をキャッシュ + ステータスオーバーレイ
         context.add_init_script(_SUNO_AUDIO_URL_INTERCEPTOR)
@@ -2381,7 +2354,7 @@ def run_browser_automation(settings):
         context.add_init_script(f"window.__appBrandLabel = '{_brand}';")
         context.add_init_script(_STATUS_OVERLAY_SCRIPT)
 
-        page = context.pages[0] if context.pages else context.new_page()
+        page = session.page()
 
         # SUNO にアクセス
         print("suno.com/create にアクセス中...")
@@ -2427,7 +2400,7 @@ def run_browser_automation(settings):
                 if _is_unattended():
                     # 無人モードではハングせず例外で抜ける（呼び出し側が Discord 通知 + 失敗扱い）
                     try:
-                        context.close()
+                        session.close()
                     except Exception:
                         pass
                     raise UnattendedLoginRequired(
@@ -2440,7 +2413,7 @@ def run_browser_automation(settings):
                         time.sleep(3600)
                 except KeyboardInterrupt:
                     pass
-                context.close()
+                session.close()
                 return
             time.sleep(3)
 
@@ -2734,7 +2707,7 @@ def run_browser_automation(settings):
                     pass
         finally:
             try:
-                context.close()
+                session.close()
             except Exception:
                 pass
 
@@ -3974,20 +3947,10 @@ def submit_song_to_suno(page, content, form_retries=2):
 def _run_download_only(workspace_name, target_dir, settings):
     """Playwright を起動して指定 Workspace の楽曲をダウンロードして終了"""
     from playwright.sync_api import sync_playwright
-    profile_dir = str(Path.home() / ".config/orzz/chromium_profile")
     ready_poll = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
     with sync_playwright() as p:
-        launch_kwargs = dict(
-            user_data_dir=profile_dir, headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--no-first-run"],
-            viewport={"width": 1280, "height": 900},
-            ignore_default_args=["--enable-automation"],
-            accept_downloads=True,
-        )
-        try:
-            context = p.chromium.launch_persistent_context(**launch_kwargs)
-        except Exception:
-            context = p.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
+        session = open_suno_context(p, settings)
+        context = session.context
         # SUNO SPA の内部 fetch/XHR をインターセプトして audio_url をキャッシュ
         context.add_init_script(_SUNO_AUDIO_URL_INTERCEPTOR)
         if os.environ.get("APP_SUNO_DL_MODE", "fast").strip().lower() != "legacy":
@@ -3995,7 +3958,7 @@ def _run_download_only(workspace_name, target_dir, settings):
             install_fast_capture(context)
         if ready_poll:
             context.add_init_script(_STATUS_OVERLAY_SCRIPT)
-        page = context.pages[0] if context.pages else context.new_page()
+        page = session.page()
         try:
             expected_ready = int(settings.get("expected_ready") or 0)
             if ready_poll and expected_ready > 0:
@@ -4010,7 +3973,7 @@ def _run_download_only(workspace_name, target_dir, settings):
                 download_workspace_tracks(page, workspace_name, target_dir)
         finally:
             time.sleep(2)
-            context.close()
+            session.close()
 
 
 # ブラウザ右下に Automation Studio のステータスを表示するオーバーレイ。
@@ -4176,6 +4139,10 @@ def main():
     parser.add_argument("--mode", choices=["lyrics", "lyrics_styles", "styles_title_only", "instrumental_filler"],
                         help="生成モード（instrumental_filler: lyrics を [instrumental] x 5000文字で固定充填）")
     parser.add_argument("--headless", action="store_true", help="ヘッドレスモード")
+    parser.add_argument("--browser-mode", choices=list(BROWSER_MODES),
+                        help="ブラウザ接続先（chrome=正式Chrome+専用プロファイル / chromium=同梱Chromium / cdp=起動済みChromeへ接続）")
+    parser.add_argument("--browser-profile-dir", help="プロファイルフォルダ（省略時はモード別の既定）")
+    parser.add_argument("--cdp-port", type=int, help="cdp モードの接続ポート（既定 9222）")
     parser.add_argument("--workspace", "-w", help="SUNO Workspace 名（例: orzz_vol74）。指定時は確保してから生成")
     parser.add_argument("--download-workspace", help="指定 Workspace の楽曲を一括ダウンロード（生成せず）")
     parser.add_argument("--download-dir", help="ダウンロード先フォルダ（--download-workspace と併用）")
@@ -4222,6 +4189,12 @@ def main():
         settings["generation_mode"] = args.mode
     if args.headless:
         settings["headless"] = True
+    apply_cli_overrides(settings, mode=args.browser_mode,
+                        profile_dir=args.browser_profile_dir, cdp_port=args.cdp_port)
+    try:
+        resolve_browser_settings(settings)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.workspace:
         settings["workspace"] = args.workspace
     if args.auto_download:

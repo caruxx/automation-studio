@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from resource_lock import ResourceLock
+from suno_browser import MODES as BROWSER_MODES, apply_cli_overrides, open_suno_context
 import suno_auto_create as suno
 
 
@@ -191,22 +192,6 @@ def print_plan(jobs: list[Job]) -> None:
             },
         )
     emit("summary", "summary", {"dry_run": True, "total": len(jobs), "failed": 0})
-
-
-def launch_browser(playwright: Any, headless: bool) -> Any:
-    profile_dir = str(Path.home() / ".config/orzz/chromium_profile")
-    launch_kwargs = {
-        "user_data_dir": profile_dir,
-        "headless": headless,
-        "args": ["--disable-blink-features=AutomationControlled", "--no-first-run"],
-        "viewport": {"width": 1280, "height": 900},
-        "ignore_default_args": ["--enable-automation"],
-        "accept_downloads": True,
-    }
-    try:
-        return playwright.chromium.launch_persistent_context(**launch_kwargs)
-    except Exception:
-        return playwright.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
 
 
 def ensure_login(page: Any) -> None:
@@ -459,6 +444,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jobs-file", required=True, type=Path, help="ジョブ JSON 配列のパス")
     parser.add_argument("--dry-run", action="store_true", help="ブラウザとロックを使わず計画だけ表示")
     parser.add_argument("--headless", action="store_true", help="ブラウザをヘッドレスで起動")
+    parser.add_argument("--browser-mode", choices=list(BROWSER_MODES),
+                        help="ブラウザ接続先（chrome=正式Chrome+専用プロファイル / chromium=同梱Chromium / cdp=起動済みChromeへ接続）")
+    parser.add_argument("--browser-profile-dir", help="プロファイルフォルダ（省略時はモード別の既定）")
+    parser.add_argument("--cdp-port", type=int, help="cdp モードの接続ポート（既定 9222）")
     return parser.parse_args()
 
 
@@ -483,14 +472,21 @@ def main() -> int:
     lock = ResourceLock("suno", owner="suno_queue").acquire(blocking=True)
     atexit.register(lock.release)
     context = None
+    session = None
     page = None
     try:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
-            context = launch_browser(playwright, args.headless)
+            browser_settings = suno.load_config()
+            if args.headless:
+                browser_settings["headless"] = True
+            apply_cli_overrides(browser_settings, mode=args.browser_mode,
+                                profile_dir=args.browser_profile_dir, cdp_port=args.cdp_port)
+            session = open_suno_context(playwright, browser_settings)
+            context = session.context
             context.add_init_script(suno._SUNO_AUDIO_URL_INTERCEPTOR)
-            page = context.pages[0] if context.pages else context.new_page()
+            page = session.page()
             ensure_login(page)
             emit("queue", "started", {"jobs": len(jobs), "final_wait_sec": final_wait_sec})
             for job in jobs:
@@ -512,9 +508,9 @@ def main() -> int:
         emit_summary(jobs)
         return 1
     finally:
-        if context is not None:
+        if session is not None:
             try:
-                context.close()
+                session.close()
             except Exception:
                 pass
         lock.release()
