@@ -2489,8 +2489,9 @@ def run_browser_automation(settings):
             # 2. SUNO フォームに入力
             from app_music_catalog import prepare_submission, mark_submitted
             content = prepare_submission(content)
-            if settings.get("duration_seconds") is not None:
-                content = dict(content, duration_seconds=settings["duration_seconds"])
+            for key in ("duration_seconds", "weirdness", "style_influence", "variety"):
+                if settings.get(key) is not None:
+                    content = dict(content, **{key: settings[key]})
             try:
                 if not inject_into_suno(page, content):
                     progress.update(page, phase="form_validation_error",
@@ -3423,22 +3424,27 @@ def _locator_with_attribute(locator, attribute, max_levels=5):
     return None, ""
 
 
+def _find_more_options_toggle(page):
+    """曲行メニューを除き、サマリ付きの可視見出しを1件だけ返す。"""
+    headings = page.locator('[role="button"][aria-expanded]')
+    prefixes = tuple(_normalize_ui_text(text) for text in _MORE_OPTIONS_TEXTS)
+    matched = []
+    for index in range(headings.count()):
+        current = headings.nth(index)
+        if current.is_visible() and _normalize_ui_text(current.inner_text()).startswith(prefixes):
+            matched.append(current)
+    if len(matched) != 1:
+        _form_dom_diagnostics(page, "more_options")
+        raise SunoSubmissionError(
+            "more_options", f"More options/その他のオプションの可視見出しは1件必要です: {len(matched)}件",
+        )
+    return matched[0]
+
+
 def _ensure_more_options_open(page):
     """More optionsを閉じている場合だけ開き、aria-expanded=trueを確認する。"""
-    toggle = _find_text_locator(
-        page,
-        '[aria-expanded]',
-        _MORE_OPTIONS_TEXTS,
-        visible_only=True,
-    )
-    if toggle is None:
-        _form_dom_diagnostics(page, "more_options")
-        raise SunoSubmissionError("more_options", "More options/その他のオプションが見つかりません")
-    toggle, expanded = _locator_with_attribute(toggle, "aria-expanded")
-    if toggle is None:
-        _form_dom_diagnostics(page, "more_options_aria")
-        raise SunoSubmissionError("more_options_aria", "More optionsにaria-expandedがありません")
-    expanded = expanded.strip().lower()
+    toggle = _find_more_options_toggle(page)
+    expanded = str(toggle.get_attribute("aria-expanded") or "").strip().lower()
     if expanded not in ("true", "false"):
         raise SunoSubmissionError(
             "more_options_aria",
@@ -3480,7 +3486,8 @@ def _title_inputs_in_create_panel(page):
         for index in range(inputs.count()):
             current = inputs.nth(index)
             try:
-                if _title_placeholder_match(current.get_attribute("placeholder")):
+                if (current.is_visible() and current.is_editable()
+                        and _title_placeholder_match(current.get_attribute("placeholder"))):
                     matched.append(current)
             except Exception:
                 continue
@@ -3500,35 +3507,30 @@ def _fill_optional_title(page, title, retries=2):
             if not candidates:
                 _ensure_more_options_open(page)
                 candidates = _title_inputs_in_create_panel(page)
-            if not candidates:
-                raise RuntimeError("作成フォームパネル内に曲名inputが見つかりません")
-            candidate_errors = []
-            for title_input in candidates:
-                try:
-                    title_input.scroll_into_view_if_needed(timeout=_form_timeout_ms(5000))
-                    title_input.fill(title, timeout=_form_timeout_ms(5000))
-                    actual_title = title_input.input_value()
-                    if actual_title == title:
-                        return True
-                    candidate_errors.append(
-                        f"value mismatch expected={title!r} actual={actual_title!r}"
-                    )
-                except Exception as exc:
-                    candidate_errors.append(str(exc))
-            raise RuntimeError("; ".join(candidate_errors) or "曲名inputへの入力に失敗しました")
+            if len(candidates) != 1:
+                raise RuntimeError(f"作成フォームパネル内の可視・編集可能な曲名inputは1件必要です: {len(candidates)}件")
+            title_input = candidates[0]
+            title_input.scroll_into_view_if_needed(timeout=_form_timeout_ms(5000))
+            title_input.fill(title, timeout=_form_timeout_ms(5000))
+            actual_title = title_input.input_value()
+            if actual_title == title:
+                return True
+            raise RuntimeError(f"value mismatch expected={title!r} actual={actual_title!r}")
         except Exception as exc:
             failures.append(f"attempt {attempt}/{attempts}: {exc}")
             if attempt < attempts:
                 _form_wait(0.5)
 
     cleared = False
-    for title_input in _title_inputs_in_create_panel(page):
+    candidates = _title_inputs_in_create_panel(page)
+    if len(candidates) == 1:
+        title_input = candidates[0]
         try:
             title_input.scroll_into_view_if_needed(timeout=_form_timeout_ms(3000))
             title_input.fill("", timeout=_form_timeout_ms(3000))
             cleared = title_input.input_value() == "" or cleared
         except Exception:
-            continue
+            pass
 
     # SUNOの任意入力欄でも、永久台帳で予約したタイトルは必須として扱う。
     # 呼び出し元が戻り値を検査し、入力失敗時にはCreateを止める。
@@ -3628,6 +3630,11 @@ def inject_into_suno(page, content):
         except Exception as exc:
             errors.append(f"custom duration validation error: {exc}")
 
+    try:
+        _apply_numeric_options(page, content)
+    except Exception as exc:
+        errors.append(f"numeric options validation error: {exc}")
+
     if errors:
         print(f"フォーム入力検証失敗: {errors}")
         _form_dom_diagnostics(page, "form_validation")
@@ -3637,15 +3644,10 @@ def inject_into_suno(page, content):
 
 def _set_custom_duration(page, seconds):
     """指定時だけDurationをCustomへ切り替え、秒数を読み戻して送信を守る。"""
-    if isinstance(seconds, bool) or int(seconds) != float(seconds) or int(seconds) <= 0:
-        raise ValueError("duration_secondsは正の整数秒で指定してください")
+    if isinstance(seconds, bool) or int(seconds) != float(seconds):
+        raise ValueError("duration_secondsは整数秒で指定してください")
     seconds = int(seconds)
-    # v6のボタン名には現在の設定サマリが付くため、旧UIの完全一致を避ける。
-    options = page.get_by_role("button", name=re.compile(r"^(More Options|その他のオプション)", re.I))
-    duration_slider = page.get_by_role("slider", name="Duration", exact=True)
-    custom = page.get_by_role("button", name="Custom", exact=True)
-    if not duration_slider.count() and not custom.count():
-        options.click(timeout=_form_timeout_ms(5000))
+    _ensure_more_options_open(page)
     field = page.get_by_role("textbox", name="Duration", exact=True)
     if not field.count() or not field.is_visible():
         custom = page.get_by_role("button", name="Custom", exact=True)
@@ -3653,10 +3655,22 @@ def _set_custom_duration(page, seconds):
             raise SunoSubmissionError("duration_custom", "DurationのCustomボタンが見つかりません")
         custom.click(timeout=_form_timeout_ms(5000))
     field.wait_for(state="visible", timeout=_form_timeout_ms(5000))
+    slider = page.get_by_role("slider", name="Duration", exact=True)
+    try:
+        minimum = int(slider.get_attribute("aria-valuemin"))
+    except (TypeError, ValueError):
+        minimum = 10
+    try:
+        maximum = int(slider.get_attribute("aria-valuemax"))
+    except (TypeError, ValueError):
+        maximum = 360
+    if not minimum <= seconds <= maximum:
+        raise SunoSubmissionError(
+            "duration_validation", f"Custom Durationは{minimum}〜{maximum}秒で指定してください: 指定値={seconds}",
+        )
     display = f"{seconds // 60}:{seconds % 60:02d}"
     field.fill(display, timeout=_form_timeout_ms(5000))
     field.press("Tab", timeout=_form_timeout_ms(5000))
-    slider = page.get_by_role("slider", name="Duration", exact=True)
     actual = slider.get_attribute("aria-valuenow")
     if field.input_value() != display or actual is None or float(actual) != seconds:
         raise SunoSubmissionError(
@@ -3664,6 +3678,59 @@ def _set_custom_duration(page, seconds):
         )
     print(f"Custom Durationを検証: {display} ({seconds}秒)")
     return seconds
+
+
+def _set_slider_value(page, name, target):
+    """可視スライダーを矢印キーで設定し、残差の再調整は1回までにする。"""
+    sliders = page.get_by_role("slider", name=name, exact=True)
+    visible = [sliders.nth(index) for index in range(sliders.count())
+               if sliders.nth(index).is_visible()]
+    if len(visible) != 1:
+        raise SunoSubmissionError(
+            "slider_validation", f"{name}の可視スライダーは1件必要です: {len(visible)}件、指定値={target!r}",
+        )
+    slider = visible[0]
+    actual = slider.get_attribute("aria-valuenow")
+    try:
+        minimum = int(slider.get_attribute("aria-valuemin"))
+        maximum = int(slider.get_attribute("aria-valuemax"))
+        current = int(actual)
+    except (TypeError, ValueError) as exc:
+        raise SunoSubmissionError(
+            "slider_validation", f"{name}の数値属性が不正です: 指定値={target!r}, 実際の値={actual!r}",
+        ) from exc
+    if isinstance(target, bool) or not isinstance(target, int) or not minimum <= target <= maximum:
+        raise SunoSubmissionError(
+            "slider_validation",
+            f"{name}は{minimum}〜{maximum}の整数で指定してください: 指定値={target!r}, 実際の値={actual!r}",
+        )
+    for _ in range(2):
+        difference = target - current
+        key = "ArrowRight" if difference > 0 else "ArrowLeft"
+        for _ in range(abs(difference)):
+            slider.press(key, timeout=_form_timeout_ms(5000))
+        actual = slider.get_attribute("aria-valuenow")
+        try:
+            current = int(actual)
+        except (TypeError, ValueError):
+            break
+        if current == target:
+            return target
+    raise SunoSubmissionError(
+        "slider_validation", f"{name}が指定と一致しません: 指定値={target}, 実際の値={actual!r}",
+    )
+
+
+def _apply_numeric_options(page, content):
+    """指定された数値項目だけ設定し、未指定の項目は現在値を保つ。"""
+    options = (("weirdness", "Weirdness"), ("style_influence", "Style Influence"), ("variety", "Variety"))
+    specified = [(name, content[key]) for key, name in options if content.get(key) is not None]
+    if not specified:
+        return
+    _ensure_more_options_open(page)
+    for name, target in specified:
+        _set_slider_value(page, name, target)
+        print(f"{name} を検証: {target}")
 
 
 _BRACKET_LINE_RE = re.compile(r'^\s*\[[^\]]+\]\s*$')
@@ -4129,6 +4196,9 @@ def main():
     parser.add_argument("--interval", "-i", type=int, help="ループ間隔（秒）")
     parser.add_argument("--duration-seconds", type=int,
                         help="各曲の送信前にSUNO DurationをCustomへ切り替え、指定秒数を検証（例: 240 = 4:00）")
+    parser.add_argument("--weirdness", type=int, help="Weirdness（0〜100）")
+    parser.add_argument("--style-influence", type=int, help="Style Influence（0〜100）")
+    parser.add_argument("--variety", type=int, help="Variety（0〜4）")
     parser.add_argument("--provider", choices=["gemini", "chatgpt", "claude", "codex"], help="AIプロバイダー")
     parser.add_argument("--model", "-m", help="モデル名")
     parser.add_argument("--api-key", "-k", help="APIキー")
@@ -4172,9 +4242,15 @@ def main():
     if args.interval:
         settings["loop_interval_sec"] = args.interval
     if args.duration_seconds is not None:
-        if args.duration_seconds <= 0:
-            parser.error("--duration-secondsは正の整数で指定してください")
+        if not 10 <= args.duration_seconds <= 360:
+            parser.error("--duration-secondsは10〜360の整数で指定してください")
         settings["duration_seconds"] = args.duration_seconds
+    for key, maximum in (("weirdness", 100), ("style_influence", 100), ("variety", 4)):
+        value = getattr(args, key)
+        if value is not None:
+            if not 0 <= value <= maximum:
+                parser.error(f"--{key.replace('_', '-')}は0〜{maximum}の整数で指定してください")
+            settings[key] = value
     if args.provider:
         settings["provider"] = args.provider
     if args.model:

@@ -150,6 +150,9 @@ def load_jobs(path: Path) -> list[Job]:
         settings.update(channel_config)
         if item.get("duration_seconds") is not None:
             settings["duration_seconds"] = int(item["duration_seconds"])
+        for key in ("weirdness", "style_influence", "variety"):
+            if item.get(key) is not None:
+                settings[key] = item[key]
         settings.update(
             {
                 "workspace": workspace,
@@ -283,8 +286,9 @@ def submit_job(page: Any, job: Job) -> None:
             },
         )
         job.step = f"song_{index + 1}_submission"
-        if job.settings.get("duration_seconds") is not None:
-            content = dict(content, duration_seconds=job.settings["duration_seconds"])
+        for key in ("duration_seconds", "weirdness", "style_influence", "variety"):
+            if job.settings.get(key) is not None:
+                content = dict(content, **{key: job.settings[key]})
         call_existing(suno.submit_song_to_suno, page, content, form_retries=2)
         job.submitted_count += 1
         emit(
