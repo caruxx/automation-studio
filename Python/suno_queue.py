@@ -148,11 +148,20 @@ def load_jobs(path: Path) -> list[Job]:
 
         settings = suno.load_config()
         settings.update(channel_config)
-        if item.get("duration_seconds") is not None:
-            settings["duration_seconds"] = int(item["duration_seconds"])
-        for key in ("weirdness", "style_influence", "variety"):
+        for key, minimum, maximum in (
+            ("duration_seconds", 10, 360),
+            ("weirdness", 0, 100),
+            ("style_influence", 0, 100),
+            ("variety", 0, 4),
+        ):
             if item.get(key) is not None:
                 settings[key] = item[key]
+            value = settings.get(key)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int)
+                or not minimum <= value <= maximum
+            ):
+                raise ValueError(f"job {index}: {key} は {minimum}〜{maximum} の整数にしてください")
         settings.update(
             {
                 "workspace": workspace,
@@ -203,17 +212,24 @@ def ensure_login(page: Any) -> None:
     if suno.is_suno_logged_in(page):
         return
     emit("browser", "login_wait", {"timeout_sec": 300})
-    for elapsed in range(300):
-        time.sleep(1)
+    started = time.monotonic()
+    deadline = started + 300
+    while time.monotonic() < deadline:
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+        if time.monotonic() >= deadline:
+            break
         try:
-            url = page.url.lower()
-            if "suno.com" in url and not any(x in url for x in ("sign", "login", "clerk")):
-                if "/create" not in url:
-                    page.goto("https://suno.com/create", wait_until="domcontentloaded", timeout=15000)
-                    time.sleep(3)
-                if suno.is_suno_logged_in(page):
-                    emit("browser", "login_ready", {"elapsed_sec": elapsed + 1})
-                    return
+            if suno._login_wait_should_navigate(page):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                remaining_ms = max(1, int(remaining * 1000))
+                page.goto("https://suno.com/create", wait_until="domcontentloaded",
+                          timeout=min(15000, remaining_ms))
+                time.sleep(min(3, max(0, deadline - time.monotonic())))
+            if time.monotonic() < deadline and suno.is_suno_logged_in(page):
+                emit("browser", "login_ready", {"elapsed_sec": int(time.monotonic() - started)})
+                return
         except Exception:
             continue
     raise suno.UnattendedLoginRequired("SUNO のログインが 300 秒以内に確認できませんでした")
@@ -493,14 +509,23 @@ def main() -> int:
 
         with sync_playwright() as playwright:
             session = open_suno_context(playwright, browser_settings)
-            context = session.context
-            context.add_init_script(suno._SUNO_AUDIO_URL_INTERCEPTOR)
-            page = session.page()
-            ensure_login(page)
-            emit("queue", "started", {"jobs": len(jobs), "final_wait_sec": final_wait_sec})
-            for job in jobs:
-                emit(job.label, job.state, {"order": job.index, "vol": job.vol})
-            return run_scheduler(jobs, page, final_wait_sec)
+            try:
+                context = session.context
+                context.add_init_script(suno._SUNO_AUDIO_URL_INTERCEPTOR)
+                if os.environ.get("APP_SUNO_DL_MODE", "fast").strip().lower() != "legacy":
+                    from suno_fast_dl import install_fast_capture
+                    install_fast_capture(context)
+                page = session.page()
+                ensure_login(page)
+                emit("queue", "started", {"jobs": len(jobs), "final_wait_sec": final_wait_sec})
+                for job in jobs:
+                    emit(job.label, job.state, {"order": job.index, "vol": job.vol})
+                return run_scheduler(jobs, page, final_wait_sec)
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
     except KeyboardInterrupt:
         trace = traceback.format_exc()
         for job in jobs:
@@ -517,11 +542,6 @@ def main() -> int:
         emit_summary(jobs)
         return 1
     finally:
-        if session is not None:
-            try:
-                session.close()
-            except Exception:
-                pass
         lock.release()
 
 

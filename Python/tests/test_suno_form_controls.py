@@ -148,6 +148,47 @@ class FormControlsTests(unittest.TestCase):
         """)
         self.assertFalse(suno.is_suno_logged_in(self.page))
 
+    def test_login_ui_visible_on_landing_but_not_logged_in_page(self):
+        self.load_login_page('<button>Log in</button><button>Create</button>')
+        self.assertTrue(suno._login_ui_visible(self.page))
+        self.load_login_page('<button data-testid="profile-menu-button"></button>')
+        self.assertFalse(suno._login_ui_visible(self.page))
+
+    def test_login_wait_leaves_landing_page_untouched(self):
+        requests = []
+
+        def landing(route):
+            requests.append(route.request.url)
+            route.fulfill(status=200, content_type="text/html", body='<button>Log in</button>')
+
+        self.page.route("https://suno.com/**", landing)
+        self.page.goto("https://suno.com/")
+        for _ in range(3):
+            should_navigate = suno._login_wait_should_navigate(self.page)
+            if should_navigate:
+                self.page.goto("https://suno.com/create")
+            self.assertFalse(should_navigate)
+        self.assertEqual(requests, ["https://suno.com/"])
+
+    def test_login_wait_only_navigates_from_unidentified_suno_page(self):
+        cases = (
+            ("https://suno.com/", "<main>Loading</main>", True),
+            ("https://suno.com/create", "<main>Loading</main>", False),
+            ("https://suno.com/sign-up", "<main>Loading</main>", False),
+            ("https://suno.com/login", "<main>Loading</main>", False),
+            ("https://suno.com/clerk", "<main>Loading</main>", False),
+            ("https://suno.com/?redirect=accounts.google.com", "<main>Loading</main>", False),
+            ("https://accounts.google.com/", "<main>Loading</main>", False),
+            ("https://example.com/?next=suno.com", "<main>Loading</main>", False),
+            ("https://suno.com/", '<button data-testid="profile-menu-button"></button>', False),
+        )
+        for url, html, expected in cases:
+            with self.subTest(url=url, html=html):
+                self.page.route("**/*", lambda route: route.fulfill(
+                    status=200, content_type="text/html", body=html))
+                self.page.goto(url)
+                self.assertIs(suno._login_wait_should_navigate(self.page), expected)
+
     def test_login_profile_menu_confirms_logged_in_before_other_controls(self):
         for other_controls in (
             '<button aria-label="Create song">Create</button><textarea></textarea>',
@@ -366,6 +407,65 @@ class FormControlsTests(unittest.TestCase):
     def test_inject_stops_when_numeric_validation_fails(self):
         with mock.patch.object(suno, "_ensure_advanced_mode", return_value=True):
             self.assertFalse(suno.inject_into_suno(self.page, {"weirdness": 101}))
+
+
+class DownloadLoginTests(unittest.TestCase):
+    def run_download(self, settings, logged_in, ready_poll=False):
+        session = mock.MagicMock()
+        page = session.page.return_value
+        calls = []
+        page.goto.side_effect = lambda *args, **kwargs: calls.append("goto")
+
+        def check_login(actual_page):
+            self.assertIs(actual_page, page)
+            calls.append("login")
+            return logged_in
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch("playwright.sync_api.sync_playwright"))
+            stack.enter_context(mock.patch.object(suno, "open_suno_context", return_value=session))
+            stack.enter_context(mock.patch.object(suno, "is_suno_logged_in", side_effect=check_login))
+            download = stack.enter_context(mock.patch.object(
+                suno, "download_workspace_tracks", side_effect=lambda *args: calls.append("download")))
+            poll = stack.enter_context(mock.patch.object(
+                suno, "_ready_poll_and_download", side_effect=lambda *args: calls.append("poll")))
+            stack.enter_context(mock.patch.object(suno, "SunoProgress"))
+            stack.enter_context(mock.patch.object(suno.time, "sleep"))
+            stack.enter_context(mock.patch.dict(os.environ, {
+                "APP_SUNO_DL_MODE": "legacy", "APP_SUNO_READY_POLL": "1" if ready_poll else "0",
+            }))
+            if logged_in:
+                suno._run_download_only("fixture", "/fixture", settings)
+            else:
+                with self.assertRaises(suno.UnattendedLoginRequired) as caught:
+                    suno._run_download_only("fixture", "/fixture", settings)
+                message = str(caught.exception)
+                resolved = suno.resolve_browser_settings(settings)
+                self.assertIn(resolved["mode"], message)
+                self.assertIn(str(resolved["cdp_port"]) if resolved["mode"] == "cdp"
+                              else resolved["profile_dir"], message)
+                self.assertIn("そのブラウザで SUNO にログインしてから再実行", message)
+                download.assert_not_called()
+                poll.assert_not_called()
+        page.goto.assert_called_once_with(
+            "https://suno.com/create", wait_until="domcontentloaded", timeout=30000)
+        session.close.assert_called_once_with()
+        return calls
+
+    def test_download_requires_login_for_every_connection_mode(self):
+        for mode in ("chrome", "chromium", "cdp"):
+            for ready_poll in (False, True):
+                with self.subTest(mode=mode, ready_poll=ready_poll):
+                    calls = self.run_download(
+                        {"browser_mode": mode, "cdp_port": 9333, "expected_ready": 2},
+                        logged_in=False, ready_poll=ready_poll)
+                    self.assertEqual(calls, ["goto", "login"])
+
+    def test_download_checks_login_before_both_download_paths(self):
+        for ready_poll, expected in ((False, "download"), (True, "poll")):
+            with self.subTest(ready_poll=ready_poll):
+                calls = self.run_download({"expected_ready": 2}, logged_in=True, ready_poll=ready_poll)
+                self.assertEqual(calls, ["goto", "login", expected])
 
 
 class NumericCliTests(unittest.TestCase):

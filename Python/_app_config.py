@@ -203,7 +203,7 @@ def migrate_legacy_if_needed(verbose: bool = False) -> dict:
         "venv", ".venv", "__pycache__", "node_modules", ".pytest_cache",
         ".cache", ".git",
         # Playwright / Chromium プロファイル（289MB+ になる、再ログイン推奨）
-        "chromium_profile", ".flow-playwright-profile",
+        "chromium_profile", "chrome_profile", ".flow-playwright-profile",
         # ブラウザキャッシュ系
         "Cache", "GPUCache", "ShaderCache", "GrShaderCache", "GraphiteDawnCache",
         "Code Cache", "Service Worker",

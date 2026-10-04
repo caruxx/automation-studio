@@ -137,3 +137,14 @@ def open_suno_context(playwright, settings: dict) -> BrowserSession
 - ブランチ `feature/suno-chrome-direct-hook`。実装は Codex へ委譲（`codex-driven-development`）。
 - `Python/app.py`・`web/static/index.html` には着手前から未コミットの変更（fal-video / layer-motion 関連）がある。今回の変更はそれらと別の箇所に限定し、コミットは今回の hunk だけを `git add -p` 相当で選ぶ。既存の未コミット変更は巻き込まない・消さない。
 - 本番デプロイは対象外（ローカルの Automation Studio で動作確認まで）。
+
+## 追記（2026-10-04 本人指示による範囲拡大）
+
+DOM 突合の報告後、本人から「不一致 3 件をすべて直す。時間尺指定や他の数値の調整もできるように、確認の上実装」との指示があり、上の「対象外」のうち生成パラメータの一部を範囲に入れた。
+
+- 追加した項目: 曲の長さ（10〜360 秒）、Weirdness（0〜100）、Style Influence（0〜100）、Variety（0〜4）。範囲と操作方法は `docs/music/suno-dom-snapshot-2026-10-04.md` の 5 節で実画面から採取した。
+- 設定画面「SUNO 設定」カードにチャンネル別の設定として追加。空欄は「触れない」（尺は SUNO の Auto のまま）。
+- 作成フォームへの投入は読み戻し検証つき。一致しなければ Create の前に止める。
+- 引き続き対象外: モデル選択、Exclude Styles の UI 化、BPM（現行の画面では非表示）、ネイティブ Instrumental、DL 設定の UI 化、Studio 書き出し。
+- 起動失敗時は成功扱いにせずエラー終了する（計画の当初コードは終了コード 0 だったが、5 節の「失敗させる」に合わせた）。
+- SUNO タブの「曲の長さ」セレクト（既定 4:00）は設定画面の値より優先される。設定画面の値は、セレクトで「設定の長さを使う」を選んだときに使われる。

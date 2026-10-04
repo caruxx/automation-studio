@@ -624,6 +624,17 @@ def step_plan(vol: int, folder: Path, via_api: bool, **kw):
         return True
 
 
+def _suno_control_cli_args(config_get):
+    args = []
+    for key, flag in (("weirdness", "--weirdness"),
+                      ("style_influence", "--style-influence"),
+                      ("variety", "--variety")):
+        value = config_get(key)
+        if value is not None:
+            args += [flag, str(value)]
+    return args
+
+
 def step_suno(vol: int, folder: Path, via_api: bool, **kw):
     # SUNO 設定は per-channel `.app_channel_config.json.suno` を最優先、
     # 無ければグローバル `~/.config/{app_id}/suno_config.json` にフォールバック。
@@ -779,6 +790,7 @@ def step_suno(vol: int, folder: Path, via_api: bool, **kw):
             cmd += ["--history-limit", str(hist_limit)]
         if song_duration is not None:
             cmd += ["--duration-seconds", str(song_duration)]
+        cmd += _suno_control_cli_args(_cfg)
         oneshot = os.environ.get("APP_SUNO_ONESHOT", "").strip().lower() in ("1", "true", "yes")
         ready_poll = os.environ.get("APP_SUNO_READY_POLL", "").strip().lower() in ("1", "true", "yes")
         render_wait_timeout = int(os.environ.get("APP_SUNO_AUTO_DOWNLOAD_TIMEOUT_SEC") or "2700")

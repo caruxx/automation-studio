@@ -4684,6 +4684,25 @@ function sunoNumericPatch(){
   if(clearKeys.length)patch.clear_keys=clearKeys;
   return patch;
 }
+function sunoInvalidFields(){
+  const fields=[
+    ['cfgSunoDuration','曲の長さ',10,360],
+    ['cfgSunoWeirdness','Weirdness',0,100],
+    ['cfgSunoStyleInfluence','Style Influence',0,100],
+    ['cfgSunoVariety','Variety',0,4],
+  ];
+  if(document.getElementById('cfgSunoBrowserMode')?.value==='cdp'){
+    fields.unshift(['cfgSunoCdpPort','接続ポート',1024,65535]);
+  }
+  const names=[];
+  for(const [id,name,min,max] of fields){
+    const raw=(document.getElementById(id)?.value||'').trim();
+    if(raw==='')continue;
+    const value=Number(raw);
+    if(!Number.isInteger(value)||value<min||value>max)names.push(name);
+  }
+  return names;
+}
 async function putSunoConfig(patch){
   try{
     const r=await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
@@ -4819,6 +4838,7 @@ async function _autoSaveSettingsNow(){
     if(codexCli)sunoPatch.codex_cli=codexCli;
     const sunoSaved=await putSunoConfig(sunoPatch);
     if(!sunoSaved){_setAutoSaveIndicator('注意: 保存失敗 (SUNO 設定)','var(--accent-danger)');return}
+    const names=sunoInvalidFields();
     // 正規化されたスプシ URL を表示に反映
     try{
       const d=await r.json();
@@ -4829,6 +4849,11 @@ async function _autoSaveSettingsNow(){
         if($('cfgSheetGrowth') && $('cfgSheetGrowth').value!==b)$('cfgSheetGrowth').value=b;
       }
     }catch(e){}
+    if(names.length){
+      toast('範囲外のため保存していない項目があります: '+names.join('、'),'w');
+      _setAutoSaveIndicator('注意: 範囲外の項目は未保存','var(--accent-warning)');
+      return;
+    }
     _setAutoSaveIndicator('✓ 自動保存しました ('+new Date().toLocaleTimeString('ja-JP')+')','var(--accent-success)');
   }catch(e){_setAutoSaveIndicator('注意: '+e.message,'var(--accent-danger)')}
 }
@@ -5040,6 +5065,8 @@ async function saveSettings(){
   if(codexCli)sunoPatch.codex_cli=codexCli;
   const sunoSaved=await putSunoConfig(sunoPatch);
   if(!sunoSaved)return;
+  const names=sunoInvalidFields();
+  if(names.length)toast('範囲外のため保存していない項目があります: '+names.join('、'),'w');
   await loadChannelSwitcher();
   await loadConfig();
   refreshQuickSetup();

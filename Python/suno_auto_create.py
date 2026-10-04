@@ -21,6 +21,7 @@ import time
 import atexit
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -2276,6 +2277,17 @@ def _collect_all_song_uuids(page, from_top: bool = False):
     return uuids_seen
 
 
+def _login_ui_visible(page) -> bool:
+    """可視のログイン操作が表示されているか確認する。"""
+    return any(
+        control.is_visible() and _ui_text_match(
+            control.inner_text(),
+            ("Log in", "Sign in", "Sign Up", "ログイン", "サインイン", "新規登録"),
+        )
+        for control in page.query_selector_all('button, a, [role="button"]')
+    )
+
+
 def is_suno_logged_in(page):
     """プロフィール・ログイン UI を優先し、曲作成 UI を保険にログイン状態を確認する。"""
     try:
@@ -2283,12 +2295,8 @@ def is_suno_logged_in(page):
             return False
         if page.query_selector('[data-testid="profile-menu-button"]'):
             return True
-        for control in page.query_selector_all('button, a, [role="button"]'):
-            if control.is_visible() and _ui_text_match(
-                control.inner_text(),
-                ("Log in", "Sign in", "Sign Up", "ログイン", "サインイン", "新規登録"),
-            ):
-                return False
+        if _login_ui_visible(page):
+            return False
         buttons = page.query_selector_all('button')
         for btn in buttons:
             try:
@@ -2301,6 +2309,27 @@ def is_suno_logged_in(page):
         return False
     except Exception:
         return False
+
+
+def _login_wait_should_navigate(page) -> bool:
+    """ログイン操作を中断せず /create に戻せる場合だけ True を返す。"""
+    url = page.url.lower()
+    host = urllib.parse.urlparse(url).hostname or ""
+    if host != "suno.com" and not host.endswith(".suno.com"):
+        return False
+    if any(part in url for part in ("/create", "sign", "login", "clerk", "accounts.google")):
+        return False
+    return not _login_ui_visible(page) and not is_suno_logged_in(page)
+
+
+def _login_required_message(browser_cfg):
+    target = ("cdp_port=%s" % browser_cfg["cdp_port"] if browser_cfg["mode"] == "cdp"
+              else "profile=%s" % browser_cfg["profile_dir"])
+    return (
+        "SUNO のブラウザログインが必要です (mode=%s, %s)。"
+        "そのブラウザで SUNO にログインしてから再実行してください。"
+        % (browser_cfg["mode"], target)
+    )
 
 
 def run_browser_automation(settings):
@@ -2382,18 +2411,29 @@ def run_browser_automation(settings):
             progress.update(page, phase="login_wait", last_action="waiting for login", emit=True)
 
             # ログイン完了を自動検知（最大5分待機）
-            for tick in range(300):
-                time.sleep(1)
-                if tick % 10 == 0 and tick > 0:
+            login_started = time.monotonic()
+            login_deadline = login_started + 300
+            next_log = 10
+            while time.monotonic() < login_deadline:
+                time.sleep(min(1, max(0, login_deadline - time.monotonic())))
+                if time.monotonic() >= login_deadline:
+                    continue
+                tick = int(time.monotonic() - login_started)
+                if tick >= next_log:
                     print(f"  ... 待機中 ({tick}秒経過) URL: {page.url}")
-                    progress.update(page, phase="login_wait", last_action=f"waiting for login {tick}s", emit=(tick % 30 == 0))
+                    progress.update(page, phase="login_wait", last_action=f"waiting for login {tick}s", emit=(tick // 10 % 3 == 0))
+                    next_log = (tick // 10 + 1) * 10
                 try:
-                    # suno.com のどこかにいればリダイレクト試行
-                    if "suno.com" in page.url and "sign" not in page.url.lower() and "login" not in page.url.lower() and "clerk" not in page.url.lower():
-                        # /create に移動
-                        if "/create" not in page.url:
-                            page.goto("https://suno.com/create", wait_until="domcontentloaded", timeout=15000)
-                            time.sleep(3)
+                    if is_logged_in():
+                        print(" ログイン検知!")
+                        break
+                    if _login_wait_should_navigate(page):
+                        remaining = login_deadline - time.monotonic()
+                        if remaining <= 0:
+                            continue
+                        page.goto("https://suno.com/create", wait_until="domcontentloaded",
+                                  timeout=max(1, min(15000, int(remaining * 1000))))
+                        time.sleep(min(3, max(0, login_deadline - time.monotonic())))
                         if is_logged_in():
                             print(" ログイン検知!")
                             break
@@ -2407,10 +2447,7 @@ def run_browser_automation(settings):
                         session.close()
                     except Exception:
                         pass
-                    raise UnattendedLoginRequired(
-                        "SUNO のブラウザログインが必要です。手動でログインを完了させてください。"
-                        " 一度ログインすれば ~/.flow-playwright-profile に保存され、以降の自動実行は通ります。"
-                    )
+                    raise UnattendedLoginRequired(_login_required_message(browser_cfg))
                 print("ブラウザは開いたままにします。手動で操作してください。")
                 try:
                     while True:
@@ -4031,6 +4068,10 @@ def _run_download_only(workspace_name, target_dir, settings):
             context.add_init_script(_STATUS_OVERLAY_SCRIPT)
         page = session.page()
         try:
+            page.goto("https://suno.com/create", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(3)
+            if not is_suno_logged_in(page):
+                raise UnattendedLoginRequired(_login_required_message(resolve_browser_settings(settings)))
             expected_ready = int(settings.get("expected_ready") or 0)
             if ready_poll and expected_ready > 0:
                 progress_settings = dict(settings)
