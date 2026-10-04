@@ -293,3 +293,19 @@ URL: `https://suno.com/me/workspaces`。Library 内の Workspaces タブ選択�
 - ログイン判定。
 
 上記の動作確認済み項目はTask 13の変更対象外。数値項目は表示言語を判定せず、各項目の英語名・日本語名のいずれかに完全一致するrole要素のうち、可視のものがちょうど1件であることを要求する。
+
+## 7. 日本語表示での曲一覧（2026-10-05 追加採取）
+
+以下はユーザーが2026-10-05に実機の日本語表示（`lang=ja`、曲2件のワークスペース）で追加採取した事実。Task 14ではSUNOへの接続や実機での再確認は行っていない。
+
+|要素|英語表示|日本語表示|
+|---|---|---|
+|曲行|`[data-testid="clip-row"]`、`aria-label=曲名`|同じ|
+|再生ボタン（行内 `div[role=button].clip-image-container`）の `aria-label`|`Play <曲名>`|`<曲名>を再生`|
+|再生中の同ボタンの `aria-label`|`Pause <曲名>`（英語は未採取、現行コードの前提）|`<曲名>を一時停止`（実機で確認。停止すると `<曲名>を再生` に戻る）|
+|曲数表示（子要素なしの葉）|`20 songs`|`2曲`（数字と「曲」の間に空白なし）|
+|ページ番号入力の `aria-label`|`Current page number`|`現在のページ番号`|
+|前 / 次ページボタンの `aria-label`|`Previous page` / `Next page`|`前のページ` / `次のページ`|
+|フィルター開閉（`button[role=combobox]`）の `aria-label`|`Filters (3)`|`フィルター (3)`|
+|選択済みフィルター（`[role=listbox] [role=option][aria-selected=true]`）の `aria-label`|`Hide disliked clips` / `Hide Stems` / `Hide Clips from Edit Mode`|`低く評価したクリップを非表示` / `ステムを非表示` / `編集モードのクリップを非表示`|
+|曲なし表示|`No songs found`|未採取（現行コードの候補 `曲が見つかりません` をそのまま残す）|

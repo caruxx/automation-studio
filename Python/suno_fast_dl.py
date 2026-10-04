@@ -399,7 +399,7 @@ _WORKSPACE_ROWS_DOM = r"""
     return false;
   });
   const counts = leaves.map((element) => {
-    const match = element.textContent.trim().match(/^([\d,]+)\s+songs?$/i);
+    const match = element.textContent.trim().match(/^([\d,]+)(?:\s+songs?|\s*曲)$/i);
     return match ? { element, count: Number(match[1].replace(/,/g, '')) } : null;
   }).filter(Boolean);
   let expected = null;
@@ -496,7 +496,7 @@ def _clear_workspace_filters(page, status_cb=None) -> None:
     """全曲列挙の前に、明示的に選択済みと表示されるフィルターだけを解除する。"""
     import re
 
-    selector = 'button[aria-label^="Filters"]:visible'
+    selector = 'button[aria-label^="Filters"]:visible, button[aria-label^="フィルター"]:visible'
 
     def read_filter_count():
         button = page.locator(selector)
@@ -505,7 +505,7 @@ def _clear_workspace_filters(page, status_cb=None) -> None:
         if button.count() != 1:
             raise RuntimeError("曲一覧のFiltersを一意に特定できません")
         label = button.get_attribute("aria-label") or ""
-        match = re.fullmatch(r"Filters(?:\s*\((\d+)\))?", label)
+        match = re.fullmatch(r"(?:Filters|フィルター)(?:\s*\((\d+)\))?", label)
         if not match:
             raise RuntimeError(f"Filtersの状態を確認できません: {label}")
         return int(match.group(1) or 0)
@@ -661,8 +661,14 @@ def iter_workspace_rows(page, status_cb: Optional[Callable[[str], None]] = None,
     return result
 
 
-_PLAY_BUTTON = 'button[aria-label^="Play " i], [role="button"][aria-label^="Play " i]'
-_PAUSE_BUTTON = 'button[aria-label^="Pause " i], [role="button"][aria-label^="Pause " i]'
+_PLAY_BUTTON = (
+    'button[aria-label^="Play " i], [role="button"][aria-label^="Play " i], '
+    'button[aria-label$="を再生"], [role="button"][aria-label$="を再生"]'
+)
+_PAUSE_BUTTON = (
+    'button[aria-label^="Pause " i], [role="button"][aria-label^="Pause " i], '
+    'button[aria-label$="を一時停止"], [role="button"][aria-label$="を一時停止"]'
+)
 
 
 def _song_row(page, song_id):
