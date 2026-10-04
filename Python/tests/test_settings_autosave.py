@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import unittest
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,7 +13,7 @@ ORIGIN = "http://settings.test"
 CONFIG = {
     "dashboard": {"channel_name": "Settings fixture", "app_id": "orzz",
                   "persona": "Saved persona", "rival_channels": ["Saved rival"]},
-    "suno": {"provider": "claude", "weirdness": 20},
+    "suno": {"provider": "claude", "weirdness": 20, "api_key": "sk-r●●●●●●●●"},
 }
 
 
@@ -38,7 +39,10 @@ class SettingsAutosaveTests(unittest.TestCase):
         self.addCleanup(self.context.close)
         self.page = self.context.new_page()
         self.puts = []
+        self.config = copy.deepcopy(CONFIG)
         self.config_status = 200
+        self.hold_paths = set()
+        self.pending = {}
         self.page.route("**/*", self._asset)
         self.page.route("**/api/**", self._api)
 
@@ -63,11 +67,27 @@ class SettingsAutosaveTests(unittest.TestCase):
         if request.method == "PUT":
             patch = request.post_data_json
             self.puts.append((path, patch))
-            body = {"status": "ok", "config": {**CONFIG["dashboard"], **patch}}
+            body = {"status": "ok", "config": {**self.config["dashboard"], **(patch or {})}}
         elif request.method == "GET" and path == "/api/config":
             status = self.config_status
-            body = CONFIG if status == 200 else {"detail": "test load failure"}
+            body = self.config if status == 200 else {"detail": "test load failure"}
+        if path in self.hold_paths:
+            self.pending.setdefault(path, []).append(route)
+            return
         route.fulfill(status=status, content_type="application/json", body=json.dumps(body))
+
+    def _release(self, path, status=200, body=None):
+        self.hold_paths.discard(path)
+        for route in self.pending.pop(path, []):
+            route.fulfill(status=status, content_type="application/json", body=json.dumps(body or {}))
+
+    def _settings_puts(self):
+        return [(path, body) for path, body in self.puts if path.startswith("/api/config/")]
+
+    def _start_held_autosave(self):
+        self.hold_paths.add("/api/config/dashboard")
+        with self.page.expect_request("**/api/config/dashboard"):
+            self.page.evaluate("window.testSave = _autoSaveSettingsNow(); void 0")
 
     def _load(self, fail=False):
         self.config_status = 500 if fail else 200
@@ -97,7 +117,8 @@ class SettingsAutosaveTests(unittest.TestCase):
         self.assertGreaterEqual(len(suno), 1)
         self.assertEqual(suno[-1]["weirdness"], 37)
         dashboard = [body for path, body in self.puts if path == "/api/config/dashboard"][-1]
-        for key in ("persona", "rival_channels", "publish_mode", "publish_delay_hours"):
+        for key in ("persona", "rival_channels", "publish_mode", "publish_delay_hours",
+                    "channel_folder", "channel_name"):
             self.assertNotIn(key, dashboard)
 
     def test_manual_save_omits_absent_fields_and_toast_suffix(self):
@@ -172,6 +193,146 @@ class SettingsAutosaveTests(unittest.TestCase):
         self._remove_optional_inputs()
         self.page.evaluate("saveSettings()")
         self._assert_removed_inputs_omitted()
+
+    def _check_api_key_edits(self, manual):
+        cases = [
+            ("sk-r●●●●●●●●", None, None),
+            ("sk-r●●●●●●●●", "sk-new-key-123", "sk-new-key-123"),
+            ("sk-r●●●●●●●●", "sk-other●mask", None),
+            ("plain-loaded-key", None, None),
+        ]
+        for loaded, entered, expected in cases:
+            with self.subTest(loaded=loaded, entered=entered):
+                self.config["suno"]["api_key"] = loaded
+                self._load()
+                self.puts.clear()
+                if entered is not None:
+                    self.page.locator("#cfgApiKey").evaluate("(el, value) => el.value = value", entered)
+                if manual:
+                    self.page.evaluate("saveSettings()")
+                else:
+                    self._wait_autosave()
+                patch = [body for path, body in self.puts if path == "/api/config/suno"][-1]
+                if expected is None:
+                    self.assertNotIn("api_key", patch)
+                else:
+                    self.assertEqual(patch["api_key"], expected)
+
+    def test_autosave_sends_only_new_unmasked_api_key(self):
+        self._check_api_key_edits(manual=False)
+
+    def test_manual_save_sends_only_new_unmasked_api_key(self):
+        self._check_api_key_edits(manual=True)
+
+    def test_channel_pointer_inputs_do_not_trigger_autosave(self):
+        self._load()
+        for selector in ("#cfgFolder", "#cfgName"):
+            with self.subTest(selector=selector):
+                self.puts.clear()
+                self.page.locator(selector).evaluate("""el => {
+                    el.value = 'partially typed';
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                    el.dispatchEvent(new Event('blur'));
+                }""")
+                self.page.wait_for_timeout(900)
+                self.assertEqual(self.puts, [])
+
+    def test_switch_blocks_autosave_and_recovers_after_failure(self):
+        self._load()
+        switch_path = "/api/channels/active/next"
+        self.hold_paths.add(switch_path)
+        self._input_weirdness()  # 切替開始前に予約済みのタイマーも止める。
+        with self.page.expect_request("**" + switch_path):
+            self.page.evaluate("window.testSwitch = switchCh('next', true); void 0")
+        self._input_weirdness()
+        self.page.wait_for_timeout(900)
+        self.assertEqual(self._settings_puts(), [])
+        self.assertFalse(self.page.evaluate("_settingsLoaded"))
+        self._release(switch_path, status=500)
+        self.page.evaluate("window.testSwitch")
+        self.assertTrue(self.page.evaluate("_settingsLoaded"))
+        self.assertEqual(self.page.locator("#cfgSunoWeirdness").input_value(), "20")
+        self._wait_autosave()
+
+    def test_switch_network_failure_reloads_config(self):
+        self._load()
+        self.page.locator("#cfgSunoWeirdness").evaluate("el => el.value = '91'")
+        self.page.route("**/api/channels/active/next", lambda route: route.abort())
+        self.page.evaluate("switchCh('next', true)")
+        self.assertTrue(self.page.evaluate("_settingsLoaded"))
+        self.assertEqual(self.page.locator("#cfgSunoWeirdness").input_value(), "20")
+
+    def test_switch_success_reloads_before_autosave_resumes(self):
+        self._load()
+        switch_path = "/api/channels/active/next"
+        self.hold_paths.add(switch_path)
+        with self.page.expect_request("**" + switch_path):
+            self.page.evaluate("window.testSwitch = switchCh('next', true); void 0")
+        self.assertFalse(self.page.evaluate("_settingsLoaded"))
+        self.config["suno"]["weirdness"] = 63
+        self._release(switch_path)
+        self.page.evaluate("window.testSwitch")
+        self.assertTrue(self.page.evaluate("_settingsLoaded"))
+        self.assertEqual(self.page.locator("#cfgSunoWeirdness").input_value(), "63")
+
+    def test_autosave_snapshots_suno_before_dashboard_response(self):
+        self._load()
+        self._start_held_autosave()
+        self.page.locator("#cfgSunoWeirdness").evaluate("el => el.value = '92'")
+        self._release("/api/config/dashboard")
+        self.page.evaluate("window.testSave")
+        patch = [body for path, body in self.puts if path == "/api/config/suno"][-1]
+        self.assertEqual(patch["weirdness"], 20)
+
+    def test_autosave_stops_between_puts_when_settings_become_unloaded(self):
+        self._load()
+        self._start_held_autosave()
+        self.page.evaluate("_settingsLoaded = false")
+        self._release("/api/config/dashboard")
+        self.page.evaluate("window.testSave")
+        self.assertEqual([path for path, body in self.puts], ["/api/config/dashboard"])
+
+    def test_unknown_saved_model_is_omitted_by_both_save_paths(self):
+        self.config["suno"]["model"] = "model-not-in-options"
+        for manual in (False, True):
+            with self.subTest(manual=manual):
+                self._load()
+                self.puts.clear()
+                self.assertEqual(self.page.locator("#cfgSunoModel").input_value(), "")
+                if manual:
+                    self.page.evaluate("saveSettings()")
+                else:
+                    self._wait_autosave()
+                patch = [body for path, body in self.puts if path == "/api/config/suno"][-1]
+                self.assertNotIn("model", patch)
+
+    def test_manual_save_omits_templates_until_list_is_loaded(self):
+        self.config["dashboard"].update(template_prproj="saved.prproj", template_psd="saved.psd")
+        self.hold_paths.add("/api/templates/list")
+        self._load()
+        self.page.evaluate("saveSettings()")
+        patch = [body for path, body in self.puts if path == "/api/config/dashboard"][-1]
+        self.assertNotIn("template_prproj", patch)
+        self.assertNotIn("template_psd", patch)
+        self._release("/api/templates/list", body={
+            "prproj": [{"filename": "saved.prproj"}], "psd": [{"filename": "saved.psd"}],
+        })
+        self.page.wait_for_function("document.getElementById('cfgTemplatePsd').value === 'saved.psd'")
+        self.puts.clear()
+        self.page.evaluate("saveSettings()")
+        patch = [body for path, body in self.puts if path == "/api/config/dashboard"][-1]
+        self.assertEqual(patch["template_prproj"], "saved.prproj")
+        self.assertEqual(patch["template_psd"], "saved.psd")
+
+    def test_failed_template_reload_disables_template_save(self):
+        self._load()
+        self.page.route("**/api/templates/list", lambda route: route.fulfill(
+            status=500, content_type="application/json", body='{"detail":"failed"}'))
+        self.page.evaluate("loadTemplateOptions()")
+        self.page.evaluate("saveSettings()")
+        patch = [body for path, body in self.puts if path == "/api/config/dashboard"][-1]
+        self.assertNotIn("template_prproj", patch)
+        self.assertNotIn("template_psd", patch)
 
 
 if __name__ == "__main__":

@@ -4246,8 +4246,17 @@ async function switchCh(id, skipNavigate=false){
     _uiChannelId='all';localStorage.setItem('automationStudioChannelContext','all');closeChDD();
     await loadChannelSwitcher();navigate({..._routeState},{replace:true});return;
   }
-  const r=await fetch(`/api/channels/active/${id}`,{method:'PUT'});
-  if(!r.ok){toast('チャンネル切替に失敗','e');return}
+  _settingsLoaded=false;
+  clearTimeout(_autoSaveTimer);
+  let r;
+  try{
+    r=await fetch(`/api/channels/active/${id}`,{method:'PUT'});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+  }catch(e){
+    toast('チャンネル切替に失敗','e');
+    await loadConfig();
+    return;
+  }
   let d={}; try{d=await r.json()}catch(e){}
   if(d.restart_required){
     // app_id(プロファイル)が変わる切替 → サーバーが自己再起動。数秒後に自動再読込。
@@ -4352,6 +4361,7 @@ function applyBrand(_dc){
   if(bt && bt.textContent!=='Automation Studio')bt.textContent='Automation Studio';
 }
 let _settingsLoaded=false;
+let _loadedSunoApiKey='';
 async function loadConfig(){
   _settingsLoaded=false;
   try{
@@ -4400,7 +4410,8 @@ async function loadConfig(){
     $('cfgExportEngine').value=['ame','ffmpeg'].includes(eng)?eng:'ame';
   }
   syncProductionModeUi();
-  if($('cfgApiKey'))$('cfgApiKey').value=s.api_key||'';
+  _loadedSunoApiKey=s.api_key||'';
+  if($('cfgApiKey'))$('cfgApiKey').value=_loadedSunoApiKey;
   if($('cfgClaudeCli'))$('cfgClaudeCli').value=s.claude_cli||'claude';
   if($('cfgCodexCli'))$('cfgCodexCli').value=s.codex_cli||'codex';
   if($('cfgPersona'))$('cfgPersona').value=dc.persona||'';
@@ -4792,10 +4803,8 @@ async function _autoSaveSettingsNow(){
     const persona=$('cfgPersona')?.value||'';
     const rivals=($('cfgRivals')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
     const filePrefix=($('cfgFilePrefix')?.value||'').trim().replace(/[^A-Za-z0-9_-]/g,'');
-    // app_id は自動保存しない（変更時は手動で「全保存」ボタンを使う）
+    // app_id とチャンネル名・フォルダは手動の「全保存」でのみ変更する
     const body={
-      ...($('cfgName')?{channel_name:$('cfgName').value||''}:{}),
-      ...($('cfgFolder')?{channel_folder:$('cfgFolder').value||''}:{}),
       ...($('cfgExport')?{export_path:$('cfgExport').value||''}:{}),
       ...($('cfgProductionMode')?{production_mode:$('cfgProductionMode').value||'standard'}:{}),
       ...($('cfgExportEngine')?{export_engine:$('cfgExportEngine').value||'ame'}:{}),
@@ -4824,13 +4833,11 @@ async function _autoSaveSettingsNow(){
       }
     }
     if(filePrefix)body.file_prefix=filePrefix;
-    const r=await fetch('/api/config/dashboard',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok){_setAutoSaveIndicator('注意: 保存失敗 (HTTP '+r.status+')','var(--accent-danger)');return}
-    // SUNO
+    // 両方の保存内容を await 前に確定し、同じ画面の値を送る
     const k=$('cfgApiKey')?.value||'',cli=$('cfgClaudeCli')?.value||'',codexCli=$('cfgCodexCli')?.value||'';
     const sunoPatch={
       ...($('cfgSunoProvider')?{provider:$('cfgSunoProvider').value||'claude'}:{}),
-      ...($('cfgSunoModel')?{model:$('cfgSunoModel').value||''}:{}),
+      ...($('cfgSunoModel')?.value?{model:$('cfgSunoModel').value}:{}),
       ...($('cfgSunoMode')?{generation_mode:$('cfgSunoMode').value||'styles_title_only'}:{}),
       ...($('cfgSunoPrompt')?{prompt:$('cfgSunoPrompt').value||''}:{}),
       ...($('cfgSunoCount')?{loop_count:parseInt($('cfgSunoCount').value||'5')}:{}),
@@ -4839,9 +4846,13 @@ async function _autoSaveSettingsNow(){
     };
     Object.assign(sunoPatch,sunoBrowserPatch());
     Object.assign(sunoPatch,sunoNumericPatch());
-    if(k)sunoPatch.api_key=k;
+    if(k&&k!==_loadedSunoApiKey&&!k.includes('●'))sunoPatch.api_key=k;
     if(cli)sunoPatch.claude_cli=cli;
     if(codexCli)sunoPatch.codex_cli=codexCli;
+    if(!_settingsLoaded)return;
+    const r=await fetch('/api/config/dashboard',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){_setAutoSaveIndicator('注意: 保存失敗 (HTTP '+r.status+')','var(--accent-danger)');return}
+    if(!_settingsLoaded)return;
     const sunoSaved=await putSunoConfig(sunoPatch);
     if(!sunoSaved){_setAutoSaveIndicator('注意: 保存失敗 (SUNO 設定)','var(--accent-danger)');return}
     const names=sunoInvalidFields();
@@ -4875,7 +4886,7 @@ function wireSettingsAutoSave(){
   const ids=[
     'cfgPersona','cfgRivals',
     'cfgFilePrefix',
-    'cfgName','cfgFolder','cfgExport','cfgExportEngine',
+    'cfgExport','cfgExportEngine',
     'cfgSheetDetail','cfgSheetGrowth',
     'cfgYtApiKey','cfgSheetsApiKey',
     'cfgReferenceImage',
@@ -4999,8 +5010,8 @@ async function saveSettings(){
     ...($('cfgSheetGrowth')?{spreadsheet_growth_tracking_url:$('cfgSheetGrowth').value.trim()}:{}),
     ...($('cfgYtApiKey')?{youtube_api_key:$('cfgYtApiKey').value.trim()}:{}),
     ...($('cfgSheetsApiKey')?{sheets_api_key:$('cfgSheetsApiKey').value.trim()}:{}),
-    ...($('cfgTemplatePrproj')||$('cfgTemplatePrprojCustom')?{template_prproj:tplPrproj}:{}),
-    ...($('cfgTemplatePsd')||$('cfgTemplatePsdCustom')?{template_psd:tplPsd}:{}),
+    ...(_templateOptionsLoaded&&($('cfgTemplatePrproj')||$('cfgTemplatePrprojCustom'))?{template_prproj:tplPrproj}:{}),
+    ...(_templateOptionsLoaded&&($('cfgTemplatePsd')||$('cfgTemplatePsdCustom'))?{template_psd:tplPsd}:{}),
     ...($('cfgPsdBaseLayer')?{psd_base_layer:psdBaseLayer}:{}),
     ...($('cfgPsdToggleLayer')?{psd_toggle_layer:psdToggleLayer}:{}),
     ...($('cfgPsdImageSubdir')?{psd_image_subdir:psdImageSubdir}:{}),
@@ -5058,7 +5069,7 @@ async function saveSettings(){
   const k=$('cfgApiKey')?.value||'',cli=$('cfgClaudeCli')?.value||'',codexCli=$('cfgCodexCli')?.value||'';
   const sunoPatch={
     ...($('cfgSunoProvider')?{provider:$('cfgSunoProvider').value||'claude'}:{}),
-    ...($('cfgSunoModel')?{model:$('cfgSunoModel').value||''}:{}),
+    ...($('cfgSunoModel')?.value?{model:$('cfgSunoModel').value}:{}),
     ...($('cfgSunoMode')?{generation_mode:$('cfgSunoMode').value||'styles_title_only'}:{}),
     ...($('cfgSunoPrompt')?{prompt:$('cfgSunoPrompt').value||''}:{}),
     ...($('cfgSunoCount')?{loop_count:parseInt($('cfgSunoCount').value||'5')}:{}),
@@ -5067,7 +5078,7 @@ async function saveSettings(){
   };
   Object.assign(sunoPatch,sunoBrowserPatch());
   Object.assign(sunoPatch,sunoNumericPatch());
-  if(k)sunoPatch.api_key=k;
+  if(k&&k!==_loadedSunoApiKey&&!k.includes('●'))sunoPatch.api_key=k;
   if(cli)sunoPatch.claude_cli=cli;
   if(codexCli)sunoPatch.codex_cli=codexCli;
   const sunoSaved=await putSunoConfig(sunoPatch);
@@ -12945,7 +12956,9 @@ async function pickTemplateFile(kind){
 }
 
 /* ==== テンプレートファイル選択（基本設定） ==== */
+let _templateOptionsLoaded=false;
 async function loadTemplateOptions(curPrproj,curPsd){
+  _templateOptionsLoaded=false;
   const selPr=document.getElementById('cfgTemplatePrproj');
   const selPs=document.getElementById('cfgTemplatePsd');
   const customPr=document.getElementById('cfgTemplatePrprojCustom');
@@ -12959,6 +12972,7 @@ async function loadTemplateOptions(curPrproj,curPsd){
   const wantPs=curPsd!==undefined?curPsd:(selPs.value||customPs?.value||'');
   try{
     const r=await fetch('/api/templates/list');
+    if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
     const prList=d.prproj||[];
     const psList=d.psd||[];
@@ -12977,6 +12991,7 @@ async function loadTemplateOptions(curPrproj,curPsd){
       const dirs=d.search_dirs||[];
       dirsEl.innerHTML=dirs.length?`検索先: ${dirs.map(p=>'<code>'+esc(p.split('/').slice(-2).join('/'))+'</code>').join(' / ')}`:'';
     }
+    _templateOptionsLoaded=true;
   }catch(e){
     if(hintPr)hintPr.textContent='候補の読み込みに失敗';
     if(hintPs)hintPs.textContent='';
