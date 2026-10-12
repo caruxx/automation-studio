@@ -12,6 +12,16 @@
 #   rm -f "$HOME/Library/LaunchAgents/jp.caruvistar.automation-studio.plist"
 
 set -euo pipefail
+# Prefer the current local manager; never run legacy stale-config sync/kill path on this Mac.
+STUDIO_MANAGER="$HOME/Library/Application Support/AutomationStudio/managed/manage_studio.py"
+if [[ -f "$STUDIO_MANAGER" && -f "$HOME/Library/LaunchAgents/jp.caruvistar.automation-studio.plist" ]]; then
+    case "${1:---install}" in
+        --sync|sync) exec /usr/bin/python3 "$STUDIO_MANAGER" sync ;;
+        --unload|unload) exec /usr/bin/python3 "$STUDIO_MANAGER" stop ;;
+        --install|install|"") exec /usr/bin/python3 "$STUDIO_MANAGER" start ;;
+        *) echo "unknown managed action: ${1}" >&2; exit 2 ;;
+    esac
+fi
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PY_START="$ROOT_DIR/Python/start.sh"

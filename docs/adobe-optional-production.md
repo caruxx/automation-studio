@@ -1,0 +1,13 @@
+# Adobeテンプレートを必須にしない制作
+
+Wobble Dayはチャンネル設定 `production_mode=ffmpeg_only` / `export_engine=ffmpeg` に変更済み。基本設定の「制作構成」で「Adobeなし（FFmpeg・内蔵アニメーション・タイムライン）」を選ぶ。Photoshop/Premiereテンプレートを登録する必要はない。
+
+既存のフォルダ作成APIはAdobeなしモードで.prproj/.psdのコピーを行わず、テンプレート未設定の警告も返さない。この既存分岐を再利用した。空のAdobeプロジェクトを代わりに生成しない。1_wobble_261003はそのまま使う。実動画の作成APIは今回再実行していない。
+
+制作構成の選択は専用の保存処理でproduction_modeと必要なexport_engineだけを保存する。SUNO等の設定をまとめて保存しない。成功後は画面の設定キャッシュを更新し、失敗時は選択を戻してエラー表示する。保存済みチャンネル設定は再読込後も有効。
+
+Adobeを使う場合は制作構成を切り替える。既存チャンネル・新規APIの省略時default=standardは維持する。Adobeテンプレート欠落/コピー失敗の警告は引き続き表示する。作成成功に付随する確認事項は実際のwarningsだけを表示し、.prprojと.psdの双方が失敗したと決めつけない。AdobeなしではAdobe設定を促すボタンを出さない。素材/権限/通信/HTTPエラーを隠さない。
+
+変更は静的index.htmlとWobble Dayの既存チャンネル設定。バックエンドコード変更・サーバー再起動なし。未保存内容を保存してから再読込するか、新しいタブで開く。すでに表示中の旧警告は閉じてよい。制作構成だけを保存する自動操作は、対象チャンネルを読み取り照合してから既存PUT /api/config/dashboardへproduction_mode/export_engineの最小patchを送る。動画を再作成しない。
+
+検証: 実フォルダ作成関数を隔離一時フォルダで7ケース（非Adobe/Adobe/legacy、既存vol保全、指定テンプレ欠落、コピー/フォルダ権限エラー、対象フォルダ欠落）、UIハンドラの設定保存/読戻し/保存失敗rollback/警告/HTTPエラー検証。本番8888でWobbleのper-channel保存と再GET一致確認。正式Chromeの隔離ダミーで同じ本番ハンドラのDOM動作・localStorage保持・エラー表示を確認。ダミーAPIによる隔離試験であり、実FFmpeg書き出しや実Adobe起動は今回実行していない。

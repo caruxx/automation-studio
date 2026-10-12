@@ -144,3 +144,17 @@ python3 Python/scripts/verify_suno_downloads.py /absolute/run/download-manifest.
 - 2026-09-29のレシピ・Custom240・全テイク取得・選択待ち契約は`beat-soul-recipe.md`と`semi-auto-selection.md`。音楽性は旧歌入りのため新instへ流用しない。
 - Chrome実績: `output/suno-groove-twenty-20261001-chrome/progress.json`、`validation.json`、`clips-current.json`。今回、`/Users/caruvi/Downloads/groove_twenty_20261001`の20 MP4について全件ID/タイトル、bytes/SHA256、ffprobe、全decodeを再照合。238.28〜241.2秒。記録残高9815→9715、100 credits。これは旧制作の実績で、将来の単価・Wobble音質の証明ではない。
 - 旧20の10回すべてに均一な設定readbackは残っていない。Drive複製と聴感の合否も今回の確認範囲外。今後は各Createのreadbackと最終保存先を上の契約で残す。
+
+## 動画解像度とコピー連結（2026-10-04 本人指定）
+
+本人指定は「vol2から4Kで動画作ってみて」。Vol.1の採用背景は `codex-dummy-20261002-breathing.mp4`（H3旧予定から本人が変更）、1280×720/24fps。Vol.1を再投稿しない。YouTube IDは `cDO4DyB5xg8`、2026-10-04 02:00 Asia/Tokyo予約公開を読み戻し確認済み。
+
+Vol.2以降の出力目標は3840×2160/16:9、元背景のfpsを維持（現素材24fps）、H.264 High/yuv420p、SDR BT.709、24/25/30fpsでは映像35〜45Mbps、AAC 48kHz stereo。チャンネルフォルダの `wobble-day-render-policy.json` が今回の指定・検証・参照URLを保持する。既存Automation Studio UIのrendererはこの記録だけでは変更されない。次回担当は4K対応のrendererにこのpolicyを明示して適用し、生成された実ファイルの解像度をffprobeで検証すること。
+
+H3 Max Turbo image-to-videoの公式schemaは480P/768P/1080P。1080Pはnative 768Pからlatent refinementで、4Kの直接生成は非対応。`image_url`と`end_image_url`に同じ採用画像を使うループ制作は可能だが、自然な継ぎ目の保証ではなく実映像で確認が必要。現Vol.2原本3本は1344×768/24fps/8秒。拡大4Kとnative 4Kを混同しない。1080Pへの有料再生成は、この解像度確認では実行していない。
+
+背景・音楽1周・各曲名（SF Rounded、各開始6秒/前後0.4秒fade）を1周だけ描画し、長尺化はcompressed stream copyで繰り返す。4Kでは文字90px/右144px/上108pxを基準とする。cache keyには解像度、fps、素材hash、音楽順序、font hash、文字設定、encoderを含む。映像packetの厳密コピーとAAC反復先頭priming packet省略を考慮した照合、全音声decode、cache映像decode、素材hash不変を確認する。概要欄のタイムスタンプは最初の音楽1周だけ表示し、内部render台帳には全反復の開始時刻を残す。
+
+Mac実機 `MacBook-Pro-M5.local` で1080p/4Kの24秒cache→48秒copy loopと全映像decodeを検証済み。証跡は `/Users/caruvi/Documents/Codex/2026-10-03/task-3/run/WobbleDay_Resolution_Check/resolution-validation.json`。これは既存Vol.1背景による出力能力の確認であり、Vol.2完成動画ではない。
+
+一次資料: https://fal.ai/models/minimax/h3-max-turbo/image-to-video/api 、https://support.google.com/youtube/answer/1722171?hl=ja 。

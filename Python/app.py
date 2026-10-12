@@ -6170,6 +6170,14 @@ app.include_router(_analytics_router)
 from routers.images import router as _images_router
 app.include_router(_images_router)
 
+# 固定背景と個別レイヤーから短いモーション素材を生成する追加ツール。
+from routers.layer_motion import router as _layer_motion_router
+app.include_router(_layer_motion_router)
+
+# Optional H3 generation via the official fal API; paid submit is opt-in.
+from routers.fal_video import router as _fal_video_router
+app.include_router(_fal_video_router)
+
 
 # ─── premiere_photoshop ドメインは routers/premiere_photoshop.py へ分離（D9）───
 from routers.premiere_photoshop import router as _premiere_photoshop_router
@@ -8940,6 +8948,10 @@ def _orchestrator_tick():
 @app.on_event("startup")
 async def _start_scheduler():
     global _scheduler
+    # Local login service serves the UI without enabling scheduled/paid work.
+    if os.environ.get("APP_SCHEDULER_DISABLED", "").strip() in ("1", "true", "yes"):
+        print("[scheduler] disabled by APP_SCHEDULER_DISABLED")
+        return
     if _scheduler is not None:
         return
     try:

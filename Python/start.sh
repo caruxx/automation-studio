@@ -3,6 +3,14 @@
 # 任意のPCから実行可能（共有ドライブ版）
 
 set -euo pipefail
+# Mac managed service: manual launches reuse it; channel-switch restarts are graceful.
+STUDIO_MANAGER="$HOME/Library/Application Support/AutomationStudio/managed/manage_studio.py"
+if [[ -f "$STUDIO_MANAGER" && -f "$HOME/Library/LaunchAgents/jp.caruvistar.automation-studio.plist" ]]; then
+    if [[ "${APP_MANAGED_PROCESS:-0}" == "1" ]]; then
+        exec /usr/bin/python3 "$STUDIO_MANAGER" restart
+    fi
+    exec /usr/bin/python3 "$STUDIO_MANAGER" start
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="${APP_LOG_DIR:-$HOME/Library/Logs/AutomationStudio}"
