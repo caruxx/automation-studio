@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from naming import folder_publish_date  # 命名規則の単一正本
+
 JST = _dt.timezone(_dt.timedelta(hours=9))
 DEFAULT_PUBLISH_TIME_JST = "12:00"
 
@@ -22,7 +24,6 @@ def validate_publish_time_jst(value: Any) -> str:
 
 
 def parse_publish_date_from_folder(folder: Path) -> Optional[_dt.date]:
-    from naming import folder_publish_date  # 命名規則の単一正本（循環 import 回避のため遅延）
     return folder_publish_date(Path(folder).name)
 
 

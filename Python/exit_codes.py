@@ -131,8 +131,15 @@ def stages() -> list[dict[str, Any]]:
     return list(_WORKFLOW.get("stages") or [])
 
 
+_DEFAULT_STAGE_ALIASES: dict[str, Optional[str]] = {"psd_composite": "composite", "export": "render", "premiere": None}
+
+
 def stage_aliases() -> dict[str, Optional[str]]:
-    return dict(_WORKFLOW.get("stage_aliases") or {})
+    """旧工程名 → 新工程名。workflow.json が読めない／壊れている場合は組み込みの既定表。"""
+    raw = _WORKFLOW.get("stage_aliases")
+    if not isinstance(raw, dict) or not raw:
+        return dict(_DEFAULT_STAGE_ALIASES)
+    return {str(k): (None if v is None else str(v)) for k, v in raw.items()}
 
 
 def resources() -> list[dict[str, Any]]:

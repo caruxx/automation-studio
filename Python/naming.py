@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+import unicodedata
 from pathlib import Path
 from typing import Iterable, NamedTuple, Optional
 
@@ -30,7 +31,10 @@ class VolFolder(NamedTuple):
 
 
 def parse_vol_folder(name: str) -> Optional[VolFolder]:
-    """`12_EDM_261031` → VolFolder(12, "EDM", 2026-10-31)。日付の無い旧形式も vol と prefix は読む。"""
+    """`12_EDM_261031` → VolFolder(12, "EDM", 2026-10-31)。
+
+    日付の無い旧形式も vol と prefix は読む。日付部が不正（存在しない日付）なら date だけ None にする
+    （folder_prefix と同じく vol / prefix は読める）。"""
     m = _VOL_FOLDER_RE.match(Path(str(name or "")).name)
     if not m:
         return None
@@ -39,7 +43,7 @@ def parse_vol_folder(name: str) -> Optional[VolFolder]:
         try:
             date = _dt.datetime.strptime(m.group("date"), "%y%m%d").date()
         except ValueError:
-            return None
+            date = None
     return VolFolder(int(m.group("vol")), m.group("prefix"), date)
 
 
@@ -82,27 +86,41 @@ def public_title(title: str) -> str:
     return public_track_title(title)
 
 
-def title_from_filename(filename: str) -> str:
-    """`03 - Silver Avenue(1).mp3` / `z_Silver Avenue(1).mp3` → `Silver Avenue`。"""
-    stem = Path(str(filename or "")).stem
-    stem = re.sub(r"^z+_", "", stem)
+def title_from_filename(filename: str, *, strip_z: bool = True, use_stem: bool = False) -> str:
+    """`03 - Silver Avenue(1).mp3` → `Silver Avenue`。
+
+    strip_z: 先頭の `z_` / `zz_`（旧ソート用接頭辞）を除く（ffrender の旧挙動）。timeline の表示名は除かない。
+    use_stem: Path().stem でファイル名部分だけを取る（timeline の旧挙動）。False なら拡張子だけを落とす
+    （ffrender の旧挙動。`AC/DC` のような `/` を含む曲名も壊さない）。"""
+    raw = str(filename or "")
+    stem = Path(raw).stem if use_stem else re.sub(r"\.[^.]+$", "", raw)
+    if strip_z:
+        stem = re.sub(r"^z+_", "", stem)
     stripped = _TRACK_NUMBER_RE.sub("", stem).strip()
     return public_title(stripped or stem)
 
 
 def safe_filename_stem(title: str) -> str:
-    return _UNSAFE_CHARS_RE.sub("", str(title or "")).strip()
+    """ファイル名に使えない文字を落とし、先頭のドットと末尾の空白・ドットを除く。NFC に正規化。"""
+    stem = unicodedata.normalize("NFC", _UNSAFE_CHARS_RE.sub("", str(title or "")))
+    return stem.strip().lstrip(".").rstrip(" .")
+
+
+def _name_key(name: str) -> str:
+    return unicodedata.normalize("NFC", str(name)).casefold()
 
 
 def music_filename(title: str, taken: Iterable[str] = ()) -> str:
-    """採用曲のファイル名。テイク番号を除き、安全化し、同名があれば ` -2`, ` -3` を付ける。"""
+    """採用曲のファイル名。テイク番号を除き、安全化し、同名があれば ` -2`, ` -3` を付ける。
+
+    重複判定は NFC + casefold（macOS の一覧が NFD で返っても取りこぼさない）。"""
     stem = safe_filename_stem(public_title(title))
     if not stem:
         raise ValueError("曲名からファイル名を作れません")
-    used = {str(t).lower() for t in taken}
+    used = {_name_key(t) for t in taken}
     name = f"{stem}.mp3"
     n = 2
-    while name.lower() in used:
+    while _name_key(name) in used:
         name = f"{stem} -{n}.mp3"
         n += 1
     return name

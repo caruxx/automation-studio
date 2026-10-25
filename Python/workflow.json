@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "workflow_version": "2026-10-25.1",
-  "description": "工程・資源・終了理由の定義の正本。stage_order は新しい工程名。コードの工程名切替は段階 2b で行い、stage_aliases で旧名を対応付ける。",
+  "description": "工程・資源・終了理由の定義の正本。stage_order は新しい工程名。コードの工程名切替は段階 2b で行い、stage_aliases で旧名を対応付ける。 soft_depends_on は「完了または確定失敗まで待つ」依存（localization の失敗は upload を止めない現行仕様）。",
   "exit_reasons": [
     {
       "reason": "ok",
@@ -94,6 +94,12 @@
       "note": "ffmpeg 書き出し"
     },
     {
+      "id": "composite",
+      "scope": "machine",
+      "capacity": 1,
+      "note": "Pillow 合成（routes.json の psd と同じ）"
+    },
+    {
       "id": "image_gen",
       "scope": "global",
       "capacity": 2
@@ -177,7 +183,9 @@
         "bgimage"
       ],
       "executor": "mac",
-      "resources": [],
+      "resources": [
+        "composite"
+      ],
       "timeout_seconds": 600,
       "retry": {
         "max_attempts": 2,
@@ -256,10 +264,7 @@
         "meta"
       ],
       "executor": "mac",
-      "resources": [
-        "image_gen",
-        "llm"
-      ],
+      "resources": [],
       "timeout_seconds": 1800,
       "retry": {
         "max_attempts": 2,
@@ -283,7 +288,10 @@
         "max_attempts": 2,
         "backoff_seconds": 600
       },
-      "done_validator": "upload_done"
+      "done_validator": "upload_done",
+      "soft_depends_on": [
+        "localization"
+      ]
     },
     {
       "id": "publish_verify",

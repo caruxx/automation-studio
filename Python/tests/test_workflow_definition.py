@@ -25,9 +25,11 @@ class WorkflowDefinitionTest(unittest.TestCase):
         order = ec.stage_order()
         pos = {s: i for i, s in enumerate(order)}
         for st in ec.stages():
-            for dep in st["depends_on"]:
+            for dep in list(st["depends_on"]) + list(st.get("soft_depends_on", [])):
                 self.assertIn(dep, pos, msg=f"{st['id']} -> {dep}")
                 self.assertLess(pos[dep], pos[st["id"]], msg=f"{st['id']} は {dep} より後に並ぶ")
+        upload = next(s for s in ec.stages() if s["id"] == "upload")
+        self.assertIn("localization", upload["soft_depends_on"])  # 翻訳の完了（または確定失敗）を待ってから投稿
 
     def test_resources_and_fields(self):
         res_ids = {r["id"] for r in ec.resources()}
@@ -40,6 +42,16 @@ class WorkflowDefinitionTest(unittest.TestCase):
             self.assertGreater(int(st["timeout_seconds"]), 0)
             self.assertGreaterEqual(int(st["retry"]["max_attempts"]), 1)
             self.assertTrue(st["done_validator"])
+
+    def test_aliases_fall_back_to_builtin(self):
+        saved = ec._WORKFLOW
+        try:
+            ec._WORKFLOW = {"exit_reasons": []}
+            self.assertEqual(ec.canonical_stage("psd_composite"), "composite")
+            ec._WORKFLOW = {"stage_aliases": "broken"}
+            self.assertEqual(ec.canonical_stage("export"), "render")
+        finally:
+            ec._WORKFLOW = saved
 
     def test_aliases_map_old_names(self):
         import app_pipeline as p
