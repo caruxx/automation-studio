@@ -255,7 +255,8 @@ def _state(conn, batch_id):
     state["processed"] = state["ready"] and state["processed_revision"] == state["revision"]
     from naming import _name_key
     music = Path(state["folder"]) / "music"
-    actual = {p.name for p in music.glob("*.mp3")} if music.is_dir() else set()
+    # 一覧は処理済みになったことがある batch だけ取る（一覧画面で全 batch の Drive 走査を避ける）
+    actual = {p.name for p in music.glob("*.mp3")} if state["processed_revision"] >= 0 and music.is_dir() else set()
     actual_keys = {_name_key(n) for n in actual}
     # music/ がどの規則で作られているか（"new" / "legacy" / None）。選び直しで revision が進んでも、
     # 一度旧規則で処理した vol は旧名を保つ必要があるため、全テイクの旧名と照合して判定する。
