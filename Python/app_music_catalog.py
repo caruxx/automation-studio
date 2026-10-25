@@ -84,13 +84,6 @@ def transaction():
             conn.close()
 
 
-def _detail_batch(detail_json):
-    try:
-        return json.loads(detail_json).get("batch_id")
-    except (TypeError, ValueError, AttributeError):
-        return None
-
-
 def _event(conn, kind, detail):
     conn.execute("INSERT INTO events(at,kind,detail_json) VALUES(?,?,?)",
                  (now(), kind, json.dumps(detail, ensure_ascii=False)))

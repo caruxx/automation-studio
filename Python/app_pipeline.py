@@ -86,7 +86,7 @@ def _music_selection_gate(folder, processed=False):
     _LAST_SELECTION_REASON = "human"
     from app_music_catalog import require_selection, SelectionPending, load_music_selection_config, select_takes_ai
     try:
-        state = require_selection(folder, processed=processed)
+        require_selection(folder, processed=processed)
         return None
     except SelectionPending as exc:
         first = exc
@@ -104,6 +104,8 @@ def _music_selection_gate(folder, processed=False):
             r = select_takes_ai(folder, policy=cfg["policy"], prompt=cfg["prompt"])
             print(f"AI 選曲: {r['groups_selected_by_ai']}/{r['groups_total']} 群を採用"
                   f"（人の採用 {r['groups_human']}、不合格 {r['groups_failed']}）", flush=True)
+            select_reason = r.get("blocked_reason")  # 一部不合格なら quality、未選定が残れば human
+            select_ready = bool(r.get("ready"))
         except SelectionPending as exc:
             _LAST_SELECTION_REASON = getattr(exc, "reason", "quality")
             print(str(exc), flush=True)
@@ -116,9 +118,13 @@ def _music_selection_gate(folder, processed=False):
             _LAST_SELECTION_REASON = "human"
             return None
         except SelectionPending as exc:
-            _LAST_SELECTION_REASON = getattr(exc, "reason", "human")
-            if processed and _LAST_SELECTION_REASON == "human":
-                _LAST_SELECTION_REASON = "processing"
+            reason = getattr(exc, "reason", "human")
+            if reason == "human":
+                if select_reason in ("quality", "unmeasured"):
+                    reason = select_reason  # 一部の群が不合格（AI の採用は済んでいるが未選定が残る）
+                elif processed and select_ready:
+                    reason = "processing"  # 全群の選定は済み、後処理だけ待っている
+            _LAST_SELECTION_REASON = reason
             print(str(exc), flush=True)
             return "awaiting_selection"
     print(str(first), flush=True)

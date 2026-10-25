@@ -300,6 +300,16 @@ class SelectTest(unittest.TestCase):
         with patch("music_scoring.measure", lambda path: BAD):
             self.assertEqual(p._music_selection_gate(self.folder), "awaiting_selection")
         self.assertEqual(p._LAST_SELECTION_REASON, "quality")
+
+    def test_pipeline_gate_partial_failure_reason(self):
+        """一部の群だけ不合格: 通常ゲートも processed=True のゲートも quality（processing にしない）。"""
+        import app_pipeline as p
+        table = {"Silver Avenue.mp3": GOOD, "Silver Avenue_2.mp3": BAD, "Last Light.mp3": BAD, "Last Light_2.mp3": BAD}
+        with patch("music_scoring.measure", _measurer(table)):
+            self.assertEqual(p._music_selection_gate(self.folder, processed=True), "awaiting_selection")
+            self.assertEqual(p._LAST_SELECTION_REASON, "quality")
+            self.assertEqual(p._music_selection_gate(self.folder), "awaiting_selection")
+            self.assertEqual(p._LAST_SELECTION_REASON, "quality")
         (self.root / ".app_channel_config.json").write_text(json.dumps({"music_selection_mode": "human"}), encoding="utf-8")
         self.assertEqual(p._music_selection_gate(self.folder), "awaiting_selection")
         self.assertEqual(p._LAST_SELECTION_REASON, "human")
