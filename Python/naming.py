@@ -22,6 +22,7 @@ _VOL_FOLDER_RE = re.compile(r"^(?P<vol>\d+)_(?P<prefix>[^_]+)(?:_(?P<date>\d{6})
 _VOL_PREFIX_RE = re.compile(r"^\d+_([^_]+)")  # 旧コード互換: 先頭の vol と prefix だけを読む
 _TRACK_NUMBER_RE = re.compile(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", re.I)
 _UNSAFE_CHARS_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_DEDUP_SUFFIX_RE = re.compile(r"\s-\d+$")  # music_filename の採番 ` -2`（公開曲名には出さない）
 
 
 class VolFolder(NamedTuple):
@@ -97,6 +98,7 @@ def title_from_filename(filename: str, *, strip_z: bool = True, use_stem: bool =
     if strip_z:
         stem = re.sub(r"^z+_", "", stem)
     stripped = _TRACK_NUMBER_RE.sub("", stem).strip()
+    stripped = _DEDUP_SUFFIX_RE.sub("", stripped).strip()
     return public_title(stripped or stem)
 
 

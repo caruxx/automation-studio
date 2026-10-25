@@ -74,8 +74,49 @@ class RenameRuleTest(unittest.TestCase):
         self.assertIsNotNone(catalog.require_selection(self.folder, processed=True))
 
     def test_missing_folder_argument_is_an_error(self):
-        with self.assertRaises(Exception):
-            catalog.process_selected("", shutil.copyfile)
+        batch = self._register(["Silver Avenue"])
+        catalog.choose_take(batch, "clip-0", True)
+        cwd = os.getcwd()
+        os.chdir(self.folder)  # カレントが登録済み vol でも暗黙に処理しない
+        try:
+            for bad in ("", "   ", None):
+                with self.assertRaises(ValueError):
+                    catalog.process_selected(bad, shutil.copyfile)
+        finally:
+            os.chdir(cwd)
+        self.assertFalse((self.folder / "music").exists())
+        with self.assertRaises(ValueError):
+            catalog.process_selected(self.root / "unregistered", shutil.copyfile)
+
+    def test_force_rebuild_keeps_legacy_names(self):
+        """旧規則で処理済みの vol を force で作り直しても、manifest が参照する旧名を保つ。"""
+        batch = self._register(["Silver Avenue(1)"])
+        catalog.choose_take(batch, "clip-1", True)
+        state = catalog.get_review(batch)
+        (self.folder / "music").mkdir()
+        (self.folder / "music" / "Silver Avenue(1).mp3").write_bytes(b"legacy")
+        with catalog.transaction() as conn:
+            conn.execute("UPDATE batches SET processed_revision=revision WHERE id=?", (state["id"],))
+        self.assertEqual(catalog.get_review(batch)["processed_naming"], "legacy")
+        catalog.process_selected(self.folder, shutil.copyfile, force=True)
+        self.assertEqual(sorted(p.name for p in (self.folder / "music").glob("*.mp3")), ["Silver Avenue(1).mp3"])
+        self.assertTrue(catalog.get_review(batch)["processed"])
+
+    def test_mixed_names_are_unprocessed_and_nfd_listing_is_processed(self):
+        import unicodedata
+        batch = self._register(["ガーデン(1)"])
+        catalog.choose_take(batch, "clip-1", True)
+        catalog.process_selected(self.folder, shutil.copyfile)
+        self.assertTrue(catalog.get_review(batch)["processed"])
+        # 一覧が NFD で返っても処理済み（名前を NFC で比較する）
+        nfd = unicodedata.normalize("NFD", "ガーデン.mp3")
+        self.assertNotEqual(nfd, "ガーデン.mp3")
+        with patch.object(catalog, "_legacy_music_name", lambda title: "x.mp3"), \
+                patch.object(Path, "glob", lambda self_, pat: [self_ / nfd]):
+            self.assertTrue(catalog.get_review(batch)["processed"])
+        # 新旧が混ざった music/ は未処理
+        (self.folder / "music" / "ガーデン(1).mp3").write_bytes(b"old")
+        self.assertFalse(catalog.get_review(batch)["processed"])
 
 
 if __name__ == "__main__":

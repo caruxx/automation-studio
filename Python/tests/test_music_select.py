@@ -23,6 +23,9 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(p["weights"]["duration"], 1.0)
         self.assertEqual(p["weights"]["silence"], ms.DEFAULT_POLICY["weights"]["silence"])
         self.assertEqual((p["lufs_min"], p["lufs_max"]), (-20.0, -8.0))  # 逆転は既定に戻す
+        p = ms.policy_from({"lufs_range": [-24, -10], "max_sec": float("nan")})
+        self.assertEqual((p["lufs_min"], p["lufs_max"]), (-24.0, -10.0))
+        self.assertEqual(p["max_sec"], 900.0)  # NaN は既定
 
     def test_pass_fail_boundaries(self):
         pol = ms.policy_from(None)
@@ -35,13 +38,40 @@ class ScoringTest(unittest.TestCase):
         silent = ms.score({"duration_sec": 300, "silence_ratio": 0.5, "lufs": -14.0}, None, pol)
         self.assertFalse(silent["passed"])
         loud = ms.score({"duration_sec": 300, "silence_ratio": 0.0, "lufs": -3.0}, None, pol)
-        self.assertFalse(loud["passed"])
-        # 測れなかった項目は不合格にしない（理由だけ残す）
+        self.assertTrue(loud["passed"])  # ラウドネスは後処理で正規化されるため減点のみ
+        self.assertLess(loud["score"], ok["score"])
+        silent_lufs = ms.score({"duration_sec": 300, "silence_ratio": 0.0, "lufs": -45.0}, None, pol)
+        self.assertFalse(silent_lufs["passed"])  # 実質無音は不合格
+        # 尺か無音率が測れなければ測定不能（自動採用しない）
         partial = ms.score({"duration_sec": 300, "silence_ratio": None, "lufs": None}, None, pol)
-        self.assertTrue(partial["passed"])
-        self.assertEqual(len(partial["reasons"]), 2)
+        self.assertFalse(partial["passed"])
+        self.assertTrue(partial["unmeasured"])
+        lufs_only_missing = ms.score({"duration_sec": 300, "silence_ratio": 0.0, "lufs": None}, None, pol)
+        self.assertTrue(lufs_only_missing["passed"])
+        self.assertFalse(lufs_only_missing["unmeasured"])
         nothing = ms.score({"duration_sec": None, "silence_ratio": None, "lufs": None}, None, pol)
         self.assertFalse(nothing["passed"])
+        self.assertTrue(nothing["unmeasured"])
+        raw = ms.score({"duration_sec": 300, "silence_ratio": 0.0, "lufs": -14.0}, None, {"min_sec": 10})  # 生の dict でも正規化
+        self.assertTrue(raw["passed"])
+
+    def test_measure_parses_ffmpeg_output_with_fake_binaries(self):
+        """偽の ffprobe / ffmpeg スクリプトで、末尾無音の除外と Summary の LUFS 解析を検証する。"""
+        import stat
+        with tempfile.TemporaryDirectory() as t:
+            probe = Path(t) / "ffprobe"
+            probe.write_text("#!/bin/sh\necho 14.0\n")
+            ff = Path(t) / "ffmpeg"
+            ff.write_text("#!/bin/sh\ncat >&2 <<'EOT'\n[silencedetect] silence_start: 5.0\n[silencedetect] silence_end: 8.0 | silence_duration: 3.0\n"
+                          "[silencedetect] silence_start: 12.0\n[silencedetect] silence_end: 14.0 | silence_duration: 2.0\n"
+                          "[Parsed_ebur128_1] Summary:\n  Integrated loudness:\n    I:         -22.4 LUFS\n  True peak:\n    Peak:      -18.5 dBFS\nEOT\n")
+            for f in (probe, ff):
+                f.chmod(f.stat().st_mode | stat.S_IEXEC)
+            m = ms.measure(Path(t) / "x.mp3", ffmpeg=str(ff), ffprobe=str(probe))
+            self.assertEqual(m["duration_sec"], 14.0)
+            self.assertAlmostEqual(m["silence_ratio"], 3.0 / 14.0, places=3)  # 末尾 2 秒は除外
+            self.assertEqual(m["trailing_silence_sec"], 2.0)
+            self.assertEqual((m["lufs"], m["true_peak"]), (-22.4, -18.5))
 
     def test_prompt_fit_parsing(self):
         self.assertIsNone(ms.prompt_fit("A", "", llm=lambda q: "0.9"))
@@ -105,13 +135,52 @@ class SelectTest(unittest.TestCase):
         manifest = json.loads((self.folder / ".music_review.json").read_text(encoding="utf-8"))
         self.assertTrue(manifest["ready"])
 
-    def test_all_failed_is_quality_block(self):
+    def test_all_failed_is_quality_block_and_attempts_are_recorded(self):
         table = {k: BAD for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
         with self.assertRaises(catalog.SelectionPending) as cm:
             catalog.select_takes_ai(self.folder, measurer=_measurer(table))
         self.assertIn("品質待機", str(cm.exception))
+        self.assertIn("試行 1 回目", str(cm.exception))
         self.assertFalse(catalog.get_review(self.batch)["ready"])
         self.assertEqual(len(catalog.list_scores(self.batch)), 4)  # 不合格でもスコアは残す
+        with self.assertRaises(catalog.SelectionPending) as cm2:
+            catalog.select_takes_ai(self.folder, measurer=_measurer(table))
+        self.assertIn("試行 2 回目", str(cm2.exception))
+        self.assertEqual(catalog.ai_select_attempts(self.batch), 2)
+
+    def test_unmeasured_is_not_adopted_and_reported_separately(self):
+        none = {"duration_sec": None, "silence_ratio": None, "lufs": None, "true_peak": None}
+        table = {k: none for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
+        with self.assertRaises(catalog.SelectionPending) as cm:
+            catalog.select_takes_ai(self.folder, measurer=_measurer(table))
+        self.assertIn("測定不能", str(cm.exception))
+        # 一部だけ測れた群: 測定不能のテイクは選ばれない
+        table = {"Silver Avenue.mp3": none, "Silver Avenue_2.mp3": GOOD, "Last Light.mp3": GOOD, "Last Light_2.mp3": GOOD}
+        r = catalog.select_takes_ai(self.folder, measurer=_measurer(table))
+        selected = {t["clip_id"] for t in catalog.get_review(self.batch)["takes"] if t["selected"]}
+        self.assertIn("clip-1", selected)
+        self.assertNotIn("clip-0", selected)
+
+    def test_human_heart_during_measurement_is_not_overridden(self):
+        """測定中に人がハートを付けたら、AI はその群を採用しない（人の採用を尊重）。"""
+        table = {k: GOOD for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
+        calls = []
+        def measurer(path):
+            calls.append(path.name)
+            if path.name == "Silver Avenue_2.mp3":
+                catalog.choose_take(self.batch, "clip-0", True)  # 測定の最中に人が clip-0 を採用
+            return table[path.name]
+        r = catalog.select_takes_ai(self.folder, measurer=measurer)
+        selected = {t["clip_id"] for t in catalog.get_review(self.batch)["takes"] if t["selected"]}
+        self.assertIn("clip-0", selected)   # 人の採用が残る
+        self.assertNotIn("clip-1", selected)
+        self.assertEqual((r["groups_human"], r["groups_selected_by_ai"]), (1, 1))
+
+    def test_tie_prefers_first_take_in_order(self):
+        table = {k: GOOD for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
+        catalog.select_takes_ai(self.folder, measurer=_measurer(table))
+        selected = {t["clip_id"] for t in catalog.get_review(self.batch)["takes"] if t["selected"]}
+        self.assertEqual(selected, {"clip-0", "clip-2"})
 
     def test_partial_failure_leaves_group_unselected(self):
         table = {"Silver Avenue.mp3": GOOD, "Silver Avenue_2.mp3": BAD, "Last Light.mp3": BAD, "Last Light_2.mp3": BAD}
@@ -119,12 +188,16 @@ class SelectTest(unittest.TestCase):
         self.assertEqual((r["groups_selected_by_ai"], r["groups_failed"]), (1, 1))
         self.assertFalse(r["ready"])
 
-    def test_dry_run_changes_nothing(self):
+    def test_dry_run_changes_nothing_and_never_raises(self):
         table = {k: GOOD for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
         r = catalog.select_takes_ai(self.folder, measurer=_measurer(table), dry_run=True)
         self.assertEqual(len(r["scores"]), 4)
         self.assertEqual(catalog.list_scores(self.batch), [])
         self.assertFalse(catalog.get_review(self.batch)["ready"])
+        bad = {k: BAD for k in table}
+        r = catalog.select_takes_ai(self.folder, measurer=_measurer(bad), dry_run=True)
+        self.assertEqual(r["blocked_reason"], "quality")
+        self.assertEqual(catalog.ai_select_attempts(self.batch), 0)  # dry-run は試行に数えない
 
     def test_incomplete_download_is_pending(self):
         (self.folder / "Last Light_2.mp3").unlink()
@@ -137,16 +210,36 @@ class SelectTest(unittest.TestCase):
             {"music_selection": {"mode": "human", "policy": {"min_sec": 10}, "prompt": "lofi"}}), encoding="utf-8")
         cfg = catalog.load_music_selection_config(self.folder)
         self.assertEqual((cfg["mode"], cfg["policy"]["min_sec"], cfg["prompt"]), ("human", 10, "lofi"))
+        # ブリーフの形: music_selection_mode と music_selection 直下の方針、lufs_range
+        (self.root / ".app_channel_config.json").write_text(json.dumps(
+            {"music_selection_mode": "human", "music_selection": {"mode": "ai", "min_sec": 30, "lufs_range": [-24, -10]}}), encoding="utf-8")
+        cfg = catalog.load_music_selection_config(self.folder)
+        self.assertEqual(cfg["mode"], "human")  # トップレベルのキーを優先
+        self.assertEqual(cfg["policy"]["min_sec"], 30)
+        self.assertEqual(ms.policy_from(cfg["policy"])["lufs_min"], -24.0)
         (self.root / ".app_channel_config.json").write_text(json.dumps({"music_selection": {"mode": "bogus"}}), encoding="utf-8")
         self.assertEqual(catalog.load_music_selection_config(self.folder)["mode"], "ai")
 
-    def test_pipeline_gate_ai_then_human(self):
+    def test_pipeline_gate_ai_default_adopts(self):
         import app_pipeline as p
         table = {k: GOOD for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
-        with patch.object(catalog, "select_takes_ai", lambda folder, **kw: catalog.select_takes_ai.__wrapped__(folder, measurer=_measurer(table), **kw)) \
-                if False else patch("music_scoring.measure", _measurer(table)):
+        with patch("music_scoring.measure", _measurer(table)):
             self.assertIsNone(p._music_selection_gate(self.folder))  # ai 既定: 自動で採用して通過
         self.assertTrue(catalog.get_review(self.batch)["ready"])
+        # processed=True のゲートは、選定済みでも後処理前なら待機し、測定はしない
+        with patch("music_scoring.measure", side_effect=AssertionError("測り直してはいけない")):
+            self.assertEqual(p._music_selection_gate(self.folder, processed=True), "awaiting_selection")
+
+    def test_select_cli_exit_codes(self):
+        import subprocess
+        cli = [sys.executable, str(Path(__file__).resolve().parents[1] / "app_music_select.py")]
+        env = dict(os.environ)
+        r = subprocess.run(cli + [str(self.root / "nope"), "--json"], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        (self.root / ".app_channel_config.json").write_text(json.dumps({"music_selection_mode": "human"}), encoding="utf-8")
+        r = subprocess.run(cli + [str(self.folder), "--json"], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 79)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["mode"], "human")
 
     def test_pipeline_gate_human_waits(self):
         import app_pipeline as p
