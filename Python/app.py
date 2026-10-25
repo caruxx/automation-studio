@@ -6752,8 +6752,9 @@ def _send_discord_notify(message: str):
     try:
         try:
             from error_humanizer import format_for_discord
-            if re.search(r"\b(exit|code|終了コード)\s*[:= ]\s*(75|76|77|78)\b", message, re.I):
-                m = re.search(r"\b(75|76|77|78)\b", message)
+            _pat = _exit_codes.sentinel_pattern()  # 75|76|77|78|79（workflow.json の単一正本）
+            if re.search(rf"\b(exit|code|終了コード)\s*[:= ]\s*({_pat})\b", message, re.I):
+                m = re.search(rf"\b({_pat})\b", message)
                 message = format_for_discord(exit_code=int(m.group(1)), message=message)
             elif re.search(r"invalid_grant|quotaExceeded|Premiere Link|preflight|UnattendedLoginRequired", message, re.I):
                 message = format_for_discord(message=message)
@@ -7133,8 +7134,8 @@ def _schedule_publish(*, video_name: str, channel_folder: str, channel_name: str
 # pipeline は失敗時に標準出力末尾に「再開: python3 app_pipeline.py <vol> --from <stage>」を
 # 必ず出すので、それから stage を抽出する。
 
-# 手動介入が必要で resume しても無意味な exit code（P1-1/P1-4/P1-5 の sentinel）
-_NO_AUTO_RESUME_CODES = {75, 77, 78, 79}
+# 手動介入・時間待ち・選定待ちで resume しても無意味な exit code（workflow.json の単一正本から導出: 75/77/78/79）
+_NO_AUTO_RESUME_CODES = _exit_codes.no_auto_resume_codes()
 
 
 def _parse_failed_stage(stdout: str) -> str:

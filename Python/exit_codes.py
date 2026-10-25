@@ -19,10 +19,10 @@ WORKFLOW_JSON = Path(__file__).resolve().parent / "workflow.json"
 _DEFAULT_EXIT_REASONS: list[dict[str, Any]] = [
     {"reason": "ok",                "exit_code": 0,  "status": "done",    "retryable": False, "needs_human": False},
     {"reason": "failed",            "exit_code": 1,  "status": "failed",  "retryable": False, "needs_human": False},
-    {"reason": "usage",             "exit_code": 2,  "status": "failed",  "retryable": False, "needs_human": True},
+    {"reason": "usage",             "exit_code": 2,  "status": "usage",   "retryable": False, "needs_human": True},
     {"reason": "unattended_login",  "exit_code": 75, "status": "failed",  "retryable": False, "needs_human": True},
     {"reason": "retryable",         "exit_code": 76, "status": "failed",  "retryable": True,  "needs_human": False},
-    {"reason": "quota_exhausted",   "exit_code": 77, "status": "failed",  "retryable": True,  "needs_human": False},
+    {"reason": "quota_exhausted",   "exit_code": 77, "status": "failed",  "retryable": False, "needs_human": False, "retry_after_sec": 86400},
     {"reason": "preflight_fail",    "exit_code": 78, "status": "failed",  "retryable": False, "needs_human": True},
     {"reason": "selection_pending", "exit_code": 79, "status": "blocked", "retryable": False, "needs_human": False},
 ]
@@ -71,7 +71,7 @@ def reason_for(code: int) -> str:
 
 
 def status_for(code: int) -> str:
-    """done / failed / blocked。blocked は待機であり失敗に数えない。"""
+    """done / failed / blocked / usage。blocked は待機であり失敗に数えない。"""
     return str(describe(code)["status"])
 
 
@@ -92,8 +92,29 @@ def needs_human(code: int) -> bool:
     return bool(describe(code).get("needs_human"))
 
 
+def retry_after_sec(code: int) -> Optional[int]:
+    """再試行までの待ち秒数（77 の 24 時間など）。retryable でなくても「時間が経てば復旧」を表す。"""
+    v = describe(code).get("retry_after_sec")
+    return int(v) if v is not None else None
+
+
+def no_auto_resume_codes() -> set[int]:
+    """自動再開しても無意味なコード（人手・時間待ち・選定待ち）。成功・一般失敗・usage は除く。"""
+    return {int(c) for c in ExitCode
+            if c not in (ExitCode.OK, ExitCode.FAIL, ExitCode.USAGE) and not is_retryable(int(c))}
+
+
+def sentinel_codes() -> list[int]:
+    """sentinel（75 以上）のコード一覧。通知文からの抽出パターンに使う。"""
+    return sorted(int(c) for c in ExitCode if int(c) >= 75)
+
+
+def sentinel_pattern() -> str:
+    return "|".join(str(c) for c in sentinel_codes())
+
+
 def ledger_status_for(code: int) -> str:
-    """台帳 finish_run の status（done / failed / waiting_selection）。"""
+    """台帳 finish_run の status（done / failed / waiting_selection）。usage は failed に読み替える。"""
     st = status_for(code)
     if st == "done":
         return "done"
@@ -111,8 +132,8 @@ def builtin_matches_workflow() -> list[str]:
         if j is None:
             problems.append(f"workflow.json に exit_code {row['exit_code']} がありません")
             continue
-        for k in ("reason", "status", "retryable", "needs_human"):
-            if j.get(k) != row[k]:
+        for k in ("reason", "status", "retryable", "needs_human", "retry_after_sec"):
+            if j.get(k) != row.get(k):
                 problems.append(f"exit_code {row['exit_code']} の {k}: json={j.get(k)!r} builtin={row[k]!r}")
     for extra in set(json_codes) - {r["exit_code"] for r in _DEFAULT_EXIT_REASONS}:
         problems.append(f"workflow.json にだけある exit_code {extra}")

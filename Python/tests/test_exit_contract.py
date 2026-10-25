@@ -5,6 +5,7 @@ except ImportError:
     import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,10 +25,16 @@ class WorkflowJsonTest(unittest.TestCase):
         self.assertEqual(ec.status_for(0), "done")
         self.assertEqual(ec.status_for(1), "failed")
         self.assertEqual(ec.status_for(79), "blocked")
+        self.assertEqual(ec.status_for(2), "usage")
+        self.assertEqual(ec.ledger_status_for(2), "failed")
         self.assertTrue(ec.is_blocked(79))
         self.assertFalse(ec.is_blocked(78))
         self.assertTrue(ec.is_retryable(76))
-        self.assertTrue(ec.is_retryable(77))
+        self.assertFalse(ec.is_retryable(77))  # 24 時間待ち。すぐの再試行は無意味
+        self.assertEqual(ec.retry_after_sec(77), 86400)
+        self.assertIsNone(ec.retry_after_sec(76))
+        self.assertEqual(ec.no_auto_resume_codes(), {75, 77, 78, 79})
+        self.assertEqual(ec.sentinel_pattern(), "75|76|77|78|79")
         self.assertFalse(ec.is_retryable(75))
         self.assertTrue(ec.needs_human(75))
         self.assertTrue(ec.needs_human(78))
@@ -83,6 +90,35 @@ class EntryPointsTest(unittest.TestCase):
         finally:
             o._ledger = saved
 
+    def test_evaluate_skips_vol_waiting_for_selection(self):
+        import app_orchestrator as o
+
+        class FakeLedger:
+            def __init__(self, status):
+                self.status = status
+            def list_runs(self, channel_id="", vol=None, limit=50, **kw):
+                return [{"status": self.status, "vol": vol}]
+
+        folder = Path(tempfile.mkdtemp(prefix="orch_"))
+        saved_ledger, saved_pending = o._ledger, o._selection_still_pending
+        try:
+            o._selection_still_pending = lambda f: True
+            o._ledger = FakeLedger("waiting_selection")
+            self.assertTrue(o.is_awaiting_selection(folder, 3, channel_id="ch"))
+            # 選定が済んだら候補に戻る
+            o._selection_still_pending = lambda f: False
+            self.assertFalse(o.is_awaiting_selection(folder, 3, channel_id="ch"))
+            # 直近 run が失敗なら従来どおり（待機扱いしない）
+            o._selection_still_pending = lambda f: True
+            o._ledger = FakeLedger("failed")
+            self.assertFalse(o.is_awaiting_selection(folder, 3, channel_id="ch"))
+            # evaluate は待機中の vol を候補に出さない
+            o._ledger = FakeLedger("waiting_selection")
+            channels = [{"channel_id": "ch", "vols": [{"vol": 3, "folder": str(folder)}]}]
+            self.assertEqual(o.evaluate(channels, dry_run=True), [])
+        finally:
+            o._ledger, o._selection_still_pending = saved_ledger, saved_pending
+
     def test_batch_preflight_code(self):
         import batch_orchestrator as b
         self.assertEqual(b.EXIT_PREFLIGHT, 78)
@@ -91,6 +127,7 @@ class EntryPointsTest(unittest.TestCase):
         import error_humanizer as h
         self.assertTrue(set(h.SENTINELS) <= {int(m) for m in ec.ExitCode})
         self.assertIn(79, h.SENTINELS)
+        self.assertEqual(sorted(h.SENTINELS), [75, 76, 77, 78, 79])
         self.assertEqual(h.SENTINELS[79]["code"], "music_selection_pending")
 
     def test_studio_exit_fields(self):
