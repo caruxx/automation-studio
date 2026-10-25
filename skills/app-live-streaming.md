@@ -88,7 +88,7 @@ VPS（Ubuntu/Debian）上で ffmpeg + screen を使い、作成済み BGM 動画
 | 「待機/異常」バッジ | key/動画未設定 or 動画パス誤り（ログ参照）。プレイリストのパス typo に注意 |
 | ローテが効かない | プレイリスト2本以上 + ローテ間隔>0 + 保存後に再起動（or 差替）したか |
 | 視聴者数が「未取得」 | そのチャンネルの `.youtube_token.json` 未認証、またはキーが YouTube 側の boundStream と不一致 |
-| copy で映像乱れ | 入力が H.264+AAC でない → reencode で検証 or AME で再書き出し |
+| copy で映像乱れ | 入力が H.264+AAC でない → reencode で検証 or `--only export` で再書き出し |
 | 削除できない動画 | いずれかの配信の動画/プレイリストで使用中 → 設定から外してから削除 |
 
 ## 関連

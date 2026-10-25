@@ -20,7 +20,7 @@ curl -fsS http://localhost:8888/api/config/migration-status >/dev/null
 
 失敗時:
 - SUNO 実行中なら、同時に SUNO を動かさず完了を待つ。
-- port 8888 が落ちていれば、launchd 常駐時は `bash setup_launchd.sh --sync`、非常駐時は `bash Python/start.sh`。
+- port 8888 が落ちていれば `bash Python/start.sh`（launchd 常駐は廃止）。
 - ネットワーク断や接続拒否は即中断せず、`curl` が 200 を返すまで待って再試行する。
 
 ## 1. Vol フォルダ作成

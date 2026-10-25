@@ -1,7 +1,5 @@
 # SUNO 復号方式ダウンロード 実装計画
 
-> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
-
 > **実行者向け**: REQUIRED SUB-SKILL: `codex-driven-development` を使ってタスク単位で実装する。
 > （superpowers の計画テンプレートは `subagent-driven-development` と書くが、この
 > ワークスペースでは DEV/CLAUDE.md の分業体制により `codex-driven-development` に読み替える。

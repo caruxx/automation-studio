@@ -117,7 +117,7 @@ stage 単位の retry 層 (`RETRY_POLICY`) が試行回数を使い切った状�
 | `suno` | Workspace 命名重複 / DL タイムアウト | `~/.flow-playwright-profile` を保ったまま `--from suno` で再開 |
 | `rename` | ffmpeg なし | `brew install ffmpeg` |
 | `premiere` | （自動通過。失敗しない） | — |
-| `export` | ffmpeg エラー / ディスク満杯 / export_path 未マウント | ログ確認 + `df -h` + `/Volumes` のマウント確認 |
+| `export` | ffmpeg エラー / ディスク満杯 / 背景画像なし | ログ確認 + `df -h` + `vol{N}.jpg` の有無（export_path 未マウント時は警告のうえ vol フォルダへ書き出す） |
 | `meta` | Claude CLI レートリミット | 数分待ってから `--from meta` で再投入 |
 | `upload` | quotaExceeded（→ 📊 セクションへ） / 動画違反 | YouTube Studio で動画詳細を確認 |
 

@@ -1,6 +1,6 @@
 # 自己評価付き反復画像生成ループ 実装計画（IMAGE_EVAL_LOOP_PLAN）
 
-> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `SPEC.md`（正本）と `skills/app-export.md`、計画は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` を参照。本文書は履歴として保持する。
 
 > **状態**: 計画確定 / S0 実装着手（2026-06-01 起案）
 > **要望**: 生成画像をベンチマーク先と比較してスコア化（遜色ない/次にベンチが出しそう/視聴者目線の優位点）し、合格ラインまで複数枚生成→評価→再生成を繰り返し、合格画像を採用。+ 弱点を次プロンプトに還流するフィードバック。完全自動（パイプライン組込）。

@@ -93,7 +93,7 @@ _claude/                         # プロジェクトルート
 │   ├── app_process_tracks.py   # 楽曲リネーム + ffmpeg 後処理（サムネ/ペルソナ）
 │   ├── app_sheets.py  # Google スプシ CSV 取得 + パース + マッチング
 │   ├── claude_proposer.py       # Claude CLI 提案ヘルパー（タイトル/説明/タグ）
-│   ├── app_ffrender.py         # ループ連結方式レンダラー（export_engine=ffmpeg・AME 代替）
+│   ├── app_ffrender.py         # FFmpeg 書き出し（唯一の書き出し経路。静止画ループ + 音声 + SRT + TC）
 │   ├── app_youtube.py   # YouTube 投稿
 │   ├── app_notify.sh      # Discord 通知
 ├── web/static/
@@ -174,7 +174,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 
 > **書き出しエンジン** — 2026-10-25 段階 1a 以降は FFmpeg（`app_ffrender.py`）のみ。`production_mode` は `ffmpeg_only` だけで、旧値 `standard` / `export_engine=ame` は警告付きで読み替える。
 >
-> **レンダーマニフェスト `.ffrender_manifest.json`（構成の正本）** — vol フォルダに保存。曲順・使用画像・尺・音声設定・焼き込み設定を固定する。`--from-premiere` で **Premiere の配置済みタイムラインを Premiere Link 経由で読み取り**（曲順=`getMediaPath`、尺=seq end、画像=V トラック）manifest 化（＝直感的に Premiere で編集→ffmpeg で高速書き出し、のブリッジ。著作権で配置済み動画の修正にも使う）。`--swap '曲名=新.mp3'` / `--remove '曲名'` で曲を差し替え/削除して再レンダ（Premiere 不要・SRT/チャプター自動再生成）。
+> **レンダーマニフェスト `.ffrender_manifest.json`（構成の正本）** — vol フォルダに保存。曲順・使用画像・尺・音声設定・焼き込み設定を固定する。`--swap '旧=新.mp3'` / `--remove '曲名'` で構成を差し替え、`--show-manifest` で表示、`--no-render` で manifest 操作だけ行う。
 >
 > **曲名焼き込み（`--burn-titles always`）** — 各曲の区間に曲名を**常時焼き込み**（drawtext、画像境界∪曲境界で分割→GOP→TS 連結）。書式は per-channel `.app_channel_config.json` の `burn_titles` ブロック（`font`/`fontsize`/`color`/`prefix`/`x`/`y`/`border`）で定義。mov_text ソフト字幕も併存。（補足: キャプショントラックのフォント/位置は ExtendScript 非公開のため Premiere Link では読めない。焼き込み書式は channel 設定で持つ。）
 | 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py |

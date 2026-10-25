@@ -19,7 +19,7 @@ cron 風のスケジュール管理で、PC を起動しておくだけで定期
 
 | type | 用途 | 追加パラメータ |
 |------|------|--------------|
-| `vol_create` | 次の vol を **フル自動**で作る（plan → suno → rename → bgimage → psd_composite → export → qa → meta → upload） | `channel_id`（複数チャンネル運営時、省略可 = アクティブを使う） |
+| `vol_create` | 次の vol を **フル自動**で作る（plan → suno → rename → bgimage → psd_composite → export → qa → meta → localization → thumbnail → upload の全工程） | `channel_id`（複数チャンネル運営時、省略可 = アクティブを使う） |
 | `benchmark_refresh` | ベンチマーク分析を実行 → キャッシュ更新 | なし |
 | `export_window` | （廃止・互換のため残置）旧 AME ウォッチャーの切替。2026-10-25 段階 1a 以降は効果なし | `action`: `"on"` or `"off"` |
 | `spot_create` | 指定 vol を **1 回限り**で作る | `vol`（必須）, `channel_id`（省略可） |

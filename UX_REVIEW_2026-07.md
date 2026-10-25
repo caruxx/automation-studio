@@ -1,6 +1,6 @@
 # Automation Studio UI/UX 棚卸し（2026-07-18）
 
-> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `SPEC.md`（正本）と `skills/app-export.md`、計画は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` を参照。本文書は履歴として保持する。
 
 実画面巡回（Chrome 1440x900、orzz チャンネル、サーバー稼働中 localhost:8888）と DOM/CSS 検査で実施。
 2026-06-11 の UX_REVIEW.md の後継。前回の C1〜C4（進捗表現・用語・ジャーゴン・赤色規約）の修正は一覧レベルでは維持されているが、**構造レベルの不統一と、修正後に入った新レイアウトの崩れ**が今回の主対象。

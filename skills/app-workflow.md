@@ -65,7 +65,7 @@ bash Python/start.sh       # http://localhost:8888/
 ### STEP 3: 背景画像生成（動画詳細「画像」タブ）
 - ベンチマーク（picked or rival_channels の thumbs プール）から N 枚ランダム選択 →
   チャンネル persona を載せたプロンプトで `codex_imagegen.py` を起動 → `vol{N}.png` を 1 枚生成
-- 背景画像の既定名は `vol{N}.png`（`selected_images.json` が無いとき app_ffrender が読む）
+- 背景画像は `selected_images.json` があればそれを優先。無ければ `vol{N}.jpg` → `vol{N}.png` → `vol{N}-1.*` の順で app_ffrender が読む
 - 既存 `vol{N}.png/.jpg` あれば既定でスキップ（`APP_BGIMAGE_FORCE=1` で上書き）
 - 「上書き再生成」UI ボタン / `POST /api/bgimage/run` でも単発実行可能
 - 詳細: [app-bgimage.md](./app-bgimage.md)

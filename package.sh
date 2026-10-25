@@ -66,6 +66,7 @@ scan_zip() {
   tmp_patterns="$(mktemp)"
   {
     id -un
+    echo "GoogleDrive-"
     if [[ -f "$ROOT_DIR/config/channels.json" ]]; then
       python3 - "$ROOT_DIR/config/channels.json" <<'PY'
 import json, sys

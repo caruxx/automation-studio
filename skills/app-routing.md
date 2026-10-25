@@ -19,11 +19,10 @@ python3 Python/studio.py pipeline --vol 78 --from export
 
 ## Web サーバー再起動
 
-launchd 常駐時はコードがローカルミラーから起動するため、コード変更の反映と再起動をまとめて行う。
+launchd 常駐は 2026-07-04 に廃止。コード変更後は手動で再起動する。
 
 ```bash
-bash setup_launchd.sh --sync
-launchctl list | grep automation
+bash Python/start.sh --replace   # 稼働中なら SIGTERM で止めてから起動
 ```
 
 非常駐時だけ直接起動する。

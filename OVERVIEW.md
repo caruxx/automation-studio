@@ -180,9 +180,9 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 | 5 | premiere | 配置は書き出しに統合（この工程は自動で通過） | — | app_pipeline step_premiere | — |
 | 6 | export | FFmpeg で MP4・SRT・タイムコードを一括生成 | `{prefix}_vol*.mp4` | app_ffrender.py | — |
 | 7 | qa | 書き出し直後に自動品質チェック | QA 4 軸 pass | app_pipeline step_qa | — |
-| 8 | meta | タイトル/説明文/タグを AI 生成 | `youtube_description.txt` + `tags.txt` | claude_proposer.py | メタ生成 |
+| 8 | meta | タイトル/説明文/タグを AI 生成 | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py | メタ生成 |
 | 9 | localization | メイン言語→他言語へ翻訳 | 多言語メタ | app_pipeline step_localization | 翻訳 |
-| 10 | thumbnail | AI サムネ生成（PSD 失敗時の予備） | `thumbnail.png` / `vol*.jpg` | app_channel_thumbnail.py | 画像+Vision |
+| 10 | thumbnail | AI サムネ生成（画像合成が使えない時の予備） | `thumbnail.png` / `vol*.jpg` | app_channel_thumbnail.py | 画像+Vision |
 | 11 | upload | YouTube へ投稿（限定/公開/予約） | `youtube_upload.json` | app_youtube.py | — |
 
 - 自動運転（使い方③）のときだけ先頭に「作戦立て（plan）」が 1 段増えて 12 工程になります。
@@ -328,7 +328,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 |---|---|---|
 | `suno_auto_create.py` | — | Playwright で suno.com を操作し楽曲生成。Workspace 管理・一括生成（`--batch`）・一括 DL |
 | `app_process_tracks.py` | 850 | 楽曲後処理。英語リネーム + ffmpeg（無音トリム/フェード/LUFS 正規化）+ 透かし除去 + ID3 |
-| `app_ffrender.py` | — | FFmpeg 書き出しエンジン（唯一の書き出し経路）。静止画 1 GOP→ループ連結で音声+映像+字幕(SRT)+チャプター(TC) を一括生成。`export_engine=ffmpeg` 時に premiere/export を置換し 70-190 秒で書き出し |
+| `app_ffrender.py` | — | FFmpeg 書き出しエンジン（唯一の書き出し経路）。静止画 1 GOP→ループ連結で音声+映像+字幕(SRT)+チャプター(TC) を一括生成 |
 | `app_image_composite.py` / `app_image_compositor.py` | — | 画像合成（Pillow）。背景＋文字で `vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し |
 | `app_youtube.py` | 919 | YouTube 投稿。保存ファイルから自動読込→`videos().insert()`。`--auth-only` で再認証 |
 | `app_image_prompt.py` / `codex_imagegen.py` | — | 背景画像のプロンプト構築 / OpenAI Image・Codex CLI で生成（並列・参照画像対応） |
@@ -364,7 +364,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 - **役割：AI の取扱説明書** — 「サムネを作って」と頼むと、AI はまず `app-thumbnail.md` を読んで正しいやり方と落とし穴を理解してから作業します。だから指示がざっくりでも正しい手順で動きます。
 - **位置づけ：実行はしない・案内する** — skills 自体は動くプログラムではありません。実際に動くのは `app_*.py`。skills は「どのプログラムをどう呼ぶか」を AI に教えるナレッジ層で、上記「使い方②」を支えています。
 
-現在 24 本。主なもの: `app-workflow.md`（全体フロー）/ `app-web-dashboard.md`（API 全体像）/ `app-suno-download.md` / `app-rename-audio.md` / `app-bgimage.md` / `app-thumbnail.md` / `app-psd-composite.md` / `app-premiere.md` / `app-export.md` / `app-youtube-upload.md` / `app-competitor-spreadsheet.md` / `app-imitate-evolve.md` / `app-schedule.md` / `app-remote-access.md` ほか。全文は `skills/` 内の各 `.md` を参照。
+主なもの: `app-workflow.md`（全体フロー）/ `app-web-dashboard.md`（API 全体像）/ `app-suno-download.md` / `app-rename-audio.md` / `app-bgimage.md` / `app-thumbnail.md` / `image.md`（画像合成）/ `app-export.md`（FFmpeg 書き出し）/ `app-youtube-upload.md` / `app-schedule.md` など。
 
 > これはリポジトリ内の `skills/` のこと。Claude Code の個人設定 `.claude/skills`（壊れた空リンク）とは別物で、リポジトリには含めていません。
 
@@ -426,7 +426,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 
 ### FFmpeg 書き出し
 - 背景は画像合成の出力 `vol{N}.jpg`（1920x1080）を使う。生の `vol{N}.png` を直接使うと中央が切れる
-- 外部 SSD（`export_path`）が未マウントだと書き出し前に停止する
+- 外部 SSD（`export_path`）が未マウントのときは警告を出して vol フォルダへ書き出す（停止はしない）
 
 ### AI / Codex / 共有ドライブ
 - Codex は `codex login` 必須・認証が失効しやすい。切替は Claude → Codex の一方向

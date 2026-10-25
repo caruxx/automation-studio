@@ -3,7 +3,7 @@
 `export` 工程は `Python/app_ffrender.py` が担う。Premiere / Media Encoder は使わない（2026-10-25 段階 1a で廃止）。
 
 ## 概要
-- 入力: `music/*.mp3`（処理済み楽曲）、背景画像 `vol{N}.jpg`（画像合成の出力。無ければ `vol{N}.png` / `vol{N}_source.jpg`）、チャンネル設定（`ffrender`、`default_duration_sec`、`export_path`）
+- 入力: `music/*.mp3`（処理済み楽曲）、背景画像（`selected_images.json` があればそれを優先。無ければ `vol{N}.jpg` → `vol{N}.png` → `vol{N}-1.*` の順。画像が無いと失敗する）、チャンネル設定（`ffrender`、`default_duration_sec`、`export_path`）
 - 出力: `{prefix}_vol{N}.mp4`（`export_path` 指定時は外部ストレージ直下に flat 配置）、`subtitles_{N}.srt`、`music_time_code_info_{N}.txt`、構成の正本 `.ffrender_manifest.json`
 - 方式: 静止画を 1 GOP だけエンコードし `-stream_loop` と `-c copy` で目標尺まで連結。音声は concat → フェード → リミッター。字幕とタイムコードは `srt_timecode.py` の純関数で生成する。
 

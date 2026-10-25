@@ -4,7 +4,7 @@
 
 ## 1. AceDataCloud Midjourney API
 
-撤去済み（2026-06-07 D8）。実装・設定キー・UI は残っていない。監査記録は git 履歴（2026-05-17 時点）を参照。
+撤去済み（2026-06-07 D8）。実装・設定キー・UI は撤去済み（`routers/images.py` の見出しコメントが残るのみ）。監査記録は git 履歴（2026-05-17 時点）を参照。
 
 ---
 
@@ -24,7 +24,7 @@
 
 ### 2.3 Google Flow / Nano Banana 2
 
-撤去済み（2026-06-07 D8）。画像生成は OpenAI Image API（`OPENAI_API_KEY`）または Codex CLI のみ。
+撤去済み（2026-06-07 D8）。画像生成は OpenAI Image API（`OPENAI_API_KEY`）または Codex CLI のみ。`Python/flow_userscript.js` と `save_auth.py` は未参照の残骸として残っており、段階 7 で整理する。
 
 ---
 

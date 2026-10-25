@@ -1,6 +1,6 @@
 # Automation Studio — エージェント設計書（AGENTS_DESIGN）
 
-> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `SPEC.md`（正本）と `skills/app-export.md`、計画は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` を参照。本文書は履歴として保持する。
 
 > **状態**: ドラフト / レビュー待ち（2026-05-31 起案）
 > **対象**: (A) Claude Code 開発サブエージェント + (B) アプリ内 運用自動化エージェント
