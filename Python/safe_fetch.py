@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import socket
+import time
 import urllib.error
 import urllib.request
 from typing import Callable, Iterable, Tuple
@@ -16,6 +18,7 @@ from urllib.parse import urlsplit, urljoin
 
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 20
+DEFAULT_DEADLINE = 30  # 1 URL あたりの全体の締め切り（秒）
 MAX_REDIRECTS = 5
 _METADATA_NETS = (ipaddress.ip_network("169.254.0.0/16"), ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd00::/8"))
 
@@ -56,7 +59,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def open_url(url: str, timeout: float) -> Tuple[int, dict, Callable[[int], bytes], Callable[[], None]]:
     """urllib で 1 hop だけ取得する。戻り値: (status, headers, read(n), close)。"""
-    opener = urllib.request.build_opener(_NoRedirect)
+    # 環境変数のプロキシには従わない（検証した IP と実際の接続先がずれるのを防ぐ）
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
     req = urllib.request.Request(url, headers={"User-Agent": "AutomationStudio/1.0 (+safe_fetch)"})
     try:
         resp = opener.open(req, timeout=timeout)
@@ -97,14 +101,28 @@ def validate_url(url: str, resolver: Callable[[str], Iterable[str]] = resolve_ip
 
 
 def fetch_image(url: str, *, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float = DEFAULT_TIMEOUT,
-                max_redirects: int = MAX_REDIRECTS,
+                max_redirects: int = MAX_REDIRECTS, deadline: float = DEFAULT_DEADLINE,
                 resolver: Callable[[str], Iterable[str]] = resolve_ips,
                 opener: Callable[[str, float], Tuple[int, dict, Callable[[int], bytes], Callable[[], None]]] = open_url,
+                clock: Callable[[], float] = time.monotonic,
                 ) -> Tuple[bytes, str]:
-    """画像 URL を取得して (bytes, content_type) を返す。拒否・失敗は SafeFetchError。"""
+    """画像 URL を取得して (bytes, content_type) を返す。拒否・失敗（接続・読み込みのエラー、締め切り超過を含む）は SafeFetchError。"""
     current = validate_url(url, resolver)
+    started = clock()
+
+    def _remaining() -> float:
+        left = deadline - (clock() - started)
+        if left <= 0:
+            raise SafeFetchError("取得が締め切りを超えました")
+        return min(timeout, left)
+
     for _ in range(max_redirects + 1):
-        status, headers, read, close = opener(current, timeout)
+        try:
+            status, headers, read, close = opener(current, _remaining())
+        except SafeFetchError:
+            raise
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            raise SafeFetchError("接続に失敗しました") from exc
         try:
             if 300 <= status < 400:
                 location = headers.get("location")
@@ -120,9 +138,24 @@ def fetch_image(url: str, *, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float 
             length = headers.get("content-length")
             if length and length.isdigit() and int(length) > max_bytes:
                 raise SafeFetchError("画像が大きすぎます")
-            data = read(max_bytes + 1)
-            if len(data) > max_bytes:
-                raise SafeFetchError("画像が大きすぎます")
+            # 64KB ずつ読み、容量と締め切りの両方で打ち切る
+            chunks: list[bytes] = []
+            total = 0
+            try:
+                while True:
+                    _remaining()
+                    chunk = read(min(65536, max_bytes + 1 - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise SafeFetchError("画像が大きすぎます")
+            except SafeFetchError:
+                raise
+            except (OSError, http.client.HTTPException, ValueError) as exc:
+                raise SafeFetchError("読み込みに失敗しました") from exc
+            data = b"".join(chunks)
             if not data:
                 raise SafeFetchError("空の応答です")
             return data, ctype

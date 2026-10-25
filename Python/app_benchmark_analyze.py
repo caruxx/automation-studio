@@ -456,7 +456,9 @@ def analyze_thumbnail_elements(
         for i, url in enumerate(url_list):
             try:
                 data, ctype = fetch_image(url)
-                ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(ctype, "jpg")
+                ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(ctype)
+                if not ext:
+                    raise SafeFetchError(f"対応していない画像形式です: {ctype}")
                 dst = tmp_dir / f"thumb_{i:02d}.{ext}"
                 dst.write_bytes(data)
                 downloaded.append(dst)

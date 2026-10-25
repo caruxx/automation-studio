@@ -97,6 +97,24 @@ class FetchImageTest(unittest.TestCase):
         with self.assertRaises(safe_fetch.SafeFetchError):
             safe_fetch.fetch_image("https://img.example.com/a.png", resolver=self.res, opener=op)
 
+    def test_read_errors_and_deadline_become_safe_fetch_error(self):
+        def flaky_open(url, timeout):
+            def read(n):
+                raise TimeoutError("read timed out")
+            return 200, {"content-type": "image/png"}, read, (lambda: None)
+        with self.assertRaises(safe_fetch.SafeFetchError):
+            safe_fetch.fetch_image("https://img.example.com/a.png", resolver=self.res, opener=flaky_open)
+
+        def failing_open(url, timeout):
+            raise ConnectionResetError("reset")
+        with self.assertRaises(safe_fetch.SafeFetchError):
+            safe_fetch.fetch_image("https://img.example.com/a.png", resolver=self.res, opener=failing_open)
+
+        ticks = iter([0.0, 0.0, 100.0, 100.0, 100.0])
+        op = _opener({"https://img.example.com/a.png": (200, {"Content-Type": "image/png"}, b"\x89PNG" + b"\x00" * 10)})
+        with self.assertRaises(safe_fetch.SafeFetchError):
+            safe_fetch.fetch_image("https://img.example.com/a.png", resolver=self.res, opener=op, deadline=30, clock=lambda: next(ticks))
+
     def test_internal_target_is_never_opened(self):
         op = _opener({})
         with self.assertRaises(safe_fetch.SafeFetchError):

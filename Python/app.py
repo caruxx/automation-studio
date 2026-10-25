@@ -4896,7 +4896,7 @@ _THUMB_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 def _thumb_upload_dir(upload_id: str) -> Path:
     """upload_id（英数と -_ のみ）を専用領域配下のディレクトリに解決する。"""
     uid = str(upload_id or "").strip()
-    if not uid or not all(c.isalnum() or c in "-_" for c in uid) or len(uid) > 64:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", uid):
         raise HTTPException(400, "upload_id が不正です")
     d = (_THUMB_UPLOAD_ROOT / uid).resolve()
     if not path_is_within(d, _THUMB_UPLOAD_ROOT):
@@ -4904,18 +4904,41 @@ def _thumb_upload_dir(upload_id: str) -> Path:
     return d
 
 
+def _sweep_stale_thumb_uploads(max_age_sec: int = 24 * 3600) -> None:
+    """分析されずに残った upload ディレクトリを一定時間後に消す（best effort）。"""
+    try:
+        if not _THUMB_UPLOAD_ROOT.is_dir():
+            return
+        now = time.time()
+        for d in _THUMB_UPLOAD_ROOT.iterdir():
+            try:
+                if d.is_dir() and now - d.stat().st_mtime > max_age_sec:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 def _save_image_bytes(dst_dir: Path, index: int, content: bytes, name_hint: str = "") -> Path:
     """画像であることを Pillow で確認し、実形式に合わせた拡張子で保存する。"""
     import io
+    import warnings
     from PIL import Image
     if not content:
         raise HTTPException(400, "空のファイルです")
     if len(content) > _THUMB_UPLOAD_MAX_BYTES:
         raise HTTPException(413, "画像が大きすぎます（10MB まで）")
     try:
-        with Image.open(io.BytesIO(content)) as img:
-            fmt = (img.format or "").lower()
-            img.verify()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(content)) as img:
+                fmt = (img.format or "").lower()
+                if img.width * img.height > 40_000_000:
+                    raise HTTPException(400, "画像の画素数が大きすぎます（4000 万画素まで）")
+                img.verify()
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(400, f"画像として読めません: {Path(name_hint or 'file').name}")
     ext = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}.get(fmt)
@@ -4931,16 +4954,23 @@ async def api_thumbnails_upload(files: List[UploadFile] = File(...)):
     """画像をサーバの専用領域（CONFIG_DIR/thumb_uploads/<upload_id>/）に保存し、upload_id を返す。
     パスは返さない（S04: 利用者に紐付く ID だけを後続 API に渡す）。"""
     import uuid
+    if len(files) > 20:
+        raise HTTPException(400, "画像は 20 枚までです")
+    _sweep_stale_thumb_uploads()
     upload_id = uuid.uuid4().hex
     dst_dir = _thumb_upload_dir(upload_id)
     dst_dir.mkdir(parents=True, exist_ok=False)
     saved = 0
-    for f in files[:20]:
-        content = await f.read()
-        _save_image_bytes(dst_dir, saved, content, f.filename or "")
-        saved += 1
-    if not saved:
-        raise HTTPException(400, "画像がありません")
+    try:
+        for f in files:
+            content = await f.read(_THUMB_UPLOAD_MAX_BYTES + 1)
+            _save_image_bytes(dst_dir, saved, content, f.filename or "")
+            saved += 1
+        if not saved:
+            raise HTTPException(400, "画像がありません")
+    except Exception:
+        shutil.rmtree(dst_dir, ignore_errors=True)
+        raise
     return {"upload_id": upload_id, "count": saved}
 
 
@@ -4951,24 +4981,28 @@ def api_analyze_thumbnails(req: ThumbnailAnalysisRequest):
     from safe_fetch import SafeFetchError, fetch_image
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
+    upload_ids = [str(u) for u in (req.upload_ids or [])]
+    urls = [str(u) for u in (req.urls or [])]
+    if len(upload_ids) > 10 or len(urls) > 10:
+        raise HTTPException(400, "upload_ids と urls はそれぞれ 10 件までです")
+    upload_dirs = [_thumb_upload_dir(uid) for uid in upload_ids]  # 形式検証は先に済ませる
     image_paths: list[str] = []
-    for uid in (req.upload_ids or [])[:10]:
-        d = _thumb_upload_dir(uid)
-        if not d.is_dir():
-            raise HTTPException(404, f"upload_id が見つかりません: {uid}")
-        image_paths.extend(str(p) for p in sorted(d.iterdir()) if p.suffix.lower() in _THUMB_IMAGE_EXT)
     fetched_dir = None
-    if req.urls:
-        import tempfile
-        _THUMB_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
-        fetched_dir = Path(tempfile.mkdtemp(prefix="thumb_url_", dir=str(_THUMB_UPLOAD_ROOT)))
-        for i, url in enumerate(req.urls[:10]):
-            try:
-                data, _ctype = fetch_image(url)
-            except SafeFetchError as e:
-                raise HTTPException(400, f"URL を取得できません: {e}")
-            image_paths.append(str(_save_image_bytes(fetched_dir, i, data, url)))
     try:
+        for uid, d in zip(upload_ids, upload_dirs):
+            if not d.is_dir():
+                raise HTTPException(404, f"upload_id が見つかりません: {uid}")
+            image_paths.extend(str(p) for p in sorted(d.iterdir()) if p.suffix.lower() in _THUMB_IMAGE_EXT)
+        if urls:
+            import tempfile
+            _THUMB_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+            fetched_dir = Path(tempfile.mkdtemp(prefix="thumb_url_", dir=str(_THUMB_UPLOAD_ROOT)))
+            for i, url in enumerate(urls):
+                try:
+                    data, _ctype = fetch_image(url)
+                except SafeFetchError as e:
+                    raise HTTPException(400, f"URL を取得できません: {e}")
+                image_paths.append(str(_save_image_bytes(fetched_dir, i, data, url)))
         result = analyze_thumbnail_elements(
             image_paths=image_paths,
             url_list=[],
@@ -4996,14 +5030,11 @@ def api_analyze_thumbnails(req: ThumbnailAnalysisRequest):
             raise HTTPException(400, msg)
         raise HTTPException(500, msg)
     finally:
-        # 取得・アップロードした画像は分析後に消す
-        try:
-            if fetched_dir is not None:
-                shutil.rmtree(fetched_dir, ignore_errors=True)
-            for uid in (req.upload_ids or [])[:10]:
-                shutil.rmtree(_thumb_upload_dir(uid), ignore_errors=True)
-        except Exception:
-            pass
+        # 取得・アップロードした画像は成否にかかわらず消す
+        if fetched_dir is not None:
+            shutil.rmtree(fetched_dir, ignore_errors=True)
+        for d in upload_dirs:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 # ─── API: Sheets URL 取り込み ───
