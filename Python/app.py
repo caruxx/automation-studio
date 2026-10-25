@@ -8579,7 +8579,19 @@ async def _recover_scheduled_publishes():
     if not chs or _scheduler is None:
         return
     import datetime as _dt
+    from publish_schedule import (
+        JST as _JST,
+        plan_scheduled_publish_recovery as _plan_recovery,
+        resolve_recover_max_stale_days as _resolve_stale_days,
+        scheduler_run_at as _scheduler_run_at,
+    )
+    max_stale_days, stale_warn = _resolve_stale_days(os.environ.get("APP_PUBLISH_RECOVER_MAX_STALE_DAYS"))
+    if stale_warn:
+        print(f"[publish] 警告: {stale_warn}")
+    # スケジューラ（Asia/Tokyo）に合わせ JST の naive 時刻で統一する
+    now_local = _dt.datetime.now(_JST).replace(tzinfo=None)
     n_recovered = 0
+    n_stale = 0
     for ch in chs:
         ch_folder_str = ch.get("folder") or ""
         if not ch_folder_str:
@@ -8601,25 +8613,33 @@ async def _recover_scheduled_publishes():
             already = d.get("published_at") or (d.get("privacy") == "public")
             if not sched or already:
                 continue
-            try:
-                run_at = _dt.datetime.fromisoformat(sched)
-            except Exception:
+            # naive/aware 混在を正規化し、max_stale_days より古い予約は再登録しない
+            # （旧環境で読み飛ばされていた古い予約を 3.12 で一斉投入する事故の防止）
+            kind, run_at = _plan_recovery(sched, now=now_local, max_stale_days=max_stale_days)
+            if kind == "invalid":
+                print(f"[publish] 復旧スキップ（解釈不能な scheduled_publish_at）: {ch.get('name', '')}/{vol_dir.name} = {sched!r}")
                 continue
-            # 過去日付なら 1 分後に即時投入
-            if run_at < _dt.datetime.now():
-                run_at = _dt.datetime.now() + _dt.timedelta(minutes=1)
+            if kind == "stale":
+                n_stale += 1
+                print(f"[publish] 警告: 古い公開予約を再登録しません（{max_stale_days} 日超過）: "
+                      f"{ch.get('name', '')}/{vol_dir.name} scheduled_publish_at={sched} "
+                      f"→ 公開するなら UI か studio.py から改めて予約してください")
+                continue
             try:
                 _schedule_publish(
                     video_name=vol_dir.name,
                     channel_folder=str(ch_folder),
                     channel_name=ch.get("name", ""),
-                    run_at=run_at,
+                    # DateTrigger は naive を OS の TZ で解釈するため JST 付きの aware で渡す
+                    run_at=_scheduler_run_at(run_at),
                 )
                 n_recovered += 1
             except Exception as e:
                 print(f"[publish] 復旧失敗 {vol_dir.name}: {e}")
     if n_recovered:
         print(f"[publish] {n_recovered} 件の公開ゲートを再登録（再起動復旧）")
+    if n_stale:
+        print(f"[publish] 警告: {n_stale} 件の古い公開予約を再登録せず残しました（APP_PUBLISH_RECOVER_MAX_STALE_DAYS={max_stale_days}）")
 
 
 # ─── API: スケジュール ───
