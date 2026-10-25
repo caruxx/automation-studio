@@ -169,12 +169,21 @@ class StudioIntentTest(unittest.TestCase):
                 self.assertEqual(studio.main(), 2)
             with patch("sys.argv", ["studio.py", "run", "--vol", "12", "--request-id", "short", "--json"]):
                 self.assertEqual(studio.main(), 2)
+            with patch("sys.argv", ["studio.py", "run", "--vol", "12", "--json", "--dry-run"]):
+                self.assertEqual(studio.main(), 0)  # 送らない
+            with patch("sys.argv", ["studio.py", "run-cancel", "--run-id", "5", "--json", "--dry-run"]):
+                self.assertEqual(studio.main(), 0)
         self.assertEqual(calls[0][2]["intent"], "pipeline")
         self.assertEqual(calls[1][2]["intent"], "qa")
         self.assertEqual(calls[1][2]["request_id"], "req-fixed-0003")
         self.assertEqual(len(calls), 2)
         lines = [json.loads(l) for l in out.getvalue().strip().splitlines()]
         self.assertEqual((lines[0]["intent"], lines[0]["run_intent"]), ("run", "pipeline"))
+        dry = [l for l in lines if l.get("dry_run")]
+        self.assertEqual(len(dry), 2)
+        self.assertEqual((dry[0]["method"], dry[0]["path"], dry[0]["payload"]["intent"]), ("POST", "/api/runs", "pipeline"))
+        self.assertEqual(dry[1]["path"], "/api/runs/5/cancel")
+        self.assertNotIn("ai_token", json.dumps(dry))
 
     def test_cli_not_configured_exits_2(self):
         with tempfile.TemporaryDirectory() as t:

@@ -326,6 +326,20 @@ def run_vps_runs(args: argparse.Namespace) -> int:
     import vps_runs
     from exit_codes import ExitCode
     intent = args.intent_name
+    if getattr(args, "dry_run", False):
+        # 他の intent と同じく、--dry-run は何も送らず「送るはずの内容」だけを出す（トークンは含めない）
+        preview = {"ok": True, "intent": intent, "dry_run": True}
+        if intent == "run":
+            raw = args.vol or args.resolve_num
+            preview.update({"method": "POST", "path": "/api/runs",
+                            "payload": {"request_id": args.request_id or "(auto)", "channel_key": (args.channel or get_active_channel_info().get("id") or ""),
+                                        "vol": raw, "workflow_version": vps_runs.workflow_version(), "intent": args.run_intent, "from_step": args.from_step}})
+        elif intent == "run-status":
+            preview.update({"method": "GET", "path": f"/api/runs/{args.run_id}" if args.run_id else "/api/runs"})
+        else:
+            preview.update({"method": "POST", "path": f"/api/runs/{args.run_id}/{intent.split('-', 1)[1]}"})
+        emit(preview)
+        return 0
     try:
         if intent == "run":
             raw = args.vol or args.resolve_num
