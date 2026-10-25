@@ -78,9 +78,11 @@ def stage_outputs(stage: str, folder: Path, vol: int) -> list[Path]:
                  sorted(p for p in folder.glob("subtitles_*.srt") if p.is_file())
         return (mine or _mp4s(folder)) + extras
     if st == "qa":
-        # qa の出力は検査結果 + 検査した書き出し物（meta は曲順・タイムコードの変更で失効する）
+        # qa の出力は検査結果 + 検査した書き出しのタイムコード（内容ハッシュ。曲順の変更だけで meta が失効する）。
+        # mp4 / srt は含めない（中身の同じ再 render で meta が作り直されるのを防ぐ）。
         p = folder / "qa_report.json"
-        return ([p] if p.is_file() else []) + stage_outputs("render", folder, vol)
+        tcs = sorted(q for q in folder.glob("music_time_code_info_*.txt") if q.is_file())
+        return ([p] if p.is_file() else []) + tcs
     if st == "meta":
         return [folder / n for n in ("youtube_title.txt", "youtube_description.txt", "youtube_tags.txt") if (folder / n).is_file()]
     if st == "localization":
@@ -297,7 +299,8 @@ def mark_done(stage: str, folder: Path, vol: int) -> Optional[dict]:
     fn = validator_for(st)
     if fn is not None and not fn(folder, vol):
         # 成果物を作らずに成功した工程（例: 多言語設定の無いチャンネルの localization）は記録しない。
-        # 記録すると "missing" になって毎回再投入される。従来どおり成果物と台帳で判定する。
+        # 記録すると "missing" になって毎回再投入される。古い記録も消し、従来どおり成果物と台帳で判定する。
+        invalidate(st, folder, vol)
         return None
     with _locked(folder):
         stages = load(folder)

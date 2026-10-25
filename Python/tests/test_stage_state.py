@@ -172,8 +172,11 @@ class StageStateTest(unittest.TestCase):
 
     def test_success_without_artifact_is_not_recorded_and_ledger_still_completes(self):
         import app_orchestrator as o
+        _touch(self.folder / "youtube_localizations.json", b"{}")
+        ss.mark_done("localization", self.folder, self.vol)
+        (self.folder / "youtube_localizations.json").unlink()
         self.assertIsNone(ss.mark_done("localization", self.folder, self.vol))  # 多言語設定なし: 成果物なしで成功
-        self.assertEqual(ss.load(self.folder), {})
+        self.assertEqual(ss.load(self.folder), {})  # 古い記録も消える
         self.assertEqual(ss.evaluate("localization", self.folder, self.vol), "pending")
         saved = o._ledger
         o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [{"status": "done", "meta_json": '{"stage": "localization"}'}])})()
@@ -193,6 +196,11 @@ class StageStateTest(unittest.TestCase):
         _touch(self.folder / "qa_report.json", json.dumps({"passed": True, "issues": []}).encode())
         _touch(self.folder / "youtube_title.txt", b"t")
         ss.mark_done("meta", self.folder, self.vol)
+        # 中身の同じ再 render（mp4 の mtime だけ変わる、タイムコードも同内容）では meta は失効しない
+        (self.folder / "x_vol7.mp4").write_bytes(b"m"); os.utime(self.folder / "x_vol7.mp4", (44_444, 44_444))
+        tc.write_bytes(b"00:00 song A\n03:00 song B"); os.utime(tc, (44_444, 44_444))
+        _touch(self.folder / "subtitles_7.srt", b"s")
+        self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "done")
         tc.write_bytes(b"00:00 song B\n03:00 song A")  # 曲順変更 → 再 render → qa 合格（結果は同じ）
         self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "stale")
 
