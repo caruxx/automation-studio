@@ -34,6 +34,16 @@ BASE_URL = "http://localhost:8888"
 STUDIO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _exit_fields(code: int) -> dict:
+    """終了コードの reason / status（workflow.json の単一正本）。読めなくても落とさない。"""
+    try:
+        from exit_codes import describe
+        d = describe(int(code))
+        return {"reason": d["reason"], "status": d["status"], "retryable": bool(d.get("retryable"))}
+    except Exception:
+        return {}
+
+
 def emit(obj: dict[str, Any]) -> None:
     print(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
 
@@ -722,7 +732,7 @@ def main() -> int:
             emit({"ok": True, "intent": args.intent, "video_name": ctx["video_name"], "cmd": cmd, "dry_run": True})
             return 0
         code = run_api(method, path, body)
-        emit({"ok": code == 0, "intent": args.intent, "video_name": ctx["video_name"], "cmd": cmd, "exit_code": code})
+        emit({"ok": code == 0, "intent": args.intent, "video_name": ctx["video_name"], "cmd": cmd, "exit_code": code, **_exit_fields(code)})
         return code
 
     if not route.get("cli"):
@@ -735,7 +745,7 @@ def main() -> int:
         emit({"ok": True, "intent": args.intent, "video_name": ctx["video_name"], "cmd": cmd, "dry_run": True})
         return 0
     code = subprocess.call(cmd, cwd=str(PYTHON_DIR))
-    emit({"ok": code == 0, "intent": args.intent, "video_name": ctx["video_name"], "cmd": cmd, "exit_code": code})
+    emit({"ok": code == 0, "intent": args.intent, "video_name": ctx["video_name"], "cmd": cmd, "exit_code": code, **_exit_fields(code)})
     return code
 
 

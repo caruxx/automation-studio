@@ -42,6 +42,12 @@ SENTINELS = {
         "next_action": "ffmpeg / ffprobe / Pillow が見つかりません。brew install ffmpeg と .venv の再作成（bash Python/start.sh）を行い、python3 Python/studio.py preflight --json で確認してから再実行してください。",
         "action_url": ACTION_URLS["preflight"],
     },
+    79: {
+        "code": "music_selection_pending",
+        "title": "楽曲の選定待ちです",
+        "next_action": "失敗ではありません。選曲（AI 選曲または人のハート）が済むと rename から再開できます。",
+        "action_url": ACTION_URLS["ledger"],
+    },
 }
 
 

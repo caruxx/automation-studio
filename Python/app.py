@@ -26,6 +26,7 @@ from typing import Optional, List, Literal
 
 # ─── 土台は app_core へ分離（D9 第1段）。foundation シンボルを取り込む ───
 import app_core  # noqa: F401  （app_core.X 直接参照用）
+import exit_codes as _exit_codes  # 終了コードの単一正本
 from app_core import *  # noqa: F401,F403  土台の全シンボル
 from pydantic import field_validator
 import app_updater
@@ -7227,7 +7228,7 @@ async def _job_auto_resume(payload: dict):
         if run_id:
             try:
                 import app_run_ledger as _ledger
-                _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
+                _ledger.finish_run(run_id, status=_exit_codes.ledger_status_for(proc.returncode),
                                    exit_code=proc.returncode,
                                    failed_stage=next_stage,
                                    summary=f"resume vol.{vol} 失敗 (attempt {attempt}, next={next_stage})")
@@ -7361,7 +7362,7 @@ async def _job_vol_create(job: dict):
             if run_id:
                 try:
                     import app_run_ledger as _ledger
-                    _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
+                    _ledger.finish_run(run_id, status=_exit_codes.ledger_status_for(proc.returncode),
                                        exit_code=proc.returncode,
                                        failed_stage=failed_stage,
                                        summary=f"vol.{next_vol} 失敗 ({failed_stage or 'unknown'})")
@@ -7477,7 +7478,7 @@ async def _job_spot_create(job: dict):
             if run_id:
                 try:
                     import app_run_ledger as _ledger
-                    _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
+                    _ledger.finish_run(run_id, status=_exit_codes.ledger_status_for(proc.returncode),
                                        exit_code=proc.returncode,
                                        failed_stage=failed_stage,
                                        summary=f"spot vol.{vol} 失敗 ({failed_stage or 'unknown'})")

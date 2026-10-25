@@ -63,17 +63,11 @@ _PARALLELISM = _load_route_parallelism()
 
 
 # ─── sentinel exit（app_pipeline と一致させる） ───
-class Exit(IntEnum):
-    OK = 0
-    FAIL = 1
-    UNATTENDED_LOGIN = 75
-    RETRYABLE = 76
-    QUOTA_EXHAUSTED = 77
-    PREFLIGHT_FAIL = 78
+from exit_codes import ExitCode as Exit, ledger_status_for as _ledger_status_for  # 単一正本（workflow.json）
 
 
-# step_* の戻り値（True / False / "retryable" / "unattended_login" / "quota_exhausted"）
-# を Exit に正規化する。
+# step_* の戻り値（True / False / "retryable" / "unattended_login" / "quota_exhausted" /
+# "awaiting_selection"）を Exit に正規化する。
 def _normalize_result(r) -> Exit:
     if r is True:
         return Exit.OK
@@ -83,6 +77,8 @@ def _normalize_result(r) -> Exit:
         return Exit.QUOTA_EXHAUSTED
     if r == "retryable":
         return Exit.RETRYABLE
+    if r == "awaiting_selection":
+        return Exit.SELECTION_PENDING
     return Exit.FAIL
 
 
@@ -92,6 +88,7 @@ class Action(IntEnum):
     AUTO_RESUME = 2    # 前段へ差し戻して再開（_RESUME_OVERRIDE 考慮）
     NOTIFY = 3         # 人手必要（75/77/78）。retry/resume せず通知のみ
     DONE = 4           # 成功
+    WAIT = 5           # 待機（79 楽曲選定待ち）。失敗に数えず、選定後に再開
 
 
 # STEPS の成果物判定（フォルダにこれがあれば「その stage は実体として完了」とみなす補助）。
@@ -210,6 +207,8 @@ class StageWorker:
     def on_fail(self, code: Exit, stage: str) -> Action:
         if code == Exit.OK:
             return Action.DONE
+        if code == Exit.SELECTION_PENDING:
+            return Action.WAIT
         if code in (Exit.UNATTENDED_LOGIN, Exit.QUOTA_EXHAUSTED, Exit.PREFLIGHT_FAIL):
             return Action.NOTIFY
         if code == Exit.RETRYABLE:
@@ -246,7 +245,7 @@ class StageWorker:
         try:
             _ledger.finish_run(
                 run_id,
-                status="done" if code == Exit.OK else "failed",
+                status=_ledger_status_for(int(code)),
                 exit_code=int(code),
                 failed_stage=failed_stage,
                 summary=summary,
@@ -718,6 +717,13 @@ def dispatch(candidate: "Candidate", channel: dict, *, via_api: bool = False,
         if notify:
             try: notify(f"↩ [{ch_name}] vol.{candidate.vol} {head_stage} 不良 → "
                         f"{result['resume_stage']} へ差し戻し要")
+            except Exception: pass
+    elif action == Action.WAIT:
+        # 待機は失敗ではない。選定が済めば rename から再開する。
+        result["status"] = "blocked"
+        result["reason"] = "selection_pending"
+        if notify:
+            try: notify(f"[{ch_name}] vol.{candidate.vol} {candidate.domain} 楽曲選定待ち（選定後に再開）")
             except Exception: pass
     elif action == Action.NOTIFY:
         reason = {Exit.UNATTENDED_LOGIN: "手動ログイン要", Exit.QUOTA_EXHAUSTED: "quota 枯渇",

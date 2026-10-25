@@ -60,19 +60,18 @@ except Exception:
         return True
 API_BASE = "http://localhost:8888"
 
-# 子プロセスがブラウザ手動ログインを要求した場合の sentinel exit code。
-# suno_auto_create.py の UnattendedLoginRequired ハンドラと一致させる。
-EXIT_UNATTENDED = 75
-# 子プロセスが「transient / retryable な失敗」を示す場合の sentinel exit code。
-# app_youtube.py の HttpError ハンドラと一致させる（403 quotaExceeded / 429 / 5xx）。
-EXIT_RETRYABLE = 76
-# 子プロセスが「YouTube クオータ枯渇（24h ウィンドウで上限到達）」を示す sentinel。
-# 短時間の retry では復旧しないので、即座に Discord 通知して停止する。
-EXIT_QUOTA_EXHAUSTED = 77
-# preflight チェック（Premiere Pro / CEP パネルが未起動など）に失敗した場合の sentinel。
-# pipeline 開始前に判明するので、各 step を一切実行せず早期終了する。
-EXIT_PREFLIGHT_FAIL = 78
-EXIT_SELECTION_PENDING = 79
+# sentinel exit code は exit_codes.py（workflow.json の exit_reasons）が単一正本。
+# 75: ブラウザ手動ログイン要（suno_auto_create.py の UnattendedLoginRequired と一致）
+# 76: transient / retryable（app_youtube.py の HttpError ハンドラと一致）
+# 77: YouTube クオータ枯渇（短時間の retry では復旧しない）
+# 78: preflight 失敗（ffmpeg / ffprobe / Pillow 不足。各 step を実行せず早期終了）
+# 79: 楽曲選定待ち（待機であり失敗ではない）
+from exit_codes import ExitCode as _ExitCode
+EXIT_UNATTENDED = int(_ExitCode.UNATTENDED_LOGIN)
+EXIT_RETRYABLE = int(_ExitCode.RETRYABLE)
+EXIT_QUOTA_EXHAUSTED = int(_ExitCode.QUOTA_EXHAUSTED)
+EXIT_PREFLIGHT_FAIL = int(_ExitCode.PREFLIGHT_FAIL)
+EXIT_SELECTION_PENDING = int(_ExitCode.SELECTION_PENDING)
 
 
 def _music_selection_gate(folder, processed=False):
