@@ -420,38 +420,12 @@ def _new_manifest(num: str, order_names: list, main: Optional[Path], subs: list,
     }
 
 
-def derive_order_from_clips(clips: list, music_dir: Path) -> list:
-    """Premiere タイムラインのクリップ列（start 昇順）から 1 ループ分の曲順(Path)を導く。
-    clips: [{start,end,title,path}]。path(getMediaPath) を最優先、無ければ title で music/ を探す。"""
-    by_name = {f.name: f for f in music_dir.glob("*.mp3")}
-    by_title = {}
-    for f in music_dir.glob("*.mp3"):
-        by_title.setdefault(_title_from(f.name), f)
-    order, seen = [], set()
-    for c in sorted(clips, key=lambda x: x["start"]):
-        key = c.get("title") or c.get("path") or ""
-        if key in seen:                  # 2 周目に入った → 1 ループ完了
-            break
-        seen.add(key)
-        f = None
-        mp = c.get("path") or ""
-        if mp and Path(mp).name in by_name:
-            f = by_name[Path(mp).name]
-        elif c.get("title") in by_title:
-            f = by_title[c["title"]]
-        if f:
-            order.append(f)
-        else:
-            print(f"  WARNING: timeline の曲 '{c.get('title')}' を music/ で解決できず（スキップ）")
-    return order
-
-
 def edit_manifest_order(vol_folder: Path, swaps: list, removes: list) -> dict:
     """manifest の曲順を編集（著作権差し替え/削除）。swaps=[(対象, 新ファイル名)] / removes=[対象]。
     対象はファイル名 or 曲名で照合。"""
     m = load_manifest(vol_folder)
     if not m:
-        raise RuntimeError("manifest がありません。先に通常レンダか --from-premiere で作成してください")
+        raise RuntimeError("manifest がありません。先に通常レンダで作成してください")
     order = m["audio"]["order"]
     music_dir = Path(vol_folder) / "music"
 

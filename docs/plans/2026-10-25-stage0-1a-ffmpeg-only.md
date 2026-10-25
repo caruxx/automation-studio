@@ -72,11 +72,11 @@
 
 ## Task 3: フロントエンドから Adobe 関連 UI を外す
 
-**対象**: `web/static/index.html`、`web/static/js/assembly-premiere-layout.js`、`web/static/css/assembly-premiere-layout.css`、`web/static/sw.js`。
+**対象**: `web/static/index.html`、`web/static/js/e2-ui.js`、`web/static/js/assembly-premiere-layout.js`、`web/static/css/assembly-premiere-layout.css`、`web/static/sw.js`。
 
 **要件**
 
-1. Task 2 で削除した API（`/api/premiere/*`、`/api/photoshop/*`、`/api/render-queue*`、`/api/export` の AME 版、`/api/psd/*`）を呼ぶ関数・ボタン・タブ・設定欄を `index.html` から削除する。削除後、`grep -n -E "api/(premiere|photoshop|render-queue|psd)" web/static` が 0 件。
+1. Task 2 で削除した API（`/api/premiere/*`、`/api/photoshop/*`（`generate-scene-text` を除く）、`/api/render-queue*`、`/api/export/queue*`・`/api/export/ignore-list*`・`/api/export/scan`・`/api/ame/queue`、`/api/templates/list`）を呼ぶ関数・ボタン・タブ・設定欄を `index.html` と `e2-ui.js` から削除する。`/api/photoshop/generate-scene-text` の呼び出し（`generateSceneTextFor`）は削除ではなく `/api/scene-text/generate` へ**付け替え**る（機能は残す）。`e2-ui.js` の `channel.template_prproj` / `template_psd` の読み書きと `/api/templates/list` 呼び出しは削除する。削除後、`grep -n -E "api/(premiere|photoshop|render-queue|templates|export/(queue|ignore|scan)|ame)" web/static` が 0 件。`/api/export/rules` は残してよい。
 2. `assembly-premiere-layout.js` / `.css` を `git rm` し、`index.html` の `<script>` / `<link>` 参照と `sw.js` のキャッシュ一覧から外す。`sw.js` の `CACHE_NAME` を `v5` に上げる。
 3. 設定画面（`e2-ui.js` が `settings-catalog` から描画する）は Task 2 のカタログ変更に追従するので、index.html 側に残る `export_engine` / `template_prproj` / `template_psd` の直書き入力欄を削除する。
 4. 削除した関数を参照する `onclick` が残っていないこと: `node -e` で index.html の `onclick="..."` を抽出し、同ファイル内に定義の無い関数名を列挙するスクリプトを `Python/scripts/check_onclick_refs.js` として追加し、結果 0 件をレポートに貼る。
@@ -86,7 +86,7 @@
 
 ## Task 4: 文書・skills・AGENTS.md の更新と個人情報の除去
 
-**対象**: `README.md`、`OVERVIEW.md`、`SPEC.md`、`AGENTS.md`、`CLAUDE.md`（repo 内）、`SECURITY_NOTES.md`、`skills/app-premiere.md`、`skills/app-psd-composite.md`、`skills/app-export.md`、`skills/app-workflow.md`、`skills/pipeline.md`、`skills/video.md`、`docs/QUOTA_AUDIT_APPLICATION.md`、`docs/XSERVER_RESTORE_2026-09-06.md`、`docs/superpowers/plans/2026-09-06-suno-fast-decrypt-download.md`、`UX_REVIEW_2026-07.md`、`package.sh`。
+**対象**: `README.md`、`OVERVIEW.md`、`SPEC.md`、`AGENTS.md`、`AGENTS_DESIGN.md`、`AGENTS_WORKPLAN.md`、`CLAUDE.md`（repo 内）、`SECURITY_NOTES.md`、`skills/app-premiere.md`、`skills/app-psd-composite.md`、`skills/app-export.md`、`skills/app-workflow.md`、`skills/pipeline.md`、`skills/video.md`、`docs/QUOTA_AUDIT_APPLICATION.md`、`docs/XSERVER_RESTORE_2026-09-06.md`、`docs/superpowers/plans/2026-09-06-suno-fast-decrypt-download.md`、`UX_REVIEW_2026-07.md`、`package.sh`。
 
 **要件**
 

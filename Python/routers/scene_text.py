@@ -5,6 +5,30 @@ from app_core import *  # noqa: F401,F403  土台シンボル(stdlib/fastapi/fou
 router = APIRouter()
 
 
+def _find_swap_image(video_folder: Path, image_subdir: str) -> Optional[Path]:
+    """動画フォルダ内の image_subdir から差し替え用画像を 1 つ選ぶ（旧 app_photoshop から移植）。
+
+    大文字小文字違いのフォルダ名（image / Image / IMAGE）にも対応。
+    PNG > JPG > JPEG > WebP の優先順で探索。
+    """
+    base = video_folder / image_subdir
+    if not base.exists():
+        for d in video_folder.iterdir() if video_folder.exists() else []:
+            if d.is_dir() and d.name.lower() == image_subdir.lower():
+                base = d
+                break
+        else:
+            return None
+    if not base.exists() or not base.is_dir():
+        return None
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        for f in sorted(base.glob(f"*.{ext}")):
+            return f
+        for f in sorted(base.glob(f"*.{ext.upper()}")):
+            return f
+    return None
+
+
 class SceneTextGenerateRequest(BaseModel):
     video_name: Optional[str] = None         # アクティブチャンネル配下の vol フォルダ名
     video_folder: Optional[str] = None       # or 絶対パス
@@ -33,9 +57,9 @@ def api_scene_text_generate(req: SceneTextGenerateRequest):
         # vol{N}.png を優先、無ければ image_subdir 配下の最初の画像
         cands = list(folder.glob("vol*.png")) + list(folder.glob("vol*.jpg"))
         if not cands:
-            subdir = folder / (config.get("psd_image_subdir") or "image")
-            if subdir.is_dir():
-                cands = sorted(p for p in subdir.iterdir() if p.suffix.lower() in (".png", ".jpg", ".jpeg"))
+            swap = _find_swap_image(folder, config.get("psd_image_subdir") or "image")
+            if swap:
+                cands = [swap]
         if not cands:
             raise HTTPException(404, f"画像が見つかりません: {folder}")
         image_path = str(cands[0])

@@ -234,8 +234,8 @@
     "psd": {
       "aliases": [
         "PSD合成",
-        "Photoshop",
-        "サムネをPhotoshopで作って"
+        "画像合成",
+        "サムネを画像合成で作って"
       ],
       "description": "画像合成（vol画像 + サムネイル画像、Pillow）",
       "cli": {

@@ -104,8 +104,10 @@ class AdobeFreeProductionTest(unittest.TestCase):
     def test_registration_seed_has_no_adobe_templates(self):
         req = studio.ChannelCreate(name="QA", folder=str(self.channel))
         self.assertEqual(req.production_mode, "ffmpeg_only")
-        with self.assertRaises(ValidationError):
-            studio.ChannelCreate(name="QA", folder=str(self.channel), production_mode="standard")
+        legacy = studio.ChannelCreate(name="QA", folder=str(self.channel), production_mode="standard")
+        self.assertEqual(legacy.production_mode, "ffmpeg_only")
+        self.assertEqual(studio.DashboardConfigUpdate(production_mode="standard").production_mode, "ffmpeg_only")
+        self.assertIsNone(studio.DashboardConfigUpdate().production_mode)
         studio._create_empty_channel_config(self.channel, req)
         seed = json.loads((self.channel / ".app_channel_config.json").read_text())
         self.assertEqual(seed["export_engine"], "ffmpeg")

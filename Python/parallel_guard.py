@@ -28,9 +28,7 @@ RESOURCE_LOCKS = {
     "suno-auto": "suno-browser",
     "suno-download": "suno-browser",
     "premiere": "premiere-ame",
-    "place-images": "premiere-ame",
     "export": "premiere-ame",
-    "pipeline-from-premiere": "premiere-ame",
     "psd": "photoshop",
     "psd_composite": "photoshop",
 }

@@ -26,7 +26,8 @@ from typing import Optional, List, Literal
 
 # ─── 土台は app_core へ分離（D9 第1段）。foundation シンボルを取り込む ───
 import app_core  # noqa: F401  （app_core.X 直接参照用）
-from app_core import *  # noqa: F401,F403  土台の全シンボル
+from app_core import *
+from pydantic import field_validator  # noqa: F401,F403  土台の全シンボル
 import app_updater
 from settings_service import config_get, config_set, load_catalog
 import app_music_catalog as music_catalog
@@ -412,6 +413,17 @@ def api_config_init():
         save_dashboard_config_smart(config)
     return {"status": "ok", "config": config, "changed": changed}
 
+def _normalize_production_mode_value(v: str) -> str:
+    """API 入力の production_mode を正規化する。
+
+    ffmpeg_only はそのまま。旧値 standard は警告付きで ffmpeg_only に読み替える（段階 1a）。
+    それ以外の値は不正として拒否する。"""
+    val = str(v or "").strip().lower()
+    if val in ("ffmpeg_only", "standard"):
+        return effective_production_mode({"production_mode": val})
+    raise ValueError("production_mode は ffmpeg_only のみ指定できます（旧値 standard は自動変換）")
+
+
 class DashboardConfigUpdate(BaseModel):
     brand_short: Optional[str] = None
     brand_full: Optional[str] = None
@@ -435,7 +447,14 @@ class DashboardConfigUpdate(BaseModel):
     reference_image: Optional[str] = None        # step_bgimage: 固定参照画像（空文字でクリア）
     reference_image_mix_mode: Optional[str] = None  # fixed_only / identity_plus_benchmark / benchmark_only
     default_duration_sec: Optional[int] = None   # 動画の規定尺（秒）。0/空でクリア（10800 にフォールバック）
-    production_mode: Optional[Literal["ffmpeg_only"]] = None  # 段階 1a: ffmpeg_only のみ
+    production_mode: Optional[str] = None  # 段階 1a: 旧値(standard)は ffmpeg_only へ正規化（警告のみ）
+
+    @field_validator("production_mode")
+    @classmethod
+    def _normalize_production_mode(cls, v):
+        if v is None:
+            return None
+        return _normalize_production_mode_value(v)
     thumbnail_composition: Optional[dict] = None
 
 @app.put("/api/config/dashboard")
@@ -1445,13 +1464,18 @@ def api_channels_resolve_url(req: ChannelResolveRequest):
     return _resolve_youtube_channel_meta(req.url)
 
 class ChannelCreate(BaseModel):
-    production_mode: Literal["ffmpeg_only"] = "ffmpeg_only"  # 段階 1a: ffmpeg 専用
+    production_mode: str = "ffmpeg_only"  # 段階 1a: 旧値(standard)は ffmpeg_only へ正規化（警告のみ）
     name: str
     folder: str
     prefix: str = ""
     create_folder: bool = True
     open_in_finder: bool = True
     youtube_url: str = ""
+
+    @field_validator("production_mode")
+    @classmethod
+    def _normalize_production_mode(cls, v):
+        return _normalize_production_mode_value(v or "ffmpeg_only")
 
 
 ONBOARDING_STEP_ORDER = [
@@ -6407,8 +6431,8 @@ DEFAULT_EXPORT_RULES = {
     "mp4_appear_timeout_sec": 300,   # 5 分
     # Phase2: mp4 出現後、サイズ安定で done を出すまでの上限（実エンコード時間の上限）
     "mp4_stable_timeout_sec": 1800,  # 30 分
-    "auto_upload_after_export": False,   # ME 完了後に YouTube へ自動アップロード
-    "auto_upload_privacy": "unlisted",   # 自動アップロード時の公開設定
+    "auto_upload_after_export": False,   # 未使用（AME 自動書き出しキューは段階 1a で廃止。互換のため保持）
+    "auto_upload_privacy": "unlisted",   # 未使用（同上）
     "rules": {
         "require_prproj": True,
         "require_music": True,
@@ -6923,7 +6947,6 @@ def _build_job_env(ch_name: Optional[str], ch_folder: Optional[Path],
     # 無人モード（input/sleep ハングを禁止）
     env["APP_NO_INTERACTIVE"] = "1"
     # P2-1: render queue を使う（premiere/export はシリアライズキュー経由）
-    env["APP_USE_RENDER_QUEUE"] = "1"
     return env
 
 
@@ -7759,7 +7782,6 @@ def _estimate_required_gap_minutes() -> int:
     return SLOT_GRANULARITY_MIN
 
 
-
 def _channel_quota_pressure(channel_id: str) -> float:
     """channel が直近 24h で quota をどれだけ使っているか（0.0〜1.0+）。
 
@@ -8084,6 +8106,69 @@ async def _start_scheduler():
         print("[scheduler] apscheduler 未インストール。pip install apscheduler が必要")
     except Exception as e:
         print(f"[scheduler] 起動失敗: {e}")
+
+
+@app.on_event("startup")
+async def _validate_channel_registry():
+    """P2-2: dashboard_config.channel_folder が channels.json に登録されているか検証。
+
+    canonical source は channels.json。dashboard_config の channel_folder/channel_name は
+    あくまで「UI のアクティブビュー」のポインタなので、registry に無い folder を
+    指していたら警告（自動修正はしない、運営者の判断を待つ）。"""
+    try:
+        # PC 間共有: 共有ドライブ上の registry を旧ローカル版＋YT フォルダスキャンで同期・自己修復
+        try:
+            sync_channel_registry(verbose=True)
+        except Exception as e:
+            print(f"[registry] sync 失敗（続行）: {e}")
+        # PC 間共有: ベンチマークのプロファイル/設定/分析を共有ドライブへ移行（thumbs 画像は除く）
+        try:
+            migrate_benchmark_to_shared(verbose=True)
+        except Exception as e:
+            print(f"[benchmark] 移行呼び出し失敗（続行）: {e}")
+        # PC 間共有: discord/prompts/master_prompts を共有ドライブへ移行
+        try:
+            migrate_shared_settings(verbose=True)
+        except Exception as e:
+            print(f"[shared-config] 移行呼び出し失敗（続行）: {e}")
+        chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
+        if not chs:
+            print("[registry] channels.json が空。基本設定 > チャンネル管理から追加してください。")
+            return
+        cfg = load_json(DASHBOARD_CONFIG, {}) or {}
+        active_folder = cfg.get("channel_folder") or ""
+        active_name = cfg.get("channel_name") or ""
+        if not active_folder:
+            print(f"[registry] dashboard_config に channel_folder 未設定（{len(chs)} 件登録あり）")
+            return
+        # registry のいずれかと一致するか
+        target = _norm_folder(active_folder)
+        match = None
+        for ch in chs:
+            if _norm_folder(ch.get("folder") or "") == target:
+                match = ch
+                break
+        if match:
+            print(f"[registry] active channel: {match.get('name')!r} (id={match.get('id')!r}) ✓")
+        else:
+            print(f"[registry] ⚠ dashboard_config.channel_folder が registry に未登録: {active_folder}")
+            print(f"[registry] ⚠ active_name={active_name!r} → 'UI 内表示は許可するが job 実行時は --channel-id 推奨'")
+    except Exception as e:
+        print(f"[registry] 検証失敗: {e}")
+
+
+@app.on_event("startup")
+async def _init_run_ledger():
+    """P3-1: run ledger の DB 初期化 + stale 回収。"""
+    try:
+        import app_run_ledger as _ledger
+        _ledger.init_db()
+        reaped = _ledger.reap_stale()
+        if reaped:
+            print(f"[ledger] reaped {reaped} stale in_progress runs at startup")
+        print(f"[ledger] initialized at {_ledger.DB_PATH}")
+    except Exception as e:
+        print(f"[ledger] 起動失敗: {e}")
 
 
 # ─── API: run ledger（P3-1） ─────────────────────
