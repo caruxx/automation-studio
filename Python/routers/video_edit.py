@@ -7,7 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from app_core import get_channels, resolve_video_folder
+from app_core import get_channels, resolve_video_folder, resolve_asset_in_folder, path_is_within, _find_exported_mp4
 from app_video_edit import run_edit, run_queue, generate_editor_assets
 from resource_lock import acquire_resource
 
@@ -49,28 +49,35 @@ def _vol_folder(name: str) -> Optional[Path]:
             if found: return Path(found).resolve()
     return None
 
+MEDIA_EXT={".mp4",".mov",".mkv",".m4a",".mp3",".wav",".png",".jpg",".jpeg",".webp"}
+
+def _require_folder(video_name: Optional[str]) -> Path:
+    """video_name を必須にし、登録チャンネル配下の vol フォルダ（実体パス）を返す。"""
+    if not (video_name or "").strip(): raise HTTPException(400, "video_name が必要です")
+    folder=_vol_folder(video_name)
+    if not folder: raise HTTPException(404, "video_name が見つかりません")
+    return folder
+
+def _resolve_media(folder: Path, video_name: str, raw: str, *, must_exist: bool=True) -> Path:
+    """vol フォルダ配下（または書き出し済み mp4）の素材だけを許可する。相対・絶対どちらも可。"""
+    try:
+        return resolve_asset_in_folder(folder, raw, allowed_ext=MEDIA_EXT, must_exist=must_exist)
+    except HTTPException as exc:
+        if exc.status_code==403:
+            exported=_find_exported_mp4(folder, video_name)
+            if exported is not None and Path(raw).expanduser().resolve(strict=False)==Path(exported).resolve(strict=False) and (not must_exist or Path(exported).is_file()):
+                return Path(exported).resolve(strict=False)
+        raise
+
 def _validated(req: EditRequest) -> dict[str,Any]:
-    p=Path(req.input_path).expanduser()
-    if not p.is_absolute(): raise HTTPException(400, "input_path は絶対パスで指定してください")
-    p=p.resolve()
-    if not p.is_file(): raise HTTPException(404, f"入力ファイルがありません: {p}")
-    if req.video_name:
-        folder=_vol_folder(req.video_name)
-        if not folder: raise HTTPException(404, "video_name が見つかりません")
-        try: p.relative_to(folder)
-        except ValueError: raise HTTPException(400, "video_name を指定した入力は対応 vol 配下に限ります")
+    folder=_require_folder(req.video_name)
+    p=_resolve_media(folder, req.video_name, req.input_path)
     params=dict(req.params); params["input_path"]=str(p)
     for key in ("input_paths","audio_path","overlay_path"):
         if key in params:
             vals=params[key] if isinstance(params[key],list) else [params[key]]
-            checked=[]
-            for raw in vals:
-                q=Path(raw).expanduser()
-                if not q.is_absolute() or not q.resolve().is_file(): raise HTTPException(400, f"{key} の絶対パスが不正です: {raw}")
-                if req.video_name:
-                    try: q.resolve().relative_to(_vol_folder(req.video_name))
-                    except ValueError: raise HTTPException(400, f"{key} は対応 vol 配下に限ります")
-                checked.append(str(q.resolve()))
+            checked=[str(_resolve_media(folder, req.video_name, str(raw))) for raw in vals if str(raw).strip()]
+            if not checked: raise HTTPException(400, f"{key} が空です")
             params[key]=checked if isinstance(params[key],list) else checked[0]
     return params
 
@@ -144,15 +151,18 @@ def history(limit: int=20):
     return {"history":sorted(rows,key=lambda j:j.get("created_at",0),reverse=True)[:max(1,min(limit,50))]}
 
 @router.get("/preview")
-def preview(path: str):
-    p=Path(path).expanduser().resolve()
-    if not p.is_file(): raise HTTPException(404, "動画ファイルが見つかりません")
+def preview(video_name: str="", asset: str="", path: str=""):
+    """vol フォルダ配下の素材だけを配信する。asset（相対）または path（絶対。実体が vol 配下のもの）。"""
+    folder=_require_folder(video_name)
+    p=_resolve_media(folder, video_name, asset or path)
     return FileResponse(str(p))
 
 @router.get("/assets")
-def assets(path: str, count: int=8):
+def assets(video_name: str="", asset: str="", path: str="", count: int=8):
+    folder=_require_folder(video_name)
+    p=_resolve_media(folder, video_name, asset or path)
     try:
-        data=generate_editor_assets(path, ASSET_CACHE, count)
+        data=generate_editor_assets(str(p), ASSET_CACHE, count)
         key=data["cache_key"]
         return {"cache_key":key,"duration":data["duration"],"cached":data["cached"],"frames":[f"/api/video-edit/asset/{key}/{p.name}" for p in data["frames"]],"waveform":f"/api/video-edit/asset/{key}/{data['waveform'].name}"}
     except Exception as e: raise HTTPException(500, f"編集素材生成失敗: {e}")
@@ -169,12 +179,8 @@ def asset(cache_key: str, filename: str):
 @router.post("/adopt")
 def adopt(req: AdoptRequest):
     if not req.confirmed: raise HTTPException(400,"確認が必要です")
-    folder=_vol_folder(req.video_name)
-    if not folder: raise HTTPException(404,"video_name が見つかりません")
-    output=Path(req.output_path).expanduser().resolve(); target=Path(req.target_path).expanduser().resolve()
-    try: output.relative_to(folder); target.relative_to(folder)
-    except ValueError: raise HTTPException(400,"出力と差し替え先は対応 vol 配下に限ります")
-    if not output.is_file() or not target.is_file(): raise HTTPException(404,"出力または差し替え先がありません")
+    folder=_require_folder(req.video_name)
+    output=_resolve_media(folder, req.video_name, req.output_path); target=_resolve_media(folder, req.video_name, req.target_path)
     stamp=time.strftime("%Y%m%d_%H%M%S"); backup=target.with_name(f"{target.stem}.backup_{stamp}{target.suffix}")
     for n in range(1, 1000):
         if not backup.exists(): break
@@ -190,10 +196,10 @@ def adopt(req: AdoptRequest):
 
 @router.post("/use-thumbnail")
 def use_thumbnail(req: ThumbnailUseRequest):
-    folder=_vol_folder(req.video_name)
-    if not folder: raise HTTPException(404,"video_name が見つかりません")
-    src=Path(req.frame_path).expanduser().resolve()
-    if not src.is_file(): raise HTTPException(404,"フレームがありません")
+    folder=_require_folder(req.video_name)
+    src=Path(req.frame_path).expanduser().resolve(strict=False)
+    if not (path_is_within(src, ASSET_CACHE) or path_is_within(src, folder)): raise HTTPException(403,"フレームは編集素材キャッシュか vol 配下に限ります")
+    if src.suffix.lower() not in (".png",".jpg",".jpeg",".webp") or not src.is_file(): raise HTTPException(404,"フレームがありません")
     out_dir=folder/"thumbnail_materials"; out_dir.mkdir(exist_ok=True)
     out=out_dir/f"video_frame_{time.strftime('%Y%m%d_%H%M%S')}{src.suffix.lower()}"; shutil.copy2(src,out)
     return {"status":"ok","path":str(out)}

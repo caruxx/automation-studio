@@ -1298,19 +1298,70 @@ def _safe_user_path(p):
         resolved = Path(p).expanduser().resolve(strict=False)
     except Exception:
         raise HTTPException(400, "不正なパスです")
-    if resolved.is_symlink():
-        raise HTTPException(403, "シンボリックリンクは許可されていません")
+    # resolve() は symlink を辿るので、許可 root との包含判定は実体パスで行う
     allowed_roots = [HOME.resolve(), Path("/Volumes").resolve()]
-    if not any(str(resolved).startswith(str(root)) for root in allowed_roots):
+    if not any(path_is_within(resolved, root) for root in allowed_roots):
         raise HTTPException(403, f"許可されていないパスです: {resolved}")
-    # ~/Library 以下は CloudStorage だけ許可（.ssh, .config など秘密情報の保護）
+    # ~/Library 以下は CloudStorage / Application Support だけ許可（.ssh, .config など秘密情報の保護）
     lib = (HOME / "Library").resolve()
-    if str(resolved).startswith(str(lib)):
+    if path_is_within(resolved, lib):
         cloud = (HOME / "Library/CloudStorage").resolve()
         app_sup = (HOME / "Library/Application Support").resolve()
-        if not (str(resolved).startswith(str(cloud)) or str(resolved).startswith(str(app_sup))):
+        if not (path_is_within(resolved, cloud) or path_is_within(resolved, app_sup)):
             raise HTTPException(403, "Library 配下の機密領域へのアクセスは禁止されています")
     return resolved
+
+
+def path_is_within(path, root) -> bool:
+    """実体パス（symlink 解決後）で path が root 配下かを判定する。隣接 prefix（/a/b と /a/bc）は拒否。"""
+    try:
+        Path(path).resolve(strict=False).relative_to(Path(root).resolve(strict=False))
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def resolve_asset_in_folder(folder, asset: str, *, allowed_ext=None, must_exist: bool = True) -> Path:
+    """vol フォルダ配下の素材を、相対パスまたは絶対パスから安全に解決する。
+
+    - 相対パスは folder 基準。絶対パスは実体が folder 配下にあるときだけ許可。
+    - ".." や NUL、空文字は拒否。symlink は実体パスで包含判定する。
+    - allowed_ext（小文字の拡張子集合、例 {".mp4", ".png"}）を指定すると拡張子を限定する。
+    違反時は HTTPException(400/403/404)。"""
+    raw = str(asset or "").strip()
+    if not raw or "\x00" in raw or "\0" in raw:
+        raise HTTPException(400, "asset が不正です")
+    parts = Path(raw).parts
+    if ".." in parts:
+        raise HTTPException(400, "asset に .. は使えません")
+    root = Path(folder).resolve(strict=False)
+    candidate = Path(raw).expanduser()
+    target = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=False)
+    if not path_is_within(target, root):
+        raise HTTPException(403, "asset が動画フォルダの外を指しています")
+    if allowed_ext is not None and target.suffix.lower() not in allowed_ext:
+        raise HTTPException(400, f"許可されていないファイル形式です: {target.suffix}")
+    if must_exist and not target.is_file():
+        raise HTTPException(404, "ファイルが見つかりません")
+    return target
+
+
+def resolve_folder_in_registered_channels(folder) -> Optional[Path]:
+    """絶対パスで渡された動画フォルダが、登録チャンネルのいずれかの直下にある vol フォルダなら実体パスを返す。"""
+    try:
+        target = Path(folder).expanduser().resolve(strict=False)
+    except Exception:
+        return None
+    if not parse_video_folder_name(target.name):
+        return None
+    for ch in get_channels():
+        root = (ch.get("folder") or "").strip()
+        if not root:
+            continue
+        root_p = Path(_resolve_to_current_host(root)).expanduser()
+        if path_is_within(target, root_p) and target.parent.resolve(strict=False) == root_p.resolve(strict=False):
+            return target
+    return None
 
 
 def get_channels():

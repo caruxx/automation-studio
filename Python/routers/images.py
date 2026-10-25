@@ -48,10 +48,14 @@ def _channel_layout_template_path(folder: Path) -> Path:
 
 
 def _resolve_video_folder(video_name: Optional[str], video_folder: Optional[str]) -> Path:
-    if video_folder:
-        folder = Path(video_folder).expanduser()
-    elif video_name:
+    """video_name（アクティブチャンネル配下）を標準入力にする。video_folder は互換のため受けるが、
+    登録チャンネル直下の vol フォルダ（実体パス）に限る（S03: 任意フォルダへの読み書きを封じる）。"""
+    if video_name:
         folder = resolve_video_folder(video_name)
+    elif video_folder:
+        folder = resolve_folder_in_registered_channels(video_folder)
+        if folder is None:
+            raise HTTPException(400, "video_folder は登録チャンネル直下の動画フォルダのみ指定できます")
     else:
         raise HTTPException(400, "video_folder か video_name のいずれかが必要")
     if not folder.exists():
