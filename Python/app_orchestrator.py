@@ -321,11 +321,14 @@ def _stage_artifact_done(stage: str, folder: Path, vol: int, channel_id: str = "
     """成果物 + input_hash（stage_state）で完了を判定し、無ければ台帳で補う。
     記録があり入力が変わっている工程は、成果物や台帳に done があっても失効（未完了）。"""
     try:
-        if _ss.is_stale(stage, folder, vol):
-            return False
-        if _ss.stage_done(stage, folder, vol):
-            return True
+        verdict = _ss.evaluate(stage, folder, vol)  # done / stale / pending / unknown（廃止工程）
     except Exception:
+        verdict = "unknown"
+    if verdict == "stale":
+        return False
+    if verdict == "done":
+        return True
+    if verdict == "unknown":
         fn = _ARTIFACT_DONE.get(stage)
         if fn and fn(folder, vol):
             return True
@@ -376,9 +379,9 @@ class UploadWorker(StageWorker):
         super().__init__(domain="upload", stages=["upload"])
 
     def can_run(self, vol: int, folder: Path, *, channel_id: str = "") -> bool:
-        if not _qa_done(folder, vol):
+        if not _stage_artifact_done("qa", folder, vol, channel_id=channel_id):
             return False
-        if _upload_done(folder, vol):
+        if _stage_artifact_done("upload", folder, vol, channel_id=channel_id):
             return False
         return self._slot_available(channel_id=channel_id)
 
@@ -840,14 +843,14 @@ if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as _td:
         _tp = Path(_td)
-        assert _qa_done(_tp, 1) is False, "report 無し → not done"
+        assert _ss.qa_done(_tp, 1) is False, "report 無し → not done"
         (_tp / "test_vol1.mp4").write_bytes(b"x")
         assert WORKERS["qa"].can_run(1, _tp) is True, "mp4 あり + report 無し → 候補"
         (_tp / "qa_report.json").write_text('{"passed": false, "issues": ["x"]}', encoding="utf-8")
-        assert _qa_done(_tp, 1) is False, "passed:false → not done（保留）"
+        assert _ss.qa_done(_tp, 1) is False, "passed:false → not done（保留）"
         assert WORKERS["qa"].can_run(1, _tp) is False, "passed:false → 候補外（再dispatchしない）"
         (_tp / "qa_report.json").write_text('{"passed": true}', encoding="utf-8")
-        assert _qa_done(_tp, 1) is True, "passed:true → done"
+        assert _ss.qa_done(_tp, 1) is True, "passed:true → done"
     print("qa_done logic asserts: PASS")
     print("WORKERS に upload 無し（自動投稿しない）:", "upload" not in WORKERS)
     # policy-aware 配分の単体確認

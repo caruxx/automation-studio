@@ -34,6 +34,7 @@ import argparse
 import datetime as dt
 import json
 import os
+from typing import Optional
 import re
 import shutil
 import subprocess
@@ -3095,6 +3096,26 @@ _RESUME_OVERRIDE = {
 }
 
 
+# 失効（前段の出力が変わった）した工程を再実行するとき、既存出力でスキップする工程に強制再生成を指示する env。
+_STALE_FORCE_ENV = {
+    "bgimage": "APP_BGIMAGE_FORCE",
+    "psd_composite": "APP_IMAGE_COMPOSITE_FORCE",
+    "composite": "APP_IMAGE_COMPOSITE_FORCE",
+}
+
+
+def _stale_force_env(step: str, folder: Path, vol: int) -> Optional[str]:
+    """工程が失効していれば、その工程の強制再生成 env 名を返す（無ければ None）。判定できないときも None。"""
+    try:
+        import stage_state
+        if stage_state.evaluate(step, folder, vol) == "stale":
+            print(f"  前段の出力が変わったため {step} の完了は失効しています。再生成します。")
+            return _STALE_FORCE_ENV.get(step)
+    except Exception:
+        return None
+    return None
+
+
 def _record_stage_done(step: str, folder: Path, vol: int) -> None:
     """工程成功時に stage_state へ input_hash 付きの完了を記録する（失敗しても pipeline は止めない）。"""
     try:
@@ -3310,6 +3331,10 @@ def main():
         sys.stdout.flush()
         _ledger_call(ledger_sync, "report_step", args.vol, s, "running")
         func = STEP_FUNCS[s]
+        force_env = _stale_force_env(s, folder, args.vol)
+        prev_force = os.environ.get(force_env) if force_env else None
+        if force_env:
+            os.environ[force_env] = "1"
         try:
             ok = _run_step_with_retry(s, func, args.vol, folder, args.via_api, **kw)
         except BaseException as e:
@@ -3317,6 +3342,12 @@ def main():
             print(f"◀ STEP {s} 結果: 例外 — {type(e).__name__}: {e}")
             sys.stdout.flush()
             raise
+        finally:
+            if force_env:
+                if prev_force is None:
+                    os.environ.pop(force_env, None)
+                else:
+                    os.environ[force_env] = prev_force
         if ok == "awaiting_selection":
             _ledger_call(ledger_sync, "report_step", args.vol, s, "pending",
                          {"human": "楽曲のハート選択待ち", "quality": "品質待機（AI 選曲で全候補が不合格）",

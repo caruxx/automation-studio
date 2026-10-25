@@ -50,7 +50,9 @@ def _mp4s(folder: Path) -> list[Path]:
 
 
 def stage_outputs(stage: str, folder: Path, vol: int) -> list[Path]:
-    """その工程の出力ファイル（後段の input_hash の材料）。無ければ空。"""
+    """その工程の出力ファイル（後段の input_hash の材料）。無ければ空。
+
+    自分の出力を自分の入力に含めない（bgimage は vol{N}.png だけ。vol{N}.jpg は composite の出力）。"""
     st = ec.canonical_stage(stage) or stage
     if st == "suno":
         return _files(folder / "original_music", _AUDIO) or _files(folder / "music", _AUDIO)
@@ -60,11 +62,12 @@ def stage_outputs(stage: str, folder: Path, vol: int) -> list[Path]:
     if st == "rename":
         return _files(folder / "music", _AUDIO)
     if st == "bgimage":
-        return _img_candidates(folder, vol, f"vol{vol}.png", f"vol{vol}.jpg")
+        return _img_candidates(folder, vol, f"vol{vol}.png")
     if st in ("composite", "thumbnail"):
         return _img_candidates(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
     if st == "render":
-        return _mp4s(folder)
+        mine = [p for p in _mp4s(folder) if f"vol{vol}" in p.name]
+        return mine or _mp4s(folder)
     if st == "qa":
         p = folder / "qa_report.json"
         return [p] if p.is_file() else []
@@ -79,7 +82,24 @@ def stage_outputs(stage: str, folder: Path, vol: int) -> list[Path]:
     return []
 
 
+def _selection_essence(path: Path) -> str:
+    """.music_review.json のうち選定の意味内容だけ（PID・採点・試行回数などの揮発する値は除く）。"""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    takes = data.get("takes") if isinstance(data, dict) else None
+    chosen = []
+    if isinstance(takes, list):
+        for t in takes:
+            if isinstance(t, dict) and t.get("selected"):
+                chosen.append(str(t.get("clip_id") or t.get("file") or ""))
+    essence = {"selected": sorted(chosen),
+               "revision": data.get("revision") if isinstance(data, dict) else None,
+               "processed_revision": data.get("processed_revision") if isinstance(data, dict) else None}
+    return hashlib.sha256(json.dumps(essence, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _fingerprint(path: Path, folder: Path) -> str:
+    """ファイルの指紋。音声は名前とサイズ（原本は編集されない）、小さな JSON / TXT は内容、
+    それ以外はサイズと mtime（秒。Drive 同期で mtime の精度が落ちても失効しない）。"""
     try:
         rel = str(path.resolve().relative_to(folder.resolve()))
     except (ValueError, OSError):
@@ -88,13 +108,21 @@ def _fingerprint(path: Path, folder: Path) -> str:
         st = path.stat()
     except OSError:
         return f"{rel}|missing"
-    if path.suffix.lower() in _CONTENT_HASH_SUFFIXES and st.st_size <= _CONTENT_HASH_MAX_BYTES:
+    suffix = path.suffix.lower()
+    if path.name == ".music_review.json":
+        try:
+            return f"{rel}|selection:{_selection_essence(path)}"
+        except (OSError, ValueError, TypeError):
+            pass
+    if suffix in _CONTENT_HASH_SUFFIXES and st.st_size <= _CONTENT_HASH_MAX_BYTES:
         try:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             return f"{rel}|sha256:{digest}"
         except OSError:
             pass
-    return f"{rel}|{st.st_size}|{st.st_mtime_ns}"
+    if suffix in _AUDIO:
+        return f"{rel}|{st.st_size}"
+    return f"{rel}|{st.st_size}|{int(st.st_mtime)}"
 
 
 def _stage_def(stage: str) -> dict:
@@ -229,9 +257,11 @@ def save(folder: Path, stages: dict) -> None:
         raise
 
 
-def mark_done(stage: str, folder: Path, vol: int) -> dict:
-    """工程成功時に呼ぶ。現在の入力ハッシュを記録する。"""
-    st = ec.canonical_stage(stage) or stage
+def mark_done(stage: str, folder: Path, vol: int) -> Optional[dict]:
+    """工程成功時に呼ぶ。現在の入力ハッシュを記録する。廃止工程（premiere）は記録しない。"""
+    st = ec.canonical_stage(stage)
+    if st is None:
+        return None
     stages = load(folder)
     stages[st] = {"input_hash": compute_input_hash(st, folder, vol),
                   "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -253,22 +283,30 @@ def record(stage: str, folder: Path) -> Optional[dict]:
     return load(folder).get(st)
 
 
-def stage_done(stage: str, folder: Path, vol: int) -> bool:
-    """validator 合格 かつ（記録が無い＝旧 vol、または input_hash 一致）。記録があって不一致なら失効。"""
+def evaluate(stage: str, folder: Path, vol: int) -> str:
+    """1 回の読込と計算で判定する。
+    - "unknown": 廃止工程（premiere）など、ここでは判定しない（呼び出し側が従来の判定へ）
+    - "stale":   記録があり入力が変わっている（成果物があっても失効）
+    - "done":    validator 合格 かつ（記録なし＝旧 vol、または input_hash 一致）
+    - "pending": それ以外
+    """
     st = ec.canonical_stage(stage)
     if st is None:
-        return False  # 廃止工程（premiere）
+        return "unknown"
+    rec = load(folder).get(st)
+    if isinstance(rec, dict) and rec.get("input_hash") != compute_input_hash(st, folder, vol):
+        return "stale"
     fn = validator_for(st)
     if fn is None or not fn(folder, vol):
-        return False
-    rec = load(folder).get(st)
-    if not isinstance(rec, dict):
-        return True
-    return rec.get("input_hash") == compute_input_hash(st, folder, vol)
+        return "pending"
+    return "done"
+
+
+def stage_done(stage: str, folder: Path, vol: int) -> bool:
+    """validator 合格 かつ（記録が無い＝旧 vol、または input_hash 一致）。記録があって不一致なら失効。"""
+    return evaluate(stage, folder, vol) == "done"
 
 
 def is_stale(stage: str, folder: Path, vol: int) -> bool:
     """記録があり、入力が変わっている（成果物の有無は見ない）。"""
-    st = ec.canonical_stage(stage) or stage
-    rec = load(folder).get(st)
-    return isinstance(rec, dict) and rec.get("input_hash") != compute_input_hash(st, folder, vol)
+    return evaluate(stage, folder, vol) == "stale"

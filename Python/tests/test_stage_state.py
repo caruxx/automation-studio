@@ -75,15 +75,57 @@ class StageStateTest(unittest.TestCase):
         self.assertIsNone(ss.record("meta", self.folder))
         self.assertTrue(ss.stage_done("meta", self.folder, self.vol))
 
-    def test_old_stage_names_map_to_new_and_premiere_is_never_done(self):
+    def test_old_stage_names_map_to_new_and_premiere_is_unknown(self):
         _touch(self.folder / "7_test_vol7.mp4", b"m")
         self.assertTrue(ss.stage_done("export", self.folder, self.vol))
         self.assertTrue(ss.stage_done("render", self.folder, self.vol))
-        self.assertFalse(ss.stage_done("premiere", self.folder, self.vol))
+        self.assertEqual(ss.evaluate("premiere", self.folder, self.vol), "unknown")
+        self.assertIsNone(ss.mark_done("premiere", self.folder, self.vol))
+        self.assertFalse((self.folder / ss.STATE_FILE).exists())
         _touch(self.folder / "Image" / "サムネイル.jpg", b"j")
         self.assertTrue(ss.stage_done("psd_composite", self.folder, self.vol))
         ss.mark_done("psd_composite", self.folder, self.vol)
         self.assertEqual(set(ss.load(self.folder)), {"composite"})
+
+    def test_composite_and_render_invalidate_on_upstream_change_but_not_own_output(self):
+        png = _touch(self.folder / "vol7.png", b"p" * 10)
+        jpg = _touch(self.folder / "vol7.jpg", b"j" * 10)
+        _touch(self.folder / "サムネイル.jpg", b"t")
+        ss.mark_done("composite", self.folder, self.vol)
+        # 自分の出力（vol7.jpg）を書き直しても失効しない
+        jpg.write_bytes(b"J" * 20)
+        os.utime(jpg, (10_000, 10_000))
+        self.assertEqual(ss.evaluate("composite", self.folder, self.vol), "done")
+        # 前段 bgimage の出力（vol7.png）が変わると失効
+        png.write_bytes(b"P" * 11)
+        os.utime(png, (20_000, 20_000))
+        self.assertEqual(ss.evaluate("composite", self.folder, self.vol), "stale")
+        # render: composite + rename に依存。mp4 自身の変更では失効しない。mtime は秒単位
+        _touch(self.folder / "music" / "a.mp3", b"a" * 5)
+        mp4 = _touch(self.folder / "x_vol7.mp4", b"m")
+        ss.mark_done("render", self.folder, self.vol)
+        mp4.write_bytes(b"mm")
+        self.assertEqual(ss.evaluate("render", self.folder, self.vol), "done")
+        os.utime(jpg, ns=(10_000_000_000_500, 10_000_000_000_500))  # 同じ秒内の mtime 変化（Drive の精度落ち）
+        self.assertEqual(ss.evaluate("render", self.folder, self.vol), "done")
+        os.utime(jpg, (30_000, 30_000))
+        self.assertEqual(ss.evaluate("render", self.folder, self.vol), "stale")
+
+    def test_select_input_ignores_volatile_review_fields_and_audio_ignores_mtime(self):
+        review = self.folder / ".music_review.json"
+        state = {"processing": 123, "revision": 2, "processed_revision": 2, "scores": {"a": 1}, "ai_select_attempts": 0,
+                 "takes": [{"clip_id": "c1", "selected": True}, {"clip_id": "c2", "selected": False}]}
+        _touch(review, json.dumps(state).encode())
+        mp3 = _touch(self.folder / "original_music" / "c1.mp3", b"x" * 8)
+        _touch(self.folder / "music" / "c1.mp3", b"y" * 9)
+        ss.mark_done("rename", self.folder, self.vol)  # rename は select に依存
+        state["processing"] = 456; state["scores"] = {"a": 9}; state["ai_select_attempts"] = 3
+        review.write_text(json.dumps(state), encoding="utf-8")
+        os.utime(mp3, (1, 1))
+        self.assertEqual(ss.evaluate("rename", self.folder, self.vol), "done")
+        state["takes"][1]["selected"] = True
+        review.write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(ss.evaluate("rename", self.folder, self.vol), "stale")
 
     def test_qa_requires_passed_true(self):
         _touch(self.folder / "qa_report.json", json.dumps({"passed": False}).encode())
@@ -119,9 +161,52 @@ class StageStateTest(unittest.TestCase):
             self.assertFalse(o._stage_artifact_done("meta", self.folder, self.vol, channel_id="ch"))
             # 成果物が無くても台帳 done なら従来どおり補完（記録が無い場合）
             self.assertTrue(o._stage_artifact_done("thumbnail", self.folder, self.vol, channel_id="ch"))
+            # 廃止工程 premiere は従来の判定（mp4 の有無）に戻す
+            o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [])})()
+            self.assertFalse(o._stage_artifact_done("premiere", self.folder, self.vol, channel_id="ch"))
+            _touch(self.folder / "7_test_vol7.mp4", b"m")
+            self.assertTrue(o._stage_artifact_done("premiere", self.folder, self.vol, channel_id="ch"))
+        finally:
+            o._ledger = saved
+
+    def test_upload_worker_can_run_uses_stage_state(self):
+        import app_orchestrator as o
+        saved = o._ledger
+        o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [])})()
+        try:
+            w = o.UploadWorker()
+            w._slot_available = lambda **kw: True
+            self.assertFalse(w.can_run(self.vol, self.folder))
+            _touch(self.folder / "qa_report.json", json.dumps({"passed": True}).encode())
+            self.assertTrue(w.can_run(self.vol, self.folder))
+            _touch(self.folder / "youtube_upload.json", b"{}")
+            self.assertFalse(w.can_run(self.vol, self.folder))
+            self.assertTrue(o.WORKERS["qa"].can_run(self.vol, self.folder) in (True, False))
         finally:
             o._ledger = saved
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PipelineStaleForceTest(unittest.TestCase):
+    def test_stale_stage_sets_force_env_for_regenerating_steps(self):
+        import app_pipeline as p
+        root = Path(tempfile.mkdtemp(prefix="stale_force_"))
+        try:
+            folder = root / "3_x"; folder.mkdir()
+            self.assertIsNone(p._stale_force_env("composite", folder, 3))  # 記録なし → 失効ではない
+            png = _touch(folder / "vol3.png", b"p"); _touch(folder / "vol3.jpg", b"j")
+            ss.mark_done("composite", folder, 3)
+            self.assertIsNone(p._stale_force_env("psd_composite", folder, 3))
+            png.write_bytes(b"pp"); os.utime(png, (99_999, 99_999))
+            self.assertEqual(p._stale_force_env("psd_composite", folder, 3), "APP_IMAGE_COMPOSITE_FORCE")
+            self.assertEqual(p._stale_force_env("composite", folder, 3), "APP_IMAGE_COMPOSITE_FORCE")
+            # 強制 env の無い工程（thumbnail）は失効しても None（再実行はされる）
+            _touch(folder / "youtube_title.txt", b"t")
+            ss.mark_done("thumbnail", folder, 3)
+            png.write_bytes(b"ppp"); os.utime(png, (88_888, 88_888))
+            self.assertIsNone(p._stale_force_env("thumbnail", folder, 3))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
