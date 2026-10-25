@@ -170,6 +170,32 @@ class StageStateTest(unittest.TestCase):
         self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "done")
         self.assertFalse(ss.is_stale("meta", self.folder, self.vol))
 
+    def test_success_without_artifact_is_not_recorded_and_ledger_still_completes(self):
+        import app_orchestrator as o
+        self.assertIsNone(ss.mark_done("localization", self.folder, self.vol))  # 多言語設定なし: 成果物なしで成功
+        self.assertEqual(ss.load(self.folder), {})
+        self.assertEqual(ss.evaluate("localization", self.folder, self.vol), "pending")
+        saved = o._ledger
+        o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [{"status": "done", "meta_json": '{"stage": "localization"}'}])})()
+        try:
+            self.assertTrue(o._stage_artifact_done("localization", self.folder, self.vol, channel_id="ch"))
+            w = o.WORKERS["localization"]
+            w._slot_available = lambda **kw: True
+            _touch(self.folder / "youtube_title.txt", b"t")
+            self.assertFalse(w.can_run(self.vol, self.folder, channel_id="ch"))  # 再投入されない
+        finally:
+            o._ledger = saved
+
+    def test_meta_invalidates_when_timecode_changes_after_rerender(self):
+        _touch(self.folder / "music" / "a.mp3", b"a")
+        _touch(self.folder / "x_vol7.mp4", b"m")
+        tc = _touch(self.folder / "music_time_code_info_ja.txt", b"00:00 song A\n03:00 song B")
+        _touch(self.folder / "qa_report.json", json.dumps({"passed": True, "issues": []}).encode())
+        _touch(self.folder / "youtube_title.txt", b"t")
+        ss.mark_done("meta", self.folder, self.vol)
+        tc.write_bytes(b"00:00 song B\n03:00 song A")  # 曲順変更 → 再 render → qa 合格（結果は同じ）
+        self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "stale")
+
     def test_select_input_ignores_volatile_review_fields(self):
         review = self.folder / ".music_review.json"
         state = {"processing": 123, "revision": 2, "processed_revision": 2, "scores": {"a": 1}, "ai_select_attempts": 0,
