@@ -229,6 +229,25 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class QAWorkerStaleTest(unittest.TestCase):
+    def test_qa_worker_recandidates_when_render_changed(self):
+        import app_orchestrator as o
+        root = Path(tempfile.mkdtemp(prefix="qa_stale_"))
+        try:
+            folder = root / "5_x"; folder.mkdir()
+            w = o.WORKERS["qa"]
+            w._slot_available = lambda **kw: True
+            mp4 = _touch(folder / "x_vol5.mp4", b"m")
+            self.assertTrue(w.can_run(5, folder))
+            _touch(folder / "qa_report.json", json.dumps({"passed": True}).encode())
+            ss.mark_done("qa", folder, 5)
+            self.assertFalse(w.can_run(5, folder))  # 検査済み
+            mp4.write_bytes(b"re-rendered"); os.utime(mp4, (55_555, 55_555))
+            self.assertTrue(w.can_run(5, folder))  # 再 render → 再検査
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class PipelineStaleForceTest(unittest.TestCase):
     def test_stale_stage_sets_force_env_for_regenerating_steps(self):
         import app_pipeline as p

@@ -237,7 +237,7 @@
         "画像合成",
         "サムネを画像合成で作って"
       ],
-      "description": "画像合成（vol画像 + サムネイル画像、Pillow）",
+      "description": "画像合成（vol画像 + サムネイル画像、Pillow）（旧名。composite と同じ）",
       "cli": {
         "cmd": [
           "python3",
@@ -255,12 +255,38 @@
         "max_parallel": 1
       }
     },
+    "composite": {
+      "aliases": [
+        "composite",
+        "合成",
+        "PSD合成",
+        "画像合成",
+        "サムネを画像合成で作って"
+      ],
+      "description": "画像合成（vol画像 + サムネイル画像、Pillow）。旧 intent 名 psd",
+      "cli": {
+        "cmd": [
+          "python3",
+          "app_pipeline.py",
+          "{vol}",
+          "--only",
+          "composite"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": true,
+      "requires_vol": true,
+      "parallelism": {
+        "scope": "per-machine",
+        "max_parallel": 1
+      }
+    },
     "export": {
       "aliases": [
         "書き出し",
         "エクスポート"
       ],
-      "description": "FFmpeg 書き出し（音声+映像+字幕+タイムコード）",
+      "description": "FFmpeg 書き出し（音声+映像+字幕+タイムコード）（旧名。render と同じ）",
       "cli": {
         "cmd": [
           "python3",
@@ -268,6 +294,32 @@
           "{vol}",
           "--only",
           "export"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "requires_vol": true,
+      "parallelism": {
+        "scope": "per-machine",
+        "max_parallel": 1
+      },
+      "via_api_unsafe_reason": "段階 1a: AME API は廃止。CLI（app_pipeline --only export）で実行する。"
+    },
+    "render": {
+      "aliases": [
+        "render",
+        "レンダリング",
+        "書き出し",
+        "エクスポート"
+      ],
+      "description": "FFmpeg 書き出し（音声+映像+字幕+タイムコード）。旧 intent 名 export",
+      "cli": {
+        "cmd": [
+          "python3",
+          "app_pipeline.py",
+          "{vol}",
+          "--only",
+          "render"
         ]
       },
       "prefer": "cli",

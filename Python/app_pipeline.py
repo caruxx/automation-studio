@@ -10,7 +10,7 @@
   python3 app_pipeline.py 78
 
   # 特定工程から開始
-  python3 app_pipeline.py 78 --from premiere
+  python3 app_pipeline.py 78 --from render
 
   # 特定工程だけ実行
   python3 app_pipeline.py 78 --only meta
@@ -131,16 +131,32 @@ def _music_selection_gate(folder, processed=False):
     print(str(first), flush=True)
     return "awaiting_selection"
 
-STEPS = ["suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
-STEPS_WITH_PLAN = ["plan", "suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
+# 工程名は workflow.json の stage_order（publish_verify は VPS 側の工程なので Mac の STEPS には含めない）。
+STEPS = ["suno", "select", "rename", "bgimage", "composite", "render", "qa", "meta", "localization", "thumbnail", "upload"]
+STEPS_WITH_PLAN = ["plan"] + STEPS
+# 旧工程名（段階 2c より前）。CLI / env / API の入力では受け付けて新名に写す。premiere は render に統合。
+LEGACY_STEP_NAMES = ["psd_composite", "premiere", "export"]
+
+
+def canonical_step(name):
+    """旧工程名を新名に写す。plan はそのまま。premiere（廃止）は render。未知の名前はそのまま返す。"""
+    if name is None:
+        return None
+    name = str(name).strip()
+    if name == "plan":
+        return name
+    if name == "premiere":
+        return "render"
+    import exit_codes as _ec
+    return _ec.canonical_stage(name) or name
 STEP_LABELS = {
     "plan":          "0/11 ベンチマーク分析 → 次動画プラン生成",
     "suno":          "1/11 SUNO 楽曲生成",
-    "rename":        "2/11 楽曲リネーム + 音声処理",
-    "bgimage":       "3/11 背景画像生成（ベンチマーク参照 + チャンネルコンセプト）",
-    "psd_composite": "4/11 PSD 合成（vol{N}.jpg + サムネイル.jpg を 2 枚出し）",
-    "premiere":      "5/11 Premiere 自動配置",
-    "export":        "6/11 書き出し",
+    "select":        "2/11 楽曲選定（AI 採点 / 人のハート）",
+    "rename":        "3/11 楽曲リネーム + 音声処理",
+    "bgimage":       "4/11 背景画像生成（ベンチマーク参照 + チャンネルコンセプト）",
+    "composite":     "5/11 画像合成（vol{N}.jpg + サムネイル.jpg を 2 枚出し）",
+    "render":        "6/11 FFmpeg 書き出し",
     "qa":            "7/11 QA チェック（解像度 / アスペクト / 尺 / コーデック）",
     "meta":          "8/11 動画メタ（タイトル・説明・タグ）",
     "localization":  "9/11 多言語メタデータ（メイン言語 → 各国翻訳）",
@@ -150,15 +166,15 @@ STEP_LABELS = {
 
 
 _FFMPEG_STEP_LABELS = {
-    "psd_composite": "4/11 画像合成（画像エディタ・Adobeなし）",
-    "premiere": "5/11 動画構成（FFmpeg書き出しへ引き継ぎ）",
-    "export": "6/11 FFmpeg書き出し・曲名・タイムスタンプ生成",
+    "composite": "5/11 画像合成（画像エディタ・Adobeなし）",
+    "render": "6/11 FFmpeg書き出し・曲名・タイムスタンプ生成",
     "thumbnail": "10/11 サムネイル確認（画像合成出力を利用）",
 }
 
 
 def _step_label(step: str) -> str:
     """工程の表示名。段階 1a 以降は常に ffmpeg 専用構成の表記を使う。"""
+    step = canonical_step(step)
     return _FFMPEG_STEP_LABELS.get(step) or STEP_LABELS[step]
 
 
@@ -1416,18 +1432,28 @@ def _overlay_thumbnail_script(out_thumb: Path, cfg: dict, out_bg: Path = None) -
             print(f"  ⚠ 筆記体オーバーレイ失敗 ({Path(tgt).name}): {e}")
 
 
-def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
+def step_select(vol: int, folder: Path, via_api: bool, **kw):
+    """楽曲選定。チャンネル設定 music_selection_mode が ai なら採点して自動ハート、human なら人の選定を待つ。
+    選定が済んでいれば何もしない（後処理は rename）。"""
+    print(f"\n{'='*60}")
+    print(f"  {_step_label('select')}")
+    print(f"{'='*60}")
+    gate = _music_selection_gate(folder)
+    return gate if gate else True
+
+
+def step_composite(vol: int, folder: Path, via_api: bool, **kw):
     """vol{N}.jpg + サムネイル.jpg を 2 枚出す画像合成（Pillow、Adobe は使わない）。
 
     bgimage step が生成した <vol_folder>/vol{N}.png を入力に、app_image_composite が
     チャンネル設定 thumbnail_composition に従って背景用とサムネ用を書き出す。
-    工程名は互換のため psd_composite のままにしている（改名は別段階）。
+    旧工程名 psd_composite は別名として受け付ける（段階 2c で composite に改名）。
 
     env:
       APP_IMAGE_COMPOSITE_FORCE=1 / APP_PSD_COMPOSITE_FORCE=1  既存出力があっても強制再合成
     """
     print(f"\n{'='*60}")
-    print(f"  {_step_label('psd_composite')}")
+    print(f"  {_step_label('composite')}")
     print(f"{'='*60}")
     from app_image_composite import compose_images
     force = os.environ.get("APP_IMAGE_COMPOSITE_FORCE", os.environ.get("APP_PSD_COMPOSITE_FORCE", "")).strip() in ("1", "true", "yes")
@@ -1606,15 +1632,6 @@ def _resolve_target_duration(kw: dict) -> int:
         duration = 10800
     return int(duration)
 
-
-def step_premiere(vol: int, folder: Path, via_api: bool, **kw):
-    """ffmpeg 専用: 配置は export（app_ffrender）が一括で行うため、この工程は何もしない。"""
-    gate = _music_selection_gate(folder, processed=True)
-    if gate:
-        return gate
-    print(" FFmpeg構成 → 動画配置をFFmpeg書き出しへ引き継ぎ"
-          "（ffrender が export 時に 音声/映像/字幕(SRT)/チャプター(TC) を一括生成）")
-    return True
 
 
 
@@ -1801,11 +1818,11 @@ def _run_ffrender_export(vol: int, folder: Path, kw: dict) -> bool:
     cmd = [sys.executable, str(BASE / "app_ffrender.py"),
            "--vol-folder", str(folder), "--duration", str(duration),
            "--output-path", str(out)]
-    return _run(cmd, STEP_LABELS["export"], timeout=7200)
+    return _run(cmd, STEP_LABELS["render"], timeout=7200)
 
 
-def step_export(vol: int, folder: Path, via_api: bool, **kw):
-    """ffmpeg 専用: app_ffrender で音声+映像+字幕+TC を一括書き出し（Premiere/AME は廃止）。"""
+def step_render(vol: int, folder: Path, via_api: bool, **kw):
+    """ffmpeg 専用: app_ffrender で音声+映像+字幕+TC を一括書き出し（旧名 export。Premiere/AME は廃止）。"""
     gate = _music_selection_gate(folder, processed=True)
     if gate:
         return gate
@@ -2003,7 +2020,7 @@ def step_qa(vol: int, folder: Path, via_api: bool, **kw):
     重量チェック（オプション、`APP_QA_LOUDNESS=1`）:
       - 統合ラウドネス: -16 LUFS ± 2 LU（BGM 標準）
 
-    NG 時は False を返し、pipeline は失敗扱い → auto_resume が `--from premiere` で
+    NG 時は False を返し、pipeline は失敗扱い → auto_resume が `--from render` で
     Premiere に差し戻す（タイムライン or 書き出し設定の問題のはず）。
 
     出力: `<vol_folder>/qa_report.json`（次回起動時の参照や運営者の確認用）。
@@ -3052,10 +3069,10 @@ STEP_FUNCS = {
     "plan": step_plan,
     "suno": step_suno,
     "rename": step_rename,
+    "select": step_select,
     "bgimage": step_bgimage,
-    "psd_composite": step_psd_composite,
-    "premiere": step_premiere,
-    "export": step_export,
+    "composite": step_composite,
+    "render": step_render,
     "qa": step_qa,
     "meta": step_meta,
     "localization": step_localization,
@@ -3092,8 +3109,12 @@ DEFAULT_POLICY = {"attempts": 1, "backoff": [], "retry_on": set()}
 # pipeline は失敗時に末尾へ「再開: ... --from <stage>」を出力し、
 # auto_resume(app.py) がそれを解析して再投入する。ここで差し戻し先を上書きする。
 _RESUME_OVERRIDE = {
-    "qa": "premiere",
+    "qa": "render",
 }
+
+# 旧名の関数名（外部スクリプト・テストの互換）
+step_psd_composite = step_composite
+step_export = step_render
 
 
 # 失効（前段の出力が変わった）した工程を再実行するとき、既存出力でスキップする工程に強制再生成を指示する env。
@@ -3179,15 +3200,16 @@ def main():
 
 例:
   python3 app_pipeline.py 78                    # vol.78 を全工程
-  python3 app_pipeline.py 78 --from premiere    # Premiere から
+  python3 app_pipeline.py 78 --from render      # 書き出しから
   python3 app_pipeline.py 78 --only meta        # メタ生成だけ
   python3 app_pipeline.py 78 --via-api          # Web API 経由
   python3 app_pipeline.py 78 --dry-run          # 確認のみ
 """,
     )
     parser.add_argument("vol", type=int, help="vol 番号（例: 78）")
-    parser.add_argument("--from", dest="from_step", choices=STEPS_WITH_PLAN, help="指定工程から開始")
-    parser.add_argument("--only", choices=STEPS_WITH_PLAN, help="指定工程だけ実行")
+    parser.add_argument("--from", dest="from_step", choices=STEPS_WITH_PLAN + LEGACY_STEP_NAMES,
+                        help="指定工程から開始（旧名 psd_composite / export / premiere も可）")
+    parser.add_argument("--only", choices=STEPS_WITH_PLAN + LEGACY_STEP_NAMES, help="指定工程だけ実行")
     parser.add_argument("--via-api", action="store_true", help="Web API (localhost:8888) 経由で実行")
     parser.add_argument("--dry-run", action="store_true", help="実行せず計画だけ表示")
     parser.add_argument("--duration", type=int, default=None, help="Premiere 目標時間（秒）。未指定なら APP_DURATION_SEC env → per-channel default_duration_sec → 10800 の順で解決")
@@ -3276,9 +3298,15 @@ def main():
 
     # 実行する工程を決定
     base_steps = STEPS_WITH_PLAN if args.from_benchmark else STEPS
+    args.from_step = canonical_step(args.from_step)
+    args.only = canonical_step(args.only)
     env_steps = (os.environ.get("APP_PIPELINE_STEPS") or os.environ.get("ORZZ_PIPELINE_STEPS", ""))
     if env_steps:
-        steps = [s.strip() for s in env_steps.split(",") if s.strip() in STEPS_WITH_PLAN]
+        steps = []
+        for raw in env_steps.split(","):
+            c = canonical_step(raw)
+            if c in STEPS_WITH_PLAN and c not in steps:
+                steps.append(c)
     elif args.only:
         steps = [args.only]
     elif args.from_step:
@@ -3300,7 +3328,7 @@ def main():
     # ─── preflight チェック（ffmpeg 専用構成の実行環境） ───
     # 長時間 SUNO を回した後で ffmpeg 不在に気付く事故を防ぐ。APP_PREFLIGHT_DISABLE=1 で抑止可能。
     _export_engine()  # 旧設定値が残っていれば 1 回だけ警告を出す
-    needs_render = any(s in ("premiere", "export", "psd_composite") for s in steps)
+    needs_render = any(s in ("render", "composite") for s in steps)
     if needs_render and os.environ.get("APP_PREFLIGHT_DISABLE", "").strip() not in ("1", "true", "yes"):
         missing = preflight_ffmpeg()
         if missing:
@@ -3354,7 +3382,7 @@ def main():
                           "unmeasured": "測定不能（ffmpeg / ffprobe を確認）",
                           "processing": "選定済み。後処理（リネーム + フェード）待ち"}.get(_LAST_SELECTION_REASON, "楽曲の選定待ち"))
             print(f"◀ STEP {s} 結果: MUSIC_SELECTION_PENDING")
-            print(f"ハート選択・後処理後に再開: python3 app_pipeline.py {args.vol} --from rename")
+            print(f"ハート選択・後処理後に再開: python3 app_pipeline.py {args.vol} --from select")
             sys.exit(EXIT_SELECTION_PENDING)
         # unattended_login は専用ハンドリング（Discord で「ログインが必要」と通知）
         if ok == "unattended_login":

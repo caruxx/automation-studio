@@ -185,8 +185,8 @@ class StageWorker:
                 if r.get("status") == "done":
                     # done run は full pipeline 完走 or --from 再開完走。stage 到達済みとみなす。
                     return True
-        # フォルダ成果物による補助判定（export は mp4）
-        if stage == "export":
+        # フォルダ成果物による補助判定（render は mp4）
+        if stage in ("render", "export"):
             return _has_export_mp4(folder)
         return False
 
@@ -235,7 +235,7 @@ class StageWorker:
         return Action.NOTIFY
 
     def resume_stage(self, stage: str) -> str:
-        """差し戻し先 stage（_RESUME_OVERRIDE 考慮。例 qa→premiere）。"""
+        """差し戻し先 stage（_RESUME_OVERRIDE 考慮。例 qa→render）。"""
         return getattr(_pipe, "_RESUME_OVERRIDE", {}).get(stage, stage)
 
     # ── 台帳記録 ──
@@ -285,7 +285,8 @@ class QAWorker(StageWorker):
         # 人間が原因を解消して qa_report.json を削除すると再検査対象に戻る。
         if not _has_export_mp4(folder):
             return False
-        if (folder / "qa_report.json").exists():
+        # 再 render で qa の記録が失効した場合は、report が残っていても再検査の候補にする（step_qa は report を上書きする）。
+        if (folder / "qa_report.json").exists() and not _ss.is_stale("qa", folder, vol):
             return False
         return self._slot_available(channel_id=channel_id)
 
@@ -476,9 +477,8 @@ class PlanWorker(StageWorker):
 # per-channel 設定で絞る（既定 = export〜thumbnail）。
 WORKERS: dict[str, StageWorker] = {
     "bgimage":       StepWorker(domain="bgimage", stages=["bgimage"], domain_label="image"),
-    "psd_composite": StepWorker(domain="psd_composite", stages=["psd_composite"], domain_label="image"),
-    "premiere":      StepWorker(domain="premiere", stages=["premiere"], domain_label="video"),
-    "export":        StepWorker(domain="export", stages=["export"], domain_label="video"),
+    "composite":     StepWorker(domain="composite", stages=["composite"], domain_label="image"),
+    "render":        StepWorker(domain="render", stages=["render"], domain_label="video"),
     "qa":            QAWorker(),
     "meta":          StepWorker(domain="meta", stages=["meta"], domain_label="publish"),
     "localization":  StepWorker(domain="localization", stages=["localization"], domain_label="publish"),
@@ -493,7 +493,12 @@ ALL_WORKERS: dict[str, StageWorker] = {"plan": PLAN_WORKER, **WORKERS}
 # autopilot 既定範囲（app.py 統合時に tick 対象を絞るためのヒント）。
 # plan を入れると「次 vol を自動起案」になるが、§9-2 で空枠作成までは許容範囲。
 # ただし既定では含めない（明示 opt-in）。
-AUTOPILOT_DEFAULT_STAGES = ["export", "qa", "meta", "localization", "thumbnail", "upload"]
+AUTOPILOT_DEFAULT_STAGES = ["render", "qa", "meta", "localization", "thumbnail", "upload"]
+
+
+def canonical_domain(name: str) -> str:
+    """autopilot 設定などで渡される旧工程名を WORKERS のキーに写す（premiere は render）。"""
+    return _pipe.canonical_step(name) if hasattr(_pipe, "canonical_step") else name
 
 
 # ─── オーケストレーション tick（APScheduler 定期ジョブから呼ぶ想定） ───
@@ -526,20 +531,8 @@ def evaluate(channels: list[dict], *, dry_run: bool = True,
                 continue
             for domain, worker in pool.items():
                 try:
-                    # ffmpeg チャンネルは app_ffrender が配置+書き出しを
-                    # export の1工程で行う。汎用 StepWorker の直前工程判定に
-                    # 任せると premiere 候補が残り、export は永久に候補に
-                    # ならないため、ここで経路を置換する。
-                    if export_engine == "ffmpeg" and domain == "premiere":
-                        continue
-                    if export_engine == "ffmpeg" and domain == "export":
-                        can_run = (
-                            _stage_artifact_done("psd_composite", folder, vol, channel_id=ch_id)
-                            and not _stage_artifact_done("export", folder, vol, channel_id=ch_id)
-                            and worker._slot_available(channel_id=ch_id)
-                        )
-                    else:
-                        can_run = worker.can_run(vol, folder, channel_id=ch_id)
+                    # render の前段は STEPS 上 composite（段階 2c で premiere を廃止したので特別扱いは不要）
+                    can_run = worker.can_run(vol, folder, channel_id=ch_id)
                     if can_run:
                         candidates.append(Candidate(domain=domain, vol=vol,
                                                     folder=str(folder), channel_id=ch_id))

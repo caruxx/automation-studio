@@ -263,7 +263,7 @@ def step_command(vol: int, channel_id: str, step: str) -> list[str]:
 
 def phase2_commands(vol: int, channel_id: str, *, include_images: bool) -> list[tuple[str, list[str]]]:
     """Build post commands; each pipeline implementation owns its resource lock."""
-    first_step = "bgimage" if include_images else "premiere"
+    first_step = "bgimage" if include_images else "render"
     return [(step, step_command(vol, channel_id, step)) for step in STEPS[STEPS.index(first_step):]]
 
 
@@ -285,12 +285,12 @@ def run_logged(command: list[str], env: dict[str, str], log_path: Path, label: s
 
 def run_image_prefetch(vol: int, channel_id: str, env: dict[str, str], log_path: Path,
                        photoshop_lock: threading.Lock) -> dict[str, int]:
-    """Run bgimage then PSD while phase1 proceeds; only PSD needs thread serialization."""
+    """Run bgimage then composite while phase1 proceeds; only composite needs thread serialization."""
     codes: dict[str, int] = {}
-    for step in ("bgimage", "psd_composite"):
+    for step in ("bgimage", "composite"):
         command = step_command(vol, channel_id, step)
         try:
-            if step == "psd_composite":
+            if step == "composite":
                 with photoshop_lock:
                     code, _elapsed = run_logged(command, env, log_path, f"prefetch:{step}")
             else:
@@ -301,7 +301,7 @@ def run_image_prefetch(vol: int, channel_id: str, env: dict[str, str], log_path:
         codes[step] = code
         if code != 0:
             if step == "bgimage":
-                codes["psd_composite"] = 1
+                codes["composite"] = 1
             break
     return codes
 
@@ -410,7 +410,7 @@ def main() -> int:
             suffix = " [skip-completed candidate]" if args.skip_completed and completed(folder) else ""
             print(f"vol{vol} phase1: {' '.join(phase1_command(vol, channel_id))}{suffix}")
             if not args.no_prefetch_image:
-                for step in ("bgimage", "psd_composite"):
+                for step in ("bgimage", "composite"):
                     print(f"vol{vol} prefetch-image[{step}]: {' '.join(step_command(vol, channel_id, step))}{suffix}")
                 print(f"vol{vol} phase2[image-recovery]: retry failed prefetch steps only{suffix}")
             for step, command in phase2_commands(
@@ -442,16 +442,16 @@ def main() -> int:
             try:
                 prefetch_codes = image_future.result()
             except Exception as exc:
-                prefetch_codes = {"bgimage": 1, "psd_composite": 1}
+                prefetch_codes = {"bgimage": 1, "composite": 1}
                 append_log(log_path, f"[prefetch] result error: {type(exc).__name__}: {exc}")
             failed_images = [
-                step for step in ("bgimage", "psd_composite")
+                step for step in ("bgimage", "composite")
                 if prefetch_codes.get(step, 1) != 0
             ]
             if failed_images:
                 recovery_steps = (
-                    ["bgimage", "psd_composite"] if "bgimage" in failed_images
-                    else ["psd_composite"]
+                    ["bgimage", "composite"] if "bgimage" in failed_images
+                    else ["composite"]
                 )
                 print(f"vol{result.vol} phase2 image recovery: {','.join(recovery_steps)}")
                 for step in recovery_steps:

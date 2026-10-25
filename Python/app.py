@@ -2264,8 +2264,8 @@ def api_list_videos():
 
     stage_groups = (
         ("music", "楽曲", ("suno", "rename")),
-        ("image", "画像", ("bgimage", "psd_composite")),
-        ("video", "動画", ("premiere", "export")),
+        ("image", "画像", ("bgimage", "composite")),
+        ("video", "動画", ("render",)),
         ("qa", "検査", ("qa",)),
         ("meta", "メタ", ("meta", "localization", "thumbnail")),
         ("publish", "公開", ("upload",)),
@@ -2398,7 +2398,7 @@ def api_list_videos():
 # UI は #p-dashboard 上部にこの集約ビューを描画する。**台帳ではなく集約**：
 # 状態は依然として folder artifact から推論する（中央 ledger は P3）。
 
-_PIPELINE_STAGES = ["plan", "suno", "rename", "premiere", "export", "meta", "upload"]
+_PIPELINE_STAGES = ["plan", "suno", "rename", "render", "meta", "upload"]
 
 def _infer_stage_from_artifacts(folder: Path) -> dict:
     """vol フォルダのファイル群から、各 stage の done/current を推定。"""
@@ -2416,8 +2416,7 @@ def _infer_stage_from_artifacts(folder: Path) -> dict:
         "plan":     has_plan,
         "suno":     has_music,
         "rename":   has_audio_processed or has_music,  # rename は music 内で完了する場合あり
-        "premiere": has_timecode or has_srt,
-        "export":   has_mp4,
+        "render":   has_mp4,
         "meta":     has_title and has_desc and has_tags,
         "upload":   has_upload,
     }
@@ -3758,6 +3757,20 @@ def api_video_suggest(video_name: str, req: SuggestRequest):
 # ─── API: パイプライン自動実行 ───
 # PIPELINE_SCRIPT は app_core へ移動（pipeline/images の両ドメインが参照する共有定数・D9）
 
+def _canonical_steps(steps):
+    """UI / API から来る工程名（旧名を含む）を app_pipeline の新名に写し、重複を除く。"""
+    out = []
+    try:
+        from app_pipeline import canonical_step
+    except Exception:
+        canonical_step = lambda s: s  # noqa: E731
+    for s in steps or []:
+        c = canonical_step(s)
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
 class PipelineRunRequest(BaseModel):
     steps: List[str]  # ["suno", "rename", "premiere", "meta", "upload"]
     duration: Optional[int] = 10800
@@ -3816,7 +3829,7 @@ async def api_run_pipeline(video_name: str, req: PipelineRunRequest):
     }
     # steps を環境変数で渡す
     env = {**os.environ, "PYTHONUNBUFFERED": "1",
-           "APP_PIPELINE_STEPS": ",".join(req.steps)}
+           "APP_PIPELINE_STEPS": ",".join(_canonical_steps(req.steps))}
     # SUNO 上書き（リクエスト > 自動化設定 > デフォルト の優先順位）
     def _env(key_env, req_val, auto_key, cast=str):
         v = req_val if req_val not in (None, "") else auto_cfg.get(auto_key)
@@ -3906,7 +3919,7 @@ async def api_create_from_benchmark(req: CreateFromBenchmarkRequest):
             "hint": "作成後、自動運転がONのチャンネルでは予約投稿まで自動で進みます。必要なら個別工程を手動で進めてください。",
         }
 
-    steps = ["suno", "rename", "premiere", "export", "meta", "upload"]
+    steps = ["suno", "select", "rename", "render", "meta", "upload"]
     pipeline_req = PipelineRunRequest(
         steps=steps,
         duration=req.duration or auto_cfg.get("premiere_duration") or 10800,
@@ -4007,7 +4020,7 @@ async def api_suno_generate_mix_drafts(req: MixDraftRequest):
 
 # pipeline に委譲する後半工程（SUNO/DL/整備の後）。upload は含めない（投稿手前で停止）。
 _ORCHESTRATE_PIPELINE_STEPS = [
-    "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "thumbnail",
+    "bgimage", "composite", "render", "qa", "meta", "thumbnail",
 ]
 
 
@@ -4030,7 +4043,7 @@ async def api_orchestrate_create_and_run(req: OrchestrateRequest):
       3. SUNO 投入（songs_draft_json 経路、--songs-file）  ※dry_run はスキップ
       4. DL（/api/suno/download）                         ※dry_run はスキップ
       5. 整備（process-tracks: apply_tags=true, keep_names=true）※dry_run はスキップ
-      6. 後半 pipeline（bgimage→psd_composite→premiere→export→qa→meta→thumbnail）
+      6. 後半 pipeline（bgimage→composite→render→qa→meta→thumbnail）
          を APP_PIPELINE_STEPS で委譲。upload は含めない。      ※dry_run はスキップ
 
     auto_upload は常に false（upload step を渡さない）。dry_run=true では実走系
@@ -4069,7 +4082,7 @@ async def api_orchestrate_create_and_run(req: OrchestrateRequest):
             {"step": "suno_start", "detail": f"songs_draft_json 投入（--songs-file, interval={interval}s）", "browser": True},
             {"step": "suno_download", "detail": "Workspace DL → 動画フォルダ", "browser": True},
             {"step": "process_tracks", "detail": "整備（apply_tags=true, keep_names=true）"},
-            {"step": "pipeline", "detail": "後半工程委譲", "pipeline_steps": list(_ORCHESTRATE_PIPELINE_STEPS), "premiere": True},
+            {"step": "pipeline", "detail": "後半工程委譲", "pipeline_steps": list(_ORCHESTRATE_PIPELINE_STEPS), "render": True},
         ],
         "pipeline_steps": list(_ORCHESTRATE_PIPELINE_STEPS),
         "upload_step_included": "upload" in _ORCHESTRATE_PIPELINE_STEPS,  # 常に False を期待
@@ -8129,6 +8142,7 @@ def _orchestrator_tick():
     stages_env = (os.environ.get("APP_ORCH_AUTOPILOT_STAGES") or "").strip()
     stage_list = ([s.strip() for s in stages_env.split(",") if s.strip()]
                   or list(getattr(_orch, "AUTOPILOT_DEFAULT_STAGES", [])))
+    stage_list = [getattr(_orch, "canonical_domain", lambda s: s)(s) for s in stage_list]
     workers = {k: v for k, v in _orch.WORKERS.items() if k in stage_list} or None
     try:
         # max_dispatch はチャンネル数以下に抑え、1 tick で同一チャンネルへ過剰投入しない。
