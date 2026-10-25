@@ -8583,6 +8583,7 @@ async def _recover_scheduled_publishes():
         JST as _JST,
         plan_scheduled_publish_recovery as _plan_recovery,
         resolve_recover_max_stale_days as _resolve_stale_days,
+        scheduler_run_at as _scheduler_run_at,
     )
     max_stale_days, stale_warn = _resolve_stale_days(os.environ.get("APP_PUBLISH_RECOVER_MAX_STALE_DAYS"))
     if stale_warn:
@@ -8629,7 +8630,8 @@ async def _recover_scheduled_publishes():
                     video_name=vol_dir.name,
                     channel_folder=str(ch_folder),
                     channel_name=ch.get("name", ""),
-                    run_at=run_at,
+                    # DateTrigger は naive を OS の TZ で解釈するため JST 付きの aware で渡す
+                    run_at=_scheduler_run_at(run_at),
                 )
                 n_recovered += 1
             except Exception as e:

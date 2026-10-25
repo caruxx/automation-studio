@@ -53,6 +53,7 @@ def resolve_publish_at_iso(
 # marker の scheduled_publish_at は世代差で naive（ローカル時刻）と aware（"…Z" / "+09:00"）が混在する。
 # Python 3.11+ の fromisoformat は "Z" を aware として読むため、naive の now() と直接比較すると TypeError になる。
 DEFAULT_RECOVER_MAX_STALE_DAYS = 7
+MAX_RECOVER_STALE_DAYS = 3650  # timedelta のオーバーフロー防止と設定ミスの上限
 
 
 def normalize_scheduled_local(value: Any) -> Optional[_dt.datetime]:
@@ -70,8 +71,21 @@ def normalize_scheduled_local(value: Any) -> Optional[_dt.datetime]:
     except Exception:
         return None
     if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(JST).replace(tzinfo=None)
+        try:
+            parsed = parsed.astimezone(JST).replace(tzinfo=None)
+        except (OverflowError, ValueError):
+            return None
     return parsed
+
+
+def scheduler_run_at(run_at: _dt.datetime) -> _dt.datetime:
+    """復旧で求めた JST naive の run_at を、APScheduler の DateTrigger へ渡す aware 値にする。
+
+    DateTrigger は naive を OS のローカル時間帯で解釈し、scheduler の Asia/Tokyo 設定を継承しない。
+    JST 付きの aware にしておけば OS の TZ に関係なく意図した時刻に発火する。"""
+    if run_at.tzinfo is None:
+        return run_at.replace(tzinfo=JST)
+    return run_at.astimezone(JST)
 
 
 def resolve_recover_max_stale_days(raw: Any, default: int = DEFAULT_RECOVER_MAX_STALE_DAYS) -> tuple[int, Optional[str]]:
@@ -87,6 +101,8 @@ def resolve_recover_max_stale_days(raw: Any, default: int = DEFAULT_RECOVER_MAX_
         return default, f"APP_PUBLISH_RECOVER_MAX_STALE_DAYS={text!r} は整数ではないため既定値 {default} を使います"
     if days < 0:
         return 0, f"APP_PUBLISH_RECOVER_MAX_STALE_DAYS={days} は負数のため 0 として扱います"
+    if days > MAX_RECOVER_STALE_DAYS:
+        return MAX_RECOVER_STALE_DAYS, f"APP_PUBLISH_RECOVER_MAX_STALE_DAYS={days} は上限を超えるため {MAX_RECOVER_STALE_DAYS} として扱います"
     return days, None
 
 
@@ -113,6 +129,7 @@ def plan_scheduled_publish_recovery(
         current = current.astimezone(JST).replace(tzinfo=None)
     if run_at >= current:
         return "future", run_at
-    if current - run_at > _dt.timedelta(days=max(0, int(max_stale_days))):
+    window_days = min(max(0, int(max_stale_days)), MAX_RECOVER_STALE_DAYS)
+    if current - run_at > _dt.timedelta(days=window_days):
         return "stale", run_at
     return "overdue", current + _dt.timedelta(minutes=1)

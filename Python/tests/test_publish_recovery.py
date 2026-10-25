@@ -76,6 +76,32 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(kind, "stale")
 
 
+class SchedulerRunAtTest(unittest.TestCase):
+    def test_naive_jst_becomes_aware_jst(self):
+        aware = ps.scheduler_run_at(dt.datetime(2026, 10, 26, 12, 0))
+        self.assertEqual(aware.utcoffset(), dt.timedelta(hours=9))
+        self.assertEqual(aware.replace(tzinfo=None), dt.datetime(2026, 10, 26, 12, 0))
+        # OS の TZ に関係なく UTC 03:00 を指す
+        self.assertEqual(aware.astimezone(dt.timezone.utc), dt.datetime(2026, 10, 26, 3, 0, tzinfo=dt.timezone.utc))
+
+    def test_aware_input_is_converted_to_jst(self):
+        aware = ps.scheduler_run_at(dt.datetime(2026, 10, 26, 3, 0, tzinfo=dt.timezone.utc))
+        self.assertEqual(aware.replace(tzinfo=None), dt.datetime(2026, 10, 26, 12, 0))
+
+
+class OverflowTest(unittest.TestCase):
+    def test_far_future_aware_value_is_invalid_not_crash(self):
+        self.assertIsNone(ps.normalize_scheduled_local("9999-12-31T23:00:00Z"))
+        self.assertEqual(ps.plan_scheduled_publish_recovery("9999-12-31T23:00:00Z", now=NOW), ("invalid", None))
+
+    def test_huge_window_is_clamped(self):
+        days, warn = ps.resolve_recover_max_stale_days("1000000000")
+        self.assertEqual(days, ps.MAX_RECOVER_STALE_DAYS)
+        self.assertIn("上限", warn)
+        kind, _ = ps.plan_scheduled_publish_recovery("2026-07-09T00:00:00Z", now=NOW, max_stale_days=10**9)
+        self.assertEqual(kind, "overdue")
+
+
 class ResolveEnvTest(unittest.TestCase):
     def test_values(self):
         self.assertEqual(ps.resolve_recover_max_stale_days(None), (7, None))
