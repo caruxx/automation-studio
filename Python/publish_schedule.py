@@ -47,3 +47,53 @@ def resolve_publish_at_iso(
     if scheduled <= now_jst and publish_date == now_jst.date():
         return (now_jst + _dt.timedelta(minutes=15)).isoformat()
     return scheduled.isoformat()
+
+
+# ─── 再起動時の公開予約復旧 ───
+# marker の scheduled_publish_at は世代差で naive（ローカル時刻）と aware（"…Z" / "+09:00"）が混在する。
+# Python 3.11+ の fromisoformat は "Z" を aware として読むため、naive の now() と直接比較すると TypeError になる。
+DEFAULT_RECOVER_MAX_STALE_DAYS = 7
+
+
+def normalize_scheduled_local(value: Any) -> Optional[_dt.datetime]:
+    """scheduled_publish_at をローカル時刻の naive datetime に正規化する。解釈できなければ None。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z") or text.endswith("z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = _dt.datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def plan_scheduled_publish_recovery(
+    value: Any,
+    *,
+    now: Optional[_dt.datetime] = None,
+    max_stale_days: int = DEFAULT_RECOVER_MAX_STALE_DAYS,
+) -> tuple[str, Optional[_dt.datetime]]:
+    """復旧時の扱いを決める。
+
+    戻り値 (kind, run_at):
+      ("future", run_at)  予約時刻が未来 → その時刻で再登録
+      ("overdue", run_at) 過去だが max_stale_days 以内 → now+1 分で即時投入
+      ("stale", run_at)   max_stale_days より古い → 再登録せず警告のみ（一斉公開事故の防止）
+      ("invalid", None)   解釈不能
+    now は naive ローカル時刻（省略時は datetime.now()）。
+    """
+    run_at = normalize_scheduled_local(value)
+    if run_at is None:
+        return "invalid", None
+    current = now if now is not None else _dt.datetime.now()
+    if current.tzinfo is not None:
+        current = current.astimezone().replace(tzinfo=None)
+    if run_at >= current:
+        return "future", run_at
+    if current - run_at > _dt.timedelta(days=max(0, int(max_stale_days))):
+        return "stale", run_at
+    return "overdue", current + _dt.timedelta(minutes=1)
