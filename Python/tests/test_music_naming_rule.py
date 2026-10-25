@@ -131,9 +131,13 @@ class RenameRuleTest(unittest.TestCase):
         # 一覧が NFD で返っても処理済み（名前を NFC で比較する）
         nfd = unicodedata.normalize("NFD", "ガーデン.mp3")
         self.assertNotEqual(nfd, "ガーデン.mp3")
+        # APFS は正規化を区別しないので同じ実体、ext4（CI）では別ファイルになる。どちらでも NFD 名の実体を用意する
+        (self.folder / "music" / nfd).write_bytes(b"x")
         with patch.object(catalog, "_legacy_music_name", lambda title: "x.mp3"), \
                 patch.object(Path, "glob", lambda self_, pat: [self_ / nfd]):
             self.assertTrue(catalog.get_review(batch)["processed"])
+        if len(list((self.folder / "music").iterdir())) > 1:
+            (self.folder / "music" / nfd).unlink()  # ext4 で別ファイルになった場合だけ片付ける（APFS では同じ実体）
         # 新旧が混ざった music/ は未処理
         (self.folder / "music" / "ガーデン(1).mp3").write_bytes(b"old")
         self.assertFalse(catalog.get_review(batch)["processed"])
