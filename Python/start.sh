@@ -64,10 +64,14 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
     "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.lock"
 fi
 
-# 依存の確認（不足があれば requirements.lock から補う）
-if ! "$VENV_DIR/bin/python" -c 'import fastapi, uvicorn, apscheduler, googleapiclient, PIL, numpy, python_multipart' 2>/dev/null; then
-    echo "依存を requirements.lock から導入します"
+# 依存の同期: requirements.lock のハッシュが前回導入時と違えば入れ直す（旧版のまま起動しない）
+LOCK_SHA="$(shasum -a 256 "$ROOT_DIR/requirements.lock" | cut -d' ' -f1)"
+MARK="$VENV_DIR/.requirements.lock.sha256"
+if [[ ! -f "$MARK" || "$(cat "$MARK" 2>/dev/null)" != "$LOCK_SHA" ]] \
+   || ! "$VENV_DIR/bin/python" -c 'import fastapi, uvicorn, apscheduler, googleapiclient, PIL, numpy, python_multipart' 2>/dev/null; then
+    echo "依存を requirements.lock から同期します"
     "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.lock"
+    echo "$LOCK_SHA" > "$MARK"
 fi
 
 # ポート確認（LISTEN しているプロセスだけを見る）

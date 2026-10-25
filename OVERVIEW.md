@@ -246,7 +246,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 | 自動運転 | APScheduler（時刻・曜日の予約実行） |
 | 外部アクセス | Cloudflare Tunnel + 認証 + PWA |
 
-> 注意: サーバーは自動リロード無しで起動します。Python を変更したら `bash Python/start.sh` で**再起動しないと反映されません**。
+> 注意: サーバーは自動リロード無しで起動します。Python を変更したら `bash Python/start.sh --replace` で**再起動しないと反映されません**。
 
 ---
 
@@ -414,7 +414,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 ## 14. 注意点・つまずきやすい所
 
 ### サーバー / 実行
-- uvicorn は自動リロード無し → 変更後は `bash start.sh` で再起動
+- uvicorn は自動リロード無し → 変更後は `bash Python/start.sh --replace` で再起動
 - AI 工程（meta / localization）を `--via-api` 実行すると 10 秒タイムアウトで必ず失敗 → CLI 直で実行
 - export の「完了」ログは早期誤判定あり → MP4 サイズ安定 + ffprobe で裏取り
 

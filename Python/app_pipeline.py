@@ -409,7 +409,7 @@ def _api_poll(status_path, label, timeout=7200, interval=3):
     """API のステータスをポーリングして完了を待つ。
     完了判定: 一度 running=True を観測した後に running=False かつ末尾ログに [完了] 終了コード: 0。
     ⚠ running=True を一度も観測しない間は、前ジョブの残存完了マーカーを新ジョブ完了と
-       誤認しないよう採用しない（premiere→export で /api/premiere/status を共有するため）。
+       誤認しないよう採用しない（同じ status API を複数工程で共有する場合があるため）。
     """
     import urllib.request
     start = time.time()
@@ -3098,8 +3098,8 @@ def main():
 工程:
   suno      SUNO 楽曲生成（Workspace 作成 + batch モード）
   rename    楽曲リネーム + FFmpeg 後処理
-  premiere  Premiere 自動配置（.prproj 自動オープン）
-  export    Media Encoder 書き出し
+  premiere  （自動通過。配置は export に統合）
+  export    FFmpeg 書き出し（音声・映像・SRT・タイムコード）
   meta      Claude CLI でタイトル・説明・タグ生成
   upload    YouTube アップロード
 

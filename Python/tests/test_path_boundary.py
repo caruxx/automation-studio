@@ -172,7 +172,9 @@ class ApiBoundaryTest(unittest.TestCase):
         ext_dir.mkdir()
         exported = ext_dir / "QA_vol2.mp4"
         exported.write_bytes(b"\x00" * 8)
-        with unittest.mock.patch.object(ve, "_find_exported_mp4", return_value=exported):
+        with unittest.mock.patch.object(ve, "_find_exported_mp4", return_value=exported), \
+             unittest.mock.patch.object(ve, "_resolve_external_export_dir", return_value=ext_dir), \
+             unittest.mock.patch.object(ve, "get_dashboard_config", return_value={"channel_folder": str(self.root)}):
             self.assertEqual(ve._resolve_media(self.vol, self.vol.name, str(exported), allow_exported=True), exported.resolve())
             with self.assertRaises(HTTPException):
                 ve._resolve_media(self.vol, self.vol.name, str(exported))
@@ -181,6 +183,14 @@ class ApiBoundaryTest(unittest.TestCase):
             with unittest.mock.patch.object(ve, "_find_exported_mp4", return_value=other):
                 with self.assertRaises(HTTPException):
                     ve._resolve_media(self.vol, self.vol.name, str(other), allow_exported=True)
+        # export_path の外（別領域）にある同名 mp4 は許可しない
+        stray = Path(self.tmp.name) / "elsewhere" / "QA_vol2.mp4"
+        stray.parent.mkdir(); stray.write_bytes(b"\x00" * 8)
+        with unittest.mock.patch.object(ve, "_find_exported_mp4", return_value=stray), \
+             unittest.mock.patch.object(ve, "_resolve_external_export_dir", return_value=ext_dir), \
+             unittest.mock.patch.object(ve, "get_dashboard_config", return_value={"channel_folder": str(self.root)}):
+            with self.assertRaises(HTTPException):
+                ve._resolve_media(self.vol, self.vol.name, str(stray), allow_exported=True)
 
     def test_image_compositor_rejects_escaping_subdir_and_symlinked_output(self):
         r = self.client.post("/api/image-compositor/render-dual-thumbnail", json={"video_name": self.vol.name, "image_subdir": "../../"})
@@ -196,6 +206,14 @@ class ApiBoundaryTest(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"orig")
         r = self.client.post("/api/image-compositor/save-canvas", json={"video_name": self.vol.name, "filename": "fresh.png", "data_url": png})
         self.assertEqual(r.status_code, 200, r.text)
+
+    def test_scene_text_generate_rejects_arbitrary_paths(self):
+        r = self.client.post("/api/scene-text/generate", json={"image_path": str(self.outside)})
+        self.assertIn(r.status_code, (400, 403))
+        r = self.client.post("/api/scene-text/generate", json={"video_folder": str(self.adjacent)})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/scene-text/generate", json={"video_name": self.vol.name, "image_path": "../secret.txt"})
+        self.assertEqual(r.status_code, 400)
 
     def test_image_compositor_rejects_unregistered_folder(self):
         body = {"video_folder": str(self.adjacent), "template": {"layers": []}}

@@ -126,11 +126,11 @@
       75:['SUNOのログインが切れました','SUNOを開いて再ログインし、止まった工程から再開してください。'],
       76:['一時的な通信エラーです','しばらく待ってから再実行してください。'],
       77:['YouTube APIの1日上限に達しました','約24時間待ってから再開してください。'],
-      78:['Premiere Proの準備ができていません','Premiere ProとPremiere Linkを起動してから再実行してください。']
+      78:['書き出しの実行環境が足りません','ffmpeg / ffprobe / Pillow を導入し、studio.py preflight で確認してから再実行してください。']
     };
     let m = map[code];
     if(!m && /invalid_grant|OAuth|再認証/i.test(text)) m=['YouTubeの再認証が必要です','YouTube設定で対象チャンネルを再認証してください。'];
-    if(!m && /Premiere|CEP|preflight/i.test(text)) m=map[78];
+    if(!m && /preflight|ffprobe/i.test(text)) m=map[78];
     if(!m && /SUNO|ログイン|cookie/i.test(text)) m=map[75];
     if(!m) m=['処理が途中で止まりました','実行履歴で詳細ログを確認し、止まった工程から再実行してください。'];
     return {plain_ja: (stage ? stage + ': ' : '') + m[0], next_action: m[1]};

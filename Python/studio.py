@@ -304,7 +304,7 @@ def run_update(args: argparse.Namespace) -> int:
         data = {"ok": False, "intent": "update", "message": str(e)}
     print(json.dumps(data, ensure_ascii=False, indent=2))
     if data.get("ok") and (data.get("backup") or data.get("restored_version")):
-        print("次の操作: bash Python/start.sh で再起動してください。")
+        print("次の操作: bash Python/start.sh --replace で再起動してください。")
     emit({"ok": bool(data.get("ok")), "intent": "update", **data})
     return 0 if data.get("ok") else 1
 

@@ -7,7 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from app_core import get_channels, resolve_video_folder, resolve_asset_in_folder, path_is_within, _find_exported_mp4, _resolve_to_current_host
+from app_core import get_channels, resolve_video_folder, resolve_asset_in_folder, path_is_within, _find_exported_mp4, _resolve_to_current_host, _resolve_external_export_dir, get_dashboard_config
 from app_video_edit import run_edit, run_queue, generate_editor_assets
 from resource_lock import acquire_resource
 
@@ -70,6 +70,15 @@ def _exported_mp4_for(folder: Path, video_name: str) -> Optional[Path]:
     p=Path(exported).resolve(strict=False)
     if p.suffix.lower()!=".mp4" or not p.is_file(): return None
     if not re.search(rf"vol0*{int(m.group(1))}(?!\d)", p.stem): return None
+    if path_is_within(p, folder): return p
+    # vol フォルダ外は「アクティブチャンネルの vol」かつ「そのチャンネルの export_path 配下」に限る
+    try:
+        active=Path(_resolve_to_current_host(get_dashboard_config().get("channel_folder") or "")).expanduser().resolve(strict=False)
+        ext_dir=_resolve_external_export_dir()
+    except Exception:
+        return None
+    if ext_dir is None or Path(folder).resolve(strict=False).parent!=active: return None
+    if not path_is_within(p, ext_dir): return None
     return p
 
 def _resolve_media(folder: Path, video_name: str, raw: str, *, allow_exported: bool=False) -> Path:

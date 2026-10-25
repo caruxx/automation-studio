@@ -10,9 +10,8 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import socket
+import ssl
 import time
-import urllib.error
-import urllib.request
 from typing import Callable, Iterable, Tuple
 from urllib.parse import urlsplit, urljoin
 
@@ -52,31 +51,55 @@ def resolve_ips(host: str) -> list[str]:
     return ips
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
-        return None
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """検証済み IP へ接続し、TLS の SNI と証明書検証、Host ヘッダは元のホスト名で行う（DNS rebinding 対策）。"""
+
+    def __init__(self, ip: str, tls_host: str, timeout: float, context: ssl.SSLContext):
+        super().__init__(ip, 443, timeout=timeout, context=context)
+        self._tls_host = tls_host
+
+    def connect(self):  # noqa: D401
+        sock = socket.create_connection((self.host, self.port), self.timeout)
+        try:
+            self.sock = self._context.wrap_socket(sock, server_hostname=self._tls_host)
+        except Exception:
+            sock.close()
+            raise
 
 
-def open_url(url: str, timeout: float) -> Tuple[int, dict, Callable[[int], bytes], Callable[[], None]]:
-    """urllib で 1 hop だけ取得する。戻り値: (status, headers, read(n), close)。"""
-    # 環境変数のプロキシには従わない（検証した IP と実際の接続先がずれるのを防ぐ）
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
-    req = urllib.request.Request(url, headers={"User-Agent": "AutomationStudio/1.0 (+safe_fetch)"})
+def open_url(url: str, timeout: float, ip: str) -> Tuple[int, dict, Callable[..., bytes], Callable[[], None]]:
+    """検証済み IP へ 1 hop だけ接続して取得する。戻り値: (status, headers, read(n, timeout=None), close)。
+    リダイレクトは追わない。環境変数のプロキシも使わない。"""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").rstrip(".")
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    context = ssl.create_default_context()
+    conn = _PinnedHTTPSConnection(ip, host, timeout, context)
     try:
-        resp = opener.open(req, timeout=timeout)
-    except urllib.error.HTTPError as exc:
-        if 300 <= exc.code < 400:
-            headers = {k.lower(): v for k, v in exc.headers.items()}
-            return exc.code, headers, (lambda n: b""), (lambda: None)
-        raise SafeFetchError(f"HTTP {exc.code}") from exc
-    except urllib.error.URLError as exc:
-        raise SafeFetchError("接続に失敗しました") from exc
-    headers = {k.lower(): v for k, v in resp.headers.items()}
-    return resp.status, headers, resp.read, resp.close
+        conn.request("GET", path, headers={"Host": host, "User-Agent": "AutomationStudio/1.0 (+safe_fetch)", "Connection": "close"})
+        resp = conn.getresponse()
+    except Exception:
+        conn.close()
+        raise
+    headers = {k.lower(): v for k, v in resp.getheaders()}
+
+    def read(n: int, timeout_sec: float | None = None) -> bytes:
+        if timeout_sec is not None and conn.sock is not None:
+            conn.sock.settimeout(max(0.05, timeout_sec))
+        return resp.read1(n)  # 1 回の recv 相当で返る（締め切りを細かく確認できる）
+
+    return resp.status, headers, read, conn.close
 
 
 def validate_url(url: str, resolver: Callable[[str], Iterable[str]] = resolve_ips) -> str:
     """scheme / host / 解決後 IP を検証し、正規化した URL を返す。"""
+    return validate_url_ips(url, resolver)[0]
+
+
+def validate_url_ips(url: str, resolver: Callable[[str], Iterable[str]] = resolve_ips) -> Tuple[str, list[str]]:
+    """validate_url と同じ検証を行い、(正規化 URL, 検証済み IP 一覧) を返す。接続はこの IP に固定する。"""
     parts = urlsplit(str(url or "").strip())
     if parts.scheme.lower() != "https":
         raise SafeFetchError("https の URL だけ取得できます")
@@ -93,21 +116,24 @@ def validate_url(url: str, resolver: Callable[[str], Iterable[str]] = resolve_ip
         literal = ipaddress.ip_address(host)
     except ValueError:
         literal = None
-    ips = [str(literal)] if literal is not None else list(resolver(host))
+    ips = [str(literal)] if literal is not None else [str(x) for x in resolver(host)]
+    if not ips:
+        raise SafeFetchError("名前解決の結果が空です")
     for ip in ips:
         if _is_forbidden_ip(ip):
             raise SafeFetchError("内部・予約アドレスへの取得は拒否しました")
-    return parts.geturl()
+    return parts.geturl(), ips
 
 
 def fetch_image(url: str, *, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float = DEFAULT_TIMEOUT,
                 max_redirects: int = MAX_REDIRECTS, deadline: float = DEFAULT_DEADLINE,
                 resolver: Callable[[str], Iterable[str]] = resolve_ips,
-                opener: Callable[[str, float], Tuple[int, dict, Callable[[int], bytes], Callable[[], None]]] = open_url,
+                opener: Callable[..., Tuple[int, dict, Callable[..., bytes], Callable[[], None]]] = open_url,
                 clock: Callable[[], float] = time.monotonic,
                 ) -> Tuple[bytes, str]:
-    """画像 URL を取得して (bytes, content_type) を返す。拒否・失敗（接続・読み込みのエラー、締め切り超過を含む）は SafeFetchError。"""
-    current = validate_url(url, resolver)
+    """画像 URL を取得して (bytes, content_type) を返す。拒否・失敗（接続・読み込みのエラー、締め切り超過を含む）は SafeFetchError。
+    接続は検証済み IP に固定する（opener(url, timeout, ip)）。"""
+    current, ips = validate_url_ips(url, resolver)
     started = clock()
 
     def _remaining() -> float:
@@ -118,7 +144,7 @@ def fetch_image(url: str, *, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float 
 
     for _ in range(max_redirects + 1):
         try:
-            status, headers, read, close = opener(current, _remaining())
+            status, headers, read, close = opener(current, _remaining(), ips[0])
         except SafeFetchError:
             raise
         except (OSError, http.client.HTTPException, ValueError) as exc:
@@ -128,7 +154,7 @@ def fetch_image(url: str, *, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float 
                 location = headers.get("location")
                 if not location:
                     raise SafeFetchError("リダイレクト先がありません")
-                current = validate_url(urljoin(current, location), resolver)
+                current, ips = validate_url_ips(urljoin(current, location), resolver)
                 continue
             if status != 200:
                 raise SafeFetchError(f"HTTP {status}")
@@ -143,8 +169,8 @@ def fetch_image(url: str, *, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float 
             total = 0
             try:
                 while True:
-                    _remaining()
-                    chunk = read(min(65536, max_bytes + 1 - total))
+                    left = _remaining()
+                    chunk = read(min(65536, max_bytes + 1 - total), left)
                     if not chunk:
                         break
                     chunks.append(chunk)

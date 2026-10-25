@@ -82,16 +82,29 @@ def server_responding() -> bool:
         return False
 
 
+def _port_listening(port: int = 8888) -> bool:
+    try:
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"], capture_output=True, text=True, timeout=10)
+        return bool(out.stdout.strip())
+    except Exception:
+        return False
+
+
 def ensure_server() -> None:
-    if server_responding():
-        print("preflight server: ok")
-        return
-    print("preflight server: not responding; starting with bash Python/start.sh --replace")
+    for attempt in range(3):
+        if server_responding():
+            print("preflight server: ok")
+            return
+        time.sleep(2)
+    if _port_listening():
+        # 稼働中のサーバーを勝手に置き換えない（制作中の処理を SIGTERM で中断しないため）
+        raise RuntimeError("localhost:8888 は LISTEN しているが応答しない。手動で確認してから再実行する: bash Python/start.sh --replace")
+    print("preflight server: not responding and nothing listening; starting with bash Python/start.sh")
     preflight_log = ROOT / "logs" / "batch" / "preflight_server.log"
     preflight_log.parent.mkdir(parents=True, exist_ok=True)
     stream = preflight_log.open("ab")
     subprocess.Popen(
-        ["bash", str(BASE / "start.sh"), "--replace"],
+        ["bash", str(BASE / "start.sh")],
         cwd=str(ROOT),
         stdout=stream,
         stderr=subprocess.STDOUT,

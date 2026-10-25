@@ -233,8 +233,6 @@ DEFAULT_DASHBOARD_CONFIG = {
     # ─── チャンネル基本 ───
     "channel_name": "orzz.",
     "channel_folder": _auto_paths.get("channel_folder", ""),
-    "template_prproj": "260207_orzz_base.prproj",
-    "template_psd": "orzz_base.psd",
     # PSD テンプレ内のレイヤー名（チャンネルごとにカスタム可）
     "psd_base_layer": "base",            # 画像差し替え対象 SO レイヤー名（WW: Chicago_Willis）
     "psd_toggle_layer": "PLAY LIST",     # 表示/非表示で 2 種類書き出すレイヤー名（WW: WORKSPACE）
@@ -756,8 +754,6 @@ def sync_channel_registry(verbose: bool = True) -> list:
             entry = {
                 "id": cid, "name": name, "folder": str(d),
                 "prefix": infer_file_prefix_from_folder(d) or "",
-                "template_prproj": cc.get("template_prproj", ""),
-                "template_psd": cc.get("template_psd", ""),
                 "youtube_url": "", "youtube_channel_id": "", "handle": "", "icon_cache": {},
             }
             if _add(entry) and verbose:

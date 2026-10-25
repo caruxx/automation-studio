@@ -6458,7 +6458,6 @@ async function showVideoDetail(name, fromRouter=false){
                 <div class="fh">書き出し済みなのに未認識のときは、MP4 を選んで読み込むと公開設定とアップロードで使えるようになります。</div>
                 <div id="mp4CandidateList" style="margin-top:var(--space-2)"></div>
               </div>
-              ${d.export_engine!=='ffmpeg'&&!d.readiness.premiere?'<div class="fh" style="color:var(--accent-warning);margin-top:var(--space-2)">Premiere プロジェクトが未作成です。「編集」タブ最下部の「Premiere 連携（自動配置）」を実行してください。</div>':''}
             </div>
             <div class="tab-next">
               <button class="btn btn-ghost btn-sm" onclick="setTab('images')">← 画像に戻る</button>

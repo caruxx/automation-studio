@@ -14,7 +14,7 @@ orzz. ダッシュボード = YouTube BGM チャンネルの動画制作を全�
 - `Python/routes.json` の `via_api_safe=false` は `--via-api` 禁止。理由は `via_api_unsafe_reason` を参照する。
 
 ## 開発時の鉄則
-- ⚠ サーバーは uvicorn **reload無し**。コード変更後は `bash Python/start.sh` で再起動する（launchd 常駐は 2026-07-04 に廃止）。
+- ⚠ サーバーは uvicorn **reload無し**。コード変更後は `bash Python/start.sh --replace` で再起動する（稼働中なら SIGTERM で止めてから起動。launchd 常駐は 2026-07-04 に廃止）。
 - Adobe（Premiere / Photoshop / AME）は 2026-10-25 段階 1a で廃止。`production_mode` は `ffmpeg_only` のみ。書き出しは `app_ffrender.py`、サムネ合成は Pillow。
 - ⚠ pipeline stage 追加時は `STEPS` / `STEP_LABELS` / `STEP_FUNCS` / `RETRY_POLICY` の**4箇所を一貫更新**。
 - sentinel exit: 0成功 / 1失敗 / 75 unattended_login / 76 retryable / 77 quota_exhausted / 78 preflight_fail

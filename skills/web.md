@@ -19,7 +19,7 @@ Automation Studio の Web UI、FastAPI ルート、設定保存、認証、タ�
 - API の内部タスクは `active_tasks` / `_ensure_not_running()` で一部排他される。
 
 ## 典型手順
-1. app.py 変更後は reload 無しのため `bash Python/start.sh` で再起動。
+1. app.py 変更後は reload 無しのため `bash Python/start.sh --replace` で再起動。
 2. ルート追加・変更は `/openapi.json` または対象 API を実際に叩いて確認。
 3. 設定は global / channel / machine-dependent の保存先を混ぜない。
 

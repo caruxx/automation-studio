@@ -44,16 +44,23 @@ def api_scene_text_generate(req: SceneTextGenerateRequest):
     except Exception as e:
         raise HTTPException(500, f"scene_text_generator のインポート失敗: {e}")
 
-    # 画像パス解決
-    image_path = req.image_path
+    # 画像パス解決（S03: 登録チャンネル配下の vol フォルダと、その配下の画像だけを受け付ける）
+    config = get_dashboard_config()
+    folder = None
+    if req.video_name:
+        folder = resolve_video_folder(req.video_name)
+    elif req.video_folder:
+        folder = resolve_folder_in_registered_channels(req.video_folder)
+        if folder is None:
+            raise HTTPException(400, "video_folder は登録チャンネル直下の動画フォルダのみ指定できます")
+    image_path = None
+    if req.image_path:
+        if folder is None:
+            raise HTTPException(400, "image_path を使うときは video_name か video_folder が必要です")
+        image_path = str(resolve_asset_in_folder(folder, req.image_path, allowed_ext={".png", ".jpg", ".jpeg", ".webp"}))
     if not image_path:
-        config = get_dashboard_config()
-        folder_path = req.video_folder
-        if not folder_path and req.video_name:
-            folder_path = str(resolve_video_folder(req.video_name))
-        if not folder_path:
-            raise HTTPException(400, "image_path / video_folder / video_name のいずれかが必要")
-        folder = Path(folder_path)
+        if folder is None:
+            raise HTTPException(400, "video_folder か video_name のいずれかが必要")
         # vol{N}.png を優先、無ければ image_subdir 配下の最初の画像
         cands = list(folder.glob("vol*.png")) + list(folder.glob("vol*.jpg"))
         if not cands:
@@ -184,16 +191,3 @@ def api_scene_text_suggest(req: SceneTextSuggestRequest):
     }
 
 
-class PhotoshopRenderDualRequest(BaseModel):
-    video_name: Optional[str] = None        # アクティブチャンネル配下の vol フォルダ名
-    video_folder: Optional[str] = None      # or 絶対パス
-    scene_text: Optional[str] = None        # 空 or 未指定なら vision で自動生成 + scene_en.txt キャッシュ
-    base_layer: Optional[str] = None        # 既定: per-channel `psd_base_layer`
-    scene_text_layer: Optional[str] = None  # 既定: per-channel `psd_text_layer` → "都市名_テキスト"
-    playlist_layer: Optional[str] = None    # 既定: per-channel `psd_toggle_layer` → "PLAY LIST " (末尾スペース)
-    image_subdir: Optional[str] = None      # 既定: per-channel `psd_image_subdir`
-    quality: int = 90
-    target_width: Optional[int] = None      # 空 or 未指定なら per-channel `psd_export_width` → 1920
-    target_height: Optional[int] = None     # 空 or 未指定なら per-channel `psd_export_height` → 1080
-    save_psd: Optional[bool] = None         # 空 or 未指定なら True (vol 固有 PSD の編集状態を保存)
-    scene_text_font: Optional[str] = None   # 空 or 未指定なら per-channel `psd_text_font`

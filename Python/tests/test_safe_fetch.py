@@ -21,12 +21,12 @@ def _opener(responses):
     """responses: {url: (status, headers, body)} を返す差し替え用 opener。呼び出し履歴を記録する。"""
     calls = []
 
-    def open_url(url, timeout):
+    def open_url(url, timeout, ip=None):
         calls.append(url)
         status, headers, body = responses[url]
         buf = {"data": body}
 
-        def read(n):
+        def read(n, timeout_sec=None):
             out = buf["data"][:n]
             buf["data"] = buf["data"][n:]
             return out
@@ -45,6 +45,24 @@ class ValidateUrlTest(unittest.TestCase):
             with self.assertRaises(safe_fetch.SafeFetchError, msg=url):
                 safe_fetch.validate_url(url, res)
         self.assertEqual(safe_fetch.validate_url("https://img.example.com/a.png", res), "https://img.example.com/a.png")
+
+    def test_validate_url_ips_returns_pinned_addresses(self):
+        res = _resolver({"img.example.com": ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]})
+        url, ips = safe_fetch.validate_url_ips("https://img.example.com/a.png", res)
+        self.assertEqual(url, "https://img.example.com/a.png")
+        self.assertEqual(ips[0], "93.184.216.34")
+
+    def test_opener_receives_validated_ip(self):
+        seen = []
+        def op(url, timeout, ip=None):
+            seen.append(ip)
+            buf = {"data": b"\x89PNG" + b"\x00" * 4}
+            def read(n, t=None):
+                out = buf["data"][:n]; buf["data"] = buf["data"][n:]; return out
+            return 200, {"content-type": "image/png"}, read, (lambda: None)
+        res = _resolver({"img.example.com": ["93.184.216.34"]})
+        safe_fetch.fetch_image("https://img.example.com/a.png", resolver=res, opener=op)
+        self.assertEqual(seen, ["93.184.216.34"])
 
     def test_unresolvable_host_is_rejected(self):
         with self.assertRaises(safe_fetch.SafeFetchError):
@@ -98,14 +116,14 @@ class FetchImageTest(unittest.TestCase):
             safe_fetch.fetch_image("https://img.example.com/a.png", resolver=self.res, opener=op)
 
     def test_read_errors_and_deadline_become_safe_fetch_error(self):
-        def flaky_open(url, timeout):
-            def read(n):
+        def flaky_open(url, timeout, ip=None):
+            def read(n, timeout_sec=None):
                 raise TimeoutError("read timed out")
             return 200, {"content-type": "image/png"}, read, (lambda: None)
         with self.assertRaises(safe_fetch.SafeFetchError):
             safe_fetch.fetch_image("https://img.example.com/a.png", resolver=self.res, opener=flaky_open)
 
-        def failing_open(url, timeout):
+        def failing_open(url, timeout, ip=None):
             raise ConnectionResetError("reset")
         with self.assertRaises(safe_fetch.SafeFetchError):
             safe_fetch.fetch_image("https://img.example.com/a.png", resolver=self.res, opener=failing_open)

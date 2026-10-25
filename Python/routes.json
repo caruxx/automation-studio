@@ -1096,11 +1096,12 @@
         "WEBを再起動して",
         "Webサーバー再起動"
       ],
-      "description": "Web サーバー再起動",
+      "description": "Web サーバー再起動（稼働中なら止めてから起動）",
       "cli": {
         "cmd": [
           "bash",
-          "start.sh"
+          "start.sh",
+          "--replace"
         ]
       },
       "prefer": "cli",

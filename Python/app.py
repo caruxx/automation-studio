@@ -2622,7 +2622,7 @@ def api_video_detail(video_name: str):
         "tags": has_tags,
         "upload": has_upload,
     }
-    all_ready = all([has_music, thumb is not None, has_prproj, has_srt, mp4_file is not None, has_desc])
+    all_ready = all([has_music, thumb is not None, has_srt, mp4_file is not None, has_desc])
 
     return {
         "num": num,
