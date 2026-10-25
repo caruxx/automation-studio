@@ -319,6 +319,96 @@ def run_update(args: argparse.Namespace) -> int:
     return 0 if data.get("ok") else 1
 
 
+def run_vps_runs(args: argparse.Namespace) -> int:
+    """run / run-status / run-resume / run-cancel: VPS の runs API を AI トークンで呼ぶ。stdout は JSON 1 行。
+
+    終了コード: 0 成功 / 1 失敗 / 2 使い方 / 79 run が blocked（待機）。"""
+    import vps_runs
+    from exit_codes import ExitCode
+    intent = args.intent_name
+
+    def _usage(message: str) -> int:
+        emit({"ok": False, "intent": intent, "error": "usage", "message": message})
+        return int(ExitCode.USAGE)
+
+    # 入力検査は --dry-run でも同じに通す（事前確認で「通る」と誤判断させない）
+    vol_n = 0
+    channel_key = ""
+    request_id = ""
+    if intent == "run":
+        raw = args.vol or args.resolve_num
+        try:
+            vol_n = int(str(raw).strip())
+        except (TypeError, ValueError):
+            vol_n = 0
+        if vol_n < 1:
+            return _usage("--vol には 1 以上の整数が必要です")
+        channel_key = (args.channel or get_active_channel_info().get("id") or "").strip()
+        if not channel_key:
+            return _usage("--channel かアクティブチャンネルが必要です（VPS の channel_key）")
+        if args.request_id is not None and not (8 <= len(args.request_id) <= 128):
+            return _usage("--request-id は 8〜128 文字")
+        # 冪等キーは送信前に確定し、失敗時の出力にも載せる（再実行で同じ vol に run を二重起票しない）
+        request_id = args.request_id or vps_runs.new_request_id()
+    elif intent in ("run-resume", "run-cancel") and not args.run_id:
+        return _usage("--run-id が必要です")
+
+    if getattr(args, "dry_run", False):
+        # 他の intent と同じく、--dry-run は何も送らず「送るはずの内容」だけを出す（トークンは含めない）
+        preview = {"ok": True, "intent": intent, "dry_run": True}
+        if intent == "run":
+            preview.update({"method": "POST", "path": "/api/runs",
+                            "payload": {"request_id": request_id, "channel_key": channel_key, "vol": vol_n,
+                                        "workflow_version": vps_runs.workflow_version(), "intent": args.run_intent, "from_step": args.from_step}})
+        elif intent == "run-status":
+            preview.update({"method": "GET", "path": f"/api/runs/{args.run_id}" if args.run_id else "/api/runs",
+                            "query": None if args.run_id else {"channel_key": (args.channel or get_active_channel_info().get("id") or "") or None,
+                                                                "state": args.state, "limit": 20}})
+        else:
+            preview.update({"method": "POST", "path": f"/api/runs/{args.run_id}/{intent.split('-', 1)[1]}"})
+        emit(preview)
+        return 0
+
+    try:
+        if intent == "run":
+            data = vps_runs.create_run(channel_key, vol_n, request_id=request_id, intent=args.run_intent, from_step=args.from_step)
+        elif intent == "run-status":
+            if args.run_id:
+                data = vps_runs.get_run(args.run_id)
+            else:
+                ck = (args.channel or get_active_channel_info().get("id") or "").strip() or None
+                data = vps_runs.list_runs(channel_key=ck, state=args.state, limit=20)
+        elif intent == "run-resume":
+            data = vps_runs.resume_run(args.run_id, from_step=args.from_step)
+        elif intent == "run-cancel":
+            data = vps_runs.cancel_run(args.run_id)
+        else:
+            return 2
+    except vps_runs.VpsRunsError as exc:
+        out = {"ok": False, "intent": intent, "error": exc.code, "message": str(exc), "detail": exc.detail}
+        if request_id:
+            out["request_id"] = request_id  # 再実行時は --request-id にこの値を渡せば同じ run に当たる
+        emit(out)
+        if exc.code in ("vps_not_configured", "invalid_request"):
+            return int(ExitCode.USAGE)
+        if exc.code in ("vps_unreachable", "previous_job_still_leased") or exc.status == 503:
+            return int(ExitCode.RETRYABLE)  # 待てば通る状態は失敗に数えない
+        return int(ExitCode.FAIL)
+    http_status = data.pop("_status", None)
+    state = data.get("state")
+    if intent == "run" and http_status in (200, 201):
+        data["created"] = http_status == 201  # 201 新規 / 200 既存（同じ request_id）
+    if "intent" in data:
+        data["run_intent"] = data.pop("intent")  # VPS 側の intent（pipeline 等）は別キーにし、intent は CLI 名を保つ
+    out = {"ok": state not in ("failed",), "intent": intent, **data}
+    if not args.json:
+        print(f"{intent}: run {data.get('id', '-')} state={state} attempts={data.get('attempts', '-')}", file=sys.stderr)
+    emit(out)
+    if state == "blocked":
+        return int(ExitCode.SELECTION_PENDING)
+    return 0 if out["ok"] else int(ExitCode.FAIL)
+
+
 def run_preflight(args: argparse.Namespace) -> int:
     """ffmpeg 専用構成の実行環境検査。欠けている項目を JSON で返す。"""
     try:
@@ -568,6 +658,10 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="実行せず解決後のコマンドだけ表示")
     parser.add_argument("--json", action="store_true", help="最終行の JSON 出力だけを使う呼び出し側向けのフラグ（既定で JSON は常に出る）")
     parser.add_argument("--from", dest="from_step", help="pipeline の再開 step")
+    parser.add_argument("--run-id", type=int, help="run-status / run-resume / run-cancel の対象 run")
+    parser.add_argument("--request-id", help="run の冪等キー（省略時は自動生成）")
+    parser.add_argument("--intent", dest="run_intent", default="pipeline", help="run が VPS に発行する intent（既定 pipeline）")
+    parser.add_argument("--state", help="run-status の一覧フィルタ")
     parser.add_argument("--publish-date", default="YYYY-MM-DD")
     parser.add_argument("--prompt", default="lounge jazz BGM, elegant cafe atmosphere")
     parser.add_argument("--count", default="20")
@@ -638,6 +732,10 @@ def main() -> int:
 
     if args.intent == "preflight":
         return run_preflight(args)
+
+    if args.intent in ("run", "run-status", "run-resume", "run-cancel"):
+        args.intent_name = args.intent
+        return run_vps_runs(args)
 
     if args.intent == "autopilot":
         return run_autopilot(args)

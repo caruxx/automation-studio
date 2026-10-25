@@ -1405,6 +1405,101 @@
         "scope": "global",
         "max_parallel": 2
       }
+    },
+    "run": {
+      "aliases": [
+        "実行して",
+        "run",
+        "起票"
+      ],
+      "description": "VPS に run を起票（channel × vol、冪等な request_id）。同じ --request-id なら同じ run を返す",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "run",
+          "--vol",
+          "{vol}",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "VPS の runs API を AI トークンで呼ぶため CLI 直実行。",
+      "requires_vol": true,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 4
+      }
+    },
+    "run-status": {
+      "aliases": [
+        "runの状態",
+        "run-status"
+      ],
+      "description": "run の状態を VPS から取得（--run-id で 1 件、省略時はチャンネルの最新 20 件）",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "run-status",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "VPS の runs API を AI トークンで呼ぶため CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 4
+      }
+    },
+    "run-resume": {
+      "aliases": [
+        "再開して",
+        "run-resume"
+      ],
+      "description": "failed / blocked / cancelled の run を再開（新しい Job を発行）",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "run-resume",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "VPS の runs API を AI トークンで呼ぶため CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 4
+      }
+    },
+    "run-cancel": {
+      "aliases": [
+        "取り消して",
+        "run-cancel"
+      ],
+      "description": "run を取消（queued / leased の Job を取消）",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "run-cancel",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "VPS の runs API を AI トークンで呼ぶため CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 4
+      }
     }
   }
 }
