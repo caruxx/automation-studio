@@ -1,6 +1,6 @@
 #!/bin/bash
 # Automation Studio 起動スクリプト
-# 任意のPCから実行可能（共有ドライブ版）
+# リポジトリ直下の .venv（Python 3.12 以上）で app.py を起動する。
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,13 +8,15 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="${APP_LOG_DIR:-$HOME/Library/Logs/AutomationStudio}"
 TODAY="$(date +%Y-%m-%d)"
 LOG_FILE="$LOG_DIR/server-$TODAY.log"
+VENV_DIR="${APP_VENV_DIR:-$ROOT_DIR/.venv}"
+PORT="${APP_PORT:-8888}"
 
 echo "=================================="
 echo "  Automation Studio"
 echo "=================================="
 echo "  Server : $SCRIPT_DIR/app.py"
-echo "  Web    : $SCRIPT_DIR/../web/static/"
-echo "  Config : ${HOME}/.config/orzz/"
+echo "  Web    : $ROOT_DIR/web/static/"
+echo "  Venv   : $VENV_DIR"
 echo "=================================="
 echo ""
 
@@ -33,50 +35,46 @@ if [[ "${1:-}" == "--rotate-logs-only" ]]; then
     exit 0
 fi
 
-# 依存パッケージチェック
-# pip 名と import 名は一致しないことが多いので、明示的なマッピング表を持つ。
-# 左: pip install で使う名前 / 右: python -c "import X" で使う名前
-# （単純に hyphen→underscore で済まないため、setup.sh の旧ロジックは
-#  google-auth が入っていると google-auth-oauthlib を skip するバグがあった）
-DEPS=(
-    "fastapi|fastapi"
-    "uvicorn|uvicorn"
-    "google-auth|google.auth"
-    "google-auth-oauthlib|google_auth_oauthlib"
-    "google-auth-httplib2|google_auth_httplib2"
-    "google-api-python-client|googleapiclient"
-    "playwright|playwright"
-    "python-multipart|python_multipart"
-    "apscheduler|apscheduler"
-)
+# 仮想環境: 無ければ作成し、requirements.lock から依存を入れる
+find_python() {
+    for cand in python3.12 python3.13 python3; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+                echo "$cand"; return 0
+            fi
+        fi
+    done
+    return 1
+}
 
-MISSING=""
-for entry in "${DEPS[@]}"; do
-    pip_name="${entry%%|*}"
-    import_name="${entry##*|}"
-    if ! python3 -c "import $import_name" 2>/dev/null; then
-        MISSING="$MISSING $pip_name"
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    PY="$(find_python || true)"
+    if [[ -z "$PY" ]]; then
+        echo "Python 3.12 以上が見つかりません（brew install python@3.12）" >&2
+        exit 1
     fi
-done
-
-if [[ -n "$MISSING" ]]; then
-    echo "不足パッケージをインストール中:$MISSING"
-    pip3 install --user $MISSING 2>/dev/null || pip3 install $MISSING
-    echo ""
+    echo "仮想環境を作成します: $VENV_DIR ($PY)"
+    "$PY" -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+    "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.lock"
 fi
 
-# ポート確認 — 既に8888が使われていたら停止
-if lsof -ti:8888 >/dev/null 2>&1; then
-    echo "ポート8888が使用中です。既存プロセスを停止します..."
-    lsof -ti:8888 | xargs kill -9 2>/dev/null || true
-    sleep 1
+# 依存の確認（不足があれば requirements.lock から補う）
+if ! "$VENV_DIR/bin/python" -c 'import fastapi, uvicorn, apscheduler, googleapiclient, PIL, numpy, python_multipart' 2>/dev/null; then
+    echo "依存を requirements.lock から導入します"
+    "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.lock"
 fi
 
-# 起動（必ず共有ドライブの app.py を使用）
+# ポート確認: 使用中なら止めずに終了する（kill -9 は廃止）
+if lsof -ti:"$PORT" >/dev/null 2>&1; then
+    echo "ポート $PORT は使用中です。既存プロセスを確認してから再実行してください: lsof -ti:$PORT" >&2
+    exit 1
+fi
+
 cd "$SCRIPT_DIR"
 rotate_logs
 if [[ "${APP_LOG_TO_STDOUT:-0}" == "1" ]]; then
-    exec python3 "$SCRIPT_DIR/app.py"
+    exec "$VENV_DIR/bin/python" "$SCRIPT_DIR/app.py"
 fi
 echo "Log    : $LOG_FILE"
-exec python3 "$SCRIPT_DIR/app.py" >> "$LOG_FILE" 2>&1
+exec "$VENV_DIR/bin/python" "$SCRIPT_DIR/app.py" >> "$LOG_FILE" 2>&1

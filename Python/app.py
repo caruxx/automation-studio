@@ -26,8 +26,8 @@ from typing import Optional, List, Literal
 
 # ─── 土台は app_core へ分離（D9 第1段）。foundation シンボルを取り込む ───
 import app_core  # noqa: F401  （app_core.X 直接参照用）
-from app_core import *
-from pydantic import field_validator  # noqa: F401,F403  土台の全シンボル
+from app_core import *  # noqa: F401,F403  土台の全シンボル
+from pydantic import field_validator
 import app_updater
 from settings_service import config_get, config_set, load_catalog
 import app_music_catalog as music_catalog
@@ -6412,7 +6412,6 @@ def _find_free_port(start=8888, end=8899, host="127.0.0.1"):
 
 
 # ─── 書き出しルール・完成 mp4 の検出（AME 自動書き出しキューは段階 1a で廃止） ───
-import hashlib
 
 EXPORT_RULES_FILE = CONFIG_DIR / "export_rules.json"
 
@@ -6944,7 +6943,6 @@ def _build_job_env(ch_name: Optional[str], ch_folder: Optional[Path],
         env["APP_CHANNEL_ID"] = ch_id
     # 無人モード（input/sleep ハングを禁止）
     env["APP_NO_INTERACTIVE"] = "1"
-    # P2-1: render queue を使う（premiere/export はシリアライズキュー経由）
     return env
 
 
