@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -101,9 +103,16 @@ def _selection_essence(path: Path) -> str:
     return hashlib.sha256(json.dumps(essence, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def _qa_essence(path: Path) -> str:
+    """qa_report.json のうち結果だけ（checked_at などの実行時刻を除く。再検査のたびに meta が失効しないように）。"""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    essence = {"passed": bool(data.get("passed")), "issues": data.get("issues")} if isinstance(data, dict) else data
+    return hashlib.sha256(json.dumps(essence, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+
+
 def _fingerprint(path: Path, folder: Path) -> str:
-    """ファイルの指紋。音声は名前とサイズ（原本は編集されない）、小さな JSON / TXT は内容、
-    それ以外はサイズと mtime（秒。Drive 同期で mtime の精度が落ちても失効しない）。"""
+    """ファイルの指紋。小さな JSON / TXT は内容、それ以外はサイズと mtime（秒。Drive 同期で
+    mtime の精度が落ちても失効しないが、同サイズの差し替えは mtime で検出する）。"""
     try:
         rel = str(path.resolve().relative_to(folder.resolve()))
     except (ValueError, OSError):
@@ -118,14 +127,17 @@ def _fingerprint(path: Path, folder: Path) -> str:
             return f"{rel}|selection:{_selection_essence(path)}"
         except (OSError, ValueError, TypeError):
             pass
+    if path.name == "qa_report.json":
+        try:
+            return f"{rel}|qa:{_qa_essence(path)}"
+        except (OSError, ValueError, TypeError):
+            pass
     if suffix in _CONTENT_HASH_SUFFIXES and st.st_size <= _CONTENT_HASH_MAX_BYTES:
         try:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             return f"{rel}|sha256:{digest}"
         except OSError:
             pass
-    if suffix in _AUDIO:
-        return f"{rel}|{st.st_size}"
     return f"{rel}|{st.st_size}|{int(st.st_mtime)}"
 
 
@@ -261,25 +273,62 @@ def save(folder: Path, stages: dict) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _locked(folder: Path):
+    """load → 更新 → save をプロセス間で排他する（batch の SUNO と画像先行が同じ vol に並行して記録しても後勝ちで消えない）。"""
+    lock = folder / ".stage_state.lock"
+    with open(lock, "a+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def mark_done(stage: str, folder: Path, vol: int) -> Optional[dict]:
     """工程成功時に呼ぶ。現在の入力ハッシュを記録する。廃止工程（premiere）は記録しない。"""
     st = ec.canonical_stage(stage)
     if st is None:
         return None
-    stages = load(folder)
-    stages[st] = {"input_hash": compute_input_hash(st, folder, vol),
-                  "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                  "workflow_version": ec.WORKFLOW_VERSION}
-    save(folder, stages)
-    return stages[st]
+    with _locked(folder):
+        stages = load(folder)
+        stages[st] = {"input_hash": compute_input_hash(st, folder, vol),
+                      "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                      "workflow_version": ec.WORKFLOW_VERSION}
+        save(folder, stages)
+        return stages[st]
+
+
+def mark_attempted(stage: str, folder: Path, vol: int) -> Optional[dict]:
+    """工程が失敗したとき、どの入力に対して試したかを記録する（同じ入力で毎 tick 再投入しないため）。
+    完了記録（input_hash / completed_at）は変えない。"""
+    st = ec.canonical_stage(stage)
+    if st is None:
+        return None
+    with _locked(folder):
+        stages = load(folder)
+        rec = dict(stages.get(st) or {})
+        rec["attempted_input_hash"] = compute_input_hash(st, folder, vol)
+        rec["attempted_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        stages[st] = rec
+        save(folder, stages)
+        return rec
+
+
+def attempted_for_current_input(stage: str, folder: Path, vol: int) -> bool:
+    """現在の入力に対して既に試行（失敗）済みか。"""
+    st = ec.canonical_stage(stage) or stage
+    rec = load(folder).get(st)
+    return isinstance(rec, dict) and rec.get("attempted_input_hash") == compute_input_hash(st, folder, vol)
 
 
 def invalidate(stage: str, folder: Path, vol: int) -> None:
     st = ec.canonical_stage(stage) or stage
-    stages = load(folder)
-    if st in stages:
-        del stages[st]
-        save(folder, stages)
+    with _locked(folder):
+        stages = load(folder)
+        if st in stages:
+            del stages[st]
+            save(folder, stages)
 
 
 def record(stage: str, folder: Path) -> Optional[dict]:
@@ -292,17 +341,22 @@ def evaluate(stage: str, folder: Path, vol: int) -> str:
     - "unknown": 廃止工程（premiere）など、ここでは判定しない（呼び出し側が従来の判定へ）
     - "stale":   記録があり入力が変わっている（成果物があっても失効）
     - "done":    validator 合格 かつ（記録なし＝旧 vol、または input_hash 一致）
-    - "pending": それ以外
+    - "missing": 記録はあるが validator 不合格（成果物が消えた等。台帳の done で代用しない）
+    - "pending": 記録なしで validator 不合格
     """
     st = ec.canonical_stage(stage)
     if st is None:
         return "unknown"
     rec = load(folder).get(st)
-    if st not in NO_INVALIDATE and isinstance(rec, dict) and rec.get("input_hash") != compute_input_hash(st, folder, vol):
+    recorded = isinstance(rec, dict) and "input_hash" in rec
+    # 投稿済み vol（youtube_upload.json あり）は失効させない。手直しで再書き出し・メタ再生成が連鎖し、
+    # YouTube 側とローカルがずれるのを防ぐ（投稿後の更新は段階 3 の update 経路で扱う）。
+    if st not in NO_INVALIDATE and not upload_done(folder, vol) and recorded \
+            and rec.get("input_hash") != compute_input_hash(st, folder, vol):
         return "stale"
     fn = validator_for(st)
     if fn is None or not fn(folder, vol):
-        return "pending"
+        return "missing" if recorded else "pending"
     return "done"
 
 

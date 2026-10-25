@@ -66,7 +66,7 @@ class StageStateTest(unittest.TestCase):
         self.assertTrue(ss.stage_done("meta", self.folder, self.vol))
         (self.folder / "qa_report.json").write_text(json.dumps({"passed": True}), encoding="utf-8")
         self.assertTrue(ss.stage_done("meta", self.folder, self.vol))
-        (self.folder / "qa_report.json").write_text(json.dumps({"passed": True, "note": 1}), encoding="utf-8")
+        (self.folder / "qa_report.json").write_text(json.dumps({"passed": True, "issues": ["warn"]}), encoding="utf-8")
         self.assertFalse(ss.stage_done("meta", self.folder, self.vol))
         # 再実行して記録し直せば done に戻る。invalidate で記録を消せば旧 vol 扱い（成果物のみ）
         ss.mark_done("meta", self.folder, self.vol)
@@ -113,7 +113,64 @@ class StageStateTest(unittest.TestCase):
         os.utime(jpg, (30_000, 30_000))
         self.assertEqual(ss.evaluate("render", self.folder, self.vol), "stale")
 
-    def test_select_input_ignores_volatile_review_fields_and_audio_ignores_mtime(self):
+    def test_same_size_audio_replacement_invalidates(self):
+        mp3 = _touch(self.folder / "music" / "a.mp3", b"a" * 8)
+        _touch(self.folder / "qa_report.json", json.dumps({"passed": True}).encode())
+        _touch(self.folder / "youtube_title.txt", b"t")
+        ss.mark_done("meta", self.folder, self.vol)
+        mp3.write_bytes(b"b" * 8)  # 同名・同サイズの差し替え
+        os.utime(mp3, (123_456, 123_456))
+        self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "stale")
+
+    def test_recorded_stage_with_missing_artifact_is_not_done_even_if_ledger_says_done(self):
+        import app_orchestrator as o
+        _touch(self.folder / "youtube_title.txt", b"t")
+        ss.mark_done("meta", self.folder, self.vol)
+        (self.folder / "youtube_title.txt").unlink()
+        self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "missing")
+        saved = o._ledger
+        o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [{"status": "done", "meta_json": ""}])})()
+        try:
+            self.assertFalse(o._stage_artifact_done("meta", self.folder, self.vol, channel_id="ch"))
+        finally:
+            o._ledger = saved
+
+    def test_concurrent_mark_done_does_not_drop_records(self):
+        import threading
+        _touch(self.folder / "music" / "a.mp3", b"a")
+        _touch(self.folder / "vol7.png", b"p")
+        errors = []
+
+        def worker(stage):
+            try:
+                for _ in range(20):
+                    ss.mark_done(stage, self.folder, self.vol)
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+        ts = [threading.Thread(target=worker, args=(st,)) for st in ("suno", "bgimage", "rename")]
+        for t in ts: t.start()
+        for t in ts: t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(set(ss.load(self.folder)), {"suno", "bgimage", "rename"})
+
+    def test_qa_rerun_does_not_invalidate_meta_and_posted_vol_never_goes_stale(self):
+        _touch(self.folder / "music" / "a.mp3", b"a")
+        _touch(self.folder / "qa_report.json", json.dumps({"passed": True, "issues": [], "checked_at": "2026-01-01T00:00:00"}).encode())
+        _touch(self.folder / "youtube_title.txt", b"t")
+        ss.mark_done("meta", self.folder, self.vol)
+        (self.folder / "qa_report.json").write_text(json.dumps({"passed": True, "issues": [], "checked_at": "2026-02-02T00:00:00"}), encoding="utf-8")
+        self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "done")  # 再検査の時刻だけでは失効しない
+        (self.folder / "qa_report.json").write_text(json.dumps({"passed": False, "issues": ["x"]}), encoding="utf-8")
+        self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "stale")
+        # 投稿済み vol は失効しない
+        (self.folder / "qa_report.json").write_text(json.dumps({"passed": True, "issues": []}), encoding="utf-8")
+        ss.mark_done("meta", self.folder, self.vol)
+        _touch(self.folder / "youtube_upload.json", b"{}")
+        (self.folder / "music" / "a.mp3").write_bytes(b"changed"); os.utime(self.folder / "music" / "a.mp3", (9, 9))
+        self.assertEqual(ss.evaluate("meta", self.folder, self.vol), "done")
+        self.assertFalse(ss.is_stale("meta", self.folder, self.vol))
+
+    def test_select_input_ignores_volatile_review_fields(self):
         review = self.folder / ".music_review.json"
         state = {"processing": 123, "revision": 2, "processed_revision": 2, "scores": {"a": 1}, "ai_select_attempts": 0,
                  "takes": [{"clip_id": "c1", "selected": True}, {"clip_id": "c2", "selected": False}]}
@@ -123,7 +180,6 @@ class StageStateTest(unittest.TestCase):
         ss.mark_done("rename", self.folder, self.vol)  # rename は select に依存
         state["processing"] = 456; state["scores"] = {"a": 9}; state["ai_select_attempts"] = 3
         review.write_text(json.dumps(state), encoding="utf-8")
-        os.utime(mp3, (1, 1))
         self.assertEqual(ss.evaluate("rename", self.folder, self.vol), "done")
         state["takes"][1]["selected"] = True
         review.write_text(json.dumps(state), encoding="utf-8")
@@ -218,15 +274,18 @@ class StageStateTest(unittest.TestCase):
             self.assertEqual(seen["force"], "1")  # 失効 → 強制再生成
             self.assertNotIn("APP_IMAGE_COMPOSITE_FORCE", os.environ)
             self.assertEqual(ss.evaluate("composite", self.folder, self.vol), "done")  # 記録が更新され再投入が止まる
+            # 失敗した工程は試行記録を持ち、完了記録は変わらない
+            o._pipe.STEP_FUNCS["psd_composite"] = lambda vol, folder, via_api, **kw: False
+            png.write_bytes(b"ppp"); os.utime(png, (78_000, 78_000))
+            self.assertEqual(w.run(self.vol, self.folder), o.Exit.FAIL)
+            self.assertTrue(ss.attempted_for_current_input("composite", self.folder, self.vol))
+            self.assertEqual(ss.evaluate("composite", self.folder, self.vol), "stale")
         finally:
             if saved is None:
                 o._pipe.STEP_FUNCS.pop("psd_composite", None)
             else:
                 o._pipe.STEP_FUNCS["psd_composite"] = saved
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class QAWorkerStaleTest(unittest.TestCase):
@@ -244,6 +303,12 @@ class QAWorkerStaleTest(unittest.TestCase):
             self.assertFalse(w.can_run(5, folder))  # 検査済み
             mp4.write_bytes(b"re-rendered"); os.utime(mp4, (55_555, 55_555))
             self.assertTrue(w.can_run(5, folder))  # 再 render → 再検査
+            # 同じ入力で検査して不合格 → 記録され、再 render されるまで候補にしない
+            ss.mark_attempted("qa", folder, 5)
+            (folder / "qa_report.json").write_text(json.dumps({"passed": False}), encoding="utf-8")
+            self.assertFalse(w.can_run(5, folder))
+            mp4.write_bytes(b"re-rendered-2"); os.utime(mp4, (66_666, 66_666))
+            self.assertTrue(w.can_run(5, folder))
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -268,3 +333,7 @@ class PipelineStaleForceTest(unittest.TestCase):
             self.assertIsNone(p._stale_force_env("thumbnail", folder, 3))
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -213,6 +213,8 @@ class StageWorker:
                         os.environ[force_env] = prev_force
             code = _normalize_result(r)
             if code != Exit.OK:
+                if code not in (Exit.SELECTION_PENDING,) and hasattr(_pipe, "_record_stage_attempted"):
+                    _pipe._record_stage_attempted(stage, folder, vol)
                 return code
             if hasattr(_pipe, "_record_stage_done"):
                 _pipe._record_stage_done(stage, folder, vol)
@@ -286,8 +288,10 @@ class QAWorker(StageWorker):
         if not _has_export_mp4(folder):
             return False
         # 再 render で qa の記録が失効した場合は、report が残っていても再検査の候補にする（step_qa は report を上書きする）。
-        if (folder / "qa_report.json").exists() and not _ss.is_stale("qa", folder, vol):
-            return False
+        # ただし同じ入力で既に検査して不合格なら候補にしない（毎 tick 再検査してブレーカーに至るのを防ぐ）。
+        if (folder / "qa_report.json").exists():
+            if not _ss.is_stale("qa", folder, vol) or _ss.attempted_for_current_input("qa", folder, vol):
+                return False
         return self._slot_available(channel_id=channel_id)
 
 
@@ -340,8 +344,8 @@ def _stage_artifact_done(stage: str, folder: Path, vol: int, channel_id: str = "
         verdict = _ss.evaluate(stage, folder, vol)  # done / stale / pending / unknown（廃止工程）
     except Exception:
         verdict = "unknown"
-    if verdict == "stale":
-        return False
+    if verdict in ("stale", "missing"):
+        return False  # 記録済み工程は validator 必須（台帳の done で代用しない）
     if verdict == "done":
         return True
     if verdict == "unknown":

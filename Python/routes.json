@@ -303,7 +303,7 @@
         "scope": "per-machine",
         "max_parallel": 1
       },
-      "via_api_unsafe_reason": "段階 1a: AME API は廃止。CLI（app_pipeline --only export）で実行する。"
+      "via_api_unsafe_reason": "段階 1a: AME API は廃止。CLI（app_pipeline --only render。旧名 export も可）で実行する。"
     },
     "render": {
       "aliases": [
@@ -329,7 +329,7 @@
         "scope": "per-machine",
         "max_parallel": 1
       },
-      "via_api_unsafe_reason": "段階 1a: AME API は廃止。CLI（app_pipeline --only export）で実行する。"
+      "via_api_unsafe_reason": "段階 1a: AME API は廃止。CLI（app_pipeline --only render。旧名 export も可）で実行する。"
     },
     "qa": {
       "aliases": [

@@ -3146,6 +3146,15 @@ def _record_stage_done(step: str, folder: Path, vol: int) -> None:
         print(f"  警告: 完了記録（.stage_state.json）を書けませんでした: {exc}")
 
 
+def _record_stage_attempted(step: str, folder: Path, vol: int) -> None:
+    """工程失敗時に、どの入力で試したかを stage_state に記録する（失敗しても pipeline は止めない）。"""
+    try:
+        import stage_state
+        stage_state.mark_attempted(step, folder, vol)
+    except Exception as exc:
+        print(f"  警告: 試行記録（.stage_state.json）を書けませんでした: {exc}")
+
+
 def _run_step_with_retry(name: str, step_func, *args, **kw):
     """単一 stage を policy に従って retry しつつ実行。
 
@@ -3427,6 +3436,7 @@ def main():
             elif s == "upload":
                 _ledger_call(ledger_sync, "report_upload", args.vol, folder)
         else:
+            _record_stage_attempted(s, folder, args.vol)
             _ledger_call(ledger_sync, "report_step", args.vol, s, "failed", str(ok))
         print(f"◀ STEP {s} 結果: {'OK' if succeeded else f'FAIL ({ok!r})'}")
         sys.stdout.flush()
