@@ -1,4 +1,8 @@
 """production_mode の一本化（常に ffmpeg_only）と旧設定値の警告を検証する。"""
+try:
+    from . import _isolation  # noqa: F401  テスト隔離（tests パッケージとして読まれた場合）
+except ImportError:
+    import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import contextlib
 import io
 import sys

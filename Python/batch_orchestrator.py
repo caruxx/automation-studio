@@ -28,7 +28,8 @@ from google.auth.transport.requests import Request  # noqa: E402
 from google.oauth2.credentials import Credentials  # noqa: E402
 
 BASE_URL = "http://localhost:8888"
-EXIT_PREFLIGHT = 78
+from exit_codes import ExitCode as _ExitCode  # noqa: E402
+EXIT_PREFLIGHT = int(_ExitCode.PREFLIGHT_FAIL)
 MIN_FREE_BYTES = 20 * 1024**3
 
 

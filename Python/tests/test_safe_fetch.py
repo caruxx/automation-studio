@@ -1,4 +1,8 @@
 """S04: 外部 URL 取得の検証（https 限定・内部アドレス拒否・リダイレクト再検証・形式と容量の上限）。"""
+try:
+    from . import _isolation  # noqa: F401  テスト隔離（tests パッケージとして読まれた場合）
+except ImportError:
+    import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import sys
 import unittest
 from pathlib import Path

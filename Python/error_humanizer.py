@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from exit_codes import ExitCode
+
 
 ACTION_URLS = {
     "suno_login": "/#suno",
@@ -18,29 +20,35 @@ ACTION_URLS = {
 
 
 SENTINELS = {
-    75: {
+    int(ExitCode.UNATTENDED_LOGIN): {
         "code": "suno_login_required",
         "title": "SUNOのログインが切れました",
         "next_action": "ダッシュボードからSUNOを開き、ブラウザで再ログインしてから同じvolを再開してください。",
         "action_url": ACTION_URLS["suno_login"],
     },
-    76: {
+    int(ExitCode.RETRYABLE): {
         "code": "temporary_retryable_error",
         "title": "一時的な通信エラーです",
         "next_action": "しばらく待ってから再実行してください。自動再投入の対象なら次の待機後に再開されます。",
         "action_url": ACTION_URLS["ledger"],
     },
-    77: {
+    int(ExitCode.QUOTA_EXHAUSTED): {
         "code": "youtube_quota_exhausted",
         "title": "YouTube APIの1日上限に達しました",
         "next_action": "約24時間待ってから再開してください。急ぐ場合は別チャンネルの作業へ切り替えてください。",
         "action_url": ACTION_URLS["youtube_quota"],
     },
-    78: {
+    int(ExitCode.PREFLIGHT_FAIL): {
         "code": "preflight_failed",
         "title": "書き出しの実行環境が足りません",
         "next_action": "ffmpeg / ffprobe / Pillow が見つかりません。brew install ffmpeg と .venv の再作成（bash Python/start.sh）を行い、python3 Python/studio.py preflight --json で確認してから再実行してください。",
         "action_url": ACTION_URLS["preflight"],
+    },
+    int(ExitCode.SELECTION_PENDING): {
+        "code": "music_selection_pending",
+        "title": "楽曲の選定待ちです",
+        "next_action": "失敗ではありません。選曲（AI 選曲または人のハート）が済むと rename から再開できます。",
+        "action_url": ACTION_URLS["ledger"],
     },
 }
 

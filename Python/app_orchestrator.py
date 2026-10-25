@@ -63,17 +63,11 @@ _PARALLELISM = _load_route_parallelism()
 
 
 # ─── sentinel exit（app_pipeline と一致させる） ───
-class Exit(IntEnum):
-    OK = 0
-    FAIL = 1
-    UNATTENDED_LOGIN = 75
-    RETRYABLE = 76
-    QUOTA_EXHAUSTED = 77
-    PREFLIGHT_FAIL = 78
+from exit_codes import ExitCode as Exit, ledger_status_for as _ledger_status_for  # 単一正本（workflow.json）
 
 
-# step_* の戻り値（True / False / "retryable" / "unattended_login" / "quota_exhausted"）
-# を Exit に正規化する。
+# step_* の戻り値（True / False / "retryable" / "unattended_login" / "quota_exhausted" /
+# "awaiting_selection"）を Exit に正規化する。
 def _normalize_result(r) -> Exit:
     if r is True:
         return Exit.OK
@@ -83,6 +77,8 @@ def _normalize_result(r) -> Exit:
         return Exit.QUOTA_EXHAUSTED
     if r == "retryable":
         return Exit.RETRYABLE
+    if r == "awaiting_selection":
+        return Exit.SELECTION_PENDING
     return Exit.FAIL
 
 
@@ -92,6 +88,7 @@ class Action(IntEnum):
     AUTO_RESUME = 2    # 前段へ差し戻して再開（_RESUME_OVERRIDE 考慮）
     NOTIFY = 3         # 人手必要（75/77/78）。retry/resume せず通知のみ
     DONE = 4           # 成功
+    WAIT = 5           # 待機（79 楽曲選定待ち）。失敗に数えず、選定後に再開
 
 
 # STEPS の成果物判定（フォルダにこれがあれば「その stage は実体として完了」とみなす補助）。
@@ -210,6 +207,8 @@ class StageWorker:
     def on_fail(self, code: Exit, stage: str) -> Action:
         if code == Exit.OK:
             return Action.DONE
+        if code == Exit.SELECTION_PENDING:
+            return Action.WAIT
         if code in (Exit.UNATTENDED_LOGIN, Exit.QUOTA_EXHAUSTED, Exit.PREFLIGHT_FAIL):
             return Action.NOTIFY
         if code == Exit.RETRYABLE:
@@ -246,7 +245,7 @@ class StageWorker:
         try:
             _ledger.finish_run(
                 run_id,
-                status="done" if code == Exit.OK else "failed",
+                status=_ledger_status_for(int(code)),
                 exit_code=int(code),
                 failed_stage=failed_stage,
                 summary=summary,
@@ -566,6 +565,9 @@ def evaluate(channels: list[dict], *, dry_run: bool = True,
         for v in ch.get("vols", []):
             vol = int(v.get("vol", 0))
             folder = Path(v.get("folder", ""))
+            if is_awaiting_selection(folder, vol, channel_id=ch_id):
+                # 79 で止まった vol は、選定が済むまで候補に出さない（tick ごとの再投入と通知の繰り返しを防ぐ）
+                continue
             for domain, worker in pool.items():
                 try:
                     # ffmpeg チャンネルは app_ffrender が配置+書き出しを
@@ -588,6 +590,39 @@ def evaluate(channels: list[dict], *, dry_run: bool = True,
                 except Exception:
                     continue
     return candidates
+
+
+def _selection_still_pending(folder: Path) -> bool:
+    """楽曲カタログ上でまだ選定待ちか。判定できないときは False（従来どおり候補に戻す）。
+
+    79 を出すゲート（export / upload）は processed=True（選定済みかつ後処理済み）を要求するので、
+    ここも同じ条件で見る。選定だけ済んで後処理前の vol を候補に戻すと、同じ 79 を繰り返す。"""
+    try:
+        from app_music_catalog import require_selection, SelectionPending
+    except Exception:
+        return False
+    try:
+        require_selection(folder, processed=True)
+    except SelectionPending:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def is_awaiting_selection(folder: Path, vol: int, *, channel_id: str = "") -> bool:
+    """直近の run が waiting_selection（79）で、かつ選定がまだ済んでいない vol か。
+
+    選定が済めば require_selection が通るので、台帳を書き換えなくても次の tick から候補に戻る。"""
+    if _ledger is None or not channel_id:
+        return False
+    try:
+        runs = _ledger.list_runs(channel_id=channel_id, vol=vol, limit=1)
+    except Exception:
+        return False
+    if not runs or runs[0].get("status") != "waiting_selection":
+        return False
+    return _selection_still_pending(folder)
 
 
 # ─── サーキットブレーカー（暴走防止・ポリシー §3） ───
@@ -637,7 +672,8 @@ def dispatch(candidate: "Candidate", channel: dict, *, via_api: bool = False,
              notify: Optional[Callable[[str], None]] = None, **kw) -> dict:
     """1 候補を実行: ブレーカー確認 → 台帳 start → run → on_fail 分岐 → 台帳 finish。
 
-    Returns: {"status": "tripped|done|failed|notify|resume|retry", "code": int, ...}
+    Returns: {"status": "tripped|done|failed|notify|resume|retry|blocked", "code": int, ...}
+    blocked は 79（楽曲選定待ち）。失敗に数えず、選定が済むまで evaluate が候補から外す。
     notify: 人手要時に呼ぶコールバック（app.py 統合時に _notify_line を渡す想定）。
     """
     ch_id = channel.get("channel_id", "")
@@ -718,6 +754,13 @@ def dispatch(candidate: "Candidate", channel: dict, *, via_api: bool = False,
         if notify:
             try: notify(f"↩ [{ch_name}] vol.{candidate.vol} {head_stage} 不良 → "
                         f"{result['resume_stage']} へ差し戻し要")
+            except Exception: pass
+    elif action == Action.WAIT:
+        # 待機は失敗ではない。選定と後処理（processed）が済めば、次の tick で evaluate が選ぶ工程（export 等）から再開する。
+        result["status"] = "blocked"
+        result["reason"] = "selection_pending"
+        if notify:
+            try: notify(f"[{ch_name}] vol.{candidate.vol} {candidate.domain} 楽曲選定待ち（選定後に再開）")
             except Exception: pass
     elif action == Action.NOTIFY:
         reason = {Exit.UNATTENDED_LOGIN: "手動ログイン要", Exit.QUOTA_EXHAUSTED: "quota 枯渇",

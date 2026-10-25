@@ -26,6 +26,7 @@ from typing import Optional, List, Literal
 
 # ─── 土台は app_core へ分離（D9 第1段）。foundation シンボルを取り込む ───
 import app_core  # noqa: F401  （app_core.X 直接参照用）
+import exit_codes as _exit_codes  # 終了コードの単一正本
 from app_core import *  # noqa: F401,F403  土台の全シンボル
 from pydantic import field_validator
 import app_updater
@@ -6751,8 +6752,9 @@ def _send_discord_notify(message: str):
     try:
         try:
             from error_humanizer import format_for_discord
-            if re.search(r"\b(exit|code|終了コード)\s*[:= ]\s*(75|76|77|78)\b", message, re.I):
-                m = re.search(r"\b(75|76|77|78)\b", message)
+            _pat = _exit_codes.sentinel_pattern()  # 75|76|77|78|79（workflow.json の単一正本）
+            if re.search(rf"\b(exit|code|終了コード)\s*[:= ]\s*({_pat})\b", message, re.I):
+                m = re.search(rf"\b({_pat})\b", message)
                 message = format_for_discord(exit_code=int(m.group(1)), message=message)
             elif re.search(r"invalid_grant|quotaExceeded|Premiere Link|preflight|UnattendedLoginRequired", message, re.I):
                 message = format_for_discord(message=message)
@@ -7132,8 +7134,15 @@ def _schedule_publish(*, video_name: str, channel_folder: str, channel_name: str
 # pipeline は失敗時に標準出力末尾に「再開: python3 app_pipeline.py <vol> --from <stage>」を
 # 必ず出すので、それから stage を抽出する。
 
-# 手動介入が必要で resume しても無意味な exit code（P1-1/P1-4/P1-5 の sentinel）
-_NO_AUTO_RESUME_CODES = {75, 77, 78, 79}
+# 手動介入・時間待ち・選定待ちで resume しても無意味な exit code（workflow.json の単一正本から導出: 75/77/78/79）
+_NO_AUTO_RESUME_CODES = _exit_codes.no_auto_resume_codes()
+
+
+def _exit_outcome(code: int) -> tuple[str, str, str]:
+    """終了コードの人向け表現。(見出し, 履歴の種別, LINE の接頭辞)。79 は待機であり失敗ではない。"""
+    if _exit_codes.is_blocked(code):
+        return "楽曲選定待ち（失敗ではありません）", "warn", "[待機]"
+    return "失敗", "error", "❌"
 
 
 def _parse_failed_stage(stdout: str) -> str:
@@ -7227,10 +7236,10 @@ async def _job_auto_resume(payload: dict):
         if run_id:
             try:
                 import app_run_ledger as _ledger
-                _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
+                _ledger.finish_run(run_id, status=_exit_codes.ledger_status_for(proc.returncode),
                                    exit_code=proc.returncode,
                                    failed_stage=next_stage,
-                                   summary=f"resume vol.{vol} 失敗 (attempt {attempt}, next={next_stage})")
+                                   summary=f"resume vol.{vol} {_exit_outcome(proc.returncode)[0]} (attempt {attempt}, next={next_stage})")
             except Exception:
                 pass
         if ok:
@@ -7243,7 +7252,8 @@ async def _job_auto_resume(payload: dict):
                             f"[{ch_name}] resume vol.{vol} 失敗、再々投入予約: {next_stage}")
         else:
             tail = stdout_str[-200:]
-            _record_history(job_id, "error", f"resume 打ち切り ({reason}): {tail}")
+            _label, _kind, _ = _exit_outcome(proc.returncode)
+            _record_history(job_id, _kind, f"resume 打ち切り ({_label}; {reason}): {tail}")
             _send_line_notify(f"⛔ [{ch_name}] vol.{vol} 再投入打ち切り: {reason}")
     except Exception as e:
         _record_history(job_id, "error", f"resume 例外: {e}")
@@ -7361,10 +7371,10 @@ async def _job_vol_create(job: dict):
             if run_id:
                 try:
                     import app_run_ledger as _ledger
-                    _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
+                    _ledger.finish_run(run_id, status=_exit_codes.ledger_status_for(proc.returncode),
                                        exit_code=proc.returncode,
                                        failed_stage=failed_stage,
-                                       summary=f"vol.{next_vol} 失敗 ({failed_stage or 'unknown'})")
+                                       summary=f"vol.{next_vol} {_exit_outcome(proc.returncode)[0]} ({failed_stage or 'unknown'})")
                 except Exception as e:
                     print(f"[ledger] finish_run 失敗: {e}")
             if ok:
@@ -7374,8 +7384,9 @@ async def _job_vol_create(job: dict):
                     f"{int(job.get('auto_resume_delay_min') or 30)} 分後に自動再投入"
                 )
             else:
+                _label, _, _prefix = _exit_outcome(proc.returncode)
                 _send_line_notify(
-                    f"❌ [{ch_name}] vol.{next_vol} 失敗 (exit={proc.returncode}) — auto_resume なし: {reason}"
+                    f"{_prefix} [{ch_name}] vol.{next_vol} {_label} (exit={proc.returncode}) — auto_resume なし: {reason}"
                 )
     except Exception as e:
         _record_history(job_id, "error", str(e)[:200])
@@ -7477,10 +7488,10 @@ async def _job_spot_create(job: dict):
             if run_id:
                 try:
                     import app_run_ledger as _ledger
-                    _ledger.finish_run(run_id, status="waiting_selection" if proc.returncode == 79 else "failed",
+                    _ledger.finish_run(run_id, status=_exit_codes.ledger_status_for(proc.returncode),
                                        exit_code=proc.returncode,
                                        failed_stage=failed_stage,
-                                       summary=f"spot vol.{vol} 失敗 ({failed_stage or 'unknown'})")
+                                       summary=f"spot vol.{vol} {_exit_outcome(proc.returncode)[0]} ({failed_stage or 'unknown'})")
                 except Exception as e:
                     print(f"[ledger] finish_run 失敗: {e}")
             if should_resume:
@@ -7490,8 +7501,9 @@ async def _job_spot_create(job: dict):
                     f"{int(job.get('auto_resume_delay_min') or 30)} 分後に自動再投入"
                 )
             else:
+                _label, _, _prefix = _exit_outcome(proc.returncode)
                 _send_line_notify(
-                    f"❌ [{ch_name}] スポット vol.{vol} 失敗 (exit={proc.returncode}) — auto_resume なし: {reason}"
+                    f"{_prefix} [{ch_name}] スポット vol.{vol} {_label} (exit={proc.returncode}) — auto_resume なし: {reason}"
                 )
     except Exception as e:
         _record_history(job_id, "error", str(e)[:200])
