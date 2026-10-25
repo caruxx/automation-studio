@@ -144,6 +144,15 @@ class EntryPointsTest(unittest.TestCase):
             self.assertFalse(o._selection_still_pending(folder))  # 後処理済み → 候補に戻る
         shutil.rmtree(root, ignore_errors=True)
 
+    def test_constants_outside_entry_points_match_table(self):
+        """表の外に残る直書き定数が表とずれていないことを検出する（78 の二重の意味は段階 2 で解消）。"""
+        import app_music_catalog as cat
+        import app_youtube as yt
+        self.assertEqual(cat.EXIT_SELECTION_PENDING, ec.ExitCode.SELECTION_PENDING)
+        self.assertEqual(yt.EXIT_RETRYABLE, ec.ExitCode.RETRYABLE)
+        self.assertEqual(yt.EXIT_QUOTA_EXHAUSTED, ec.ExitCode.QUOTA_EXHAUSTED)
+        self.assertEqual(yt.EXIT_CHANNEL_MISMATCH, ec.ExitCode.PREFLIGHT_FAIL)  # 既知: 78 を共用している
+
     def test_batch_preflight_code(self):
         import batch_orchestrator as b
         self.assertEqual(b.EXIT_PREFLIGHT, 78)
@@ -154,6 +163,13 @@ class EntryPointsTest(unittest.TestCase):
         self.assertIn(79, h.SENTINELS)
         self.assertEqual(sorted(h.SENTINELS), [75, 76, 77, 78, 79])
         self.assertEqual(h.SENTINELS[79]["code"], "music_selection_pending")
+
+    def test_app_outcome_wording_for_blocked(self):
+        import app as studio
+        self.assertEqual(studio._exit_outcome(79)[1], "warn")
+        self.assertIn("失敗ではありません", studio._exit_outcome(79)[0])
+        self.assertEqual(studio._exit_outcome(1), ("失敗", "error", "❌"))
+        self.assertEqual(studio._exit_outcome(78)[1], "error")
 
     def test_studio_exit_fields(self):
         import studio

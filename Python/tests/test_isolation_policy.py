@@ -16,7 +16,7 @@ PROBE = r"""
 import json, os, sys
 sys.path.insert(0, sys.argv[1])
 import tests
-print(json.dumps({k: os.environ.get(k) for k in ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR", "APP_SHARED_BASE", "HOME", "ORIGINAL_HOME", "AS_TESTS_ISOLATED_ROOT")}))
+print(json.dumps({k: os.environ.get(k) for k in ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR", "APP_SHARED_BASE", "HOME", "ORIGINAL_HOME", "AS_TESTS_ISOLATED_ROOT", "STUDIO_DRIVE_BASE", "APP_DRIVE_BASE", "ORZZ_SHARED_BASE", "APP_MUSIC_CATALOG_DB")}))
 """
 
 
@@ -85,6 +85,21 @@ class IsolationPolicyTest(unittest.TestCase):
             self.assertTrue((cfg / ".migration_completed").exists())
             self.assertNotEqual(got["HOME"], os.environ.get("ORIGINAL_HOME") or os.environ["HOME"])
             self.assertTrue(Path(got["HOME"]).resolve().is_relative_to(_INNER_TMP.resolve()))
+
+    def test_drive_and_catalog_aliases_are_dropped(self):
+        """launchd が設定する STUDIO_DRIVE_BASE 等と、一時領域外の APP_MUSIC_CATALOG_DB は取り除かれる。"""
+        outside = _outside_temp_dir()
+        try:
+            got = _probe({"STUDIO_DRIVE_BASE": str(outside), "APP_DRIVE_BASE": str(outside),
+                          "ORZZ_SHARED_BASE": str(outside), "APP_MUSIC_CATALOG_DB": str(outside / "music.sqlite3")})
+            for k in ("STUDIO_DRIVE_BASE", "APP_DRIVE_BASE", "ORZZ_SHARED_BASE", "APP_MUSIC_CATALOG_DB"):
+                self.assertIsNone(got[k], msg=k)
+            inside_db = _INNER_TMP / "own.sqlite3"
+            got = _probe({"APP_MUSIC_CATALOG_DB": str(inside_db)})
+            self.assertEqual(got["APP_MUSIC_CATALOG_DB"], str(inside_db))  # 一時領域内の指定は尊重
+        finally:
+            import shutil
+            shutil.rmtree(outside, ignore_errors=True)
 
     def test_stale_mark_is_not_trusted(self):
         got = _probe({"AS_TESTS_ISOLATED_ROOT": "/nonexistent/as-tests-old"})

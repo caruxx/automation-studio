@@ -756,7 +756,7 @@ def dispatch(candidate: "Candidate", channel: dict, *, via_api: bool = False,
                         f"{result['resume_stage']} へ差し戻し要")
             except Exception: pass
     elif action == Action.WAIT:
-        # 待機は失敗ではない。選定が済めば rename から再開する。
+        # 待機は失敗ではない。選定と後処理（processed）が済めば、次の tick で evaluate が選ぶ工程（export 等）から再開する。
         result["status"] = "blocked"
         result["reason"] = "selection_pending"
         if notify:

@@ -20,6 +20,9 @@ import tempfile
 from pathlib import Path
 
 ISOLATED_KEYS = ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR", "APP_SHARED_BASE")
+# 本物の Drive / 共有設定 / 楽曲カタログを指しうる別名。launchd の環境が残っていても信用せず取り除く
+# （APP_MUSIC_CATALOG_DB だけは一時領域内なら尊重する: テストが自前の一時 DB を指定する）
+DROPPED_KEYS = ("STUDIO_DRIVE_BASE", "APP_DRIVE_BASE", "ORZZ_SHARED_BASE", "APP_SHARED_CONFIG_DIR", "ORZZ_SHARED_CONFIG_DIR")
 _MARK = "AS_TESTS_ISOLATED_ROOT"
 
 
@@ -52,6 +55,11 @@ def _bootstrap() -> Path:
             "テストモジュールの冒頭で _isolation を import するか、python Python/scripts/run_tests.py で実行してください。")
 
     root = Path(tempfile.mkdtemp(prefix="as-tests-")).resolve()
+    for k in DROPPED_KEYS:
+        os.environ.pop(k, None)
+    db = os.environ.get("APP_MUSIC_CATALOG_DB")
+    if db and not _within(Path(db), _temp_root()):
+        os.environ.pop("APP_MUSIC_CATALOG_DB", None)
     home = root / "home"
     home.mkdir(parents=True, exist_ok=True)
     if _env_is_isolated():
