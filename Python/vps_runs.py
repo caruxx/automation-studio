@@ -38,8 +38,10 @@ def load_settings() -> dict[str, str]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise VpsRunsError("vps_not_configured", f"VPS の設定が読めません: {path}")
-    base_url = str((data or {}).get("base_url") or "").strip().rstrip("/")
-    ai_token = str((data or {}).get("ai_token") or "").strip()
+    if not isinstance(data, dict):
+        raise VpsRunsError("vps_not_configured", f"VPS の設定がオブジェクトではありません: {path}")
+    base_url = str(data.get("base_url") or "").strip().rstrip("/")
+    ai_token = str(data.get("ai_token") or "").strip()
     if not base_url or not ai_token:
         raise VpsRunsError("vps_not_configured", f"base_url と ai_token を {path} に設定してください（ai:runs スコープの AI トークン）")
     return {"base_url": base_url, "ai_token": ai_token}

@@ -54,6 +54,9 @@ class ClientTest(unittest.TestCase):
                     vps_runs.load_settings()  # worker_token だけでは使わない（ai_token 必須）
                 cfg.write_text(json.dumps({"base_url": "https://v/", "ai_token": "a"}), encoding="utf-8")
                 self.assertEqual(vps_runs.load_settings(), {"base_url": "https://v", "ai_token": "a"})
+                cfg.write_text("[]", encoding="utf-8")
+                with self.assertRaises(vps_runs.VpsRunsError):
+                    vps_runs.load_settings()
 
     def test_create_run_sends_workflow_version_and_request_id(self):
         seen = {}
@@ -111,7 +114,7 @@ class ClientTest(unittest.TestCase):
 
 class StudioIntentTest(unittest.TestCase):
     def _args(self, **kw):
-        base = dict(vol=None, resolve_num=None, channel="edm", request_id=None, intent="pipeline", from_step=None,
+        base = dict(vol=None, resolve_num=None, channel="edm", request_id=None, run_intent="pipeline", from_step=None,
                     run_id=None, state=None, json=True)
         base.update(kw)
         return Namespace(**base)
@@ -147,6 +150,31 @@ class StudioIntentTest(unittest.TestCase):
         self.assertEqual(calls[0][2]["request_id"], "req-fixed-0002")
         self.assertEqual(calls[0][2]["channel_key"], "edm")
         self.assertEqual(calls[3][2], {"from_step": "rename"})
+
+    def test_main_via_argparse_sends_pipeline_intent(self):
+        """argparse を通した経路: --intent の格納先が位置引数 intent と衝突しない。"""
+        import studio
+        calls = []
+        def fake_request(method, path, *, payload=None, query=None, **kw):
+            calls.append((method, path, payload))
+            return {"id": 21, "state": "queued", "attempts": 1, "intent": "pipeline", "_status": 201}
+        out = io.StringIO()
+        with patch("vps_runs.request", fake_request), patch("sys.stdout", out), \
+                patch.object(studio, "get_active_channel_info", lambda: {"id": "edm"}):
+            with patch("sys.argv", ["studio.py", "run", "--vol", "12", "--json"]):
+                self.assertEqual(studio.main(), 0)
+            with patch("sys.argv", ["studio.py", "run", "--vol", "12", "--intent", "qa", "--request-id", "req-fixed-0003", "--json"]):
+                self.assertEqual(studio.main(), 0)
+            with patch("sys.argv", ["studio.py", "run", "--vol", "abc", "--json"]):
+                self.assertEqual(studio.main(), 2)
+            with patch("sys.argv", ["studio.py", "run", "--vol", "12", "--request-id", "short", "--json"]):
+                self.assertEqual(studio.main(), 2)
+        self.assertEqual(calls[0][2]["intent"], "pipeline")
+        self.assertEqual(calls[1][2]["intent"], "qa")
+        self.assertEqual(calls[1][2]["request_id"], "req-fixed-0003")
+        self.assertEqual(len(calls), 2)
+        lines = [json.loads(l) for l in out.getvalue().strip().splitlines()]
+        self.assertEqual((lines[0]["intent"], lines[0]["run_intent"]), ("run", "pipeline"))
 
     def test_cli_not_configured_exits_2(self):
         with tempfile.TemporaryDirectory() as t:

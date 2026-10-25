@@ -1437,7 +1437,7 @@
         "runの状態",
         "run-status"
       ],
-      "description": "run の状態を VPS から取得（--run-id、または --vol で最新）",
+      "description": "run の状態を VPS から取得（--run-id で 1 件、省略時はチャンネルの最新 20 件）",
       "cli": {
         "cmd": [
           "python3",

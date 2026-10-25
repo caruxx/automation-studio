@@ -328,15 +328,22 @@ def run_vps_runs(args: argparse.Namespace) -> int:
     intent = args.intent_name
     try:
         if intent == "run":
-            vol = (args.vol or args.resolve_num or "").strip() if isinstance(args.vol or args.resolve_num, str) else (args.vol or args.resolve_num)
-            if not vol:
-                emit({"ok": False, "intent": intent, "error": "usage", "message": "--vol が必要です"})
+            raw = args.vol or args.resolve_num
+            try:
+                vol_n = int(str(raw).strip())
+            except (TypeError, ValueError):
+                vol_n = 0
+            if vol_n < 1:
+                emit({"ok": False, "intent": intent, "error": "usage", "message": "--vol には 1 以上の整数が必要です"})
                 return int(ExitCode.USAGE)
             channel_key = (args.channel or get_active_channel_info().get("id") or "").strip()
             if not channel_key:
                 emit({"ok": False, "intent": intent, "error": "usage", "message": "--channel かアクティブチャンネルが必要です（VPS の channel_key）"})
                 return int(ExitCode.USAGE)
-            data = vps_runs.create_run(channel_key, int(vol), request_id=args.request_id, intent=args.intent, from_step=args.from_step)
+            if args.request_id is not None and not (8 <= len(args.request_id) <= 128):
+                emit({"ok": False, "intent": intent, "error": "usage", "message": "--request-id は 8〜128 文字"})
+                return int(ExitCode.USAGE)
+            data = vps_runs.create_run(channel_key, vol_n, request_id=args.request_id, intent=args.run_intent, from_step=args.from_step)
         elif intent == "run-status":
             if args.run_id:
                 data = vps_runs.get_run(args.run_id)
@@ -360,6 +367,8 @@ def run_vps_runs(args: argparse.Namespace) -> int:
         return int(ExitCode.USAGE) if exc.code in ("vps_not_configured", "invalid_request") else int(ExitCode.FAIL)
     data.pop("_status", None)
     state = data.get("state")
+    if "intent" in data:
+        data["run_intent"] = data.pop("intent")  # VPS 側の intent（pipeline 等）は別キーにし、intent は CLI 名を保つ
     out = {"ok": state not in ("failed",), "intent": intent, **data}
     if not args.json:
         print(f"{intent}: run {data.get('id', '-')} state={state} attempts={data.get('attempts', '-')}", file=sys.stderr)
@@ -620,7 +629,7 @@ def main() -> int:
     parser.add_argument("--from", dest="from_step", help="pipeline の再開 step")
     parser.add_argument("--run-id", type=int, help="run-status / run-resume / run-cancel の対象 run")
     parser.add_argument("--request-id", help="run の冪等キー（省略時は自動生成）")
-    parser.add_argument("--intent", default="pipeline", help="run が VPS に発行する intent（既定 pipeline）")
+    parser.add_argument("--intent", dest="run_intent", default="pipeline", help="run が VPS に発行する intent（既定 pipeline）")
     parser.add_argument("--state", help="run-status の一覧フィルタ")
     parser.add_argument("--publish-date", default="YYYY-MM-DD")
     parser.add_argument("--prompt", default="lounge jazz BGM, elegant cafe atmosphere")
