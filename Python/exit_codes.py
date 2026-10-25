@@ -123,6 +123,37 @@ def ledger_status_for(code: int) -> str:
     return "failed"
 
 
+def stage_order() -> list[str]:
+    return list(_WORKFLOW.get("stage_order") or [])
+
+
+def stages() -> list[dict[str, Any]]:
+    return list(_WORKFLOW.get("stages") or [])
+
+
+_DEFAULT_STAGE_ALIASES: dict[str, Optional[str]] = {"psd_composite": "composite", "export": "render", "premiere": None}
+
+
+def stage_aliases() -> dict[str, Optional[str]]:
+    """旧工程名 → 新工程名。workflow.json が読めない／壊れている場合は組み込みの既定表。"""
+    raw = _WORKFLOW.get("stage_aliases")
+    if not isinstance(raw, dict) or not raw:
+        return dict(_DEFAULT_STAGE_ALIASES)
+    return {str(k): (None if v is None else str(v)) for k, v in raw.items()}
+
+
+def resources() -> list[dict[str, Any]]:
+    return list(_WORKFLOW.get("resources") or [])
+
+
+def canonical_stage(name: str) -> Optional[str]:
+    """旧工程名を新工程名に写す。廃止工程（premiere）は None。"""
+    aliases = stage_aliases()
+    if name in aliases:
+        return aliases[name]
+    return name
+
+
 def builtin_matches_workflow() -> list[str]:
     """組み込み既定表・ExitCode・workflow.json の不一致を列挙する（テスト用）。"""
     problems: list[str] = []

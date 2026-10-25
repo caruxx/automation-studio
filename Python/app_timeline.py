@@ -12,7 +12,6 @@ import re
 import random
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from app_track_title import public_track_title
 
 TIMELINE_NAME = "vol_timeline.json"
 VERSION = 2
@@ -218,8 +217,8 @@ def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
 
 
 def display_title(filename: str) -> str:
-    stem = Path(str(filename or "")).stem
-    return public_track_title(re.sub(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", "", stem, flags=re.I).strip() or stem)
+    from naming import title_from_filename  # 命名規則の単一正本（旧挙動: z_ は除かず、Path.stem を使う）
+    return title_from_filename(filename, strip_z=False, use_stem=True)
 
 
 def probe_duration(path: Path) -> float:

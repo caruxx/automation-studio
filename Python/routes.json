@@ -1381,6 +1381,30 @@
         "scope": "per-machine",
         "max_parallel": 1
       }
+    },
+    "select": {
+      "aliases": [
+        "選曲",
+        "AI選曲",
+        "select"
+      ],
+      "description": "AI 選曲（ハートの無いタイトル群を採点して 1 テイク採用。チャンネル設定 music_selection.mode が human なら待機）",
+      "cli": {
+        "cmd": [
+          "python3",
+          "app_music_select.py",
+          "{folder}",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "ローカルの楽曲ファイルを ffmpeg で測るため CLI 直実行。",
+      "requires_vol": true,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 2
+      }
     }
   }
 }

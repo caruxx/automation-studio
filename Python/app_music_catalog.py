@@ -24,7 +24,11 @@ _seeded = False
 
 
 class SelectionPending(RuntimeError):
-    pass
+    """楽曲の選定待ち。reason: human（人のハート待ち）/ quality（全候補不合格）/ unmeasured（測定不能）/ download / processing。"""
+
+    def __init__(self, message, reason="human"):
+        super().__init__(message)
+        self.reason = reason
 
 
 def db_path():
@@ -64,6 +68,10 @@ def transaction():
               PRIMARY KEY(batch_id,clip_id));
             CREATE TABLE IF NOT EXISTS events (
               id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, detail_json TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS take_scores (
+              batch_id TEXT NOT NULL, clip_id TEXT NOT NULL, duration_sec REAL, silence_ratio REAL,
+              lufs REAL, true_peak REAL, prompt_fit REAL, score REAL NOT NULL, passed INTEGER NOT NULL,
+              reason TEXT NOT NULL, scored_at TEXT NOT NULL, PRIMARY KEY(batch_id,clip_id));
             """)
             conn.execute("BEGIN IMMEDIATE")
             yield conn
@@ -207,6 +215,24 @@ def register_download(folder, saved, workspace, expected):
     return batch_id
 
 
+def _legacy_music_name(title):
+    """段階 2a より前の採用ファイル名（テイク番号を残す旧規則）。既存 vol の処理済み判定にだけ使う。"""
+    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", str(title)).strip() + ".mp3"
+
+
+def selected_music_names(takes):
+    """採用テイク → music/ のファイル名（naming.music_filename。テイク番号を除き、同名は ` -2` で採番）。
+
+    takes の順（title_key, clip_id）で決定的に採番する。戻り値は {clip_id: filename}。"""
+    from naming import music_filename
+    names = {}
+    for take in takes:
+        if not take.get("selected"):
+            continue
+        names[take["clip_id"]] = music_filename(take["title"], taken=names.values())
+    return names
+
+
 def _state(conn, batch_id):
     row = conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
     if not row: raise ValueError("楽曲バッチが見つかりません")
@@ -231,17 +257,49 @@ def _state(conn, batch_id):
         len(group) == 2 and all(t["available"] for t in group) for group in groups.values())
     state["ready"] = state["download_complete"] and all(sum(t["selected"] for t in group) == 1 for group in groups.values())
     state["processed"] = state["ready"] and state["processed_revision"] == state["revision"]
+    from naming import _name_key
+    music = Path(state["folder"]) / "music"
+    # 一覧は処理済みになったことがある batch だけ取る（一覧画面で全 batch の Drive 走査を避ける）
+    actual = {p.name for p in music.glob("*.mp3")} if state["processed_revision"] >= 0 and music.is_dir() else set()
+    actual_keys = {_name_key(n) for n in actual}
+    # music/ がどの規則で作られているか（"new" / "legacy" / None）。選び直しで revision が進んでも、
+    # 一度旧規則で処理した vol は旧名を保つ必要があるため、全テイクの旧名と照合して判定する。
+    state["processed_naming"] = None
+    if state["processed_revision"] >= 0 and actual_keys:
+        legacy_all = {_name_key(_legacy_music_name(t["title"])) for t in takes}
+        try:
+            new_all = {_name_key(n) for n in selected_music_names(takes).values()}
+        except ValueError:
+            new_all = set()
+        legacy_only = legacy_all - new_all
+        if actual_keys & legacy_only:
+            state["processed_naming"] = "legacy"
+        elif actual_keys & new_all:
+            state["processed_naming"] = "new"
     if state["processed"]:
-        names = {re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", t["title"]).strip() + ".mp3"
-                 for t in takes if t["selected"]}
-        music = Path(state["folder"]) / "music"
-        state["processed"] = music.is_dir() and {p.name for p in music.glob("*.mp3")} == names and all(
-            (music / name).stat().st_size > 0 for name in names)
+        try:
+            names = set(selected_music_names(takes).values())
+        except ValueError:
+            names = set()
+        legacy = {_legacy_music_name(t["title"]) for t in takes if t["selected"]}  # 旧規則で処理済みの既存 vol も認める
+        if names and actual_keys == {_name_key(n) for n in names}:
+            matched = actual
+        elif actual_keys == {_name_key(n) for n in legacy}:
+            matched = actual
+        else:
+            matched = None
+        state["processed"] = matched is not None and all((music / name).stat().st_size > 0 for name in matched)
     return state
 
 
 def _export(conn, batch_id):
     state = _state(conn, batch_id)
+    # AI 選曲の採点と試行回数も出す（他ツールが品質待機の根拠を読めるように）
+    state["scores"] = {r["clip_id"]: dict(r) for r in conn.execute(
+        "SELECT * FROM take_scores WHERE batch_id=? ORDER BY clip_id", (batch_id,))}
+    state["ai_select_attempts"] = int(conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE kind='ai_select_failed' AND json_extract(detail_json,'$.batch_id')=?",
+        (batch_id,)).fetchone()["n"])
     path = Path(state["folder"]) / ".music_review.json"
     part = path.with_suffix(".json.part")
     part.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -277,7 +335,7 @@ def list_reviews():
 def choose_take(batch_id, clip_id, selected):
     with transaction() as conn:
         batch = _state(conn, batch_id)
-        if batch["processing"]: raise SelectionPending("後処理中です。完了後に選び直してください")
+        if batch["processing"]: raise SelectionPending("後処理中です。完了後に選び直してください", reason="processing")
         take = next((t for t in batch["takes"] if t["clip_id"] == clip_id), None)
         if not take or not take["available"]: raise ValueError("選択対象のMP3がありません")
         if selected:
@@ -297,14 +355,188 @@ def require_selection(folder, processed=False):
     return state
 
 
+# ─── AI 選曲（select 工程） ───
+MUSIC_SELECTION_MODES = ("ai", "human")
+
+
+def load_music_selection_config(folder):
+    """チャンネル設定 `.app_channel_config.json` の選曲設定。既定は mode=ai。
+
+    受け付ける形（ブリーフの形を優先）:
+      - `music_selection_mode: "ai" | "human"`（トップレベル）
+      - `music_selection: {mode, prompt, policy: {...}}`。`music_selection` 直下の min_sec / max_sec /
+        max_silence_ratio / lufs_range / lufs_min / lufs_max / weights も policy として読む。
+    動画フォルダの親（その vol が属するチャンネル）の設定を優先し、無ければ APP_CHANNEL_FOLDER を読む。"""
+    folder = Path(folder)
+    # 動画フォルダの親（その vol が属するチャンネル）を優先し、無ければ APP_CHANNEL_FOLDER。
+    # UI のアクティブチャンネルの環境変数が残っていても、別チャンネルの選曲設定を読まない。
+    env_folder = (os.environ.get("APP_CHANNEL_FOLDER") or "").strip()
+    candidates = [folder.parent / ".app_channel_config.json"]
+    if env_folder:
+        candidates.append(Path(env_folder).expanduser() / ".app_channel_config.json")
+    data = {}
+    for path in candidates:
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8")) or {}
+                break
+        except Exception:
+            continue
+    block = data.get("music_selection") if isinstance(data.get("music_selection"), dict) else {}
+    mode = str(data.get("music_selection_mode") or block.get("mode") or "ai").strip().lower()
+    if mode not in MUSIC_SELECTION_MODES:
+        mode = "ai"
+    policy_keys = ("min_sec", "max_sec", "max_silence_ratio", "lufs_range", "lufs_min", "lufs_max", "weights")
+    policy = {k: v for k, v in block.items() if k in policy_keys}
+    nested = block.get("policy") if isinstance(block.get("policy"), dict) else {}
+    policy.update(nested)
+    prompt = str(block.get("prompt") or "")
+    return {"mode": mode, "policy": policy, "prompt": prompt}
+
+
+def choose_take_ai(batch_id, clip_id):
+    """AI の採用。1 つのトランザクション内で「後処理中でない」「その群にまだ採用が無い」を確認してから採用する。
+
+    戻り値: "selected"（採用した）/ "human"（測定中に人が採用していた）/ "processing"（後処理中で見送り）/
+    "unavailable"（対象テイクが無い）。人の採用は上書きしない。"""
+    with transaction() as conn:
+        batch = _state(conn, batch_id)
+        if batch["processing"]:
+            return "processing"
+        take = next((t for t in batch["takes"] if t["clip_id"] == clip_id), None)
+        if not take or not take["available"]:
+            return "unavailable"
+        if any(t["selected"] for t in batch["takes"] if t["title_key"] == take["title_key"]):
+            return "human"
+        conn.execute("UPDATE takes SET selected=1 WHERE batch_id=? AND clip_id=?", (batch_id, clip_id))
+        conn.execute("UPDATE batches SET revision=revision+1 WHERE id=?", (batch_id,))
+        _event(conn, "ai_selected", {"batch_id": batch_id, "clip_id": clip_id})
+        _export(conn, batch_id)
+        return "selected"
+
+
+def ai_select_attempts(batch_id):
+    """AI 選曲の試行回数（品質待機・測定不能で止まった回数。段階 3 の再生成判断に使う）。"""
+    with transaction() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM events WHERE kind='ai_select_failed' AND json_extract(detail_json,'$.batch_id')=?",
+                           (batch_id,)).fetchone()
+        return int(row["n"]) if row else 0
+
+
+def _upsert_score(conn, batch_id, clip_id, m, fit, result):
+    conn.execute("INSERT INTO take_scores VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id,clip_id) DO UPDATE SET "
+                 "duration_sec=excluded.duration_sec,silence_ratio=excluded.silence_ratio,lufs=excluded.lufs,"
+                 "true_peak=excluded.true_peak,prompt_fit=excluded.prompt_fit,score=excluded.score,passed=excluded.passed,"
+                 "reason=excluded.reason,scored_at=excluded.scored_at",
+                 (batch_id, clip_id, m.get("duration_sec"), m.get("silence_ratio"), m.get("lufs"), m.get("true_peak"),
+                  fit, float(result["score"]), int(bool(result["passed"])), "; ".join(result["reasons"]), now()))
+
+
+def list_scores(batch_id):
+    with transaction() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM take_scores WHERE batch_id=? ORDER BY clip_id", (batch_id,))]
+
+
+def select_takes_ai(folder, *, policy=None, measurer=None, llm=None, prompt="", dry_run=False):
+    """ハートの無いタイトル群だけ AI が採点して 1 テイクを選ぶ。
+
+    - 既にハートが付いた群は人の採用として触らない（採用は choose_take_ai で再確認してから行う）。
+    - 群内の合格テイクのうち最高点を採用。合格が無い群は未選定のまま残す。測定不能のテイクは採用しない。
+    - 全ての対象群が不合格なら、試行回数を台帳（events: ai_select_failed）に記録し、
+      SelectionPending（品質待機、または全てが測定不能なら測定不能）を上げる。dry_run では例外にしない。
+    戻り値: {batch_id, groups_total, groups_selected_by_ai, groups_human, groups_failed, groups_unmeasured,
+             ready, blocked_reason, attempt, scores{clip_id: {...}}}"""
+    import music_scoring
+    state = review_state(folder)
+    if state is None:
+        raise ValueError("楽曲バッチが登録されていません（SUNO のダウンロードが先です）")
+    if not state["download_complete"]:
+        raise SelectionPending(f"ダウンロードが未完了のため選曲できません: {len(state['takes'])}/{state['expected']}", reason="download")
+    measurer = measurer or music_scoring.measure
+    pol = music_scoring.policy_from(policy)
+    folder = Path(state["folder"])
+    groups = {}
+    for take in state["takes"]:
+        groups.setdefault(take["title_key"], []).append(take)
+    result = {"batch_id": state["id"], "groups_total": len(groups), "groups_selected_by_ai": 0,
+              "groups_human": 0, "groups_failed": 0, "groups_unmeasured": 0, "groups_skipped": 0, "scores": {},
+              "dry_run": bool(dry_run), "blocked_reason": None, "attempt": ai_select_attempts(state["id"])}
+    failed_titles = []
+    for key, takes in groups.items():
+        if any(t["selected"] for t in takes):
+            result["groups_human"] += 1
+            continue
+        best = None
+        all_unmeasured = True
+        for t in takes:
+            m = measurer(folder / t["file"])
+            fit = music_scoring.prompt_fit(t["title"], prompt, llm) if llm else None
+            r = music_scoring.score(m, fit, pol)
+            result["scores"][t["clip_id"]] = {**m, "prompt_fit": fit, **r, "title": t["title"]}
+            if not dry_run:
+                with transaction() as conn:
+                    _upsert_score(conn, state["id"], t["clip_id"], m, fit, r)
+            if not r["unmeasured"]:
+                all_unmeasured = False
+            if r["passed"] and (best is None or r["score"] > best[1]):
+                best = (t, r["score"])  # 同点は takes の順（title_key, clip_id）で先のものを保つ
+        if best is None:
+            result["groups_failed"] += 1
+            if all_unmeasured:
+                result["groups_unmeasured"] += 1
+            failed_titles.append(takes[0]["title"])
+            continue
+        outcome = "selected" if dry_run else choose_take_ai(state["id"], best[0]["clip_id"])
+        if outcome == "selected":
+            result["groups_selected_by_ai"] += 1
+        elif outcome == "human":
+            result["groups_human"] += 1  # 測定中に人が採用した
+        else:
+            result["groups_skipped"] += 1  # 後処理中、または対象テイクが消えた
+    ai_targets = result["groups_selected_by_ai"] + result["groups_failed"]
+    if not dry_run:
+        with transaction() as conn:
+            _export(conn, state["id"])  # 一部の群だけ不合格でも、採点をマニフェストに出す
+        final = get_review(state["id"])
+        result["ready"] = bool(final["ready"])
+    else:
+        result["ready"] = False
+    if not result["ready"]:
+        # 待機の理由: 不合格の群があれば quality（全群なら下で quality / unmeasured に確定）、
+        # 無ければ人の採用待ち（後処理中で見送った群を含む）
+        result["blocked_reason"] = "quality" if result["groups_failed"] else "human"
+    if ai_targets and result["groups_failed"] == ai_targets:
+        if result["groups_unmeasured"] == result["groups_failed"]:
+            result["blocked_reason"] = "unmeasured"
+            message = ("測定不能: 楽曲を測れませんでした（ffmpeg / ffprobe を確認してください）。"
+                       "ハートで手動採用するか、環境を直して再実行してください")
+        else:
+            result["blocked_reason"] = "quality"
+            message = ("品質待機: 全ての候補が不合格です（" + ", ".join(failed_titles[:5]) +
+                       "）。再生成するか、ハートで手動採用してください")
+        if not dry_run:
+            with transaction() as conn:
+                _event(conn, "ai_select_failed", {"batch_id": state["id"], "attempt": result["attempt"] + 1,
+                                                  "reason": result["blocked_reason"], "failed_titles": failed_titles})
+                _export(conn, state["id"])
+            result["attempt"] += 1
+            raise SelectionPending(f"{message}（試行 {result['attempt']} 回目）", reason=result["blocked_reason"])
+        result["message"] = message
+    return result
+
+
 def process_selected(folder, processor, dry_run=False, force=False):
+    if folder is None or not str(folder).strip():
+        raise ValueError("vol フォルダが指定されていません（暗黙の既定フォルダは使いません）")
     state = require_selection(folder)
+    if state is None:
+        raise ValueError(f"楽曲バッチが登録されていません: {folder}")
     if state["processed"] and not force: return 0
     if dry_run: return 0
     folder = Path(folder).resolve()
     with transaction() as conn:
         state = _state(conn, state["id"])
-        if not state["ready"] or state["processing"]: raise SelectionPending("選択待ち、または後処理中です")
+        if not state["ready"] or state["processing"]: raise SelectionPending("選択待ち、または後処理中です", reason="processing" if state["processing"] else "human")
         conn.execute("UPDATE batches SET processing=? WHERE id=?", (os.getpid(), state["id"]))
     music = folder / "music"
     stage = folder / (".music_selected_" + secrets.token_hex(6))
@@ -313,10 +545,15 @@ def process_selected(folder, processor, dry_run=False, force=False):
         # 既存の未管理音声は上書きしない。
         if music.exists() and state["processed_revision"] < 0 and any(music.iterdir()):
             raise ValueError("music/に既存の音声があります。既存動画を保護するため後処理を停止しました")
+        if state.get("processed_naming") == "legacy":
+            # 旧規則で処理済みの既存 vol を force で作り直すときは、ffrender の manifest 等が参照する旧名を保つ
+            names = {t["clip_id"]: _legacy_music_name(t["title"]) for t in state["takes"] if t["selected"]}
+        else:
+            names = selected_music_names(state["takes"])  # テイク番号 (1) 等を除いた公開用の曲名で保存する
         for take in state["takes"]:
             if not take["selected"]: continue
-            name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", take["title"]).strip() + ".mp3"
-            if name == ".mp3" or (stage / name).exists(): raise ValueError("採用タイトルのファイル名が重複しています")
+            name = names[take["clip_id"]]
+            if (stage / name).exists(): raise ValueError("採用タイトルのファイル名が重複しています")
             processor(safe_file(folder, take["file"]), stage / name)
             if not (stage / name).is_file() or not (stage / name).stat().st_size:
                 raise ValueError("後処理済み音声が出力されていません")

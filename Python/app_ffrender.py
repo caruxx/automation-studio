@@ -184,9 +184,8 @@ def probe_duration(path) -> float:
 
 
 def _title_from(name: str) -> str:
-    noext = re.sub(r"\.[^.]+$", "", name)
-    noext = re.sub(r"^z+_", "", noext)
-    return public_track_title(re.sub(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", "", noext, flags=re.I).strip() or noext)
+    from naming import title_from_filename  # 命名規則の単一正本
+    return title_from_filename(name)
 
 
 def _finite_float(value, default: float = 0.0, *, minimum: Optional[float] = None,

@@ -67,6 +67,7 @@ API_BASE = "http://localhost:8888"
 # 78: preflight 失敗（ffmpeg / ffprobe / Pillow 不足。各 step を実行せず早期終了）
 # 79: 楽曲選定待ち（待機であり失敗ではない）
 from exit_codes import ExitCode as _ExitCode
+import naming as _naming  # 命名規則の単一正本
 EXIT_UNATTENDED = int(_ExitCode.UNATTENDED_LOGIN)
 EXIT_RETRYABLE = int(_ExitCode.RETRYABLE)
 EXIT_QUOTA_EXHAUSTED = int(_ExitCode.QUOTA_EXHAUSTED)
@@ -74,14 +75,60 @@ EXIT_PREFLIGHT_FAIL = int(_ExitCode.PREFLIGHT_FAIL)
 EXIT_SELECTION_PENDING = int(_ExitCode.SELECTION_PENDING)
 
 
+_LAST_SELECTION_REASON = "human"  # 直近のゲートで待機になった理由（台帳の detail に出す）
+
+
 def _music_selection_gate(folder, processed=False):
-    from app_music_catalog import require_selection, SelectionPending
+    """楽曲の選定ゲート。未選定なら、チャンネル設定 music_selection.mode が ai（既定）のとき AI 選曲を 1 回試みる。
+
+    human のときは従来どおり人のハートを待つ。AI が全曲不合格なら品質待機として同じ 79 で止まる。"""
+    global _LAST_SELECTION_REASON
+    _LAST_SELECTION_REASON = "human"
+    from app_music_catalog import require_selection, SelectionPending, load_music_selection_config, select_takes_ai
     try:
         require_selection(folder, processed=processed)
+        return None
     except SelectionPending as exc:
-        print(str(exc), flush=True)
-        return "awaiting_selection"
-    return None
+        first = exc
+    _LAST_SELECTION_REASON = getattr(first, "reason", "human")
+    if processed and _LAST_SELECTION_REASON == "human":
+        try:
+            st = require_selection(folder)  # 選定は済んでいて後処理だけ待っているか
+            if st is not None and st.get("ready"):
+                _LAST_SELECTION_REASON = "processing"
+        except SelectionPending:
+            pass
+    cfg = load_music_selection_config(folder)
+    if cfg["mode"] == "ai":
+        try:
+            r = select_takes_ai(folder, policy=cfg["policy"], prompt=cfg["prompt"])
+            print(f"AI 選曲: {r['groups_selected_by_ai']}/{r['groups_total']} 群を採用"
+                  f"（人の採用 {r['groups_human']}、不合格 {r['groups_failed']}）", flush=True)
+            select_reason = r.get("blocked_reason")  # 一部不合格なら quality、未選定が残れば human
+            select_ready = bool(r.get("ready"))
+        except SelectionPending as exc:
+            _LAST_SELECTION_REASON = getattr(exc, "reason", "quality")
+            print(str(exc), flush=True)
+            return "awaiting_selection"
+        except Exception as exc:
+            print(f"AI 選曲に失敗したため人の選定を待ちます: {exc}", flush=True)
+            return "awaiting_selection"
+        try:
+            require_selection(folder, processed=processed)
+            _LAST_SELECTION_REASON = "human"
+            return None
+        except SelectionPending as exc:
+            reason = getattr(exc, "reason", "human")
+            if reason == "human":
+                if select_reason in ("quality", "unmeasured"):
+                    reason = select_reason  # 一部の群が不合格（AI の採用は済んでいるが未選定が残る）
+                elif processed and select_ready:
+                    reason = "processing"  # 全群の選定は済み、後処理だけ待っている
+            _LAST_SELECTION_REASON = reason
+            print(str(exc), flush=True)
+            return "awaiting_selection"
+    print(str(first), flush=True)
+    return "awaiting_selection"
 
 STEPS = ["suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
 STEPS_WITH_PLAN = ["plan", "suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
@@ -1611,8 +1658,7 @@ def _resolve_external_output_path(vol: int, folder: Path):
 
     file_prefix = (cfg.get("file_prefix") or "").strip()
     if not file_prefix:
-        fm = re.match(r"^\d+_([^_]+)", folder.name)
-        file_prefix = fm.group(1) if fm else "vol"
+        file_prefix = _naming.folder_prefix(folder.name)
 
     # 配置: <ext_dir>/<prefix>_vol{N}.mp4（flat 配置）
     # 旧: <ext_dir>/<vol_folder.name>/<prefix>_vol{N}.mp4 という per_video サブフォルダを
@@ -1740,9 +1786,8 @@ def _resolve_local_output_path(vol: int, folder: Path) -> Path:
     if not prefix:
         prefix = (_load_dashboard_config().get("file_prefix") or "").strip()
     if not prefix:
-        fm = re.match(r"^\d+_([^_]+)", folder.name)
-        prefix = fm.group(1) if fm else "vol"
-    return folder / f"{prefix}_vol{num}.mp4"
+        prefix = _naming.folder_prefix(folder.name)
+    return folder / _naming.video_name(prefix, num)
 
 
 def _run_ffrender_export(vol: int, folder: Path, kw: dict) -> bool:
@@ -3264,7 +3309,10 @@ def main():
             sys.stdout.flush()
             raise
         if ok == "awaiting_selection":
-            _ledger_call(ledger_sync, "report_step", args.vol, s, "pending", "楽曲のハート選択待ち")
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "pending",
+                         {"human": "楽曲のハート選択待ち", "quality": "品質待機（AI 選曲で全候補が不合格）",
+                          "unmeasured": "測定不能（ffmpeg / ffprobe を確認）",
+                          "processing": "選定済み。後処理（リネーム + フェード）待ち"}.get(_LAST_SELECTION_REASON, "楽曲の選定待ち"))
             print(f"◀ STEP {s} 結果: MUSIC_SELECTION_PENDING")
             print(f"ハート選択・後処理後に再開: python3 app_pipeline.py {args.vol} --from rename")
             sys.exit(EXIT_SELECTION_PENDING)

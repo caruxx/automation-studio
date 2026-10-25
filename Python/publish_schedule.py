@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from naming import folder_publish_date  # 命名規則の単一正本
+
 JST = _dt.timezone(_dt.timedelta(hours=9))
 DEFAULT_PUBLISH_TIME_JST = "12:00"
 
@@ -22,13 +24,7 @@ def validate_publish_time_jst(value: Any) -> str:
 
 
 def parse_publish_date_from_folder(folder: Path) -> Optional[_dt.date]:
-    m = re.match(r"^\d+_[^_]+_(\d{6})$", Path(folder).name)
-    if not m:
-        return None
-    try:
-        return _dt.datetime.strptime(m.group(1), "%y%m%d").date()
-    except Exception:
-        return None
+    return folder_publish_date(Path(folder).name)
 
 
 def resolve_publish_at_iso(
