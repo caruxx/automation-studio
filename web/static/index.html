@@ -3196,8 +3196,13 @@ const PROGRESS_SIX_GROUPS=[
   {key:'meta',label:'メタ',stages:['meta','localization','thumbnail']},
   {key:'publish',label:'公開',stages:['upload']},
 ];
+// 段階 2c: サーバーの新工程名（select / composite / render）を 6 区分の旧キーへ写す（表示キーの改名は段階 7）。
+const STAGE_NAME_TO_DISPLAY={select:['rename'],composite:['psd_composite'],render:['premiere','export']};
+function displayStageNames(stage){return STAGE_NAME_TO_DISPLAY[stage]||[stage];}
 function aggregateProgressSix(completedStages,currentStage){
-  const done=completedStages instanceof Set?completedStages:new Set(completedStages||[]);
+  const raw=completedStages instanceof Set?[...completedStages]:(completedStages||[]);
+  const done=new Set(raw.flatMap(displayStageNames));
+  currentStage=displayStageNames(currentStage||'')[0]||'';
   return PROGRESS_SIX_GROUPS.map(group=>({
     ...group,
     complete:group.stages.every(stage=>done.has(stage)),
@@ -3205,7 +3210,8 @@ function aggregateProgressSix(completedStages,currentStage){
   }));
 }
 function progressSixLabelForStage(stage){
-  const normalized={plan:'suno',download:'suno',process_tracks:'rename',images:'bgimage',jsx:'premiere'}[stage]||stage||'';
+  // 段階 2c: サーバーは新工程名（select / composite / render）を返す。表示グループは旧キーのまま（段階 7 で UI 側も改名）。
+  const normalized={plan:'suno',download:'suno',process_tracks:'rename',images:'bgimage',jsx:'premiere',select:'rename',composite:'psd_composite',render:'export'}[stage]||stage||'';
   return PROGRESS_SIX_GROUPS.find(group=>group.stages.includes(normalized))?.label||normalized||'未定';
 }
 function renderProgressSix(segments,opts){
@@ -3239,7 +3245,7 @@ function progressSixForVideo(v){
   if(internalDone.has('meta'))completed.push('meta','localization','thumbnail');
   if(internalDone.has('upload'))completed.push('upload');
   const currentKey=internal.find(step=>step.current)?.key||'';
-  const currentStage={suno:'suno',bgimage:'bgimage',psd_composite:'psd_composite',images:'bgimage',jsx:'premiere',export:'export',meta:'meta',upload:'upload'}[currentKey]||'';
+  const currentStage={suno:'suno',bgimage:'bgimage',psd_composite:'psd_composite',composite:'psd_composite',images:'bgimage',jsx:'premiere',export:'export',render:'export',meta:'meta',upload:'upload'}[currentKey]||'';
   return aggregateProgressSix(completed,currentStage);
 }
 function workflowProgress(v){
@@ -5357,7 +5363,7 @@ async function loadDashboard(){
       vs=(d.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{
         const done=new Set(v.completed||[]);
         if(v.has_thumb)done.add('bgimage').add('psd_composite').add('thumbnail');
-        return {name:v.name,num:v.vol,title:'',publish_date:v.publish_date,channel_id:ch.channel_id,has_music:done.has('rename'),has_mp4:done.has('export'),has_upload:!!v.is_uploaded,progress:{done_stages:[...done],next_stage:v.current||''}};
+        return {name:v.name,num:v.vol,title:'',publish_date:v.publish_date,channel_id:ch.channel_id,has_music:done.has('rename'),has_mp4:(done.has('export')||done.has('render')),has_upload:!!v.is_uploaded,progress:{done_stages:[...done],next_stage:v.current||''}};
       }));
     }else{
       const d=await (await fetch('/api/videos')).json();vs=d.videos||[];
@@ -11469,7 +11475,7 @@ async function pollStatus(){
       if(gBar){gBar.style.display='block';gFill.style.width=pct+'%'}
       setTimeout(pollStatus,1500);
     }else if(pipelineRunning){
-      const phaseLabel={suno:'楽曲生成',rename:'楽曲加工',premiere:'自動配置',export:'書き出し',meta:'メタ生成',upload:'アップロード'}[pipelinePhase]||pipelinePhase;
+      const phaseLabel={suno:'楽曲生成',select:'楽曲選定',rename:'楽曲加工',bgimage:'背景画像',composite:'画像合成',psd_composite:'画像合成',premiere:'自動配置',render:'書き出し',export:'書き出し',qa:'検査',meta:'メタ生成',localization:'多言語',thumbnail:'サムネ',upload:'アップロード'}[pipelinePhase]||pipelinePhase;
       e.innerHTML=`<span class="status-dot status-running"></span><span class="status-text">${esc(pipelineStepInfo)} ${esc(phaseLabel.slice(0,16))}</span>`;
       if(gBar){gBar.style.display='block';gFill.style.width='50%'}
       setTimeout(pollStatus,2000);

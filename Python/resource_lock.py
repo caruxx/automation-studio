@@ -18,9 +18,11 @@ RESOURCE_ALIASES = {
     "premiere": "premiere-ame",
     "export": "premiere-ame",
     "premiere-ame": "premiere-ame",
+    "render": "premiere-ame",
     "psd": "photoshop",
     "psd_composite": "photoshop",
     "photoshop": "photoshop",
+    "composite": "photoshop",
 }
 
 

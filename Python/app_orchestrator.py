@@ -185,8 +185,8 @@ class StageWorker:
                 if r.get("status") == "done":
                     # done run は full pipeline 完走 or --from 再開完走。stage 到達済みとみなす。
                     return True
-        # フォルダ成果物による補助判定（export は mp4）
-        if stage == "export":
+        # フォルダ成果物による補助判定（render は mp4）
+        if stage in ("render", "export"):
             return _has_export_mp4(folder)
         return False
 
@@ -197,10 +197,27 @@ class StageWorker:
             func = _pipe.STEP_FUNCS.get(stage)
             if func is None:
                 return Exit.FAIL
-            r = func(vol, folder, via_api, **kw)
+            # 失効（前段の出力が変わった）工程は強制再生成 env を立てて実行し、成功したら完了を記録する
+            # （app_pipeline.main と同じ扱い。autopilot 経路でも記録が更新されるようにする）。
+            force_env = _pipe._stale_force_env(stage, folder, vol) if hasattr(_pipe, "_stale_force_env") else None
+            prev_force = os.environ.get(force_env) if force_env else None
+            if force_env:
+                os.environ[force_env] = "1"
+            try:
+                r = func(vol, folder, via_api, **kw)
+            finally:
+                if force_env:
+                    if prev_force is None:
+                        os.environ.pop(force_env, None)
+                    else:
+                        os.environ[force_env] = prev_force
             code = _normalize_result(r)
             if code != Exit.OK:
+                if code not in (Exit.SELECTION_PENDING,) and hasattr(_pipe, "_record_stage_attempted"):
+                    _pipe._record_stage_attempted(stage, folder, vol)
                 return code
+            if hasattr(_pipe, "_record_stage_done"):
+                _pipe._record_stage_done(stage, folder, vol)
         return Exit.OK
 
     # ── 失敗判断 ──
@@ -220,7 +237,7 @@ class StageWorker:
         return Action.NOTIFY
 
     def resume_stage(self, stage: str) -> str:
-        """差し戻し先 stage（_RESUME_OVERRIDE 考慮。例 qa→premiere）。"""
+        """差し戻し先 stage（_RESUME_OVERRIDE 考慮。例 qa→render）。"""
         return getattr(_pipe, "_RESUME_OVERRIDE", {}).get(stage, stage)
 
     # ── 台帳記録 ──
@@ -270,8 +287,11 @@ class QAWorker(StageWorker):
         # 人間が原因を解消して qa_report.json を削除すると再検査対象に戻る。
         if not _has_export_mp4(folder):
             return False
+        # 再 render で qa の記録が失効した場合は、report が残っていても再検査の候補にする（step_qa は report を上書きする）。
+        # ただし同じ入力で既に検査して不合格なら候補にしない（毎 tick 再検査してブレーカーに至るのを防ぐ）。
         if (folder / "qa_report.json").exists():
-            return False
+            if not _ss.is_stale("qa", folder, vol) or _ss.attempted_for_current_input("qa", folder, vol):
+                return False
         return self._slot_available(channel_id=channel_id)
 
 
@@ -279,96 +299,24 @@ class QAWorker(StageWorker):
 # 台帳が一次情報だが、手動実行ぶんを拾うためフォルダ成果物も見る。
 # premiere だけはクリーンなファイル成果物が無い（Premiere プロジェクト内状態）ため
 # export mp4 を proxy にしつつ台帳併用。
-def _img_has(folder: Path, vol: int, *names: str) -> bool:
-    img = folder / "Image"
-    for n in names:
-        if (folder / n).exists() or (img / n).exists():
-            return True
-    return False
-
-
-def _bgimage_done(folder: Path, vol: int) -> bool:
-    return _img_has(folder, vol, f"vol{vol}.png", f"vol{vol}.jpg")
-
-
-def _suno_done(folder: Path, vol: int) -> bool:
-    """SUNO生成/DL済み。後処理後の music だけ残る既存volも完了扱い。"""
-    for sub in ("original_music", "music"):
-        root = folder / sub
-        if root.is_dir() and any(p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".m4a")
-                                 for p in root.iterdir()):
-            return True
-    return False
-
-
-def _rename_done(folder: Path, vol: int) -> bool:
-    root = folder / "music"
-    return root.is_dir() and any(p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".m4a")
-                                 for p in root.iterdir())
-
-
-def _psd_done(folder: Path, vol: int) -> bool:
-    # template_psd 未設定なら step_psd_composite は no-op（True 即返し）→ 完了扱い。
-    try:
-        if not _pipe._should_run_psd(folder):
-            return True
-    except Exception:
-        pass
-    return _img_has(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
-
-
-def _premiere_done(folder: Path, vol: int) -> bool:
-    # ファイル成果物なし。export mp4 があれば premiere は確実に完了済み（台帳でも補完）。
-    return _has_export_mp4(folder)
-
-
-def _export_done(folder: Path, vol: int) -> bool:
-    return _has_export_mp4(folder)
-
-
-def _qa_done(folder: Path, vol: int) -> bool:
-    # qa_report.json があり passed:true のみ done。passed:false（不合格/検査不能）は
-    # done でも候補でもない保留状態＝人間が原因を直して qa_report.json を消すまで
-    # 後続 stage に進めない（壊れ mp4 で report 無し→再dispatchループ→ブレーカー
-    # 発動した vol87 の再発防止）。
-    p = folder / "qa_report.json"
-    if not p.exists():
-        return False
-    try:
-        return bool(json.loads(p.read_text(encoding="utf-8")).get("passed", False))
-    except Exception:
-        return False
-
-
-def _meta_done(folder: Path, vol: int) -> bool:
-    # step_meta は youtube_{title,description,tags}.txt を書き出す（title を代表に判定）。
-    return (folder / "youtube_title.txt").exists()
-
-
-def _localization_done(folder: Path, vol: int) -> bool:
-    return (folder / "youtube_localizations.json").exists()
-
-
-def _thumbnail_done(folder: Path, vol: int) -> bool:
-    return _img_has(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
-
-
-def _upload_done(folder: Path, vol: int) -> bool:
-    return (folder / "youtube_upload.json").exists()
-
+# 成果物による完了判定は stage_state（done_validator）へ集約した。旧工程名のキーは段階 2c の切替まで残す。
+import stage_state as _ss
 
 _ARTIFACT_DONE = {
-    "suno": _suno_done,
-    "rename": _rename_done,
-    "bgimage": _bgimage_done,
-    "psd_composite": _psd_done,
-    "premiere": _premiere_done,
-    "export": _export_done,
-    "qa": _qa_done,
-    "meta": _meta_done,
-    "localization": _localization_done,
-    "thumbnail": _thumbnail_done,
-    "upload": _upload_done,
+    "suno": _ss.suno_done,
+    "select": _ss.selection_processed,
+    "rename": _ss.rename_done,
+    "bgimage": _ss.bgimage_done,
+    "psd_composite": _ss.composite_done,
+    "composite": _ss.composite_done,
+    "premiere": _ss.export_done,
+    "export": _ss.export_done,
+    "render": _ss.export_done,
+    "qa": _ss.qa_done,
+    "meta": _ss.meta_done,
+    "localization": _ss.localization_done,
+    "thumbnail": _ss.thumbnail_done,
+    "upload": _ss.upload_done,
 }
 
 
@@ -390,9 +338,20 @@ def _ledger_stage_done(stage: str, vol: int, channel_id: str = "") -> bool:
 
 
 def _stage_artifact_done(stage: str, folder: Path, vol: int, channel_id: str = "") -> bool:
-    fn = _ARTIFACT_DONE.get(stage)
-    if fn and fn(folder, vol):
+    """成果物 + input_hash（stage_state）で完了を判定し、無ければ台帳で補う。
+    記録があり入力が変わっている工程は、成果物や台帳に done があっても失効（未完了）。"""
+    try:
+        verdict = _ss.evaluate(stage, folder, vol)  # done / stale / pending / unknown（廃止工程）
+    except Exception:
+        verdict = "unknown"
+    if verdict in ("stale", "missing"):
+        return False  # 記録済み工程は validator 必須（台帳の done で代用しない）
+    if verdict == "done":
         return True
+    if verdict == "unknown":
+        fn = _ARTIFACT_DONE.get(stage)
+        if fn and fn(folder, vol):
+            return True
     return _ledger_stage_done(stage, vol, channel_id)
 
 
@@ -440,9 +399,11 @@ class UploadWorker(StageWorker):
         super().__init__(domain="upload", stages=["upload"])
 
     def can_run(self, vol: int, folder: Path, *, channel_id: str = "") -> bool:
-        if not _qa_done(folder, vol):
+        # qa は validator 必須（passed:true のみ。台帳の done run では代用しない）。
+        # upload は marker（youtube_upload.json）の有無だけで判定し、失効を見ない（再投稿は段階 3 の更新のみ経路で扱う）。
+        if _ss.evaluate("qa", folder, vol) != "done":
             return False
-        if _upload_done(folder, vol):
+        if _ss.upload_done(folder, vol):
             return False
         return self._slot_available(channel_id=channel_id)
 
@@ -520,9 +481,8 @@ class PlanWorker(StageWorker):
 # per-channel 設定で絞る（既定 = export〜thumbnail）。
 WORKERS: dict[str, StageWorker] = {
     "bgimage":       StepWorker(domain="bgimage", stages=["bgimage"], domain_label="image"),
-    "psd_composite": StepWorker(domain="psd_composite", stages=["psd_composite"], domain_label="image"),
-    "premiere":      StepWorker(domain="premiere", stages=["premiere"], domain_label="video"),
-    "export":        StepWorker(domain="export", stages=["export"], domain_label="video"),
+    "composite":     StepWorker(domain="composite", stages=["composite"], domain_label="image"),
+    "render":        StepWorker(domain="render", stages=["render"], domain_label="video"),
     "qa":            QAWorker(),
     "meta":          StepWorker(domain="meta", stages=["meta"], domain_label="publish"),
     "localization":  StepWorker(domain="localization", stages=["localization"], domain_label="publish"),
@@ -537,7 +497,12 @@ ALL_WORKERS: dict[str, StageWorker] = {"plan": PLAN_WORKER, **WORKERS}
 # autopilot 既定範囲（app.py 統合時に tick 対象を絞るためのヒント）。
 # plan を入れると「次 vol を自動起案」になるが、§9-2 で空枠作成までは許容範囲。
 # ただし既定では含めない（明示 opt-in）。
-AUTOPILOT_DEFAULT_STAGES = ["export", "qa", "meta", "localization", "thumbnail", "upload"]
+AUTOPILOT_DEFAULT_STAGES = ["render", "qa", "meta", "localization", "thumbnail", "upload"]
+
+
+def canonical_domain(name: str) -> str:
+    """autopilot 設定などで渡される旧工程名を WORKERS のキーに写す（premiere は render）。"""
+    return _pipe.canonical_step(name) if hasattr(_pipe, "canonical_step") else name
 
 
 # ─── オーケストレーション tick（APScheduler 定期ジョブから呼ぶ想定） ───
@@ -570,20 +535,8 @@ def evaluate(channels: list[dict], *, dry_run: bool = True,
                 continue
             for domain, worker in pool.items():
                 try:
-                    # ffmpeg チャンネルは app_ffrender が配置+書き出しを
-                    # export の1工程で行う。汎用 StepWorker の直前工程判定に
-                    # 任せると premiere 候補が残り、export は永久に候補に
-                    # ならないため、ここで経路を置換する。
-                    if export_engine == "ffmpeg" and domain == "premiere":
-                        continue
-                    if export_engine == "ffmpeg" and domain == "export":
-                        can_run = (
-                            _stage_artifact_done("psd_composite", folder, vol, channel_id=ch_id)
-                            and not _stage_artifact_done("export", folder, vol, channel_id=ch_id)
-                            and worker._slot_available(channel_id=ch_id)
-                        )
-                    else:
-                        can_run = worker.can_run(vol, folder, channel_id=ch_id)
+                    # render の前段は STEPS 上 composite（段階 2c で premiere を廃止したので特別扱いは不要）
+                    can_run = worker.can_run(vol, folder, channel_id=ch_id)
                     if can_run:
                         candidates.append(Candidate(domain=domain, vol=vol,
                                                     folder=str(folder), channel_id=ch_id))
@@ -904,14 +857,14 @@ if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as _td:
         _tp = Path(_td)
-        assert _qa_done(_tp, 1) is False, "report 無し → not done"
+        assert _ss.qa_done(_tp, 1) is False, "report 無し → not done"
         (_tp / "test_vol1.mp4").write_bytes(b"x")
         assert WORKERS["qa"].can_run(1, _tp) is True, "mp4 あり + report 無し → 候補"
         (_tp / "qa_report.json").write_text('{"passed": false, "issues": ["x"]}', encoding="utf-8")
-        assert _qa_done(_tp, 1) is False, "passed:false → not done（保留）"
+        assert _ss.qa_done(_tp, 1) is False, "passed:false → not done（保留）"
         assert WORKERS["qa"].can_run(1, _tp) is False, "passed:false → 候補外（再dispatchしない）"
         (_tp / "qa_report.json").write_text('{"passed": true}', encoding="utf-8")
-        assert _qa_done(_tp, 1) is True, "passed:true → done"
+        assert _ss.qa_done(_tp, 1) is True, "passed:true → done"
     print("qa_done logic asserts: PASS")
     print("WORKERS に upload 無し（自動投稿しない）:", "upload" not in WORKERS)
     # policy-aware 配分の単体確認

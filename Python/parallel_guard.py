@@ -29,8 +29,10 @@ RESOURCE_LOCKS = {
     "suno-download": "suno-browser",
     "premiere": "premiere-ame",
     "export": "premiere-ame",
+    "render": "premiere-ame",
     "psd": "photoshop",
     "psd_composite": "photoshop",
+    "composite": "photoshop",
 }
 
 

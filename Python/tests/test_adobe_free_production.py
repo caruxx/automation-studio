@@ -96,8 +96,8 @@ class AdobeFreeProductionTest(unittest.TestCase):
              patch.object(pipeline, "_run_ffrender_export", return_value=True) as render:
             self.assertFalse(hasattr(pipeline, "_enqueue_and_wait"))
             self.assertEqual(pipeline._export_engine(), "ffmpeg")
-            self.assertTrue(pipeline.step_premiere(1, self.folder, True))
-            self.assertTrue(pipeline.step_export(1, self.folder, True))
+            self.assertFalse(hasattr(pipeline, "step_premiere"))
+            self.assertTrue(pipeline.step_render(1, self.folder, True))
             render.assert_called_once()
             self.assertNotIn("PSD", pipeline._step_label("psd_composite"))
         # 段階 1a: 旧設定 export_engine=ame が残っていても常に ffmpeg（警告のみ）
@@ -186,14 +186,14 @@ class FfmpegOnlyDefaultTest(unittest.TestCase):
             self.assertTrue(pipeline.step_psd_composite(2, self.folder, False))
         compose.assert_called_once()
 
-    def test_premiere_step_is_noop_and_export_uses_ffrender(self):
+    def test_render_uses_ffrender_and_premiere_is_gone(self):
         with patch.object(pipeline, "_load_dashboard_config", return_value=self.empty_config), \
              patch.object(pipeline, "_music_selection_gate", return_value=None), \
              patch.object(pipeline, "_run", side_effect=AssertionError("Adobe must not run")), \
              patch.object(pipeline, "_api_post", side_effect=AssertionError("Adobe must not run")), \
              patch.object(pipeline, "_run_ffrender_export", return_value=True) as ffrender:
-            self.assertTrue(pipeline.step_premiere(2, self.folder, False))
-            self.assertTrue(pipeline.step_export(2, self.folder, False))
+            self.assertNotIn("premiere", pipeline.STEPS)
+            self.assertTrue(pipeline.step_export(2, self.folder, False))  # 旧名の別名
         ffrender.assert_called_once()
 
     def test_preflight_reports_missing_tools(self):

@@ -176,7 +176,7 @@ class MusicReviewTest(unittest.TestCase):
     def test_pipeline_and_rendering_gate_pending_selection(self):
         import app_pipeline, app_timeline, app_ffrender
         self.assertEqual(app_pipeline.step_rename(1, self.folder, False), "awaiting_selection")
-        self.assertEqual(app_pipeline.step_premiere(1, self.folder, False), "awaiting_selection")
+        self.assertEqual(app_pipeline.step_select(1, self.folder, False), "awaiting_selection")
         self.assertEqual(app_pipeline.step_export(1, self.folder, False), "awaiting_selection")
         self.assertEqual(app_pipeline.step_upload(1, self.folder, False), "awaiting_selection")
         with self.assertRaises(catalog.SelectionPending): app_timeline._audio_files(self.folder)

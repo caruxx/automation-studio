@@ -70,5 +70,49 @@ class WorkflowDefinitionTest(unittest.TestCase):
                 self.assertIn(new, order)
 
 
+class StepNamesTest(unittest.TestCase):
+    def test_pipeline_steps_follow_stage_order_and_accept_legacy_names(self):
+        import app_pipeline as p
+        self.assertEqual(p.STEPS, [s for s in ec.stage_order() if s != "publish_verify"])
+        self.assertEqual(set(p.STEP_FUNCS), set(p.STEPS_WITH_PLAN))
+        self.assertNotIn("premiere", p.STEP_FUNCS)
+        for old, new in (("psd_composite", "composite"), ("export", "render"), ("premiere", "render"), ("plan", "plan"), ("qa", "qa")):
+            self.assertEqual(p.canonical_step(old), new)
+        self.assertIs(p.step_export, p.step_render)
+        self.assertIs(p.step_psd_composite, p.step_composite)
+        self.assertEqual(p._RESUME_OVERRIDE["qa"], "render")
+        self.assertIn("画像合成", p._step_label("psd_composite"))
+        import app_orchestrator as o
+        self.assertEqual(set(o.WORKERS) - {"qa", "upload"}, {"bgimage", "composite", "render", "meta", "localization", "thumbnail"})
+        self.assertEqual(o.canonical_domain("export"), "render")
+        self.assertEqual(o.AUTOPILOT_DEFAULT_STAGES[0], "render")
+        import json as _json
+        routes = _json.loads((Path(__file__).resolve().parents[1] / "routes.json").read_text(encoding="utf-8"))["intents"]
+        self.assertEqual(routes["composite"]["cli"]["cmd"][-1], "composite")
+        self.assertEqual(routes["render"]["cli"]["cmd"][-1], "render")
+        self.assertEqual(ec.WORKFLOW_VERSION, "2026-10-26.1")
+
+    def test_cli_maps_legacy_from_step(self):
+        import os as _os
+        import subprocess, sys as _sys
+        import shutil, tempfile
+        env = {**_os.environ, "APP_PIPELINE_STEPS": "psd_composite,premiere,export,bogus"}
+        here = Path(__file__).resolve().parents[1]
+        ch = Path(tempfile.mkdtemp(prefix="wf_cli_"))
+        try:
+            (ch / "1_test").mkdir()
+            r = subprocess.run([_sys.executable, str(here / "app_pipeline.py"), "1", "--dry-run", "--channel-folder", str(ch)],
+                               capture_output=True, text=True, env=env, timeout=60)
+            out = r.stdout + r.stderr
+            self.assertIn("画像合成", out)
+            self.assertIn("FFmpeg", out)
+            self.assertNotIn("Premiere 自動配置", out)
+            self.assertEqual(out.count("[1]"), 1)
+            self.assertIn("[2]", out)
+            self.assertNotIn("[3]", out)  # bogus は捨て、premiere は render に写って重複しない
+        finally:
+            shutil.rmtree(ch, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
