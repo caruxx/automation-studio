@@ -184,8 +184,11 @@ curl -s http://localhost:8888/api/analysis/hot-channels?top_n=10
 # 起動（launchd 常駐は 2026-07-04 に廃止。常に手動起動）
 bash Python/start.sh
 
-# 停止
-lsof -ti:8888 | xargs kill -9
+# 停止（SIGTERM。kill -9 は使わない）
+lsof -nP -iTCP:8888 -sTCP:LISTEN -t | xargs kill
+
+# 再起動（稼働中なら止めてから起動）
+bash Python/start.sh --replace
 ```
 
 ## ユーザーからの自然言語指示 → 実行マッピング
@@ -214,7 +217,7 @@ lsof -ti:8888 | xargs kill -9
 | 「競合分析から提案して」 | Web UI「AI 提案（ベンチマーク連動）」パネル、または `curl POST /api/videos/.../suggest-all`（競合分析を内部で反映。旧 suggest-with-analysis は廃止） |
 | 「今伸びてるチャンネルは？」 | `curl GET /api/analysis/hot-channels?top_n=10` |
 | 「WEB を起動して」 | `bash Python/start.sh` |
-| 「WEB を再起動して」 | `lsof -ti:8888 | xargs kill; bash Python/start.sh` |
+| 「WEB を再起動して」 | `bash Python/start.sh --replace` |
 | 「ライブ配信を開始して/止めて」 | `curl POST /api/live/streams/<id>/start`（stop/restart も同形）。状態は `curl GET /api/live/status` |
 | 「ライブの動画を差し替えて」 | 設定変更後 `curl POST /api/live/streams/<id>/swap`（プレイリスト次へは `?next=1`）。**配信は止まらない** |
 | 「ライブ配信の調子は？」「VPS の負荷は？」 | `curl GET /api/live/status`（load/mem/送信Mbps/グループ別容量 + 配信別稼働）。ログは `GET /api/live/streams/<id>/log` |
@@ -286,7 +289,7 @@ for v in vs:
 
 | エラー | 対処 |
 |--------|------|
-| Web サーバーが応答しない | `lsof -ti:8888 | xargs kill; bash Python/start.sh` で再起動 |
+| Web サーバーが応答しない | `bash Python/start.sh --replace` で再起動 |
 | パイプライン途中で止まった | `python3 app_pipeline.py <vol> --from <止まった工程>` で再開 |
 | Claude CLI がない | `which claude` で確認。無ければ Claude Code CLI をインストール |
 

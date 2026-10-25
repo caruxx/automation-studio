@@ -86,12 +86,12 @@ def ensure_server() -> None:
     if server_responding():
         print("preflight server: ok")
         return
-    print("preflight server: not responding; starting with bash Python/start.sh")
+    print("preflight server: not responding; starting with bash Python/start.sh --replace")
     preflight_log = ROOT / "logs" / "batch" / "preflight_server.log"
     preflight_log.parent.mkdir(parents=True, exist_ok=True)
     stream = preflight_log.open("ab")
     subprocess.Popen(
-        ["bash", str(BASE / "start.sh")],
+        ["bash", str(BASE / "start.sh"), "--replace"],
         cwd=str(ROOT),
         stdout=stream,
         stderr=subprocess.STDOUT,

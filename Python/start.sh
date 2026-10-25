@@ -47,6 +47,11 @@ find_python() {
     return 1
 }
 
+if [[ ! -f "$ROOT_DIR/requirements.lock" ]]; then
+    echo "requirements.lock が見つかりません: $ROOT_DIR/requirements.lock" >&2
+    exit 1
+fi
+
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
     PY="$(find_python || true)"
     if [[ -z "$PY" ]]; then
@@ -65,9 +70,28 @@ if ! "$VENV_DIR/bin/python" -c 'import fastapi, uvicorn, apscheduler, googleapic
     "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.lock"
 fi
 
-# ポート確認: 使用中なら止めずに終了する（kill -9 は廃止）
-if lsof -ti:"$PORT" >/dev/null 2>&1; then
-    echo "ポート $PORT は使用中です。既存プロセスを確認してから再実行してください: lsof -ti:$PORT" >&2
+# ポート確認（LISTEN しているプロセスだけを見る）
+listen_pids() {
+    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true
+}
+wait_port_free() {
+    local n=0
+    while [[ -n "$(listen_pids)" && $n -lt 20 ]]; do sleep 0.5; n=$((n+1)); done
+    [[ -z "$(listen_pids)" ]]
+}
+if [[ "${1:-}" == "--replace" ]]; then
+    # 稼働中のサーバーを SIGTERM で止めてから起動する（kill -9 は使わない）
+    PIDS="$(listen_pids)"
+    if [[ -n "$PIDS" ]]; then
+        echo "ポート $PORT の既存プロセス ($PIDS) に停止を要求します"
+        kill $PIDS 2>/dev/null || true
+        if ! wait_port_free; then
+            echo "既存プロセスが 10 秒以内に止まりませんでした。手動で確認してください: lsof -nP -iTCP:$PORT -sTCP:LISTEN" >&2
+            exit 1
+        fi
+    fi
+elif ! wait_port_free; then
+    echo "ポート $PORT は使用中です。入れ替えるなら bash Python/start.sh --replace を使ってください" >&2
     exit 1
 fi
 

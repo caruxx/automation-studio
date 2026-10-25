@@ -53,9 +53,7 @@
 ```bash
 git clone https://github.com/caruxx/automation-studio.git
 cd automation-studio
-pipx install ".[all]"   # SUNO（Playwright）込み
-# または最小:
-pipx install .          # Web ダッシュボードのみ
+bash Python/start.sh    # 初回は .venv を作成し requirements.lock から依存を導入してから起動
 ```
 
 ブラウザ自動化を使う場合は Playwright のブラウザもインストール:

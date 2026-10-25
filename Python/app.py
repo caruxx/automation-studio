@@ -2080,14 +2080,14 @@ def api_update_channel(channel_id: str, req: ChannelUpdate):
     return {"status": "ok", "channel": ch}
 
 def _schedule_self_restart(delay_sec: float = 1.5):
-    """app_id 切替反映のため、delay 後に start.sh を起動して自身を置き換える。
-    start.sh が :8888 を kill → python3 app.py を exec（新 app_id を resolve）。
-    デタッチ起動なので現リクエストのレスポンスは先に返る。"""
+    """app_id 切替反映のため、delay 後に start.sh --replace を起動して自身を置き換える。
+    start.sh --replace が :8888 の LISTEN プロセス（＝自分）に SIGTERM を送り、停止を待ってから
+    python app.py を exec する（新 app_id を resolve）。デタッチ起動なので現リクエストのレスポンスは先に返る。"""
     import shlex
     script = SHARED_BASE / "Python" / "start.sh"
     try:
         subprocess.Popen(
-            ["bash", "-c", f"sleep {delay_sec}; bash {shlex.quote(str(script))}"],
+            ["bash", "-c", f"sleep {delay_sec}; bash {shlex.quote(str(script))} --replace"],
             start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"[switch] app_id 切替のため {delay_sec}s 後に自己再起動を予約")
     except Exception as e:
@@ -8879,7 +8879,7 @@ def _run_uvicorn():
     print(f"Web: {WEB_DIR}")
     print(f"Config: {CONFIG_DIR}")
     # ポートは 8888 固定（フォールバックの 8889/8890... 揺れを止める）。
-    # 8888 が使用中の場合は start.sh が起動前に kill する責務。
+    # 8888 が使用中の場合は start.sh が起動を拒否する（入れ替えは start.sh --replace）。
     # APP_PORT / ORZZ_PORT env で明示指定された場合のみ上書き可能。
     port_env = (os.environ.get("APP_PORT") or os.environ.get("ORZZ_PORT"))
     port = int(port_env) if port_env else 8888
