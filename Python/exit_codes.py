@@ -123,6 +123,30 @@ def ledger_status_for(code: int) -> str:
     return "failed"
 
 
+def stage_order() -> list[str]:
+    return list(_WORKFLOW.get("stage_order") or [])
+
+
+def stages() -> list[dict[str, Any]]:
+    return list(_WORKFLOW.get("stages") or [])
+
+
+def stage_aliases() -> dict[str, Optional[str]]:
+    return dict(_WORKFLOW.get("stage_aliases") or {})
+
+
+def resources() -> list[dict[str, Any]]:
+    return list(_WORKFLOW.get("resources") or [])
+
+
+def canonical_stage(name: str) -> Optional[str]:
+    """旧工程名を新工程名に写す。廃止工程（premiere）は None。"""
+    aliases = stage_aliases()
+    if name in aliases:
+        return aliases[name]
+    return name
+
+
 def builtin_matches_workflow() -> list[str]:
     """組み込み既定表・ExitCode・workflow.json の不一致を列挙する（テスト用）。"""
     problems: list[str] = []

@@ -218,8 +218,8 @@ def _sanitize_visualizer(value: dict | None, *, legacy: bool = False) -> dict:
 
 
 def display_title(filename: str) -> str:
-    stem = Path(str(filename or "")).stem
-    return public_track_title(re.sub(r"^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*", "", stem, flags=re.I).strip() or stem)
+    from naming import title_from_filename  # 命名規則の単一正本
+    return title_from_filename(filename)
 
 
 def probe_duration(path: Path) -> float:

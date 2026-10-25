@@ -67,6 +67,7 @@ API_BASE = "http://localhost:8888"
 # 78: preflight 失敗（ffmpeg / ffprobe / Pillow 不足。各 step を実行せず早期終了）
 # 79: 楽曲選定待ち（待機であり失敗ではない）
 from exit_codes import ExitCode as _ExitCode
+import naming as _naming  # 命名規則の単一正本
 EXIT_UNATTENDED = int(_ExitCode.UNATTENDED_LOGIN)
 EXIT_RETRYABLE = int(_ExitCode.RETRYABLE)
 EXIT_QUOTA_EXHAUSTED = int(_ExitCode.QUOTA_EXHAUSTED)
@@ -1611,8 +1612,7 @@ def _resolve_external_output_path(vol: int, folder: Path):
 
     file_prefix = (cfg.get("file_prefix") or "").strip()
     if not file_prefix:
-        fm = re.match(r"^\d+_([^_]+)", folder.name)
-        file_prefix = fm.group(1) if fm else "vol"
+        file_prefix = _naming.folder_prefix(folder.name)
 
     # 配置: <ext_dir>/<prefix>_vol{N}.mp4（flat 配置）
     # 旧: <ext_dir>/<vol_folder.name>/<prefix>_vol{N}.mp4 という per_video サブフォルダを
@@ -1740,9 +1740,8 @@ def _resolve_local_output_path(vol: int, folder: Path) -> Path:
     if not prefix:
         prefix = (_load_dashboard_config().get("file_prefix") or "").strip()
     if not prefix:
-        fm = re.match(r"^\d+_([^_]+)", folder.name)
-        prefix = fm.group(1) if fm else "vol"
-    return folder / f"{prefix}_vol{num}.mp4"
+        prefix = _naming.folder_prefix(folder.name)
+    return folder / _naming.video_name(prefix, num)
 
 
 def _run_ffrender_export(vol: int, folder: Path, kw: dict) -> bool:
