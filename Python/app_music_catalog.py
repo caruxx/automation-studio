@@ -304,9 +304,9 @@ def _export(conn, batch_id):
     # AI 選曲の採点と試行回数も出す（他ツールが品質待機の根拠を読めるように）
     state["scores"] = {r["clip_id"]: dict(r) for r in conn.execute(
         "SELECT * FROM take_scores WHERE batch_id=? ORDER BY clip_id", (batch_id,))}
-    state["ai_select_attempts"] = sum(
-        1 for r in conn.execute("SELECT detail_json FROM events WHERE kind='ai_select_failed'")
-        if _detail_batch(r["detail_json"]) == batch_id)
+    state["ai_select_attempts"] = int(conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE kind='ai_select_failed' AND json_extract(detail_json,'$.batch_id')=?",
+        (batch_id,)).fetchone()["n"])
     path = Path(state["folder"]) / ".music_review.json"
     part = path.with_suffix(".json.part")
     part.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -373,7 +373,7 @@ def load_music_selection_config(folder):
       - `music_selection_mode: "ai" | "human"`（トップレベル）
       - `music_selection: {mode, prompt, policy: {...}}`。`music_selection` 直下の min_sec / max_sec /
         max_silence_ratio / lufs_range / lufs_min / lufs_max / weights も policy として読む。
-    APP_CHANNEL_FOLDER があればそれを、無ければ動画フォルダの親をチャンネルフォルダとして読む。"""
+    動画フォルダの親（その vol が属するチャンネル）の設定を優先し、無ければ APP_CHANNEL_FOLDER を読む。"""
     folder = Path(folder)
     # 動画フォルダの親（その vol が属するチャンネル）を優先し、無ければ APP_CHANNEL_FOLDER。
     # UI のアクティブチャンネルの環境変数が残っていても、別チャンネルの選曲設定を読まない。
@@ -425,15 +425,9 @@ def choose_take_ai(batch_id, clip_id):
 def ai_select_attempts(batch_id):
     """AI 選曲の試行回数（品質待機・測定不能で止まった回数。段階 3 の再生成判断に使う）。"""
     with transaction() as conn:
-        rows = conn.execute("SELECT detail_json FROM events WHERE kind='ai_select_failed'").fetchall()
-    n = 0
-    for r in rows:
-        try:
-            if json.loads(r["detail_json"]).get("batch_id") == batch_id:
-                n += 1
-        except (TypeError, ValueError):
-            continue
-    return n
+        row = conn.execute("SELECT COUNT(*) AS n FROM events WHERE kind='ai_select_failed' AND json_extract(detail_json,'$.batch_id')=?",
+                           (batch_id,)).fetchone()
+        return int(row["n"]) if row else 0
 
 
 def _upsert_score(conn, batch_id, clip_id, m, fit, result):
@@ -508,10 +502,16 @@ def select_takes_ai(folder, *, policy=None, measurer=None, llm=None, prompt="", 
             result["groups_skipped"] += 1  # 後処理中、または対象テイクが消えた
     ai_targets = result["groups_selected_by_ai"] + result["groups_failed"]
     if not dry_run:
+        with transaction() as conn:
+            _export(conn, state["id"])  # 一部の群だけ不合格でも、採点をマニフェストに出す
         final = get_review(state["id"])
         result["ready"] = bool(final["ready"])
     else:
         result["ready"] = False
+    if not result["ready"]:
+        # 待機の理由: 不合格の群があれば quality（全群なら下で quality / unmeasured に確定）、
+        # 無ければ人の採用待ち（後処理中で見送った群を含む）
+        result["blocked_reason"] = "quality" if result["groups_failed"] else "human"
     if ai_targets and result["groups_failed"] == ai_targets:
         if result["groups_unmeasured"] == result["groups_failed"]:
             result["blocked_reason"] = "unmeasured"

@@ -208,6 +208,9 @@ class SelectTest(unittest.TestCase):
         r = catalog.select_takes_ai(self.folder, measurer=_measurer(table))
         self.assertEqual((r["groups_selected_by_ai"], r["groups_failed"]), (1, 1))
         self.assertFalse(r["ready"])
+        self.assertEqual(r["blocked_reason"], "quality")
+        manifest = json.loads((self.folder / ".music_review.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["scores"]), 4)  # 一部不合格でも全テイクの採点がマニフェストに出る
 
     def test_dry_run_changes_nothing_and_never_raises(self):
         table = {k: GOOD for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
@@ -265,9 +268,13 @@ class SelectTest(unittest.TestCase):
         with patch("music_scoring.measure", _measurer(table)):
             self.assertIsNone(p._music_selection_gate(self.folder))  # ai 既定: 自動で採用して通過
         self.assertTrue(catalog.get_review(self.batch)["ready"])
-        # processed=True のゲートは、選定済みでも後処理前なら待機し、測定はしない
+        # processed=True のゲートは、選定済みでも後処理前なら待機し、測定はしない。理由は processing
         with patch("music_scoring.measure", side_effect=AssertionError("測り直してはいけない")):
             self.assertEqual(p._music_selection_gate(self.folder, processed=True), "awaiting_selection")
+        self.assertEqual(p._LAST_SELECTION_REASON, "processing")
+        # 通過したら理由は初期値に戻る
+        self.assertIsNone(p._music_selection_gate(self.folder))
+        self.assertEqual(p._LAST_SELECTION_REASON, "human")
 
     def test_select_cli_exit_codes(self):
         import subprocess
@@ -278,7 +285,8 @@ class SelectTest(unittest.TestCase):
         (self.root / ".app_channel_config.json").write_text(json.dumps({"music_selection_mode": "human"}), encoding="utf-8")
         r = subprocess.run(cli + [str(self.folder), "--json"], env=env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 79)
-        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["mode"], "human")
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual((out["mode"], out["blocked_reason"]), ("human", "human"))
 
     def test_pipeline_gate_human_waits(self):
         import app_pipeline as p

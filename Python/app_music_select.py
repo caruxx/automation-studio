@@ -29,7 +29,8 @@ def main() -> int:
     from app_music_catalog import SelectionPending, load_music_selection_config, select_takes_ai
     cfg = load_music_selection_config(folder)
     if cfg["mode"] != "ai":
-        out = {"ok": False, "mode": cfg["mode"], "reason": "music_selection.mode が human のため AI 選曲しません"}
+        out = {"ok": False, "mode": cfg["mode"], "status": "blocked", "reason": "selection_pending", "blocked_reason": "human",
+               "message": "music_selection_mode が human のため AI 選曲しません"}
         print(json.dumps(out, ensure_ascii=False))
         return int(ExitCode.SELECTION_PENDING)
     try:

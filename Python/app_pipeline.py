@@ -83,13 +83,21 @@ def _music_selection_gate(folder, processed=False):
 
     human のときは従来どおり人のハートを待つ。AI が全曲不合格なら品質待機として同じ 79 で止まる。"""
     global _LAST_SELECTION_REASON
+    _LAST_SELECTION_REASON = "human"
     from app_music_catalog import require_selection, SelectionPending, load_music_selection_config, select_takes_ai
     try:
-        require_selection(folder, processed=processed)
+        state = require_selection(folder, processed=processed)
         return None
     except SelectionPending as exc:
         first = exc
     _LAST_SELECTION_REASON = getattr(first, "reason", "human")
+    if processed and _LAST_SELECTION_REASON == "human":
+        try:
+            st = require_selection(folder)  # 選定は済んでいて後処理だけ待っているか
+            if st is not None and st.get("ready"):
+                _LAST_SELECTION_REASON = "processing"
+        except SelectionPending:
+            pass
     cfg = load_music_selection_config(folder)
     if cfg["mode"] == "ai":
         try:
@@ -105,8 +113,12 @@ def _music_selection_gate(folder, processed=False):
             return "awaiting_selection"
         try:
             require_selection(folder, processed=processed)
+            _LAST_SELECTION_REASON = "human"
             return None
         except SelectionPending as exc:
+            _LAST_SELECTION_REASON = getattr(exc, "reason", "human")
+            if processed and _LAST_SELECTION_REASON == "human":
+                _LAST_SELECTION_REASON = "processing"
             print(str(exc), flush=True)
             return "awaiting_selection"
     print(str(first), flush=True)
@@ -3293,7 +3305,8 @@ def main():
         if ok == "awaiting_selection":
             _ledger_call(ledger_sync, "report_step", args.vol, s, "pending",
                          {"human": "楽曲のハート選択待ち", "quality": "品質待機（AI 選曲で全候補が不合格）",
-                          "unmeasured": "測定不能（ffmpeg / ffprobe を確認）"}.get(_LAST_SELECTION_REASON, "楽曲の選定待ち"))
+                          "unmeasured": "測定不能（ffmpeg / ffprobe を確認）",
+                          "processing": "選定済み。後処理（リネーム + フェード）待ち"}.get(_LAST_SELECTION_REASON, "楽曲の選定待ち"))
             print(f"◀ STEP {s} 結果: MUSIC_SELECTION_PENDING")
             print(f"ハート選択・後処理後に再開: python3 app_pipeline.py {args.vol} --from rename")
             sys.exit(EXIT_SELECTION_PENDING)
