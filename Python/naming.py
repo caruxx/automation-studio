@@ -103,7 +103,7 @@ def title_from_filename(filename: str, *, strip_z: bool = True, use_stem: bool =
 def safe_filename_stem(title: str) -> str:
     """ファイル名に使えない文字を落とし、先頭のドットと末尾の空白・ドットを除く。NFC に正規化。"""
     stem = unicodedata.normalize("NFC", _UNSAFE_CHARS_RE.sub("", str(title or "")))
-    return stem.strip().lstrip(".").rstrip(" .")
+    return stem.strip().lstrip(".").strip().rstrip(" .")
 
 
 def _name_key(name: str) -> str:

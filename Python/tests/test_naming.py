@@ -28,6 +28,10 @@ class VolFolderTest(unittest.TestCase):
         self.assertEqual(naming.parse_vol_folder("12_EDM_991399"), naming.VolFolder(12, "EDM", None))  # 不正日付は date だけ None
         for bad in ("", "abc", "12_", "12_EDM_26103", "_EDM_261031"):
             self.assertIsNone(naming.parse_vol_folder(bad), msg=bad)
+        with self.assertRaises(ValueError):
+            naming.build_vol_folder(1, "a_b", dt.date(2026, 1, 1))
+        with self.assertRaises(ValueError):
+            naming.build_vol_folder(-1, "EDM", dt.date(2026, 1, 1))
 
     def test_publish_date_matches_old_regex(self):
         import datetime as _dt
@@ -43,13 +47,11 @@ class VolFolderTest(unittest.TestCase):
     def test_video_output_path_keeps_vol_spelling(self):
         import app_pipeline as p
         folder = Path("/tmp/x/05_EDM_261031")
-        with unittest.mock.patch.object(p, "_load_dashboard_config", lambda: {}):
+        with unittest.mock.patch.object(p, "_load_dashboard_config", lambda: {}), \
+                unittest.mock.patch.object(p, "_resolve_channel", lambda *a, **k: {}):
             self.assertEqual(p._resolve_local_output_path(5, folder).name, "EDM_vol05.mp4")
             self.assertEqual(p._resolve_local_output_path(7, Path("/tmp/x/noprefix")).name, "vol_vol7.mp4")
-        with self.assertRaises(ValueError):
-            naming.build_vol_folder(1, "a_b", dt.date(2026, 1, 1))
-        with self.assertRaises(ValueError):
-            naming.build_vol_folder(-1, "EDM", dt.date(2026, 1, 1))
+
 
     def test_folder_prefix_matches_old_regex(self):
         for name in ("12_EDM_261031", "3_QA", "7_orzz._260702", "noprefix", "12_"):
@@ -98,6 +100,7 @@ class TitleTest(unittest.TestCase):
         nfd = unicodedata.normalize("NFD", "ガーデン.mp3")
         self.assertEqual(naming.music_filename("ガーデン", taken=[nfd]), "ガーデン -2.mp3")  # NFD の一覧でも重複を検出
         self.assertEqual(naming.music_filename(".hidden. "), "hidden.mp3")
+        self.assertEqual(naming.music_filename(". foo"), "foo.mp3")
         self.assertEqual(naming.music_filename("(1)"), "(1).mp3")  # テイク番号だけの曲名は元の表記を保つ（public_track_title と同じ）
         with self.assertRaises(ValueError):
             naming.music_filename("")
