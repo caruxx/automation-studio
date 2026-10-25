@@ -64,6 +64,10 @@ def transaction():
               PRIMARY KEY(batch_id,clip_id));
             CREATE TABLE IF NOT EXISTS events (
               id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL, detail_json TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS take_scores (
+              batch_id TEXT NOT NULL, clip_id TEXT NOT NULL, duration_sec REAL, silence_ratio REAL,
+              lufs REAL, true_peak REAL, prompt_fit REAL, score REAL NOT NULL, passed INTEGER NOT NULL,
+              reason TEXT NOT NULL, scored_at TEXT NOT NULL, PRIMARY KEY(batch_id,clip_id));
             """)
             conn.execute("BEGIN IMMEDIATE")
             yield conn
@@ -295,6 +299,107 @@ def require_selection(folder, processed=False):
         raise SelectionPending(f"楽曲の選択待ち: {state['selected_count']}/{state['group_count']}タイトル。"
                                f"/static/music-review.html?batch={state['id']} でハートを選び、後処理してください")
     return state
+
+
+# ─── AI 選曲（select 工程） ───
+MUSIC_SELECTION_MODES = ("ai", "human")
+
+
+def load_music_selection_config(folder):
+    """チャンネル設定 `.app_channel_config.json` の music_selection {mode, policy}。既定は mode=ai。
+
+    APP_CHANNEL_FOLDER があればそれを、無ければ動画フォルダの親をチャンネルフォルダとして読む。"""
+    folder = Path(folder)
+    env_folder = (os.environ.get("APP_CHANNEL_FOLDER") or "").strip()
+    candidates = []
+    if env_folder:
+        candidates.append(Path(env_folder).expanduser() / ".app_channel_config.json")
+    candidates.append(folder.parent / ".app_channel_config.json")
+    cfg = {}
+    for path in candidates:
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8")) or {}
+                cfg = data.get("music_selection") or {}
+                break
+        except Exception:
+            continue
+    mode = str((cfg.get("mode") if isinstance(cfg, dict) else "") or "ai").strip().lower()
+    if mode not in MUSIC_SELECTION_MODES:
+        mode = "ai"
+    policy = cfg.get("policy") if isinstance(cfg, dict) and isinstance(cfg.get("policy"), dict) else {}
+    prompt = str(cfg.get("prompt") or "") if isinstance(cfg, dict) else ""
+    return {"mode": mode, "policy": policy, "prompt": prompt}
+
+
+def _upsert_score(conn, batch_id, clip_id, m, fit, result):
+    conn.execute("INSERT INTO take_scores VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(batch_id,clip_id) DO UPDATE SET "
+                 "duration_sec=excluded.duration_sec,silence_ratio=excluded.silence_ratio,lufs=excluded.lufs,"
+                 "true_peak=excluded.true_peak,prompt_fit=excluded.prompt_fit,score=excluded.score,passed=excluded.passed,"
+                 "reason=excluded.reason,scored_at=excluded.scored_at",
+                 (batch_id, clip_id, m.get("duration_sec"), m.get("silence_ratio"), m.get("lufs"), m.get("true_peak"),
+                  fit, float(result["score"]), int(bool(result["passed"])), "; ".join(result["reasons"]), now()))
+
+
+def list_scores(batch_id):
+    with transaction() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM take_scores WHERE batch_id=? ORDER BY clip_id", (batch_id,))]
+
+
+def select_takes_ai(folder, *, policy=None, measurer=None, llm=None, prompt="", dry_run=False):
+    """ハートの無いタイトル群だけ AI が採点して 1 テイクを選ぶ。
+
+    - 既にハートが付いた群は人の採用として触らない。
+    - 群内の合格テイクのうち最高点を choose_take する。合格が無い群は未選定のまま残す。
+    - 全ての対象群が不合格なら SelectionPending(reason=quality) を上げる（品質待機 = 79）。
+    戻り値: {batch_id, groups_total, groups_selected_by_ai, groups_human, groups_failed, ready, scores{clip_id: {...}}}
+    measurer / llm は差し替え可能（既定は music_scoring.measure と LLM なし）。"""
+    import music_scoring
+    state = review_state(folder)
+    if state is None:
+        raise ValueError("楽曲バッチが登録されていません（SUNO のダウンロードが先です）")
+    if not state["download_complete"]:
+        raise SelectionPending(f"ダウンロードが未完了のため選曲できません: {len(state['takes'])}/{state['expected']}")
+    measurer = measurer or music_scoring.measure
+    pol = music_scoring.policy_from(policy)
+    folder = Path(state["folder"])
+    groups = {}
+    for take in state["takes"]:
+        groups.setdefault(take["title_key"], []).append(take)
+    result = {"batch_id": state["id"], "groups_total": len(groups), "groups_selected_by_ai": 0,
+              "groups_human": 0, "groups_failed": 0, "scores": {}, "dry_run": bool(dry_run)}
+    failed_titles = []
+    for key, takes in groups.items():
+        if any(t["selected"] for t in takes):
+            result["groups_human"] += 1
+            continue
+        best = None
+        for t in takes:
+            m = measurer(folder / t["file"])
+            fit = music_scoring.prompt_fit(t["title"], prompt, llm) if llm else None
+            r = music_scoring.score(m, fit, pol)
+            result["scores"][t["clip_id"]] = {**m, "prompt_fit": fit, **r, "title": t["title"]}
+            if not dry_run:
+                with transaction() as conn:
+                    _upsert_score(conn, state["id"], t["clip_id"], m, fit, r)
+            if r["passed"] and (best is None or r["score"] > best[1]):
+                best = (t, r["score"])
+        if best is None:
+            result["groups_failed"] += 1
+            failed_titles.append(takes[0]["title"])
+            continue
+        if not dry_run:
+            choose_take(state["id"], best[0]["clip_id"], True)
+            with transaction() as conn:
+                _event(conn, "ai_selected", {"batch_id": state["id"], "clip_id": best[0]["clip_id"], "score": best[1]})
+        result["groups_selected_by_ai"] += 1
+    final = get_review(state["id"]) if not dry_run else state
+    result["ready"] = bool(final["ready"]) if not dry_run else False
+    ai_targets = result["groups_selected_by_ai"] + result["groups_failed"]
+    if ai_targets and result["groups_failed"] == ai_targets:
+        raise SelectionPending("品質待機: 全ての候補が不合格です（" + ", ".join(failed_titles[:5]) +
+                               "）。再生成するか、ハートで手動採用してください")
+    return result
 
 
 def process_selected(folder, processor, dry_run=False, force=False):

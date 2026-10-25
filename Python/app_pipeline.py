@@ -76,13 +76,35 @@ EXIT_SELECTION_PENDING = int(_ExitCode.SELECTION_PENDING)
 
 
 def _music_selection_gate(folder, processed=False):
-    from app_music_catalog import require_selection, SelectionPending
+    """楽曲の選定ゲート。未選定なら、チャンネル設定 music_selection.mode が ai（既定）のとき AI 選曲を 1 回試みる。
+
+    human のときは従来どおり人のハートを待つ。AI が全曲不合格なら品質待機として同じ 79 で止まる。"""
+    from app_music_catalog import require_selection, SelectionPending, load_music_selection_config, select_takes_ai
     try:
         require_selection(folder, processed=processed)
+        return None
     except SelectionPending as exc:
-        print(str(exc), flush=True)
-        return "awaiting_selection"
-    return None
+        first = exc
+    cfg = load_music_selection_config(folder)
+    if cfg["mode"] == "ai":
+        try:
+            r = select_takes_ai(folder, policy=cfg["policy"], prompt=cfg["prompt"])
+            print(f"AI 選曲: {r['groups_selected_by_ai']}/{r['groups_total']} 群を採用"
+                  f"（人の採用 {r['groups_human']}、不合格 {r['groups_failed']}）", flush=True)
+        except SelectionPending as exc:
+            print(str(exc), flush=True)
+            return "awaiting_selection"
+        except Exception as exc:
+            print(f"AI 選曲に失敗したため人の選定を待ちます: {exc}", flush=True)
+            return "awaiting_selection"
+        try:
+            require_selection(folder, processed=processed)
+            return None
+        except SelectionPending as exc:
+            print(str(exc), flush=True)
+            return "awaiting_selection"
+    print(str(first), flush=True)
+    return "awaiting_selection"
 
 STEPS = ["suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
 STEPS_WITH_PLAN = ["plan", "suno", "rename", "bgimage", "psd_composite", "premiere", "export", "qa", "meta", "localization", "thumbnail", "upload"]
