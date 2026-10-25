@@ -176,7 +176,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 >
 > **レンダーマニフェスト `.ffrender_manifest.json`（構成の正本）** — vol フォルダに保存。曲順・使用画像・尺・音声設定・焼き込み設定を固定する。`--swap '旧=新.mp3'` / `--remove '曲名'` で構成を差し替え、`--show-manifest` で表示、`--no-render` で manifest 操作だけ行う。
 >
-> **曲名焼き込み（`--burn-titles always`）** — 各曲の区間に曲名を**常時焼き込み**（drawtext、画像境界∪曲境界で分割→GOP→TS 連結）。書式は per-channel `.app_channel_config.json` の `burn_titles` ブロック（`font`/`fontsize`/`color`/`prefix`/`x`/`y`/`border`）で定義。mov_text ソフト字幕も併存。（補足: キャプショントラックのフォント/位置は ExtendScript 非公開のため Premiere Link では読めない。焼き込み書式は channel 設定で持つ。）
+> **曲名焼き込み（`--burn-titles always`）** — 各曲の区間に曲名を**常時焼き込み**（drawtext、画像境界∪曲境界で分割→GOP→TS 連結）。書式は per-channel `.app_channel_config.json` の `burn_titles` ブロック（`font`/`fontsize`/`color`/`prefix`/`x`/`y`/`border`）で定義。mov_text ソフト字幕も併存。
 | 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py |
 | 9 | `localization` | （自動） | 多言語メタ（非 fatal） | app_pipeline.py `step_localization` |
 | 10 | `thumbnail` | 画像タブ | `thumbnail.png` / `vol*.jpg` / `サムネイル.jpg` | app_channel_thumbnail.py（画像合成が使えない時のフォールバック） |

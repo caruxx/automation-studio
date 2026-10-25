@@ -25,7 +25,7 @@ launchd 常駐は 2026-07-04 に廃止。コード変更後は手動で再起動
 bash Python/start.sh --replace   # 稼働中なら SIGTERM で止めてから起動
 ```
 
-非常駐時だけ直接起動する。
+初回や停止中は `bash Python/start.sh` で起動する。
 
 ```bash
 bash Python/start.sh
