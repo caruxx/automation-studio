@@ -2,7 +2,7 @@
 // 過去版のキャッシュを破棄し、HTML と manifest は常にネットワーク優先とする。
 // 静的資産（/static/*）のみキャッシュ（stale-while-revalidate）。
 
-const CACHE_NAME = 'automation-studio-static-v4';
+const CACHE_NAME = 'automation-studio-static-v5';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

@@ -31,7 +31,7 @@
     const [runs, process, rq, workers, health, stock] = await Promise.allSettled([
       fetchJson('/api/runs/active'),
       fetchJson('/api/process/status'),
-      fetchJson('/api/render-queue?limit=20'),
+      Promise.resolve(null),  // render queue は段階 1a で廃止
       fetchJson('/api/workers/status'),
       fetchJson('/api/health'),
       fetchJson('/api/stock'),
@@ -143,10 +143,9 @@
 
   function renderHealthCard(h){
     const disk = h?.disk || {};
-    const rq = h?.render_queue || {};
     const freeGb = Number.isFinite(Number(disk.free_bytes)) ? (Number(disk.free_bytes) / 1024 / 1024 / 1024).toFixed(1) : null;
     const cls = h?.status === 'ok' ? 'e2-health-ok' : 'e2-health-warn';
-    card('e2CardHealth', `<div class="${cls}">${h?.status==='ok'?'正常':'要確認'}</div><div>定期実行: ${h?.scheduler?.orchestrator_registered?'有効':'停止中'}</div><div>書き出しキュー 待機 ${esc(String(rq.pending ?? '-'))} / 実行中 ${esc(String(rq.running ?? '-'))}</div><div class="e2-card-sub">空き ${freeGb ?? '-'} GB</div>${link('ledger','接続状態へ')}`);
+    card('e2CardHealth', `<div class="${cls}">${h?.status==='ok'?'正常':'要確認'}</div><div>定期実行: ${h?.scheduler?.orchestrator_registered?'有効':'停止中'}</div><div class="e2-card-sub">空き ${freeGb ?? '-'} GB</div>${link('ledger','接続状態へ')}`);
   }
 
   function mirrorUpdateGuard(g){
@@ -214,13 +213,11 @@
     ensureSettingsTabWiring();
     relocateSettingsLegacyPanels(preserved);
     ensureSettingsTools();
-    wireSettingsTemplateTool();
     switchSettingsTab(state.activeSettingsTab);
     filterSettingsCatalog();
     loadPostingStrategyRecommendation().catch(()=>{});
     loadImageModulesPanel().catch(()=>{});
     renderReferencePreviewTool().catch(()=>{});
-    loadToolTemplateOptions().catch(()=>{});
     loadConfigBackups().catch(()=>{});
     checkAppVersion?.();
     checkUpdateGuard?.();
@@ -450,7 +447,6 @@
     </article>`;
     grid.innerHTML = [
       toolCard('settingsToolChannels','チャンネル管理','チャンネル一覧と新規作成を開きます。','<button class="btn btn-secondary btn-sm" onclick="openChannelMgmt()">管理</button><button class="btn btn-primary btn-sm" onclick="openAddChannelFlow()">新規作成</button>'),
-      toolCard('settingsToolTemplates','テンプレ選択','prproj / psd 候補をスキャンしてカタログ値へ保存します。','<div class="e2-template-tool"><select class="fs" id="toolTemplatePrproj"></select><select class="fs" id="toolTemplatePsd"></select><button class="btn btn-primary btn-sm" onclick="E2UI.saveTemplateTool()">保存</button><button class="btn btn-secondary btn-sm" onclick="E2UI.loadToolTemplateOptions()">再スキャン</button></div><div class="e2-setting-status" id="toolTemplateStatus"></div>'),
       toolCard('settingsToolReferencePreview','参照画像プレビュー','背景画像生成で使う参照画像フォルダを確認します。','<button class="btn btn-secondary btn-sm" onclick="E2UI.renderReferencePreviewTool()">更新</button><div id="settingsToolReferencePreviewBody" class="e2-ref-preview"></div>'),
       toolCard('settingsToolDiscord','Discordテスト','保存済みWebhookへテスト通知を送ります。','<button class="btn btn-secondary btn-sm" onclick="E2UI.sendDiscordTest()">テスト送信</button><div class="e2-setting-status" id="settingsToolDiscordStatus"></div>'),
       toolCard('settingsToolDiagnostics','接続診断','認証・依存関係・サーバー状態を確認します。','<button class="btn btn-secondary btn-sm" onclick="checkCredentials()">認証確認</button><button class="btn btn-secondary btn-sm" onclick="checkSetup()">セットアップ確認</button><button class="btn btn-secondary btn-sm" onclick="E2UI.runConnectionDiagnostics()">API診断</button><div class="e2-setting-status" id="settingsToolDiagnosticsStatus"></div>'),
@@ -698,48 +694,12 @@
     el.type = el.type === 'password' ? 'text' : 'password';
   }
 
-  async function loadToolTemplateOptions(){
-    const pr = $('toolTemplatePrproj'), ps = $('toolTemplatePsd'), st = $('toolTemplateStatus');
-    if(!pr || !ps) return;
-    if(st) st.textContent = 'スキャン中...';
-    try{
-      const d = await fetchJson('/api/templates/list');
-      const prCurrent = await settingValue('channel.template_prproj');
-      const psCurrent = await settingValue('channel.template_psd');
-      pr.innerHTML = '<option value="">未選択</option>' + (d.prproj || []).map(x=>`<option value="${esc(x.filename)}">${esc(x.filename)}</option>`).join('');
-      ps.innerHTML = '<option value="">未選択</option>' + (d.psd || []).map(x=>`<option value="${esc(x.filename)}">${esc(x.filename)}</option>`).join('');
-      if(prCurrent && !Array.from(pr.options).some(o=>o.value===prCurrent)) pr.insertAdjacentHTML('beforeend', `<option value="${esc(prCurrent)}">${esc(prCurrent)}</option>`);
-      if(psCurrent && !Array.from(ps.options).some(o=>o.value===psCurrent)) ps.insertAdjacentHTML('beforeend', `<option value="${esc(psCurrent)}">${esc(psCurrent)}</option>`);
-      pr.value = prCurrent || '';
-      ps.value = psCurrent || '';
-      if(st) st.textContent = `候補 prproj ${(d.prproj||[]).length} / psd ${(d.psd||[]).length}`;
-    }catch(e){
-      if(st) st.textContent = 'スキャン失敗';
-    }
-  }
-
-  function wireSettingsTemplateTool(){}
-
   async function settingValue(key){
     const item = (state.catalog?.settings || []).find(x=>x.key===key);
     const qs = new URLSearchParams({key});
     if(item?.scope === 'channel' && state.activeChannelId) qs.set('channel_id', state.activeChannelId);
     const d = await fetchJson('/api/settings-catalog/value?' + qs.toString());
     return d.current?.value || '';
-  }
-
-  async function saveTemplateTool(){
-    const st = $('toolTemplateStatus');
-    if(!state.activeChannelId){ if(st) st.textContent='チャンネル未選択'; return; }
-    try{
-      if(st) st.textContent='保存中...';
-      await fetchJson('/api/settings-catalog/value', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:'channel.template_prproj', value:$('toolTemplatePrproj')?.value || '', channel_id:state.activeChannelId})});
-      await fetchJson('/api/settings-catalog/value', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:'channel.template_psd', value:$('toolTemplatePsd')?.value || '', channel_id:state.activeChannelId})});
-      if(st) st.textContent='保存済み';
-      await loadSettingsCatalog();
-    }catch(e){
-      if(st) st.textContent='保存失敗';
-    }
   }
 
   async function renderReferencePreviewTool(){
@@ -802,7 +762,7 @@
     }
   }
 
-  window.E2UI = {loadDashboardCards, loadSettingsCatalog, saveCatalogSetting, mirrorUpdatePanel, loadConfigBackups, runConfigBackup, restoreConfigBackup, applyPostingStrategy, switchSettingsTab, showPromptSettings, sendDiscordTest, toggleSecretInput, loadToolTemplateOptions, saveTemplateTool, renderReferencePreviewTool, runConnectionDiagnostics, loadImageModulesPanel, saveImageModules};
+  window.E2UI = {loadDashboardCards, loadSettingsCatalog, saveCatalogSetting, mirrorUpdatePanel, loadConfigBackups, runConfigBackup, restoreConfigBackup, applyPostingStrategy, switchSettingsTab, showPromptSettings, sendDiscordTest, toggleSecretInput, renderReferencePreviewTool, runConnectionDiagnostics, loadImageModulesPanel, saveImageModules};
   wrapExisting();
   document.addEventListener('DOMContentLoaded', ()=>{
     wrapExisting();
