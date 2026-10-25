@@ -326,53 +326,56 @@ def run_vps_runs(args: argparse.Namespace) -> int:
     import vps_runs
     from exit_codes import ExitCode
     intent = args.intent_name
+
+    def _usage(message: str) -> int:
+        emit({"ok": False, "intent": intent, "error": "usage", "message": message})
+        return int(ExitCode.USAGE)
+
+    # 入力検査は --dry-run でも同じに通す（事前確認で「通る」と誤判断させない）
+    vol_n = 0
+    channel_key = ""
+    if intent == "run":
+        raw = args.vol or args.resolve_num
+        try:
+            vol_n = int(str(raw).strip())
+        except (TypeError, ValueError):
+            vol_n = 0
+        if vol_n < 1:
+            return _usage("--vol には 1 以上の整数が必要です")
+        channel_key = (args.channel or get_active_channel_info().get("id") or "").strip()
+        if not channel_key:
+            return _usage("--channel かアクティブチャンネルが必要です（VPS の channel_key）")
+        if args.request_id is not None and not (8 <= len(args.request_id) <= 128):
+            return _usage("--request-id は 8〜128 文字")
+    elif intent in ("run-resume", "run-cancel") and not args.run_id:
+        return _usage("--run-id が必要です")
+
     if getattr(args, "dry_run", False):
         # 他の intent と同じく、--dry-run は何も送らず「送るはずの内容」だけを出す（トークンは含めない）
         preview = {"ok": True, "intent": intent, "dry_run": True}
         if intent == "run":
-            raw = args.vol or args.resolve_num
             preview.update({"method": "POST", "path": "/api/runs",
-                            "payload": {"request_id": args.request_id or "(auto)", "channel_key": (args.channel or get_active_channel_info().get("id") or ""),
-                                        "vol": raw, "workflow_version": vps_runs.workflow_version(), "intent": args.run_intent, "from_step": args.from_step}})
+                            "payload": {"request_id": args.request_id or "(auto)", "channel_key": channel_key, "vol": vol_n,
+                                        "workflow_version": vps_runs.workflow_version(), "intent": args.run_intent, "from_step": args.from_step}})
         elif intent == "run-status":
             preview.update({"method": "GET", "path": f"/api/runs/{args.run_id}" if args.run_id else "/api/runs"})
         else:
             preview.update({"method": "POST", "path": f"/api/runs/{args.run_id}/{intent.split('-', 1)[1]}"})
         emit(preview)
         return 0
+
     try:
         if intent == "run":
-            raw = args.vol or args.resolve_num
-            try:
-                vol_n = int(str(raw).strip())
-            except (TypeError, ValueError):
-                vol_n = 0
-            if vol_n < 1:
-                emit({"ok": False, "intent": intent, "error": "usage", "message": "--vol には 1 以上の整数が必要です"})
-                return int(ExitCode.USAGE)
-            channel_key = (args.channel or get_active_channel_info().get("id") or "").strip()
-            if not channel_key:
-                emit({"ok": False, "intent": intent, "error": "usage", "message": "--channel かアクティブチャンネルが必要です（VPS の channel_key）"})
-                return int(ExitCode.USAGE)
-            if args.request_id is not None and not (8 <= len(args.request_id) <= 128):
-                emit({"ok": False, "intent": intent, "error": "usage", "message": "--request-id は 8〜128 文字"})
-                return int(ExitCode.USAGE)
             data = vps_runs.create_run(channel_key, vol_n, request_id=args.request_id, intent=args.run_intent, from_step=args.from_step)
         elif intent == "run-status":
             if args.run_id:
                 data = vps_runs.get_run(args.run_id)
             else:
-                channel_key = (args.channel or get_active_channel_info().get("id") or "").strip() or None
-                data = vps_runs.list_runs(channel_key=channel_key, state=args.state, limit=20)
+                ck = (args.channel or get_active_channel_info().get("id") or "").strip() or None
+                data = vps_runs.list_runs(channel_key=ck, state=args.state, limit=20)
         elif intent == "run-resume":
-            if not args.run_id:
-                emit({"ok": False, "intent": intent, "error": "usage", "message": "--run-id が必要です"})
-                return int(ExitCode.USAGE)
             data = vps_runs.resume_run(args.run_id, from_step=args.from_step)
         elif intent == "run-cancel":
-            if not args.run_id:
-                emit({"ok": False, "intent": intent, "error": "usage", "message": "--run-id が必要です"})
-                return int(ExitCode.USAGE)
             data = vps_runs.cancel_run(args.run_id)
         else:
             return 2

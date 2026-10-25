@@ -173,6 +173,10 @@ class StudioIntentTest(unittest.TestCase):
                 self.assertEqual(studio.main(), 0)  # 送らない
             with patch("sys.argv", ["studio.py", "run-cancel", "--run-id", "5", "--json", "--dry-run"]):
                 self.assertEqual(studio.main(), 0)
+            with patch("sys.argv", ["studio.py", "run", "--vol", "abc", "--json", "--dry-run"]):
+                self.assertEqual(studio.main(), 2)  # dry-run でも入力検査は同じ
+            with patch("sys.argv", ["studio.py", "run-resume", "--json", "--dry-run"]):
+                self.assertEqual(studio.main(), 2)
         self.assertEqual(calls[0][2]["intent"], "pipeline")
         self.assertEqual(calls[1][2]["intent"], "qa")
         self.assertEqual(calls[1][2]["request_id"], "req-fixed-0003")
@@ -182,6 +186,7 @@ class StudioIntentTest(unittest.TestCase):
         dry = [l for l in lines if l.get("dry_run")]
         self.assertEqual(len(dry), 2)
         self.assertEqual((dry[0]["method"], dry[0]["path"], dry[0]["payload"]["intent"]), ("POST", "/api/runs", "pipeline"))
+        self.assertEqual(dry[0]["payload"]["vol"], 12)  # 実送信と同じ int
         self.assertEqual(dry[1]["path"], "/api/runs/5/cancel")
         self.assertNotIn("ai_token", json.dumps(dry))
 
