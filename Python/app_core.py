@@ -93,8 +93,6 @@ WEB_DIR = SHARED_BASE / "web"
 PYTHON_DIR = SHARED_BASE / "Python"
 # パイプライン本体スクリプト（複数ドメイン=pipeline/images が参照する共有定数。D9）
 PIPELINE_SCRIPT = PYTHON_DIR / "app_pipeline.py"
-# Premiere 連携スクリプト（premiere/render-queue の両ドメインが参照する共有定数。D9）
-PREMIERE_SCRIPT = PYTHON_DIR / "app_premiere.py"
 
 # 設定ファイル（ローカル: PC固有の設定）
 DASHBOARD_CONFIG = CONFIG_DIR / "dashboard_config.json"
@@ -334,21 +332,20 @@ PER_CHANNEL_KEYS = {
     "persona", "rival_channels",
     "spreadsheet_channel_detail_url", "spreadsheet_growth_tracking_url",
     "benchmark_pinned_names", "benchmark_filter", "benchmark_extra_urls",
-    "channel_icon", "template_prproj", "template_psd", "export_path",
-    "production_mode", "thumbnail_composition",  # FFmpegのみの制作構成と画像合成設定
-    "export_engine",  # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(app_ffrender ループ連結方式・静止画チャンネル向け)
-    "psd_base_layer", "psd_toggle_layer", "psd_image_subdir",
+    "channel_icon", "export_path",
+    "production_mode", "thumbnail_composition",  # 制作構成（常に ffmpeg_only）と画像合成設定
+    "export_engine",  # 互換のため保持。段階 1a 以降は常に "ffmpeg" に正規化される
+    "psd_image_subdir",  # 画像合成の差し替え画像フォルダ（名前は互換のため psd_ のまま）
     "scene_text_enabled", "scene_text_case", "scene_text_punctuation",
     "scene_text_tone", "scene_text_examples",
     "scene_text_forbidden", "scene_text_structure",  # 文字入れ（シーンテキスト）設定（チャンネル別）
-    "export_ignore_list",  # AME 書き出し watcher が無視する video_name のリスト（2 PC 間自動同期）
     "publish_mode",  # P3-3: 公開方式（unlisted=限定公開 / public=即時公開 / delayed=N時間後自動公開）
     "publish_delay_hours",  # P2-7: upload 後の公開ゲート（0=即時、>0=N時間後 public化）
     "publish_time_jst",  # Phase G: フォルダ日付に対する予約公開時刻（HH:MM / JST）
     "reference_image_dir",  # step_bgimage: 参照画像フォルダ（空なら Picked → rival thumbs にフォールバック）
     "reference_image",  # step_bgimage: 固定参照画像（最優先。水辺プロムナード等の代表参照）
     "reference_image_mix_mode",  # fixed_only / identity_plus_benchmark / benchmark_only
-    "default_duration_sec",  # Premiere 自動配置の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
+    "default_duration_sec",  # 動画の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
     "ffrender",  # app_ffrender のチャンネル別挙動（intro_sound / song_order / intro_visual など）
     "priority",  # U3: orchestrator policy 配分の channel 優先度（大きいほど優先。既定 100）
     "autopilot_enabled",  # U3: 自動運転 ON/OFF（保存のみ。実 scheduler 起動は別途 GO 後）

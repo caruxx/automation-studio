@@ -164,15 +164,6 @@ def api_health():
         disk_free = {"path": str(CONFIG_DIR), "free_bytes": disk.free, "total_bytes": disk.total}
     except Exception as e:
         disk_free = {"path": str(CONFIG_DIR), "error": str(e)}
-    rq_counts = {}
-    try:
-        import app_render_queue as _rq
-        rq_counts = {
-            "pending": len(_rq.list_jobs("pending", limit=999)),
-            "running": len(_rq.list_jobs("running", limit=999)),
-        }
-    except Exception as e:
-        rq_counts = {"error": str(e)}
     scheduler_registered = bool(_scheduler is not None and any(
         getattr(j, "id", "") == "orchestrator_tick" for j in _scheduler.get_jobs()))
     return {
@@ -180,7 +171,6 @@ def api_health():
         "version": version,
         "uptime_sec": int(time.time() - APP_STARTED_AT),
         "scheduler": {"active": _scheduler is not None, "orchestrator_registered": scheduler_registered},
-        "render_queue": {"worker_started": bool(_rq_worker_started), **rq_counts},
         "disk": disk_free,
         "update_guard": _autopilot_update_guard_status(),
     }
@@ -437,10 +427,6 @@ class DashboardConfigUpdate(BaseModel):
     youtube_api_key: Optional[str] = None
     sheets_api_key: Optional[str] = None
     auth_token: Optional[str] = None
-    template_prproj: Optional[str] = None
-    template_psd: Optional[str] = None
-    psd_base_layer: Optional[str] = None
-    psd_toggle_layer: Optional[str] = None
     psd_image_subdir: Optional[str] = None
     publish_mode: Optional[str] = None  # P3-3: unlisted / public / delayed
     publish_delay_hours: Optional[float] = None  # P2-7: upload 後 N 時間で public 化（0=即時）
@@ -448,10 +434,9 @@ class DashboardConfigUpdate(BaseModel):
     reference_image_dir: Optional[str] = None    # step_bgimage: 参照画像フォルダ（空文字でクリア）
     reference_image: Optional[str] = None        # step_bgimage: 固定参照画像（空文字でクリア）
     reference_image_mix_mode: Optional[str] = None  # fixed_only / identity_plus_benchmark / benchmark_only
-    default_duration_sec: Optional[int] = None   # Premiere 自動配置の規定尺（秒）。0/空でクリア（10800 にフォールバック）
-    production_mode: Optional[Literal["standard", "ffmpeg_only"]] = None
+    default_duration_sec: Optional[int] = None   # 動画の規定尺（秒）。0/空でクリア（10800 にフォールバック）
+    production_mode: Optional[Literal["ffmpeg_only"]] = None  # 段階 1a: ffmpeg_only のみ
     thumbnail_composition: Optional[dict] = None
-    export_engine: Optional[str] = None          # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(ループ連結方式)
 
 @app.put("/api/config/dashboard")
 def api_update_dashboard_config(update: DashboardConfigUpdate):
@@ -521,9 +506,6 @@ def api_update_dashboard_config(update: DashboardConfigUpdate):
                         save_channel_config(cc)
                 except Exception as _e:
                     print(f"⚠ default_duration_sec 削除に失敗: {_e}")
-        elif k == "export_engine":
-            # 段階 1a: 書き出しエンジンは常に ffmpeg（Premiere/AME 経路は廃止）。
-            config["export_engine"] = "ffmpeg"
         else:
             config[k] = v
     config["production_mode"] = effective_production_mode(config)
@@ -1463,12 +1445,10 @@ def api_channels_resolve_url(req: ChannelResolveRequest):
     return _resolve_youtube_channel_meta(req.url)
 
 class ChannelCreate(BaseModel):
-    production_mode: Literal["standard", "ffmpeg_only"] = "standard"
+    production_mode: Literal["ffmpeg_only"] = "ffmpeg_only"  # 段階 1a: ffmpeg 専用
     name: str
     folder: str
     prefix: str = ""
-    template_prproj: str = ""
-    template_psd: str = ""
     create_folder: bool = True
     open_in_finder: bool = True
     youtube_url: str = ""
@@ -1827,12 +1807,10 @@ def _create_empty_channel_config(folder: Path, req: ChannelCreate) -> None:
         "benchmark_filter": DEFAULT_BENCHMARK_CONFIG["filter"],
         "spreadsheet_channel_detail_url": "",
         "spreadsheet_growth_tracking_url": "",
-        "template_prproj": req.template_prproj or "",
-        "template_psd": req.template_psd or "",
-        "production_mode": req.production_mode,
-        **({"export_engine": "ffmpeg", "template_prproj": "", "template_psd": "",
-            "scene_text_enabled": False, "thumbnail_composition": {"title": ""}}
-           if req.production_mode == "ffmpeg_only" else {}),
+        "production_mode": "ffmpeg_only",
+        "export_engine": "ffmpeg",
+        "scene_text_enabled": False,
+        "thumbnail_composition": {"title": ""},
         "_schema_version": 1,
         "_created_at": datetime.utcnow().isoformat() + "Z",
         "_created_for_channel": req.name or "",
@@ -1871,9 +1849,7 @@ def api_create_channel(req: ChannelCreate):
     prefix = sanitize_file_prefix(req.prefix or inferred_prefix or req.name, fallback="vol")
     new_channel = {
         "id": channel_id, "name": req.name, "folder": str(folder),
-        "prefix": prefix, "production_mode": req.production_mode,
-        "template_prproj": "" if req.production_mode == "ffmpeg_only" else req.template_prproj,
-        "template_psd": "" if req.production_mode == "ffmpeg_only" else req.template_psd,
+        "prefix": prefix, "production_mode": "ffmpeg_only",
         "youtube_url": (req.youtube_url or "").strip(),
         "youtube_channel_id": "",
         "handle": "",
@@ -2147,34 +2123,6 @@ class VideoFolderCreate(BaseModel):
     publish_date: str
     open_in_finder: bool = True
 
-def _resolve_template_candidates(channel_dir: Path, kind: str) -> List[Path]:
-    """テンプレ検索ディレクトリを優先順に返す。
-    kind: 'prproj' | 'psd'
-    優先順: <channel_folder>/プロジェクト/ → <channel_folder>/Project/ → <channel_folder> 直下
-    """
-    candidates = []
-    for sub in ("プロジェクト", "Project", "templates", "Templates", ""):
-        d = channel_dir / sub if sub else channel_dir
-        if d.exists() and d.is_dir():
-            candidates.append(d)
-    return candidates
-
-
-def _find_template_file(channel_dir: Path, filename: str) -> Optional[Path]:
-    """指定ファイル名のテンプレを検索ディレクトリから見つけて返す。見つからなければ None。"""
-    if not filename:
-        return None
-    # 絶対パスで指定された場合はそのまま
-    p = Path(filename)
-    if p.is_absolute() and p.exists():
-        return p
-    for d in _resolve_template_candidates(channel_dir, ""):
-        cand = d / filename
-        if cand.exists():
-            return cand
-    return None
-
-
 class PickFileRequest(BaseModel):
     extensions: List[str] = []          # ["prproj", "psd"] など。空なら任意ファイル
     initial: Optional[str] = None       # 初期表示ディレクトリ（POSIX path）
@@ -2217,38 +2165,6 @@ def api_finder_pick_file(req: PickFileRequest):
     return {"status": "ok", "path": path, "filename": Path(path).name if path else ""}
 
 
-@app.get("/api/templates/list")
-def api_list_templates():
-    """チャンネルフォルダ配下の Premiere / Photoshop テンプレ候補を返す。
-    UI 側でセレクトボックスに表示する用。"""
-    config = get_dashboard_config()
-    channel_dir_str = config.get("channel_folder") or ""
-    if not channel_dir_str:
-        return {"channel_folder": "", "prproj": [], "psd": [], "search_dirs": []}
-    channel_dir = Path(channel_dir_str)
-    if not channel_dir.exists():
-        return {"channel_folder": str(channel_dir), "prproj": [], "psd": [],
-                "search_dirs": [], "warning": "チャンネルフォルダが存在しません"}
-    search_dirs = _resolve_template_candidates(channel_dir, "")
-    prproj_set: dict[str, str] = {}
-    psd_set: dict[str, str] = {}
-    for d in search_dirs:
-        for p in d.glob("*.prproj"):
-            if p.name not in prproj_set:
-                prproj_set[p.name] = str(p)
-        for p in d.glob("*.psd"):
-            if p.name not in psd_set:
-                psd_set[p.name] = str(p)
-    return {
-        "channel_folder": str(channel_dir),
-        "search_dirs": [str(d) for d in search_dirs],
-        "prproj": [{"filename": k, "path": v} for k, v in sorted(prproj_set.items())],
-        "psd": [{"filename": k, "path": v} for k, v in sorted(psd_set.items())],
-        "current_prproj": config.get("template_prproj", ""),
-        "current_psd": config.get("template_psd", ""),
-    }
-
-
 @app.post("/api/videos/create")
 def api_create_video_folder(req: VideoFolderCreate):
     config = get_dashboard_config()
@@ -2271,57 +2187,9 @@ def api_create_video_folder(req: VideoFolderCreate):
     new_dir = channel_dir / f"{next_num}_{prefix}_{date_str}"
     new_dir.mkdir(exist_ok=True)
     vol_num = f"{next_num:02d}"
-    # テンプレートコピー（未配置時は warnings に積んで UI に通知）
-    tpl_prproj = config.get("template_prproj") or ""
-    tpl_psd = config.get("template_psd") or ""
-    if config.get("production_mode") == "ffmpeg_only":
-        tpl_prproj = tpl_psd = ""
     warnings: List[str] = []
     created: List[str] = []
 
-    if tpl_prproj:
-        prproj_src = _find_template_file(channel_dir, tpl_prproj)
-        if prproj_src:
-            prproj_dst = new_dir / f"{prefix}_vol{vol_num}.prproj"
-            try:
-                shutil.copy2(str(prproj_src), str(prproj_dst))
-                try:
-                    with gzip.open(str(prproj_dst), 'rb') as f: xml = f.read()
-                    # テンプレ内に残っている可能性のある旧シーケンス名 (BGMシーケンス /
-                    # {prefix}_vol01 / {prefix}_vol02 等) を全部 {prefix}_vol{N} に置換。
-                    # 旧コードは 'BGMシーケンス' しか置換せず、テンプレが {prefix}_vol01
-                    # と命名されていた場合に置換が効かず、JSX が新シーケンスを見つけられず
-                    # 「クリップが見つかりません」エラーになっていた。
-                    target_name = f"{prefix}_vol{vol_num}".encode()
-                    for old in (b"BGM\xe3\x82\xb7\xe3\x83\xbc\xe3\x82\xb1\xe3\x83\xb3\xe3\x82\xb9",
-                                f"{prefix}_vol01".encode(),
-                                f"{prefix}_vol02".encode()):
-                        if old != target_name:
-                            xml = xml.replace(old, target_name)
-                    with gzip.open(str(prproj_dst), 'wb') as f: f.write(xml)
-                except Exception:
-                    pass
-                created.append(prproj_dst.name)
-            except Exception as e:
-                warnings.append(f".prproj コピー失敗: {e}")
-        else:
-            warnings.append(f"Premiere テンプレが見つかりません: {tpl_prproj}（基本設定 → チャンネル → テンプレートで指定してください）")
-    elif config.get("production_mode") != "ffmpeg_only":
-        warnings.append("Premiere テンプレ未設定（基本設定 → チャンネル → テンプレートで指定してください）")
-
-    if tpl_psd:
-        psd_src = _find_template_file(channel_dir, tpl_psd)
-        if psd_src:
-            psd_dst = new_dir / f"{prefix}_vol{vol_num}.psd"
-            try:
-                shutil.copy2(str(psd_src), str(psd_dst))
-                created.append(psd_dst.name)
-            except Exception as e:
-                warnings.append(f".psd コピー失敗: {e}")
-        else:
-            warnings.append(f"Photoshop テンプレが見つかりません: {tpl_psd}（基本設定 → チャンネル → テンプレートで指定してください）")
-    elif config.get("production_mode") != "ffmpeg_only":
-        warnings.append("Photoshop テンプレ未設定（基本設定 → チャンネル → テンプレートで指定してください）")
 
     # VPS 台帳同期は best effort。設定欠損や通信失敗でフォルダ作成を失敗させない。
     try:
@@ -6143,9 +6011,9 @@ from routers.images import router as _images_router
 app.include_router(_images_router)
 
 
-# ─── premiere_photoshop ドメインは routers/premiere_photoshop.py へ分離（D9）───
-from routers.premiere_photoshop import router as _premiere_photoshop_router
-app.include_router(_premiere_photoshop_router)
+# ─── scene-text ドメイン（旧 premiere_photoshop から Adobe 非依存部分だけ分離・段階 1a）───
+from routers.scene_text import router as _scene_text_router
+app.include_router(_scene_text_router)
 
 
 # ─── live（VPS ライブ配信）ドメインは routers/live.py ───
@@ -6274,13 +6142,6 @@ def api_credentials_status():
 
     # ffmpeg
     result["ffmpeg"] = {"available": bool(shutil.which("ffmpeg"))}
-
-    # Premiere (pymiere)
-    try:
-        __import__("pymiere")
-        result["pymiere"] = {"installed": True}
-    except ImportError:
-        result["pymiere"] = {"installed": False}
 
     # Dashboard config
     result["config"] = {
@@ -6528,10 +6389,9 @@ def _find_free_port(start=8888, end=8899, host="127.0.0.1"):
     return None
 
 
-# ─── 自動書き出しキュー（Sprint 4-E） ───────────────
+# ─── 書き出しルール・完成 mp4 の検出（AME 自動書き出しキューは段階 1a で廃止） ───
 import hashlib
 
-EXPORT_QUEUE_FILE = CONFIG_DIR / "export_queue.json"
 EXPORT_RULES_FILE = CONFIG_DIR / "export_rules.json"
 
 DEFAULT_EXPORT_RULES = {
@@ -6568,166 +6428,6 @@ def get_export_rules():
 
 def save_export_rules(cfg):
     save_json(EXPORT_RULES_FILE, cfg)
-
-def get_export_queue():
-    data = load_json(EXPORT_QUEUE_FILE, {"items": []})
-    if not isinstance(data, dict) or "items" not in data:
-        return {"items": []}
-    return data
-
-def save_export_queue(data):
-    save_json(EXPORT_QUEUE_FILE, data)
-
-
-def get_export_ignore_list() -> list:
-    """AME watcher が無視すべき video_name のリスト（per-channel）。
-    既に別で書き出し済 / 手動非表示にしたフォルダがここに入る。"""
-    cc = load_channel_config()
-    raw = cc.get("export_ignore_list") or []
-    if not isinstance(raw, list):
-        return []
-    # 重複・空文字除去
-    return sorted({str(x).strip() for x in raw if isinstance(x, (str, int)) and str(x).strip()})
-
-
-def add_to_export_ignore_list(video_name: str) -> list:
-    if not video_name:
-        return get_export_ignore_list()
-    cc = load_channel_config()
-    cur = list(cc.get("export_ignore_list") or [])
-    if video_name not in cur:
-        cur.append(video_name)
-        cc["export_ignore_list"] = cur
-        save_channel_config(cc)
-    return get_export_ignore_list()
-
-
-def remove_from_export_ignore_list(video_name: str) -> list:
-    cc = load_channel_config()
-    cur = list(cc.get("export_ignore_list") or [])
-    if video_name in cur:
-        cur = [x for x in cur if x != video_name]
-        cc["export_ignore_list"] = cur
-        save_channel_config(cc)
-    return get_export_ignore_list()
-
-def _fingerprint(prproj_path: str, mtime: float) -> str:
-    return hashlib.sha256(f"{prproj_path}|{int(mtime)}".encode()).hexdigest()[:16]
-
-def _scan_video_folder_for_export(folder: Path) -> dict:
-    """完成判定: prproj / music / srt あり、mp4 なし。export_path も考慮。"""
-    if not folder.is_dir():
-        return {"completable": False}
-    rules = get_export_rules()["rules"]
-    name = folder.name
-    prproj_files = list(folder.glob("*vol*.prproj")) + list(folder.glob("*.prproj"))
-    has_prproj = bool(prproj_files)
-    music_dir = folder / "music"
-    has_music = music_dir.exists() and any(_is_usable_audio_file(p) for p in music_dir.iterdir())
-    has_srt = bool(list(folder.glob("*.srt")))
-    # MP4 は flat 配置（<export_path>/<prefix>_vol<num>.mp4）も含めて全配置を探索
-    has_mp4 = _find_exported_mp4(folder, name) is not None
-    completable = True
-    if rules.get("require_prproj") and not has_prproj: completable = False
-    if rules.get("require_music") and not has_music: completable = False
-    if rules.get("require_srt") and not has_srt: completable = False
-    if rules.get("skip_if_mp4") and has_mp4: completable = False
-    return {
-        "completable": completable,
-        "video_name": name,
-        "prproj_path": str(prproj_files[0]) if prproj_files else "",
-        "has_prproj": has_prproj, "has_music": has_music, "has_srt": has_srt, "has_mp4": has_mp4,
-        "folder": str(folder),
-    }
-
-def _scan_all_for_export(include_ignored: bool = False) -> list:
-    """書き出し可能フォルダをスキャン。
-    include_ignored=False なら ignore list（チャンネル別）に入っている video_name は除外。
-    また pending/running 中の video_name もスキャン対象外（保存で mtime が変わって
-    fingerprint が変化 → 別アイテム扱いで重複登録、を防ぐ）。
-    さらに「現在のチャンネル prefix（例: WW）と一致しない」フォルダも除外。
-    複数チャンネル並列運用時に、書き出しキューが他チャンネル分まで拾わないようにする。"""
-    config = get_dashboard_config()
-    channel_dir = Path(config.get("channel_folder", ""))
-    if not channel_dir.exists():
-        return []
-    ignore_set = set() if include_ignored else set(get_export_ignore_list())
-    if not include_ignored:
-        try:
-            q = get_export_queue()
-            ignore_set |= {x.get("video_name", "") for x in q["items"]
-                           if x.get("status") in ("pending", "running")}
-            ignore_set.discard("")
-        except Exception:
-            pass
-    # チャンネル prefix（例: "WW", "orzz" 等）。フォルダ名 "<num>_<prefix>_<date>" の prefix と
-    # 一致するもののみスキャン対象とする。設定が空なら従来通り全件。
-    channel_prefix = ""
-    try:
-        channel_prefix = (get_file_prefix() or "").strip()
-    except Exception:
-        pass
-    # _<prefix>_ パターンで matching するための正規化
-    prefix_pattern = re.compile(rf"^\d+_{re.escape(channel_prefix)}_", re.IGNORECASE) if channel_prefix else None
-
-    out = []
-    for d in sorted(channel_dir.iterdir()):
-        if not d.is_dir() or d.name.startswith('.'):
-            continue
-        if d.name in ignore_set:
-            continue
-        # チャンネル prefix と一致しないフォルダはスキップ（他チャンネルの動画フォルダ対策）
-        if prefix_pattern is not None and not prefix_pattern.match(d.name):
-            continue
-        info = _scan_video_folder_for_export(d)
-        if info.get("completable"):
-            out.append(info)
-    return out
-
-def _enqueue_export(info: dict, force: bool = False) -> dict:
-    """キューに追加。ignore list に入っている動画は force=True でない限り追加しない。"""
-    video_name = info.get("video_name", "")
-    if not force and video_name in set(get_export_ignore_list()):
-        return {"status": "skip", "reason": "ignored", "video_name": video_name}
-    q = get_export_queue()
-    prproj = info.get("prproj_path", "")
-    if not prproj:
-        return {"status": "skip", "reason": "prproj_missing"}
-    try:
-        mtime = Path(prproj).stat().st_mtime
-    except Exception:
-        return {"status": "skip", "reason": "prproj_stat_failed"}
-    fp = _fingerprint(prproj, mtime)
-    # 重複チェック: 同 video_name で pending/running 中ならスキップ。
-    # Premiere で開いて保存すると prproj の mtime が変わって fingerprint も変わるため、
-    # fingerprint 単独だと「同じ動画の二重登録」を防げない（既存重複バグの根本原因）。
-    if not force:
-        for item in q["items"]:
-            if (item.get("video_name") == video_name
-                and item.get("status") in ("pending", "running")):
-                return {"status": "duplicate",
-                        "fingerprint": item.get("fingerprint"),
-                        "reason": "already_in_progress"}
-    # 同 fingerprint かつ done → 同じ書き出しを再実行しない
-    # （prproj の更新時刻が変われば fingerprint が変わるので新規追加される）
-    for item in q["items"]:
-        if item.get("fingerprint") == fp and item.get("status") == "done":
-            return {"status": "skip", "reason": "already_done", "fingerprint": fp}
-    item = {
-        "fingerprint": fp,
-        "video_name": info["video_name"],
-        "prproj_path": prproj,
-        "folder": info["folder"],
-        "status": "pending",
-        "added_at": datetime.utcnow().isoformat() + "Z",
-        "started_at": "",
-        "completed_at": "",
-        "output_path": "",
-        "error": "",
-    }
-    q["items"].append(item)
-    save_export_queue(q)
-    return {"status": "queued", "fingerprint": fp, "item": item}
 
 def _resolve_output_path(folder: Path, video_name: str) -> Path:
     """書き出し先解決。
@@ -6839,574 +6539,7 @@ def _collect_mp4_candidates(folder: Path, video_name: str, extra_folder: Optiona
     return out
 
 
-async def _wait_for_mp4_complete(output_path: Path,
-                                  fingerprint: Optional[str] = None) -> bool:
-    """mp4 完了検知を二段階で行う。
-    Phase 1: 出現待ち（mp4_appear_timeout_sec、既定 5 分）。
-      AME が encodeSequence を受け取って書き込みを始めるまでを待つ。
-      ここで時間切れなら「AME が投入を取りこぼした」可能性が高く、即 error で次の pending へ。
-    Phase 2: 安定待ち（mp4_stable_timeout_sec、既定 30 分）。
-      出現後、サイズが size_stable_window_sec（既定 30 秒）変化しなければ done。
-
-    fingerprint があれば _ame_progress に進捗（phase / size_bytes / elapsed_sec）を更新する。
-    """
-    rules = get_export_rules()
-    stable_window = int(rules.get("size_stable_window_sec", 30))
-    appear_timeout = int(rules.get("mp4_appear_timeout_sec", 300))
-    stable_timeout = int(rules.get("mp4_stable_timeout_sec", 1800))
-
-    # ── Phase 1: mp4 が出現するまで ──
-    appear_start = time.time()
-    while not output_path.exists():
-        elapsed = time.time() - appear_start
-        if elapsed > appear_timeout:
-            if fingerprint:
-                _ame_progress[fingerprint] = {
-                    **_ame_progress.get(fingerprint, {}),
-                    "size_bytes": 0,
-                    "rate_bytes_per_sec": 0,
-                    "elapsed_sec": int(elapsed),
-                    "stable_for_sec": 0,
-                    "phase": "appear_timeout",
-                }
-            return False
-        if fingerprint:
-            _ame_progress[fingerprint] = {
-                "size_bytes": 0,
-                "rate_bytes_per_sec": 0,
-                "elapsed_sec": int(elapsed),
-                "stable_for_sec": 0,
-                "phase": "waiting_appear",
-            }
-        await asyncio.sleep(5)
-
-    # ── Phase 2: 出現後、サイズ安定まで ──
-    stable_start = time.time()
-    last_size = -1
-    last_change = time.time()
-    samples: list[tuple[float, int]] = []
-    while time.time() - stable_start < stable_timeout:
-        now = time.time()
-        try:
-            size = output_path.stat().st_size
-        except Exception:
-            size = -1
-        if size != last_size:
-            last_size = size
-            last_change = now
-            samples.append((now, size))
-            if len(samples) > 30:
-                samples = samples[-30:]
-            if fingerprint:
-                if len(samples) >= 2:
-                    dt = samples[-1][0] - samples[0][0]
-                    db = samples[-1][1] - samples[0][1]
-                    rate = (db / dt) if dt > 0 else 0
-                else:
-                    rate = 0
-                _ame_progress[fingerprint] = {
-                    "size_bytes": size,
-                    "rate_bytes_per_sec": int(rate),
-                    "elapsed_sec": int(now - stable_start),
-                    "stable_for_sec": 0,
-                    "phase": "writing",
-                }
-        elif size > 0 and (now - last_change) >= stable_window:
-            if fingerprint:
-                _ame_progress[fingerprint] = {
-                    "size_bytes": size,
-                    "rate_bytes_per_sec": 0,
-                    "elapsed_sec": int(now - stable_start),
-                    "stable_for_sec": int(now - last_change),
-                    "phase": "done",
-                }
-            return True
-        else:
-            if fingerprint:
-                _ame_progress.setdefault(fingerprint, {}).update({
-                    "stable_for_sec": int(now - last_change),
-                    "phase": "stabilizing" if size > 0 else "writing",
-                })
-        await asyncio.sleep(2)
-    if fingerprint:
-        _ame_progress[fingerprint] = {**_ame_progress.get(fingerprint, {}), "phase": "stable_timeout"}
-    return False
-
-
-# AME 進捗ストア（fingerprint → {size_bytes, rate_bytes_per_sec, elapsed_sec, phase}）
-_ame_progress: dict[str, dict] = {}
-
-# 実行中の subprocess を fingerprint で参照可能にする（停止/キャンセル用）
-_active_export_proc: dict[str, "asyncio.subprocess.Process"] = {}
-
-
-def _kill_active_proc(fingerprint: str) -> bool:
-    proc = _active_export_proc.get(fingerprint)
-    if not proc:
-        return False
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        pass
-    except Exception as e:
-        print(f"[export] kill failed fp={fingerprint}: {e}")
-        return False
-    return True
-
-async def _process_export_item(item: dict) -> dict:
-    """単一アイテムを処理: Premiere で開いて encodeSequence → mp4 完了待ち。"""
-    item["status"] = "running"
-    item["started_at"] = datetime.utcnow().isoformat() + "Z"
-    q = get_export_queue()
-    for x in q["items"]:
-        if x["fingerprint"] == item["fingerprint"]: x.update(item)
-    save_export_queue(q)
-
-    folder = Path(item["folder"])
-    # 外部 SSD 設定があればマウント確認 → 未マウントなら即エラー
-    try:
-        output_path = _resolve_output_path(folder, item["video_name"])
-    except ValueError as e:
-        item["status"] = "error"
-        item["error"] = f"外部書き出し先が利用不可: {e}"
-        item["completed_at"] = datetime.utcnow().isoformat() + "Z"
-        q = get_export_queue()
-        for x in q["items"]:
-            if x["fingerprint"] == item["fingerprint"]: x.update(item)
-        save_export_queue(q)
-        return item
-    item["output_path"] = str(output_path)
-
-    # Premiere スクリプト経由で対象 .prproj を開いてから encodeSequence
-    # 外部 export_path 設定時は AME に SSD パスを直接渡し、本体側 mp4 は作らない
-    cmd = [sys.executable, "-u", str(PREMIERE_SCRIPT), "--export-only", "--project", item["prproj_path"]]
-    is_external = output_path.parent != folder
-    if is_external:
-        cmd += ["--output-path", str(output_path)]
-    # サブプロセスの出力をファイルに残す（ハング時のデバッグ用）
-    log_path = CONFIG_DIR / f"export_log_{item['fingerprint']}.txt"
-    try:
-        log_f = open(log_path, "w", encoding="utf-8")
-    except Exception:
-        log_f = None
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=(log_f if log_f else asyncio.subprocess.PIPE),
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    _active_export_proc[item["fingerprint"]] = proc
-    # タイムアウト: クラウド DL を考慮しても 30 分で十分。それ以上はハング扱い。
-    EXPORT_SUBPROC_TIMEOUT = 30 * 60
-    try:
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=EXPORT_SUBPROC_TIMEOUT)
-        except asyncio.TimeoutError:
-            try: proc.kill()
-            except Exception: pass
-            try: await proc.wait()
-            except Exception: pass
-            if log_f:
-                try: log_f.close()
-                except Exception: pass
-            item["status"] = "error"
-            item["error"] = f"Premiere 起動 / 書き出しがタイムアウト（{EXPORT_SUBPROC_TIMEOUT//60}分）。ログ: {log_path}"
-            item["completed_at"] = datetime.utcnow().isoformat() + "Z"
-            q = get_export_queue()
-            for x in q["items"]:
-                if x["fingerprint"] == item["fingerprint"]: x.update(item)
-            save_export_queue(q)
-            return item
-        if log_f:
-            try: log_f.close()
-            except Exception: pass
-        # 外部から kill された場合は returncode が負（SIGKILL=-9 等）になる
-        if proc.returncode is not None and proc.returncode < 0:
-            item["status"] = "error"
-            item["error"] = f"キャンセル（signal={-proc.returncode}）"
-            item["completed_at"] = datetime.utcnow().isoformat() + "Z"
-            q = get_export_queue()
-            for x in q["items"]:
-                if x["fingerprint"] == item["fingerprint"]: x.update(item)
-            save_export_queue(q)
-            return item
-        if proc.returncode != 0:
-            # ログファイルから末尾を読んで error に格納
-            tail = ""
-            try:
-                if log_path.exists():
-                    tail = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
-            except Exception:
-                pass
-            item["status"] = "error"
-            item["error"] = tail or f"premiere subprocess exit {proc.returncode}"
-            item["completed_at"] = datetime.utcnow().isoformat() + "Z"
-            q = get_export_queue()
-            for x in q["items"]:
-                if x["fingerprint"] == item["fingerprint"]: x.update(item)
-            save_export_queue(q)
-            return item
-    finally:
-        _active_export_proc.pop(item["fingerprint"], None)
-
-    # mp4 完了待ち（appear/stable の二段階）
-    completed = await _wait_for_mp4_complete(output_path, fingerprint=item.get("fingerprint"))
-    if completed:
-        item["status"] = "done"
-    else:
-        prog = _ame_progress.get(item.get("fingerprint", ""), {})
-        phase = prog.get("phase", "")
-        item["status"] = "error"
-        if phase == "appear_timeout":
-            item["error"] = (
-                f"mp4 が出現せず（{prog.get('elapsed_sec', 0)}秒）。"
-                "AME がジョブを取りこぼした可能性。AME の起動状態と書き出し先を確認してください。"
-            )
-        elif phase == "stable_timeout":
-            item["error"] = (
-                f"mp4 サイズが安定せず（{prog.get('elapsed_sec', 0)}秒）。"
-                "AME ハング / ストレージ書き込み詰まりの可能性。"
-            )
-        else:
-            item["error"] = f"mp4_timeout (phase={phase or 'unknown'})"
-    item["completed_at"] = datetime.utcnow().isoformat() + "Z"
-    q = get_export_queue()
-    for x in q["items"]:
-        if x["fingerprint"] == item["fingerprint"]: x.update(item)
-    save_export_queue(q)
-
-    # 完了したフォルダは ignore list に自動追加（watcher が再検知しないように）
-    if item["status"] == "done":
-        try:
-            add_to_export_ignore_list(item.get("video_name", ""))
-        except Exception as e:
-            print(f"[export_processor] ignore-list add failed: {e}")
-
-    # 書き出し完了後の YouTube 自動アップロード
-    # 動画ファイルは output_path（外部 SSD の可能性あり）、メタは channel folder から
-    if item["status"] == "done":
-        try:
-            rules = get_export_rules()
-            if rules.get("auto_upload_after_export"):
-                privacy = (rules.get("auto_upload_privacy") or "unlisted").strip() or "unlisted"
-                _prepare_youtube_meta(folder)
-                _kick_auto_upload(folder, privacy=privacy, video_path=str(output_path))
-        except Exception as e:
-            print(f"[export_processor] auto_upload error: {e}")
-
-    return item
-
-
-def _prepare_youtube_meta(folder: Path):
-    """自動アップロード前にメタファイル（title/description/tags）が無ければ生成。
-    タイムスタンプは対応する music_time_code_info_*.txt の LOOP 直前までを概要欄に流し込む。"""
-    folder = Path(folder)
-    m = re.match(r"^(\d+)_", folder.name)
-    vol = m.group(1) if m else "00"
-
-    # title
-    title_file = folder / "youtube_title.txt"
-    if not title_file.exists() or not title_file.read_text(encoding="utf-8").strip():
-        title_text = ""
-        meta_json = folder / "video_youtube_title.json"
-        if meta_json.exists():
-            try:
-                d = json.loads(meta_json.read_text(encoding="utf-8"))
-                title_text = (d.get("new_title") or d.get("title") or "").strip()
-            except Exception:
-                pass
-        if not title_text:
-            title_text = f"orzz. vol.{vol}"
-        title_file.write_text(title_text, encoding="utf-8")
-
-    # description（タイムスタンプ含む）
-    desc_file = folder / "youtube_description.txt"
-    if not desc_file.exists() or not desc_file.read_text(encoding="utf-8").strip():
-        timestamps, _tc_file = _read_matching_timecodes_until_loop(folder, vol)
-        body = [
-            f"orzz. vol.{vol}",
-            "",
-            "Lounge & jazz BGM for relax / work / study.",
-            "",
-        ]
-        if timestamps:
-            body.append("Tracklist")
-            body.append(timestamps)
-            body.append("")
-        body.append("#orzz #BGM #LoungeJazz #ChillMusic")
-        desc_file.write_text("\n".join(body), encoding="utf-8")
-
-
-def _kick_auto_upload(folder: Path, privacy: str = "unlisted", video_path: Optional[str] = None):
-    """既存のメタファイルを使って YouTube アップロードを起動（非ブロッキング）。
-    video_path が指定された場合、その mp4 を直接使う（外部 SSD 用）。
-    folder は title/description/tags/サムネイル等メタ取得元として常に必要。
-    トークンはアクティブチャンネルの `.youtube_token.json` を明示指定。
-    """
-    try:
-        cmd, meta = _build_youtube_upload_command(
-            UploadRequest(folder=str(folder), privacy=privacy, video_path=video_path)
-        )
-        result = _enqueue_youtube_upload(cmd, meta, source="auto")
-        print(
-            f"[auto_upload] queued #{result.get('job', {}).get('id')}: "
-            f"folder={folder} video={video_path or '(folder内 mp4)'} privacy={privacy}"
-        )
-    except Exception as e:
-        print(f"[auto_upload] queue failed: {e}")
-
-
-_export_watcher_task = None
-_export_processor_task = None
-
-async def _export_watcher_loop():
-    """定期的に channel_folder をスキャン → 完成条件マッチを enqueue"""
-    while True:
-        rules = get_export_rules()
-        if rules.get("watcher_enabled"):
-            try:
-                for info in _scan_all_for_export():
-                    _enqueue_export(info)
-            except Exception as e:
-                print(f"[export_watcher] scan error: {e}")
-        await asyncio.sleep(int(rules.get("scan_interval_sec", 30)))
-
-async def _export_processor_loop():
-    """キュー先頭から順次処理。並列実行はしない（AME 1 ジョブずつ）。"""
-    while True:
-        try:
-            q = get_export_queue()
-            pending = [x for x in q["items"] if x.get("status") == "pending"]
-            if pending:
-                await _process_export_item(pending[0])
-        except Exception as e:
-            print(f"[export_processor] error: {e}")
-        await asyncio.sleep(5)
-
-@app.on_event("startup")
-async def _start_export_workers():
-    global _export_watcher_task, _export_processor_task
-    # 起動時に running 残骸を error にリセット（前回プロセスが kill された場合の救済）
-    try:
-        q = get_export_queue()
-        changed = False
-        for x in q["items"]:
-            if x.get("status") == "running":
-                x["status"] = "error"
-                x["error"] = "サーバー再起動で中断"
-                x["completed_at"] = datetime.utcnow().isoformat() + "Z"
-                changed = True
-        if changed:
-            save_export_queue(q)
-    except Exception as e:
-        print(f"[startup] running reset failed: {e}")
-    if _export_watcher_task is None:
-        _export_watcher_task = asyncio.create_task(_export_watcher_loop())
-    if _export_processor_task is None:
-        _export_processor_task = asyncio.create_task(_export_processor_loop())
-
-# ─── API: 書き出しキュー ───
-
-@app.get("/api/export/queue")
-def api_get_export_queue():
-    return get_export_queue()
-
-
-@app.get("/api/ame/queue")
-def api_get_ame_queue():
-    """AME キューの進捗付き表示。トップバーチップ・自動化タブ詳細から呼ばれる。
-
-    Returns:
-      {
-        "queue": [{...item, "progress": {size_bytes, rate_bytes_per_sec, elapsed_sec, phase}}],
-        "current_index": int|null,    # running 中アイテムの 0-based index
-        "total": int,                  # pending+running+done の合計（クリア前）
-        "running_count": int,
-        "pending_count": int,
-        "done_count": int,
-        "error_count": int,
-        "watcher_enabled": bool
-      }
-    """
-    q = get_export_queue()
-    items = q.get("items", []) or []
-    enriched = []
-    current_index = None
-    counts = {"pending": 0, "running": 0, "done": 0, "error": 0}
-    for i, it in enumerate(items):
-        st = it.get("status", "pending")
-        counts[st] = counts.get(st, 0) + 1
-        prog = _ame_progress.get(it.get("fingerprint", "")) or {}
-        enriched.append({**it, "progress": prog})
-        if st == "running" and current_index is None:
-            current_index = i
-    rules = get_export_rules()
-    return {
-        "queue": enriched,
-        "current_index": current_index,
-        "total": len(items),
-        "running_count": counts.get("running", 0),
-        "pending_count": counts.get("pending", 0),
-        "done_count": counts.get("done", 0),
-        "error_count": counts.get("error", 0),
-        "watcher_enabled": bool(rules.get("watcher_enabled")),
-    }
-
-class ExportQueueAddRequest(BaseModel):
-    video_name: str
-
-@app.post("/api/export/queue")
-def api_add_export_queue(req: ExportQueueAddRequest):
-    config = get_dashboard_config()
-    folder = resolve_video_folder(req.video_name)
-    info = _scan_video_folder_for_export(folder)
-    if not info.get("prproj_path"):
-        raise HTTPException(400, "prproj が見つかりません")
-    return _enqueue_export(info)
-
-@app.delete("/api/export/queue/{fingerprint}")
-def api_delete_export_queue(fingerprint: str, ignore: bool = False):
-    """キューから削除。ignore=true なら video_name を ignore list へ追加して
-    watcher が再検知しないようにする。"""
-    q = get_export_queue()
-    target_names = [x.get("video_name", "") for x in q["items"]
-                    if x.get("fingerprint") == fingerprint and x.get("status") != "running"]
-    before = len(q["items"])
-    q["items"] = [x for x in q["items"] if x.get("fingerprint") != fingerprint or x.get("status") == "running"]
-    save_export_queue(q)
-    if ignore:
-        for name in target_names:
-            if name:
-                add_to_export_ignore_list(name)
-    return {"status": "ok", "removed": before - len(q["items"]),
-            "ignored": target_names if ignore else []}
-
-
-@app.post("/api/export/queue/{fingerprint}/cancel")
-def api_cancel_export_item(fingerprint: str):
-    """個別キャンセル: pending → 削除、running → subprocess を kill して error 化。
-    履歴は残るので、必要なら別途 clear-done でまとめて掃除する。"""
-    q = get_export_queue()
-    target = next((x for x in q["items"] if x.get("fingerprint") == fingerprint), None)
-    if target is None:
-        raise HTTPException(404, "fingerprint not found")
-    status = target.get("status")
-    if status == "running":
-        killed = _kill_active_proc(fingerprint)
-        # subprocess の wait が完了して finally で status 更新するのを待つよりは、
-        # ここで即座に error 化しておく（race しても最終的な状態は error のまま）。
-        target["status"] = "error"
-        target["error"] = "ユーザーがキャンセル"
-        target["completed_at"] = datetime.utcnow().isoformat() + "Z"
-        save_export_queue(q)
-        return {"status": "ok", "action": "killed" if killed else "marked_error",
-                "fingerprint": fingerprint}
-    if status == "pending":
-        # pending は subprocess がまだ無いので削除でよい
-        q["items"] = [x for x in q["items"] if x.get("fingerprint") != fingerprint]
-        save_export_queue(q)
-        return {"status": "ok", "action": "removed", "fingerprint": fingerprint}
-    # done / error は単に削除
-    q["items"] = [x for x in q["items"] if x.get("fingerprint") != fingerprint]
-    save_export_queue(q)
-    return {"status": "ok", "action": "removed", "fingerprint": fingerprint}
-
-
-@app.post("/api/export/queue/stop-all")
-def api_stop_all_export_queue():
-    """全停止: running を kill、pending を error 化。done/error は触らない。
-    履歴は残るので、続けて completed をクリアしたい場合は clear-done を使う。"""
-    q = get_export_queue()
-    killed = []
-    for x in q["items"]:
-        st = x.get("status")
-        if st == "running":
-            _kill_active_proc(x.get("fingerprint", ""))
-            x["status"] = "error"
-            x["error"] = "ユーザー操作で停止"
-            x["completed_at"] = datetime.utcnow().isoformat() + "Z"
-            killed.append(x.get("video_name"))
-        elif st == "pending":
-            x["status"] = "error"
-            x["error"] = "ユーザー操作で停止（実行前）"
-            x["completed_at"] = datetime.utcnow().isoformat() + "Z"
-            killed.append(x.get("video_name"))
-    save_export_queue(q)
-    return {"status": "ok", "stopped": killed}
-
-
-@app.post("/api/export/queue/reset")
-def api_reset_export_queue():
-    """キュー完全リセット: running を kill して items を空にする。履歴も全消去。"""
-    q = get_export_queue()
-    for x in q["items"]:
-        if x.get("status") == "running":
-            _kill_active_proc(x.get("fingerprint", ""))
-    save_export_queue({"items": []})
-    return {"status": "ok", "cleared": len(q["items"])}
-
-
-@app.post("/api/export/queue/clear-done")
-def api_clear_done_export_queue(to_ignore: bool = True):
-    """完了/エラー済みアイテムをキューから削除。to_ignore=true（既定）なら
-    削除した video_name を ignore list へ追加して再検知を防ぐ。"""
-    q = get_export_queue()
-    cleared = [x for x in q["items"] if x.get("status") in ("done", "error")]
-    q["items"] = [x for x in q["items"] if x.get("status") not in ("done", "error")]
-    save_export_queue(q)
-    ignored = []
-    if to_ignore:
-        for x in cleared:
-            n = x.get("video_name", "")
-            if n:
-                add_to_export_ignore_list(n)
-                ignored.append(n)
-    return {"status": "ok", "removed": len(cleared), "ignored": ignored}
-
-
-# ── AME 書き出し無視リスト ──
-@app.get("/api/export/ignore-list")
-def api_get_export_ignore_list():
-    return {"items": get_export_ignore_list()}
-
-
-class ExportIgnoreItem(BaseModel):
-    video_name: str
-
-
-@app.post("/api/export/ignore-list")
-def api_add_export_ignore(req: ExportIgnoreItem):
-    name = validate_video_name(req.video_name)
-    items = add_to_export_ignore_list(name)
-    # 該当 video_name の pending アイテムもキューから外す
-    q = get_export_queue()
-    before = len(q["items"])
-    q["items"] = [x for x in q["items"]
-                  if x.get("video_name") != req.video_name or x.get("status") == "running"]
-    if len(q["items"]) != before:
-        save_export_queue(q)
-    return {"status": "ok", "items": items, "queue_removed": before - len(q["items"])}
-
-
-@app.delete("/api/export/ignore-list/{video_name}")
-def api_remove_export_ignore(video_name: str):
-    validate_video_name(video_name)
-    items = remove_from_export_ignore_list(video_name)
-    return {"status": "ok", "items": items}
-
-
-class ExportIgnoreBulk(BaseModel):
-    video_names: List[str]
-
-
-@app.put("/api/export/ignore-list")
-def api_replace_export_ignore(req: ExportIgnoreBulk):
-    """無視リストを丸ごと置換（管理 UI 向け）。"""
-    req.video_names = [validate_video_name(name) for name in req.video_names]
-    cc = load_channel_config()
-    cleaned = sorted({n.strip() for n in (req.video_names or []) if n and n.strip()})
-    cc["export_ignore_list"] = cleaned
-    save_channel_config(cc)
-    return {"status": "ok", "items": cleaned}
+# ─── API: 書き出しルール ───
 
 @app.get("/api/export/rules")
 def api_get_export_rules():
@@ -7429,16 +6562,6 @@ def api_put_export_rules(patch: ExportRulesPatch):
     cfg.update(body)
     save_export_rules(cfg)
     return {"status": "ok", "config": cfg}
-
-@app.post("/api/export/scan")
-def api_export_scan(include_ignored: bool = False):
-    """即時スキャン: 完成条件マッチした vol 一覧を返す（enqueue はしない）。
-    include_ignored=True にすると無視リスト内のフォルダも含めて返す（UI 管理用）。"""
-    return {
-        "completable": _scan_all_for_export(include_ignored=include_ignored),
-        "ignore_list": get_export_ignore_list(),
-    }
-
 
 # ─── API: 認証（Sprint 5-C） ───
 
@@ -8632,24 +7755,9 @@ SLOT_MAX_SHIFTS = 48  # 30 分 × 48 = 24 時間分まで自動調整
 
 # P3-4: render queue 実測から最低 gap を推定（fallback は SLOT_GRANULARITY_MIN）
 def _estimate_required_gap_minutes() -> int:
-    """直近 7 日の `premiere + export` 平均所要から、必要な slot gap を計算。
-
-    Premiere は 1 セッション固定なので、上流で密集すると後段が詰まる → 平均サイクルに
-    合わせて gap を動的に広げる。"""
-    try:
-        import app_render_queue as _rq
-        s = _rq.stats(window_days=7)
-        avg_p = int((s.get("by_stage_avg_sec") or {}).get("premiere") or 0)
-        avg_e = int((s.get("by_stage_avg_sec") or {}).get("export") or 0)
-        cycle_sec = avg_p + avg_e
-        if cycle_sec > 0:
-            cycle_min = (cycle_sec + 59) // 60  # 切り上げ分
-            # SLOT_GRANULARITY_MIN の倍数に切り上げる
-            mult = (cycle_min + SLOT_GRANULARITY_MIN - 1) // SLOT_GRANULARITY_MIN
-            return max(SLOT_GRANULARITY_MIN, mult * SLOT_GRANULARITY_MIN)
-    except Exception:
-        pass
+    """必要な slot gap（分）。render queue は段階 1a で廃止したため固定値を返す。"""
     return SLOT_GRANULARITY_MIN
+
 
 
 def _channel_quota_pressure(channel_id: str) -> float:
@@ -8976,248 +8084,6 @@ async def _start_scheduler():
         print("[scheduler] apscheduler 未インストール。pip install apscheduler が必要")
     except Exception as e:
         print(f"[scheduler] 起動失敗: {e}")
-
-
-# ─── Render queue worker（P2-1） ────────────────────
-# Premiere / Media Encoder は Mac 1 台に 1 セッションしか動かない物理制約があるため、
-# 6+ チャンネル並列ジョブは render queue (SQLite) に enqueue → 1 worker が直列処理。
-# 他 stage（plan/suno/rename/meta/upload）は queue を経由せず subprocess で並列実行。
-
-_rq_worker_started = False
-
-
-def _execute_render_job(job: dict) -> None:
-    """1 ジョブを subprocess で実行。終了 → mark_done / mark_error。"""
-    import app_render_queue as _rq
-    job_id = int(job["id"])
-    stage = str(job["stage"])
-    ch_folder = Path(job["channel_folder"])
-    video_name = job.get("video_name") or ""
-    folder = resolve_video_folder(video_name, channel_root=ch_folder) if video_name else ch_folder
-    if not folder.exists():
-        _rq.mark_error(job_id, f"video folder not found: {folder}")
-        _send_line_notify(
-            f"❌ render queue: [{job.get('channel_name','?')}] vol.{job['vol']} - フォルダ不在"
-        )
-        return
-
-    cmd_base = [sys.executable, "-u", str(SHARED_BASE / "Python" / "app_premiere.py")]
-    prproj = next(iter(folder.glob("*vol*.prproj")), None) or next(iter(folder.glob("*.prproj")), None)
-    if stage == "premiere":
-        cmd = cmd_base + ["--duration", "10800"]
-        if prproj:
-            cmd += ["--project", str(prproj)]
-        timeout = 3600
-    elif stage == "export":
-        cmd = cmd_base + ["--export-only"]
-        if prproj:
-            cmd += ["--project", str(prproj)]
-        timeout = 7200
-    else:
-        _rq.mark_error(job_id, f"unknown stage: {stage}")
-        return
-
-    env = {**os.environ}
-    env["APP_CHANNEL_FOLDER"] = str(ch_folder)
-    env["APP_CHANNEL_NAME"] = job.get("channel_name") or ""
-    env["APP_NO_INTERACTIVE"] = "1"
-    # worker から起動したサブプロセスが再帰的に enqueue しないよう抑止
-    env["APP_USE_RENDER_QUEUE"] = "0"
-
-    print(f"[render-queue] ▶ job#{job_id} {stage} vol.{job['vol']} "
-          f"[{job.get('channel_name','?')}]", flush=True)
-    try:
-        proc = subprocess.run(cmd, env=env, timeout=timeout,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if proc.returncode == 0:
-            _rq.mark_done(job_id)
-            print(f"[render-queue]  job#{job_id} done", flush=True)
-        else:
-            tail = (proc.stdout or b"").decode(errors="replace")[-300:]
-            _rq.mark_error(job_id, f"exit={proc.returncode} {tail}")
-            _send_line_notify(
-                f"❌ render queue: [{job.get('channel_name','?')}] "
-                f"vol.{job['vol']} {stage} 失敗 (exit={proc.returncode})"
-            )
-    except subprocess.TimeoutExpired:
-        _rq.mark_error(job_id, f"timeout {timeout}s")
-        _send_line_notify(
-            f" render queue: [{job.get('channel_name','?')}] "
-            f"vol.{job['vol']} {stage} タイムアウト ({timeout}s)"
-        )
-    except Exception as e:
-        _rq.mark_error(job_id, f"exception: {e}")
-        _send_line_notify(
-            f"❌ render queue: [{job.get('channel_name','?')}] "
-            f"vol.{job['vol']} {stage} 例外: {str(e)[:80]}"
-        )
-
-
-def _render_queue_worker_loop() -> None:
-    """daemon thread。pending を 1 件ずつ pick → 実行 → mark を繰り返す。"""
-    import app_render_queue as _rq
-    print("[render-queue] worker started", flush=True)
-    while True:
-        try:
-            job = _rq.claim_next()
-            if not job:
-                time.sleep(3)
-                continue
-            _execute_render_job(job)
-        except Exception as e:
-            print(f"[render-queue] worker exception: {e}", flush=True)
-            time.sleep(5)
-
-
-@app.on_event("startup")
-async def _validate_channel_registry():
-    """P2-2: dashboard_config.channel_folder が channels.json に登録されているか検証。
-
-    canonical source は channels.json。dashboard_config の channel_folder/channel_name は
-    あくまで「UI のアクティブビュー」のポインタなので、registry に無い folder を
-    指していたら警告（自動修正はしない、運営者の判断を待つ）。"""
-    try:
-        # PC 間共有: 共有ドライブ上の registry を旧ローカル版＋YT フォルダスキャンで同期・自己修復
-        try:
-            sync_channel_registry(verbose=True)
-        except Exception as e:
-            print(f"[registry] sync 失敗（続行）: {e}")
-        # PC 間共有: ベンチマークのプロファイル/設定/分析を共有ドライブへ移行（thumbs 画像は除く）
-        try:
-            migrate_benchmark_to_shared(verbose=True)
-        except Exception as e:
-            print(f"[benchmark] 移行呼び出し失敗（続行）: {e}")
-        # PC 間共有: discord/prompts/master_prompts を共有ドライブへ移行
-        try:
-            migrate_shared_settings(verbose=True)
-        except Exception as e:
-            print(f"[shared-config] 移行呼び出し失敗（続行）: {e}")
-        chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
-        if not chs:
-            print("[registry] channels.json が空。基本設定 > チャンネル管理から追加してください。")
-            return
-        cfg = load_json(DASHBOARD_CONFIG, {}) or {}
-        active_folder = cfg.get("channel_folder") or ""
-        active_name = cfg.get("channel_name") or ""
-        if not active_folder:
-            print(f"[registry] dashboard_config に channel_folder 未設定（{len(chs)} 件登録あり）")
-            return
-        # registry のいずれかと一致するか
-        target = _norm_folder(active_folder)
-        match = None
-        for ch in chs:
-            if _norm_folder(ch.get("folder") or "") == target:
-                match = ch
-                break
-        if match:
-            print(f"[registry] active channel: {match.get('name')!r} (id={match.get('id')!r}) ✓")
-        else:
-            print(f"[registry] ⚠ dashboard_config.channel_folder が registry に未登録: {active_folder}")
-            print(f"[registry] ⚠ active_name={active_name!r} → 'UI 内表示は許可するが job 実行時は --channel-id 推奨'")
-    except Exception as e:
-        print(f"[registry] 検証失敗: {e}")
-
-
-@app.on_event("startup")
-async def _init_run_ledger():
-    """P3-1: run ledger の DB 初期化 + stale 回収。"""
-    try:
-        import app_run_ledger as _ledger
-        _ledger.init_db()
-        reaped = _ledger.reap_stale()
-        if reaped:
-            print(f"[ledger] reaped {reaped} stale in_progress runs at startup")
-        print(f"[ledger] initialized at {_ledger.DB_PATH}")
-    except Exception as e:
-        print(f"[ledger] 起動失敗: {e}")
-
-
-@app.on_event("startup")
-async def _start_render_queue_worker():
-    """render queue の DB 初期化 + stale 回収 + worker thread 起動。"""
-    global _rq_worker_started
-    if _rq_worker_started:
-        return
-    if os.environ.get("APP_RENDER_QUEUE_DISABLE", "").strip() in ("1", "true", "yes"):
-        print("[render-queue] disabled by APP_RENDER_QUEUE_DISABLE")
-        return
-    try:
-        import app_render_queue as _rq
-        _rq.init_db()
-        reaped = _rq.reap_stale_running()
-        if reaped:
-            print(f"[render-queue] reaped {reaped} stale running jobs at startup")
-        t = threading.Thread(target=_render_queue_worker_loop, daemon=True,
-                             name="render-queue-worker")
-        t.start()
-        _rq_worker_started = True
-    except Exception as e:
-        print(f"[render-queue] 起動失敗: {e}")
-
-
-# ─── API: render queue（P2-1） ───────────────────
-# 6+ チャンネル並列運用時に Premiere/Export がシリアライズされる様子を可視化する。
-
-class RenderQueueEnqueueRequest(BaseModel):
-    channel_id: Optional[str] = ""
-    channel_folder: str
-    channel_name: Optional[str] = ""
-    vol: int
-    video_name: Optional[str] = ""
-    stage: str  # "premiere" | "export"
-    parent_run_id: Optional[str] = ""
-
-@app.get("/api/render-queue")
-def api_render_queue_list(status: Optional[str] = None, limit: int = 50):
-    """直近のジョブを返す（status フィルタ可: pending / running / done / error / cancelled）。"""
-    import app_render_queue as _rq
-    jobs = _rq.list_jobs(status=status, limit=int(limit))
-    return {
-        "status": "ok",
-        "jobs": jobs,
-        "counts": {
-            "pending": len(_rq.list_jobs("pending", limit=999)),
-            "running": len(_rq.list_jobs("running", limit=999)),
-        },
-    }
-
-@app.get("/api/render-queue/throughput")
-def api_render_queue_throughput(days: int = 7):
-    """直近 N 日のスループット統計（運用ガイドの「物理的に何チャンネルまで」根拠）。"""
-    import app_render_queue as _rq
-    return _rq.stats(window_days=int(days))
-
-@app.post("/api/render-queue/enqueue")
-def api_render_queue_enqueue(req: RenderQueueEnqueueRequest):
-    """pipeline 以外（CLI / 手動）からも投入可能にする内部 API。"""
-    import app_render_queue as _rq
-    if req.stage not in _rq.ALLOWED_STAGES:
-        raise HTTPException(400, f"stage must be one of {_rq.ALLOWED_STAGES}")
-    jid = _rq.enqueue(
-        channel_folder=req.channel_folder,
-        channel_name=req.channel_name or "",
-        vol=int(req.vol),
-        video_name=req.video_name or "",
-        stage=req.stage,
-        parent_run_id=req.parent_run_id or "",
-        channel_id=req.channel_id or "",
-    )
-    return {"status": "ok", "id": jid}
-
-@app.post("/api/render-queue/{job_id}/cancel")
-def api_render_queue_cancel(job_id: int):
-    import app_render_queue as _rq
-    ok = _rq.cancel(int(job_id))
-    if not ok:
-        raise HTTPException(409, "pending 状態のジョブだけがキャンセル可能です")
-    return {"status": "ok"}
-
-@app.post("/api/render-queue/reap")
-def api_render_queue_reap():
-    """stale running を error に降格（手動メンテ用）。"""
-    import app_render_queue as _rq
-    n = _rq.reap_stale_running()
-    return {"status": "ok", "reaped": n}
 
 
 # ─── API: run ledger（P3-1） ─────────────────────

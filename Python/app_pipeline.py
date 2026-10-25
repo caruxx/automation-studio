@@ -950,53 +950,6 @@ def step_rename(vol: int, folder: Path, via_api: bool, **kw):
         ], STEP_LABELS["rename"], timeout=1800)
 
 
-def _use_render_queue() -> bool:
-    """render queue を使うかどうか。
-
-    APP_USE_RENDER_QUEUE=1（推奨・並列ジョブ向け）→ enqueue + wait
-    APP_USE_RENDER_QUEUE=0 → 従来通り subprocess を直接実行
-    未指定 → 0（既定オフ。P2 安定後に既定 ON へ切替予定）"""
-    return os.environ.get("APP_USE_RENDER_QUEUE", "").strip() in ("1", "true", "yes")
-
-
-def _enqueue_and_wait(stage: str, vol: int, folder: Path) -> bool:
-    """render queue に enqueue → done/error/cancelled を blocking wait。
-    成功なら True、失敗なら False。"""
-    try:
-        sys.path.insert(0, str(BASE))
-        import app_render_queue as _rq
-    except Exception as e:
-        print(f"  ⚠ render queue モジュール読込失敗 → 直接実行へフォールバック: {e}")
-        return None  # フォールバックを意味する sentinel
-    cfg = _load_dashboard_config()
-    ch_folder = cfg.get("channel_folder") or str(folder.parent)
-    ch_name = cfg.get("channel_name") or ""
-    ch_id = ""
-    try:
-        ch = _resolve_channel(channel_folder=ch_folder)
-        ch_id = ch.get("id", "") if ch else (os.environ.get("APP_CHANNEL_ID") or "")
-    except Exception:
-        ch_id = os.environ.get("APP_CHANNEL_ID") or ""
-    try:
-        jid = _rq.enqueue(
-            channel_folder=ch_folder, channel_name=ch_name,
-            vol=int(vol), video_name=folder.name, stage=stage,
-            channel_id=ch_id,
-        )
-        print(f" enqueued render queue id={jid} (stage={stage}, vol={vol})")
-        timeout = 3600 if stage == "premiere" else 7200
-        job = _rq.wait_for(jid, timeout_sec=timeout)
-        if job.get("status") == "done":
-            print(f" render queue id={jid} done ({job.get('duration_sec') or '-'}s)")
-            return True
-        msg = (job.get("error_message") or "")[:200]
-        print(f"  ❌ render queue id={jid} {job.get('status')}: {msg}")
-        return False
-    except Exception as e:
-        print(f"  ⚠ render queue 利用失敗 → 直接実行へフォールバック: {e}")
-        return None
-
-
 # 各チャンネルルート直下の既定参照フォルダ名（reference_image_dir 未設定時のフォールバック）。
 # ⚠ ここを起点に「全チャンネル＝チャンネルルート/ベンチマーク」を規約化している。
 DEFAULT_REFERENCE_DIRNAME = "ベンチマーク"
@@ -3272,6 +3225,7 @@ def main():
 
     # ─── preflight チェック（ffmpeg 専用構成の実行環境） ───
     # 長時間 SUNO を回した後で ffmpeg 不在に気付く事故を防ぐ。APP_PREFLIGHT_DISABLE=1 で抑止可能。
+    _export_engine()  # 旧設定値が残っていれば 1 回だけ警告を出す
     needs_render = any(s in ("premiere", "export", "psd_composite") for s in steps)
     if needs_render and os.environ.get("APP_PREFLIGHT_DISABLE", "").strip() not in ("1", "true", "yes"):
         missing = preflight_ffmpeg()

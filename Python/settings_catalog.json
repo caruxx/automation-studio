@@ -390,7 +390,7 @@
     },
     {
       "key": "channel.psd_image_subdir",
-      "label_ja": "PSD差し替え画像フォルダ",
+      "label_ja": "差し替え画像フォルダ",
       "description_ja": "PSD合成で背景画像を探す動画フォルダ内サブディレクトリ",
       "tier": "advanced",
       "scope": "channel",
@@ -422,7 +422,7 @@
     {
       "key": "channel.production_mode",
       "label_ja": "制作構成",
-      "description_ja": "ffmpeg_onlyは画像エディタとFFmpegで制作し、Photoshop・Premiere・AMEを使用しない。standardは従来の構成。",
+      "description_ja": "制作構成。ffmpeg_only（画像エディタと FFmpeg）のみ。Photoshop・Premiere・AME は使用しない。",
       "tier": "easy",
       "scope": "channel",
       "storage": {
@@ -431,38 +431,49 @@
       },
       "type": "string",
       "choices": [
-        "standard",
         "ffmpeg_only"
       ],
       "category": "production"
     },
     {
-      "key": "channel.export_engine",
-      "label_ja": "書き出しエンジン",
-      "description_ja": "Premiere/AMEまたはffmpegの選択",
+      "key": "channel.ffrender.fps",
+      "label_ja": "ffmpeg書き出しFPS",
+      "description_ja": "24、30、60fpsを選択。未指定は従来の29.97fps",
       "tier": "advanced",
       "scope": "channel",
       "storage": {
         "file": "channel_config",
-        "path": "export_engine"
+        "path": "ffrender.fps"
       },
-      "type": "string",
+      "type": "integer",
       "choices": [
-        "ame",
-        "ffmpeg"
+        24,
+        30,
+        60
       ],
       "category": "production"
     },
     {
-      "key": "channel.ffrender.fps", "label_ja": "ffmpeg書き出しFPS", "description_ja": "24、30、60fpsを選択。未指定は従来の29.97fps", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "ffrender.fps"}, "type": "integer", "choices": [24, 30, 60], "category": "production"
-    },
-    {
-      "key": "channel.ffrender.bitrate_mbps", "label_ja": "ffmpeg映像ビットレート", "description_ja": "Mbps指定。未指定は従来のCRF書き出し", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "ffrender.bitrate_mbps"}, "type": "number", "validation": {"min": 1, "max": 200}, "category": "production"
+      "key": "channel.ffrender.bitrate_mbps",
+      "label_ja": "ffmpeg映像ビットレート",
+      "description_ja": "Mbps指定。未指定は従来のCRF書き出し",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "ffrender.bitrate_mbps"
+      },
+      "type": "number",
+      "validation": {
+        "min": 1,
+        "max": 200
+      },
+      "category": "production"
     },
     {
       "key": "channel.default_duration_sec",
       "label_ja": "既定動画尺",
-      "description_ja": "Premiere配置・書き出しの既定秒数",
+      "description_ja": "FFmpeg配置・書き出しの既定秒数",
       "tier": "easy",
       "scope": "channel",
       "storage": {
@@ -542,58 +553,6 @@
       "category": "production"
     },
     {
-      "key": "channel.template_prproj",
-      "label_ja": "Premiereテンプレート",
-      "description_ja": "自動配置で使うprprojテンプレート",
-      "tier": "advanced",
-      "scope": "channel",
-      "storage": {
-        "file": "channel_config",
-        "path": "template_prproj"
-      },
-      "type": "string",
-      "category": "production"
-    },
-    {
-      "key": "channel.template_psd",
-      "label_ja": "PSDテンプレート",
-      "description_ja": "PSD合成で使うテンプレート",
-      "tier": "advanced",
-      "scope": "channel",
-      "storage": {
-        "file": "channel_config",
-        "path": "template_psd"
-      },
-      "type": "string",
-      "category": "production"
-    },
-    {
-      "key": "channel.psd_base_layer",
-      "label_ja": "PSD背景レイヤー",
-      "description_ja": "背景差し替え対象レイヤー名",
-      "tier": "advanced",
-      "scope": "channel",
-      "storage": {
-        "file": "channel_config",
-        "path": "psd_base_layer"
-      },
-      "type": "string",
-      "category": "production"
-    },
-    {
-      "key": "channel.psd_toggle_layer",
-      "label_ja": "PSD切替レイヤー",
-      "description_ja": "サムネ出力時に切り替えるレイヤー名",
-      "tier": "advanced",
-      "scope": "channel",
-      "storage": {
-        "file": "channel_config",
-        "path": "psd_toggle_layer"
-      },
-      "type": "string",
-      "category": "production"
-    },
-    {
       "key": "channel.export_resolution",
       "label_ja": "書き出し解像度",
       "description_ja": "ffmpeg書き出しの解像度",
@@ -604,7 +563,10 @@
         "path": "export_resolution"
       },
       "type": "string",
-      "choices": ["1080p", "2160p"],
+      "choices": [
+        "1080p",
+        "2160p"
+      ],
       "category": "production"
     },
     {
@@ -1191,185 +1153,1102 @@
       "category": "advanced"
     },
     {
-      "key": "channel.now_playing.enabled", "label_ja": "楽曲名表示", "description_ja": "動画内に再生中の曲名を表示", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.enabled"}, "type": "boolean", "category": "production"
+      "key": "channel.now_playing.enabled",
+      "label_ja": "楽曲名表示",
+      "description_ja": "動画内に再生中の曲名を表示",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.enabled"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.mode", "label_ja": "楽曲名の表示モード", "description_ja": "各曲の冒頭のみ、または常時表示", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.mode"}, "type": "string", "choices": ["intro", "always"], "category": "production"
+      "key": "channel.now_playing.mode",
+      "label_ja": "楽曲名の表示モード",
+      "description_ja": "各曲の冒頭のみ、または常時表示",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.mode"
+      },
+      "type": "string",
+      "choices": [
+        "intro",
+        "always"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.intro_seconds", "label_ja": "冒頭表示秒数", "description_ja": "冒頭モードで曲名を表示する秒数", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.intro_seconds"}, "type": "number", "validation": {"min": 0.5, "max": 60}, "category": "production"
+      "key": "channel.now_playing.intro_seconds",
+      "label_ja": "冒頭表示秒数",
+      "description_ja": "冒頭モードで曲名を表示する秒数",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.intro_seconds"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0.5,
+        "max": 60
+      },
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.position", "label_ja": "楽曲名の位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+      "key": "channel.now_playing.position",
+      "label_ja": "楽曲名の位置",
+      "description_ja": "9グリッドで表示位置を選択",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.position"
+      },
+      "type": "string",
+      "choices": [
+        "top-left",
+        "top-center",
+        "top-right",
+        "middle-left",
+        "center",
+        "middle-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.size", "label_ja": "楽曲名のサイズ", "description_ja": "書き出し文字サイズ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.size"}, "type": "integer", "validation": {"min": 12, "max": 180}, "category": "production"
+      "key": "channel.now_playing.size",
+      "label_ja": "楽曲名のサイズ",
+      "description_ja": "書き出し文字サイズ",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.size"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 12,
+        "max": 180
+      },
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.font_name", "label_ja": "楽曲名フォント", "description_ja": "システムフォント名", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.font_name"}, "type": "string", "category": "production"
+      "key": "channel.now_playing.font_name",
+      "label_ja": "楽曲名フォント",
+      "description_ja": "システムフォント名",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.font_name"
+      },
+      "type": "string",
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.font_path", "label_ja": "任意フォントパス", "description_ja": "ttf/otf/ttcファイルの絶対パス", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.font_path"}, "type": "string", "category": "production"
+      "key": "channel.now_playing.font_path",
+      "label_ja": "任意フォントパス",
+      "description_ja": "ttf/otf/ttcファイルの絶対パス",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.font_path"
+      },
+      "type": "string",
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.color", "label_ja": "楽曲名の色", "description_ja": "16進数の文字色", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.color"}, "type": "string", "category": "production"
+      "key": "channel.now_playing.color",
+      "label_ja": "楽曲名の色",
+      "description_ja": "16進数の文字色",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.color"
+      },
+      "type": "string",
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.border_color", "label_ja": "楽曲名の縁取り色", "description_ja": "16進数の縁取り色", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.border_color"}, "type": "string", "category": "production"
+      "key": "channel.now_playing.border_color",
+      "label_ja": "楽曲名の縁取り色",
+      "description_ja": "16進数の縁取り色",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.border_color"
+      },
+      "type": "string",
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.border_width", "label_ja": "楽曲名の縁取り幅", "description_ja": "縁取りの太さ", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.border_width"}, "type": "integer", "validation": {"min": 0, "max": 12}, "category": "production"
+      "key": "channel.now_playing.border_width",
+      "label_ja": "楽曲名の縁取り幅",
+      "description_ja": "縁取りの太さ",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.border_width"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 12
+      },
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.opacity", "label_ja": "楽曲名の不透明度", "description_ja": "0から1の不透明度", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
+      "key": "channel.now_playing.opacity",
+      "label_ja": "楽曲名の不透明度",
+      "description_ja": "0から1の不透明度",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.opacity"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1
+      },
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.fade_in", "label_ja": "楽曲名フェードイン", "description_ja": "フェードイン秒数", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.fade_in"}, "type": "number", "validation": {"min": 0, "max": 10}, "category": "production"
+      "key": "channel.now_playing.fade_in",
+      "label_ja": "楽曲名フェードイン",
+      "description_ja": "フェードイン秒数",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.fade_in"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 10
+      },
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.fade_out", "label_ja": "楽曲名フェードアウト", "description_ja": "フェードアウト秒数", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.fade_out"}, "type": "number", "validation": {"min": 0, "max": 10}, "category": "production"
+      "key": "channel.now_playing.fade_out",
+      "label_ja": "楽曲名フェードアウト",
+      "description_ja": "フェードアウト秒数",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.fade_out"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 10
+      },
+      "category": "production"
     },
     {
-      "key": "channel.now_playing.margin", "label_ja": "楽曲名の余白", "description_ja": "画面端からの余白", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "now_playing.margin"}, "type": "integer", "validation": {"min": 0, "max": 400}, "category": "production"
+      "key": "channel.now_playing.margin",
+      "label_ja": "楽曲名の余白",
+      "description_ja": "画面端からの余白",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.margin"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 400
+      },
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.enabled", "label_ja": "クロマキーOP", "description_ja": "グリーンバック動画を冒頭へ合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.enabled"}, "type": "boolean", "category": "production"
+      "key": "channel.chroma_opening.enabled",
+      "label_ja": "クロマキーOP",
+      "description_ja": "グリーンバック動画を冒頭へ合成",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.enabled"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.video_path", "label_ja": "クロマキーOP動画", "description_ja": "vol相対または絶対パス", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.video_path"}, "type": "string", "category": "production"
+      "key": "channel.chroma_opening.video_path",
+      "label_ja": "クロマキーOP動画",
+      "description_ja": "vol相対または絶対パス",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.video_path"
+      },
+      "type": "string",
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.key_color", "label_ja": "クロマキー色", "description_ja": "抜き取る背景色", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.key_color"}, "type": "string", "validation": {"pattern": "^#[0-9A-Fa-f]{6}$"}, "category": "production"
+      "key": "channel.chroma_opening.key_color",
+      "label_ja": "クロマキー色",
+      "description_ja": "抜き取る背景色",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.key_color"
+      },
+      "type": "string",
+      "validation": {
+        "pattern": "^#[0-9A-Fa-f]{6}$"
+      },
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.similarity", "label_ja": "クロマキー透過の強さ", "description_ja": "キー色に近い色を抜く範囲", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.similarity"}, "type": "number", "validation": {"min": 0.05, "max": 0.45, "step": 0.01}, "category": "production"
+      "key": "channel.chroma_opening.similarity",
+      "label_ja": "クロマキー透過の強さ",
+      "description_ja": "キー色に近い色を抜く範囲",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.similarity"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0.05,
+        "max": 0.45,
+        "step": 0.01
+      },
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.position", "label_ja": "クロマキーOP位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+      "key": "channel.chroma_opening.position",
+      "label_ja": "クロマキーOP位置",
+      "description_ja": "9グリッドで表示位置を選択",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.position"
+      },
+      "type": "string",
+      "choices": [
+        "top-left",
+        "top-center",
+        "top-right",
+        "middle-left",
+        "center",
+        "middle-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.width_percent", "label_ja": "クロマキーOP幅", "description_ja": "動画幅に対する表示幅", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.width_percent"}, "type": "number", "validation": {"min": 10, "max": 100}, "category": "production"
+      "key": "channel.chroma_opening.width_percent",
+      "label_ja": "クロマキーOP幅",
+      "description_ja": "動画幅に対する表示幅",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.width_percent"
+      },
+      "type": "number",
+      "validation": {
+        "min": 10,
+        "max": 100
+      },
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.height_percent", "label_ja": "クロマキーOP高さ", "description_ja": "動画高さに対する表示高さ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.height_percent"}, "type": "number", "validation": {"min": 10, "max": 100}, "category": "production"
+      "key": "channel.chroma_opening.height_percent",
+      "label_ja": "クロマキーOP高さ",
+      "description_ja": "動画高さに対する表示高さ",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.height_percent"
+      },
+      "type": "number",
+      "validation": {
+        "min": 10,
+        "max": 100
+      },
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.opacity", "label_ja": "クロマキーOP不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
+      "key": "channel.chroma_opening.opacity",
+      "label_ja": "クロマキーOP不透明度",
+      "description_ja": "0から1の不透明度",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.opacity"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1
+      },
+      "category": "production"
     },
     {
-      "key": "channel.chroma_opening.use_audio", "label_ja": "クロマキーOP音声", "description_ja": "現在は常に無効", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "chroma_opening.use_audio"}, "type": "boolean", "category": "production"
+      "key": "channel.chroma_opening.use_audio",
+      "label_ja": "クロマキーOP音声",
+      "description_ja": "現在は常に無効",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.use_audio"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.enabled", "label_ja": "オーディオビジュアライザー", "description_ja": "音声に連動する演出を動画へ透過合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.enabled"}, "type": "boolean", "category": "production"
+      "key": "channel.visualizer.enabled",
+      "label_ja": "オーディオビジュアライザー",
+      "description_ja": "音声に連動する演出を動画へ透過合成",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.enabled"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.pattern", "label_ja": "ビジュアライザーのパターン", "description_ja": "バー、ミラーバー、波形ライン、周波数ライン、円形、リングから選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.pattern"}, "type": "string", "choices": ["bars", "mirror", "wave", "line", "circle", "ring"], "category": "production"
+      "key": "channel.visualizer.pattern",
+      "label_ja": "ビジュアライザーのパターン",
+      "description_ja": "バー、ミラーバー、波形ライン、周波数ライン、円形、リングから選択",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.pattern"
+      },
+      "type": "string",
+      "choices": [
+        "bars",
+        "mirror",
+        "wave",
+        "line",
+        "circle",
+        "ring"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.bands", "label_ja": "ビジュアライザーのバー本数", "description_ja": "周波数バーの本数", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.bands"}, "type": "integer", "validation": {"min": 16, "max": 192, "step": 4}, "category": "production"
+      "key": "channel.visualizer.bands",
+      "label_ja": "ビジュアライザーのバー本数",
+      "description_ja": "周波数バーの本数",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.bands"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 16,
+        "max": 192,
+        "step": 4
+      },
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.bar_width_percent", "label_ja": "バーの太さ", "description_ja": "セル幅に対するバー幅の割合", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.bar_width_percent"}, "type": "number", "validation": {"min": 20, "max": 100}, "category": "production"
+      "key": "channel.visualizer.bar_width_percent",
+      "label_ja": "バーの太さ",
+      "description_ja": "セル幅に対するバー幅の割合",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.bar_width_percent"
+      },
+      "type": "number",
+      "validation": {
+        "min": 20,
+        "max": 100
+      },
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.motion", "label_ja": "ビジュアライザーの動き方", "description_ja": "音声に対する動きの強さ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.motion"}, "type": "string", "choices": ["calm", "normal", "lively", "max"], "category": "production"
+      "key": "channel.visualizer.motion",
+      "label_ja": "ビジュアライザーの動き方",
+      "description_ja": "音声に対する動きの強さ",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.motion"
+      },
+      "type": "string",
+      "choices": [
+        "calm",
+        "normal",
+        "lively",
+        "max"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.position", "label_ja": "ビジュアライザーの位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+      "key": "channel.visualizer.position",
+      "label_ja": "ビジュアライザーの位置",
+      "description_ja": "9グリッドで表示位置を選択",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.position"
+      },
+      "type": "string",
+      "choices": [
+        "top-left",
+        "top-center",
+        "top-right",
+        "middle-left",
+        "center",
+        "middle-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.margin", "label_ja": "ビジュアライザーの余白", "description_ja": "画面端からの余白（px）", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.margin"}, "type": "integer", "validation": {"min": 0, "max": 800}, "category": "production"
+      "key": "channel.visualizer.margin",
+      "label_ja": "ビジュアライザーの余白",
+      "description_ja": "画面端からの余白（px）",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.margin"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 800
+      },
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.width_percent", "label_ja": "ビジュアライザーの幅", "description_ja": "動画幅に対する表示幅（%）", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.width_percent"}, "type": "number", "validation": {"min": 5, "max": 100}, "category": "production"
+      "key": "channel.visualizer.width_percent",
+      "label_ja": "ビジュアライザーの幅",
+      "description_ja": "動画幅に対する表示幅（%）",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.width_percent"
+      },
+      "type": "number",
+      "validation": {
+        "min": 5,
+        "max": 100
+      },
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.height_px", "label_ja": "ビジュアライザーの高さ", "description_ja": "表示領域の高さ（px）", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.height_px"}, "type": "integer", "validation": {"min": 16, "max": 1080}, "category": "production"
+      "key": "channel.visualizer.height_px",
+      "label_ja": "ビジュアライザーの高さ",
+      "description_ja": "表示領域の高さ（px）",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.height_px"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 16,
+        "max": 1080
+      },
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.color_mode", "label_ja": "ビジュアライザーの配色", "description_ja": "単色または2色グラデーション", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.color_mode"}, "type": "string", "choices": ["single", "gradient"], "category": "production"
+      "key": "channel.visualizer.color_mode",
+      "label_ja": "ビジュアライザーの配色",
+      "description_ja": "単色または2色グラデーション",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.color_mode"
+      },
+      "type": "string",
+      "choices": [
+        "single",
+        "gradient"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.color1", "label_ja": "ビジュアライザー色1", "description_ja": "単色またはグラデーションの開始色", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.color1"}, "type": "string", "validation": {"pattern": "^#[0-9A-Fa-f]{6}$"}, "category": "production"
+      "key": "channel.visualizer.color1",
+      "label_ja": "ビジュアライザー色1",
+      "description_ja": "単色またはグラデーションの開始色",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.color1"
+      },
+      "type": "string",
+      "validation": {
+        "pattern": "^#[0-9A-Fa-f]{6}$"
+      },
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.color2", "label_ja": "ビジュアライザー色2", "description_ja": "グラデーションの終了色", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.color2"}, "type": "string", "validation": {"pattern": "^#[0-9A-Fa-f]{6}$"}, "category": "production"
+      "key": "channel.visualizer.color2",
+      "label_ja": "ビジュアライザー色2",
+      "description_ja": "グラデーションの終了色",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.color2"
+      },
+      "type": "string",
+      "validation": {
+        "pattern": "^#[0-9A-Fa-f]{6}$"
+      },
+      "category": "production"
     },
     {
-      "key": "channel.visualizer.opacity", "label_ja": "ビジュアライザーの不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "visualizer.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
+      "key": "channel.visualizer.opacity",
+      "label_ja": "ビジュアライザーの不透明度",
+      "description_ja": "0から1の不透明度",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.opacity"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1
+      },
+      "category": "production"
     },
     {
-      "key": "channel.icon.enabled", "label_ja": "回転アイコン", "description_ja": "画像アイコンを映像へ合成", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.enabled"}, "type": "boolean", "category": "production"
+      "key": "channel.icon.enabled",
+      "label_ja": "回転アイコン",
+      "description_ja": "画像アイコンを映像へ合成",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.enabled"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.icon.image_path", "label_ja": "アイコン画像", "description_ja": "volフォルダからの相対パス", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.image_path"}, "type": "string", "category": "production"
+      "key": "channel.icon.image_path",
+      "label_ja": "アイコン画像",
+      "description_ja": "volフォルダからの相対パス",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.image_path"
+      },
+      "type": "string",
+      "category": "production"
     },
     {
-      "key": "channel.icon.rotate", "label_ja": "アイコン回転", "description_ja": "アイコンを一定周期で回転", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.rotate"}, "type": "boolean", "category": "production"
+      "key": "channel.icon.rotate",
+      "label_ja": "アイコン回転",
+      "description_ja": "アイコンを一定周期で回転",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.rotate"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.icon.period_seconds", "label_ja": "回転周期", "description_ja": "1回転にかける秒数", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.period_seconds"}, "type": "number", "validation": {"min": 5, "max": 60}, "category": "production"
+      "key": "channel.icon.period_seconds",
+      "label_ja": "回転周期",
+      "description_ja": "1回転にかける秒数",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.period_seconds"
+      },
+      "type": "number",
+      "validation": {
+        "min": 5,
+        "max": 60
+      },
+      "category": "production"
     },
     {
-      "key": "channel.icon.size_px", "label_ja": "アイコンサイズ", "description_ja": "アイコンの直径", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.size_px"}, "type": "integer", "validation": {"min": 100, "max": 900}, "category": "production"
+      "key": "channel.icon.size_px",
+      "label_ja": "アイコンサイズ",
+      "description_ja": "アイコンの直径",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.size_px"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 100,
+        "max": 900
+      },
+      "category": "production"
     },
     {
-      "key": "channel.icon.circle_crop", "label_ja": "円形切り抜き", "description_ja": "画像を円形に切り抜く", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.circle_crop"}, "type": "boolean", "category": "production"
+      "key": "channel.icon.circle_crop",
+      "label_ja": "円形切り抜き",
+      "description_ja": "画像を円形に切り抜く",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.circle_crop"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.icon.center_hole", "label_ja": "中央穴", "description_ja": "中心半径9パーセントを透明にする", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.center_hole"}, "type": "boolean", "category": "production"
+      "key": "channel.icon.center_hole",
+      "label_ja": "中央穴",
+      "description_ja": "中心半径9パーセントを透明にする",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.center_hole"
+      },
+      "type": "boolean",
+      "category": "production"
     },
     {
-      "key": "channel.icon.position", "label_ja": "アイコン位置", "description_ja": "9グリッドで表示位置を選択", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.position"}, "type": "string", "choices": ["top-left","top-center","top-right","middle-left","center","middle-right","bottom-left","bottom-center","bottom-right"], "category": "production"
+      "key": "channel.icon.position",
+      "label_ja": "アイコン位置",
+      "description_ja": "9グリッドで表示位置を選択",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.position"
+      },
+      "type": "string",
+      "choices": [
+        "top-left",
+        "top-center",
+        "top-right",
+        "middle-left",
+        "center",
+        "middle-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right"
+      ],
+      "category": "production"
     },
     {
-      "key": "channel.icon.margin", "label_ja": "アイコン余白", "description_ja": "画面端からの余白", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.margin"}, "type": "integer", "validation": {"min": 0, "max": 1080}, "category": "production"
+      "key": "channel.icon.margin",
+      "label_ja": "アイコン余白",
+      "description_ja": "画面端からの余白",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.margin"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 0,
+        "max": 1080
+      },
+      "category": "production"
     },
     {
-      "key": "channel.icon.opacity", "label_ja": "アイコン不透明度", "description_ja": "0から1の不透明度", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "icon.opacity"}, "type": "number", "validation": {"min": 0, "max": 1}, "category": "production"
-    },
-    {"key":"channel.visualizer.x","label_ja":"ビジュアライザーX座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"visualizer.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
-    {"key":"channel.visualizer.y","label_ja":"ビジュアライザーY座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"visualizer.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
-    {"key":"channel.icon.x","label_ja":"アイコンX座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"icon.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
-    {"key":"channel.icon.y","label_ja":"アイコンY座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"icon.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
-    {"key":"channel.chroma_opening.x","label_ja":"クロマキーOP X座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"chroma_opening.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
-    {"key":"channel.chroma_opening.y","label_ja":"クロマキーOP Y座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"chroma_opening.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
-    {"key":"channel.now_playing.x","label_ja":"楽曲名X座標","description_ja":"自由配置の左上X座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"now_playing.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
-    {"key":"channel.now_playing.y","label_ja":"楽曲名Y座標","description_ja":"自由配置の左上Y座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"now_playing.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
-    {
-      "key": "channel.effects.vintage", "label_ja": "ヴィンテージ", "description_ja": "色調と周辺減光を加える", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.vintage"}, "type": "boolean", "category": "production"
-    },
-    {
-      "key": "channel.effects.noise_sand", "label_ja": "砂嵐ノイズ", "description_ja": "全画面へ粒状ノイズを加える", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_sand"}, "type": "boolean", "category": "production"
-    },
-    {
-      "key": "channel.effects.noise_horizontal", "label_ja": "横ノイズ", "description_ja": "横方向の走査線ノイズを加える", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_horizontal"}, "type": "boolean", "category": "production"
+      "key": "channel.icon.opacity",
+      "label_ja": "アイコン不透明度",
+      "description_ja": "0から1の不透明度",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.opacity"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1
+      },
+      "category": "production"
     },
     {
-      "key": "channel.effects.noise_vertical", "label_ja": "縦ノイズ", "description_ja": "縦方向の走査線ノイズを加える", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_vertical"}, "type": "boolean", "category": "production"
+      "key": "channel.visualizer.x",
+      "label_ja": "ビジュアライザーX座標",
+      "description_ja": "自由配置の左上X座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.x"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1920
+      },
+      "category": "production"
     },
     {
-      "key": "channel.effects.noise_rain", "label_ja": "雨ノイズ", "description_ja": "縦に流れる雨筋をscreen合成", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_rain"}, "type": "boolean", "category": "production"
+      "key": "channel.visualizer.y",
+      "label_ja": "ビジュアライザーY座標",
+      "description_ja": "自由配置の左上Y座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "visualizer.y"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1080
+      },
+      "category": "production"
     },
     {
-      "key": "channel.effects.noise_fog", "label_ja": "霧ノイズ", "description_ja": "横に流れるミラータイル霧をscreen合成", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_fog"}, "type": "boolean", "category": "production"
+      "key": "channel.icon.x",
+      "label_ja": "アイコンX座標",
+      "description_ja": "自由配置の左上X座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.x"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1920
+      },
+      "category": "production"
     },
     {
-      "key": "channel.effects.noise_film", "label_ja": "古いフィルムノイズ", "description_ja": "ホコリ粒と露光ちらつきを合成", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_film"}, "type": "boolean", "category": "production"
+      "key": "channel.icon.y",
+      "label_ja": "アイコンY座標",
+      "description_ja": "自由配置の左上Y座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "icon.y"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1080
+      },
+      "category": "production"
     },
     {
-      "key": "channel.effects.noise_strength", "label_ja": "ノイズ強度", "description_ja": "各ノイズ効果の強さ", "tier": "easy", "scope": "channel", "storage": {"file": "channel_config", "path": "effects.noise_strength"}, "type": "integer", "validation": {"min": 5, "max": 100}, "category": "production"
+      "key": "channel.chroma_opening.x",
+      "label_ja": "クロマキーOP X座標",
+      "description_ja": "自由配置の左上X座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.x"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1920
+      },
+      "category": "production"
     },
     {
-      "key": "channel.fg.enabled", "label_ja": "最前面フレーム", "description_ja": "全レイヤーの上にPNGを合成", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "fg.enabled"}, "type": "boolean", "category": "production"
+      "key": "channel.chroma_opening.y",
+      "label_ja": "クロマキーOP Y座標",
+      "description_ja": "自由配置の左上Y座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "chroma_opening.y"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1080
+      },
+      "category": "production"
     },
     {
-      "key": "channel.fg.image_path", "label_ja": "最前面画像", "description_ja": "チャンネルまたはvolフォルダ基準のPNGパス", "tier": "advanced", "scope": "channel", "storage": {"file": "channel_config", "path": "fg.image_path"}, "type": "string", "category": "production"
+      "key": "channel.now_playing.x",
+      "label_ja": "楽曲名X座標",
+      "description_ja": "自由配置の左上X座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.x"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1920
+      },
+      "category": "production"
     },
-    {"key":"channel.fg.x","label_ja":"最前面画像X座標","description_ja":"1920x1080論理座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"fg.x"},"type":"number","validation":{"min":0,"max":1920},"category":"production"},
-    {"key":"channel.fg.y","label_ja":"最前面画像Y座標","description_ja":"1920x1080論理座標","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"fg.y"},"type":"number","validation":{"min":0,"max":1080},"category":"production"},
-    {"key":"channel.fg.w","label_ja":"最前面画像幅","description_ja":"1920x1080論理サイズ","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"fg.w"},"type":"number","validation":{"min":1,"max":1920},"category":"production"},
-    {"key":"channel.fg.h","label_ja":"最前面画像高さ","description_ja":"1920x1080論理サイズ","tier":"advanced","scope":"channel","storage":{"file":"channel_config","path":"fg.h"},"type":"number","validation":{"min":1,"max":1080},"category":"production"},
+    {
+      "key": "channel.now_playing.y",
+      "label_ja": "楽曲名Y座標",
+      "description_ja": "自由配置の左上Y座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "now_playing.y"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1080
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.vintage",
+      "label_ja": "ヴィンテージ",
+      "description_ja": "色調と周辺減光を加える",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.vintage"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_sand",
+      "label_ja": "砂嵐ノイズ",
+      "description_ja": "全画面へ粒状ノイズを加える",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.noise_sand"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_horizontal",
+      "label_ja": "横ノイズ",
+      "description_ja": "横方向の走査線ノイズを加える",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.noise_horizontal"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_vertical",
+      "label_ja": "縦ノイズ",
+      "description_ja": "縦方向の走査線ノイズを加える",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.noise_vertical"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_rain",
+      "label_ja": "雨ノイズ",
+      "description_ja": "縦に流れる雨筋をscreen合成",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.noise_rain"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_fog",
+      "label_ja": "霧ノイズ",
+      "description_ja": "横に流れるミラータイル霧をscreen合成",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.noise_fog"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_film",
+      "label_ja": "古いフィルムノイズ",
+      "description_ja": "ホコリ粒と露光ちらつきを合成",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.noise_film"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.effects.noise_strength",
+      "label_ja": "ノイズ強度",
+      "description_ja": "各ノイズ効果の強さ",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "effects.noise_strength"
+      },
+      "type": "integer",
+      "validation": {
+        "min": 5,
+        "max": 100
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.fg.enabled",
+      "label_ja": "最前面フレーム",
+      "description_ja": "全レイヤーの上にPNGを合成",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "fg.enabled"
+      },
+      "type": "boolean",
+      "category": "production"
+    },
+    {
+      "key": "channel.fg.image_path",
+      "label_ja": "最前面画像",
+      "description_ja": "チャンネルまたはvolフォルダ基準のPNGパス",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "fg.image_path"
+      },
+      "type": "string",
+      "category": "production"
+    },
+    {
+      "key": "channel.fg.x",
+      "label_ja": "最前面画像X座標",
+      "description_ja": "1920x1080論理座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "fg.x"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1920
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.fg.y",
+      "label_ja": "最前面画像Y座標",
+      "description_ja": "1920x1080論理座標",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "fg.y"
+      },
+      "type": "number",
+      "validation": {
+        "min": 0,
+        "max": 1080
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.fg.w",
+      "label_ja": "最前面画像幅",
+      "description_ja": "1920x1080論理サイズ",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "fg.w"
+      },
+      "type": "number",
+      "validation": {
+        "min": 1,
+        "max": 1920
+      },
+      "category": "production"
+    },
+    {
+      "key": "channel.fg.h",
+      "label_ja": "最前面画像高さ",
+      "description_ja": "1920x1080論理サイズ",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "fg.h"
+      },
+      "type": "number",
+      "validation": {
+        "min": 1,
+        "max": 1080
+      },
+      "category": "production"
+    },
     {
       "key": "stock.warn_days",
       "label_ja": "素材在庫警告日数",

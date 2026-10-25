@@ -2,7 +2,7 @@
 """ループ連結方式レンダラー（Premiere/AME 代替の ffmpeg 書き出しエンジン）。
 
 設計の肝（プロトタイプ検証済 2026-06-13, 11_HN で実測）:
-- BGM 動画のビデオは実質「静止画」(スペクトラム廃止 jsx_bundle.py:1042) → 全フレームを
+- BGM 動画のビデオは実質「静止画」(スペクトラム廃止) → 全フレームを
   AME で再エンコードするのは丸ごと無駄。静止画を **1 GOP だけエンコード**して
   `-stream_loop -c copy` で目標尺まで連結すれば、映像組み立ては数秒で終わる。
 - 音声は曲を concat → 目標尺トリム → ラスト 20s フェード → ハードリミッタ → AAC。
@@ -44,8 +44,8 @@ from PIL import Image, ImageDraw
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-# SRT/TC 生成は app_premiere の純関数を再利用（Premiere に触れない関数のみ）
-from app_premiere import generate_srt, generate_timecode, _read_file_prefix  # noqa: E402
+# SRT/TC 生成と file_prefix 解決は srt_timecode（旧 app_premiere の純関数）
+from srt_timecode import generate_srt, generate_timecode, _read_file_prefix  # noqa: E402
 from app_timeline import TIMELINE_NAME, load as load_vol_timeline  # noqa: E402
 
 # ── AME 目標スペック（HN_vol11.mp4 実測値に合わせる） ──────────────────
@@ -444,76 +444,6 @@ def derive_order_from_clips(clips: list, music_dir: Path) -> list:
         else:
             print(f"  WARNING: timeline の曲 '{c.get('title')}' を music/ で解決できず（スキップ）")
     return order
-
-
-_PREMIERE_READ_JSX = r'''
-(function(){
-  var p=app.project; if(!p) return "ERR|no_project";
-  var seqs=p.sequences; var n=seqs?seqs.numSequences:0;
-  if(!n) return "ERR|no_sequence";
-  var best=null,bestEnd=-1;
-  for(var i=0;i<n;i++){var s=seqs[i];var e=0;try{e=s.end.seconds;}catch(_){}
-    try{for(var t=0;t<s.audioTracks.numTracks;t++){var tr=s.audioTracks[t];if(tr&&tr.clips)
-      for(var c=0;c<tr.clips.numItems;c++){var cl=tr.clips[c];if(cl&&cl.end&&cl.end.seconds>e)e=cl.end.seconds;}}}catch(_){}
-    if(e>bestEnd){bestEnd=e;best=s;}}
-  if(!best) return "ERR|no_best";
-  var out=["SEQ|"+best.name+"|"+bestEnd.toFixed(3)];
-  function dump(tracks,kind){for(var t=0;t<tracks.numTracks;t++){var tr=tracks[t];if(!tr||!tr.clips)continue;
-    for(var c=0;c<tr.clips.numItems;c++){var cl=tr.clips[c];var nm="",mp="";
-      try{nm=cl.projectItem?cl.projectItem.name:"";}catch(_){}
-      try{mp=(cl.projectItem&&cl.projectItem.getMediaPath)?cl.projectItem.getMediaPath():"";}catch(_){}
-      out.push(kind+"|"+cl.start.seconds.toFixed(3)+"|"+cl.end.seconds.toFixed(3)+"|"+nm+"|"+mp);}}}
-  dump(best.audioTracks,"A"); dump(best.videoTracks,"V");
-  return out.join("\n");
-})()
-'''
-
-
-def build_manifest_from_premiere(vol_folder: Path, *, target_override: Optional[float] = None) -> dict:
-    """【レガシーブリッジ】開いている Premiere の配置済みタイムラインを Premiere Link 経由で
-    読み、manifest 化して vol フォルダに保存する。Premiere 起動 + Premiere Link パネル必須。"""
-    import app_premiere as ap
-    vol_folder = Path(vol_folder)
-    num = _extract_num(vol_folder)
-    music_dir = vol_folder / "music"
-    print("  Premiere Link でタイムラインを読み取り中...")
-    res = ap._file_eval_script(_PREMIERE_READ_JSX, timeout=60)
-    if res.startswith("ERR|"):
-        raise RuntimeError(f"Premiere タイムライン読取失敗: {res} "
-                           "（プロジェクトを開き、配置を済ませてから実行）")
-    aclips, vclips, seq_end, seq_name = [], [], 0.0, ""
-    for line in res.split("\n"):
-        parts = line.split("|")
-        if parts[0] == "SEQ":
-            seq_name = parts[1]
-            seq_end = float(parts[2])
-        elif parts[0] in ("A", "V") and len(parts) >= 5:
-            rec = {"start": float(parts[1]), "end": float(parts[2]),
-                   "title": _title_from(parts[3]), "path": parts[4]}
-            (aclips if parts[0] == "A" else vclips).append(rec)
-    if not aclips:
-        raise RuntimeError("音声クリップが読めません（配置が未実行の可能性）")
-    order = derive_order_from_clips(aclips, music_dir)
-    if not order:
-        raise RuntimeError("曲順を music/ に解決できませんでした")
-    # 画像: V トラックの distinct なメディアを start 順に main/subs へ
-    seen, imgs = set(), []
-    for c in sorted(vclips, key=lambda x: x["start"]):
-        nm = Path(c["path"]).name if c.get("path") else c.get("title")
-        if nm and nm not in seen and (vol_folder / nm).exists():
-            seen.add(nm)
-            imgs.append(vol_folder / nm)
-    main = imgs[0] if imgs else select_images(vol_folder, num)[0]
-    subs = imgs[1:]
-    target = target_override or seq_end
-    print(f"  読取: seq='{seq_name}' / 音声{len(aclips)}クリップ→{len(order)}曲(1ループ) / "
-          f"画像{len(imgs)}枚 / 尺={target:.0f}s")
-    data = _new_manifest(num, [f.name for f in order], main, subs, target,
-                         bitrate=DEFAULT_AUDIO_BITRATE, fade=FADE_SEC,
-                         source="premiere", clips=aclips[:50])
-    save_manifest(vol_folder, data)
-    print(f"  manifest 保存: {_manifest_path(vol_folder).name}")
-    return data
 
 
 def edit_manifest_order(vol_folder: Path, swaps: list, removes: list) -> dict:
@@ -3100,8 +3030,6 @@ def main():
     ap.add_argument("--audio-bitrate", default=DEFAULT_AUDIO_BITRATE)
     ap.add_argument("--no-audio-cache", action="store_true", help="音声キャッシュを使わない")
     # 構成ソース / 編集
-    ap.add_argument("--from-premiere", action="store_true",
-                    help="【レガシーブリッジ】開いている Premiere の配置済みタイムラインを読んで manifest 化してから書き出し")
     ap.add_argument("--swap", action="append", default=[], type=_parse_swap, metavar="対象=新.mp3",
                     help="【著作権修正】manifest の曲を差し替え（複数可）。例: --swap 'Old Title=New.mp3'")
     ap.add_argument("--remove", action="append", default=[], metavar="対象",
@@ -3125,8 +3053,6 @@ def main():
 
     try:
         # 構成ソースの確定（manifest を作る/編集する段）
-        if args.from_premiere:
-            build_manifest_from_premiere(vol, target_override=args.duration)
         if args.swap or args.remove:
             edit_manifest_order(vol, args.swap, args.remove)
 

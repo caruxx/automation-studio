@@ -237,7 +237,7 @@
         "Photoshop",
         "サムネをPhotoshopで作って"
       ],
-      "description": "PSD 合成(vol画像 + サムネイル画像)",
+      "description": "画像合成（vol画像 + サムネイル画像、Pillow）",
       "cli": {
         "cmd": [
           "python3",
@@ -255,67 +255,12 @@
         "max_parallel": 1
       }
     },
-    "premiere": {
-      "aliases": [
-        "Premiereで配置",
-        "プレミア配置",
-        "自動配置"
-      ],
-      "description": "Premiere 自動配置",
-      "cli": {
-        "cmd": [
-          "python3",
-          "app_pipeline.py",
-          "{vol}",
-          "--only",
-          "premiere"
-        ]
-      },
-      "api": {
-        "method": "POST",
-        "path": "/api/premiere/run",
-        "body": {
-          "video_name": "{video_name}",
-          "duration_h": 3,
-          "duration_m": 0,
-          "duration_s": 0
-        }
-      },
-      "prefer": "cli",
-      "via_api_safe": true,
-      "requires_vol": true,
-      "parallelism": {
-        "scope": "per-machine",
-        "max_parallel": 1
-      }
-    },
-    "place-images": {
-      "aliases": [
-        "画像のみ後から配置",
-        "画像だけ配置"
-      ],
-      "description": "Premiere に画像のみ後から配置",
-      "api": {
-        "method": "POST",
-        "path": "/api/premiere/place-images",
-        "body": {
-          "video_name": "{video_name}"
-        }
-      },
-      "prefer": "api",
-      "via_api_safe": true,
-      "requires_vol": true,
-      "parallelism": {
-        "scope": "per-machine",
-        "max_parallel": 1
-      }
-    },
     "export": {
       "aliases": [
         "書き出し",
         "エクスポート"
       ],
-      "description": "Media Encoder / Premiere 書き出し",
+      "description": "FFmpeg 書き出し（音声+映像+字幕+タイムコード）",
       "cli": {
         "cmd": [
           "python3",
@@ -325,18 +270,14 @@
           "export"
         ]
       },
-      "api": {
-        "method": "POST",
-        "path": "/api/premiere/export",
-        "body": {}
-      },
       "prefer": "cli",
-      "via_api_safe": true,
+      "via_api_safe": false,
       "requires_vol": true,
       "parallelism": {
         "scope": "per-machine",
         "max_parallel": 1
-      }
+      },
+      "via_api_unsafe_reason": "段階 1a: AME API は廃止。CLI（app_pipeline --only export）で実行する。"
     },
     "qa": {
       "aliases": [
@@ -555,29 +496,6 @@
       "via_api_safe": false,
       "via_api_unsafe_reason": "複数の長時間 subprocess とローカル資源ロックを管理するため CLI 専用。",
       "requires_vol": false,
-      "parallelism": {
-        "scope": "per-machine",
-        "max_parallel": 1
-      }
-    },
-    "pipeline-from-premiere": {
-      "aliases": [
-        "Premiereからやり直して",
-        "Premiere以降だけ再実行"
-      ],
-      "description": "Premiere 以降のパイプライン再実行",
-      "cli": {
-        "cmd": [
-          "python3",
-          "app_pipeline.py",
-          "{vol}",
-          "--from",
-          "premiere"
-        ]
-      },
-      "prefer": "cli",
-      "via_api_safe": true,
-      "requires_vol": true,
       "parallelism": {
         "scope": "per-machine",
         "max_parallel": 1

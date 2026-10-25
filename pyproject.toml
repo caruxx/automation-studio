@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "automation-studio"
 version = "0.1.0"
-description = "クリエイター向け制作パイプライン自動化ダッシュボード（SUNO・Premiere Pro・Adobe Media Encoder・YouTube・Google Flow を連携）"
+description = "クリエイター向け制作パイプライン自動化ダッシュボード（SUNO・FFmpeg・YouTube を連携）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Automation Studio Contributors" }]
-keywords = ["automation", "youtube", "premiere", "suno", "creator", "pipeline"]
+keywords = ["automation", "youtube", "ffmpeg", "suno", "creator", "pipeline"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
@@ -41,10 +41,8 @@ dependencies = [
 [project.optional-dependencies]
 # SUNO / Flow ブラウザ自動化（Playwright）
 browser = ["playwright>=1.40"]
-# Premiere Pro 連携（macOS のみ、pymiere は HTTP 経由）
-premiere = ["pymiere>=1.5"]
 # 全部入り
-all = ["playwright>=1.40", "pymiere>=1.5"]
+all = ["playwright>=1.40"]
 # 開発用
 dev = [
     "pytest>=8.0",

@@ -38,7 +38,7 @@ class MusicReviewTest(unittest.TestCase):
 
     def test_take_parentheses_are_hidden_in_timestamps_and_description(self):
         from app_track_title import public_track_title
-        import app_ffrender, app_premiere, app_timeline, app_core, claude_proposer
+        import app_ffrender, srt_timecode, app_timeline, app_core, claude_proposer
         self.assertEqual(public_track_title('Silver Avenue(1)'), 'Silver Avenue')
         self.assertEqual(public_track_title('Silver Avenue （２）'), 'Silver Avenue')
         self.assertEqual(public_track_title('Silver Avenue (Live)'), 'Silver Avenue (Live)')
@@ -47,7 +47,7 @@ class MusicReviewTest(unittest.TestCase):
         clips = [{'start':0,'end':240,'title':'Silver Avenue(1)'},
                  {'start':240,'end':480,'title':'Last Light（２）'}]
         tc = self.folder / 'music_time_code_info_1.txt'
-        app_premiere.generate_timecode(clips, tc)
+        srt_timecode.generate_timecode(clips, tc)
         expected = '00:00:00 - Silver Avenue\n00:04:00 - Last Light'
         self.assertEqual(tc.read_text().strip(), expected)
         app_ffrender.generate_display_timecode(clips, tc, {})
@@ -57,7 +57,7 @@ class MusicReviewTest(unittest.TestCase):
         self.assertEqual(app_core._read_matching_timecodes_until_loop(self.folder, '1')[0], expected)
         self.assertEqual(claude_proposer._read_tracklist_for_description(self.folder), expected)
         srt = self.folder / 'review.srt'
-        app_premiere.generate_srt(clips, srt)
+        srt_timecode.generate_srt(clips, srt)
         self.assertNotIn('(1)', srt.read_text())
         self.assertNotIn('（２）', srt.read_text())
 
