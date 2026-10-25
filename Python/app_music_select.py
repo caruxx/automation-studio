@@ -35,7 +35,8 @@ def main() -> int:
     try:
         r = select_takes_ai(folder, policy=cfg["policy"], prompt=cfg["prompt"], dry_run=args.dry_run)
     except SelectionPending as exc:
-        print(json.dumps({"ok": False, "status": "blocked", "reason": "selection_pending", "message": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "status": "blocked", "reason": "selection_pending",
+                          "blocked_reason": getattr(exc, "reason", "human"), "message": str(exc)}, ensure_ascii=False))
         return int(ExitCode.SELECTION_PENDING)
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))

@@ -24,7 +24,11 @@ _seeded = False
 
 
 class SelectionPending(RuntimeError):
-    pass
+    """楽曲の選定待ち。reason: human（人のハート待ち）/ quality（全候補不合格）/ unmeasured（測定不能）/ download / processing。"""
+
+    def __init__(self, message, reason="human"):
+        super().__init__(message)
+        self.reason = reason
 
 
 def db_path():
@@ -78,6 +82,13 @@ def transaction():
             raise
         finally:
             conn.close()
+
+
+def _detail_batch(detail_json):
+    try:
+        return json.loads(detail_json).get("batch_id")
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _event(conn, kind, detail):
@@ -290,6 +301,12 @@ def _state(conn, batch_id):
 
 def _export(conn, batch_id):
     state = _state(conn, batch_id)
+    # AI 選曲の採点と試行回数も出す（他ツールが品質待機の根拠を読めるように）
+    state["scores"] = {r["clip_id"]: dict(r) for r in conn.execute(
+        "SELECT * FROM take_scores WHERE batch_id=? ORDER BY clip_id", (batch_id,))}
+    state["ai_select_attempts"] = sum(
+        1 for r in conn.execute("SELECT detail_json FROM events WHERE kind='ai_select_failed'")
+        if _detail_batch(r["detail_json"]) == batch_id)
     path = Path(state["folder"]) / ".music_review.json"
     part = path.with_suffix(".json.part")
     part.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -325,7 +342,7 @@ def list_reviews():
 def choose_take(batch_id, clip_id, selected):
     with transaction() as conn:
         batch = _state(conn, batch_id)
-        if batch["processing"]: raise SelectionPending("後処理中です。完了後に選び直してください")
+        if batch["processing"]: raise SelectionPending("後処理中です。完了後に選び直してください", reason="processing")
         take = next((t for t in batch["takes"] if t["clip_id"] == clip_id), None)
         if not take or not take["available"]: raise ValueError("選択対象のMP3がありません")
         if selected:
@@ -358,11 +375,12 @@ def load_music_selection_config(folder):
         max_silence_ratio / lufs_range / lufs_min / lufs_max / weights も policy として読む。
     APP_CHANNEL_FOLDER があればそれを、無ければ動画フォルダの親をチャンネルフォルダとして読む。"""
     folder = Path(folder)
+    # 動画フォルダの親（その vol が属するチャンネル）を優先し、無ければ APP_CHANNEL_FOLDER。
+    # UI のアクティブチャンネルの環境変数が残っていても、別チャンネルの選曲設定を読まない。
     env_folder = (os.environ.get("APP_CHANNEL_FOLDER") or "").strip()
-    candidates = []
+    candidates = [folder.parent / ".app_channel_config.json"]
     if env_folder:
         candidates.append(Path(env_folder).expanduser() / ".app_channel_config.json")
-    candidates.append(folder.parent / ".app_channel_config.json")
     data = {}
     for path in candidates:
         try:
@@ -446,7 +464,7 @@ def select_takes_ai(folder, *, policy=None, measurer=None, llm=None, prompt="", 
     if state is None:
         raise ValueError("楽曲バッチが登録されていません（SUNO のダウンロードが先です）")
     if not state["download_complete"]:
-        raise SelectionPending(f"ダウンロードが未完了のため選曲できません: {len(state['takes'])}/{state['expected']}")
+        raise SelectionPending(f"ダウンロードが未完了のため選曲できません: {len(state['takes'])}/{state['expected']}", reason="download")
     measurer = measurer or music_scoring.measure
     pol = music_scoring.policy_from(policy)
     folder = Path(state["folder"])
@@ -507,8 +525,9 @@ def select_takes_ai(folder, *, policy=None, measurer=None, llm=None, prompt="", 
             with transaction() as conn:
                 _event(conn, "ai_select_failed", {"batch_id": state["id"], "attempt": result["attempt"] + 1,
                                                   "reason": result["blocked_reason"], "failed_titles": failed_titles})
+                _export(conn, state["id"])
             result["attempt"] += 1
-            raise SelectionPending(f"{message}（試行 {result['attempt']} 回目）")
+            raise SelectionPending(f"{message}（試行 {result['attempt']} 回目）", reason=result["blocked_reason"])
         result["message"] = message
     return result
 
@@ -524,7 +543,7 @@ def process_selected(folder, processor, dry_run=False, force=False):
     folder = Path(folder).resolve()
     with transaction() as conn:
         state = _state(conn, state["id"])
-        if not state["ready"] or state["processing"]: raise SelectionPending("選択待ち、または後処理中です")
+        if not state["ready"] or state["processing"]: raise SelectionPending("選択待ち、または後処理中です", reason="processing" if state["processing"] else "human")
         conn.execute("UPDATE batches SET processing=? WHERE id=?", (os.getpid(), state["id"]))
     music = folder / "music"
     stage = folder / (".music_selected_" + secrets.token_hex(6))

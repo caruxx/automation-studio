@@ -240,6 +240,24 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(ms.policy_from(cfg["policy"])["lufs_min"], -24.0)
         (self.root / ".app_channel_config.json").write_text(json.dumps({"music_selection": {"mode": "bogus"}}), encoding="utf-8")
         self.assertEqual(catalog.load_music_selection_config(self.folder)["mode"], "ai")
+        # vol の親の設定が、環境変数 APP_CHANNEL_FOLDER（別チャンネル）より優先される
+        other = self.root / "other"
+        other.mkdir()
+        (other / ".app_channel_config.json").write_text(json.dumps({"music_selection_mode": "ai"}), encoding="utf-8")
+        (self.root / ".app_channel_config.json").write_text(json.dumps({"music_selection_mode": "human"}), encoding="utf-8")
+        with patch.dict(os.environ, {"APP_CHANNEL_FOLDER": str(other)}):
+            self.assertEqual(catalog.load_music_selection_config(self.folder)["mode"], "human")
+
+    def test_manifest_carries_scores_attempts_and_reason(self):
+        table = {k: BAD for k in ("Silver Avenue.mp3", "Silver Avenue_2.mp3", "Last Light.mp3", "Last Light_2.mp3")}
+        with self.assertRaises(catalog.SelectionPending) as cm:
+            catalog.select_takes_ai(self.folder, measurer=_measurer(table))
+        self.assertEqual(cm.exception.reason, "quality")
+        manifest = json.loads((self.folder / ".music_review.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["ai_select_attempts"], 1)
+        self.assertEqual(set(manifest["scores"]), {"clip-0", "clip-1", "clip-2", "clip-3"})
+        self.assertEqual(manifest["scores"]["clip-0"]["passed"], 0)
+        self.assertTrue(manifest["scores"]["clip-0"]["reason"])
 
     def test_pipeline_gate_ai_default_adopts(self):
         import app_pipeline as p
@@ -273,6 +291,10 @@ class SelectTest(unittest.TestCase):
         import app_pipeline as p
         with patch("music_scoring.measure", lambda path: BAD):
             self.assertEqual(p._music_selection_gate(self.folder), "awaiting_selection")
+        self.assertEqual(p._LAST_SELECTION_REASON, "quality")
+        (self.root / ".app_channel_config.json").write_text(json.dumps({"music_selection_mode": "human"}), encoding="utf-8")
+        self.assertEqual(p._music_selection_gate(self.folder), "awaiting_selection")
+        self.assertEqual(p._LAST_SELECTION_REASON, "human")
 
 
 if __name__ == "__main__":

@@ -75,16 +75,21 @@ EXIT_PREFLIGHT_FAIL = int(_ExitCode.PREFLIGHT_FAIL)
 EXIT_SELECTION_PENDING = int(_ExitCode.SELECTION_PENDING)
 
 
+_LAST_SELECTION_REASON = "human"  # 直近のゲートで待機になった理由（台帳の detail に出す）
+
+
 def _music_selection_gate(folder, processed=False):
     """楽曲の選定ゲート。未選定なら、チャンネル設定 music_selection.mode が ai（既定）のとき AI 選曲を 1 回試みる。
 
     human のときは従来どおり人のハートを待つ。AI が全曲不合格なら品質待機として同じ 79 で止まる。"""
+    global _LAST_SELECTION_REASON
     from app_music_catalog import require_selection, SelectionPending, load_music_selection_config, select_takes_ai
     try:
         require_selection(folder, processed=processed)
         return None
     except SelectionPending as exc:
         first = exc
+    _LAST_SELECTION_REASON = getattr(first, "reason", "human")
     cfg = load_music_selection_config(folder)
     if cfg["mode"] == "ai":
         try:
@@ -92,6 +97,7 @@ def _music_selection_gate(folder, processed=False):
             print(f"AI 選曲: {r['groups_selected_by_ai']}/{r['groups_total']} 群を採用"
                   f"（人の採用 {r['groups_human']}、不合格 {r['groups_failed']}）", flush=True)
         except SelectionPending as exc:
+            _LAST_SELECTION_REASON = getattr(exc, "reason", "quality")
             print(str(exc), flush=True)
             return "awaiting_selection"
         except Exception as exc:
@@ -3285,7 +3291,9 @@ def main():
             sys.stdout.flush()
             raise
         if ok == "awaiting_selection":
-            _ledger_call(ledger_sync, "report_step", args.vol, s, "pending", "楽曲のハート選択待ち")
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "pending",
+                         {"human": "楽曲のハート選択待ち", "quality": "品質待機（AI 選曲で全候補が不合格）",
+                          "unmeasured": "測定不能（ffmpeg / ffprobe を確認）"}.get(_LAST_SELECTION_REASON, "楽曲の選定待ち"))
             print(f"◀ STEP {s} 結果: MUSIC_SELECTION_PENDING")
             print(f"ハート選択・後処理後に再開: python3 app_pipeline.py {args.vol} --from rename")
             sys.exit(EXIT_SELECTION_PENDING)
