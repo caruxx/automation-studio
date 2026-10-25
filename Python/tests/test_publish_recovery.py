@@ -1,4 +1,8 @@
 """再起動時の公開予約復旧: naive/aware 混在の正規化と、古い予約の再登録抑止。"""
+try:
+    from . import _isolation  # noqa: F401  テスト隔離（tests パッケージとして読まれた場合）
+except ImportError:
+    import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import datetime as dt
 import sys
 import unittest

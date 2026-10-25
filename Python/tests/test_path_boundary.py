@@ -1,4 +1,8 @@
 """S02 / S03: 動画編集プレビューと画像合成 API が登録チャンネルの vol フォルダ外に出ないことを検証する。"""
+try:
+    from . import _isolation  # noqa: F401  テスト隔離（tests パッケージとして読まれた場合）
+except ImportError:
+    import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import json
 import os
 import sys
@@ -7,19 +11,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-# 本物の設定・Drive に触れないよう、app を未 import の場合は一時ディレクトリへ固定する。
-# （discover で他のテストが先に app を import 済みのときは、その環境の設定パスを使う。
-#   その場合でも setUpClass のガードで本物の ~/.config 配下なら skip する。）
-if "app_core" not in sys.modules:
-    _TMP = tempfile.mkdtemp(prefix="asb_")
-    _CFG = Path(_TMP) / "config"
-    _SHARED = Path(_TMP) / "shared"
-    _CFG.mkdir()
-    _SHARED.mkdir()
-    (_CFG / ".migration_completed").write_text("test", encoding="utf-8")  # 旧設定の移行コピーを止める
-    os.environ.setdefault("APP_CONFIG_DIR", str(_CFG))
-    os.environ.setdefault("STUDIO_CONFIG_DIR", str(_SHARED))
-    os.environ.setdefault("APP_SHARED_BASE", str(Path(_TMP) / "drive"))
+# 設定・Drive の隔離は _isolation が行う（APP_CONFIG_DIR 等と HOME を一時ディレクトリへ）。
 os.environ.setdefault("APP_ORCH_TICK_ENABLED", "0")
 os.environ.setdefault("APP_AUTO_UPDATE_ENABLED", "0")
 
@@ -84,10 +76,15 @@ class ApiBoundaryTest(unittest.TestCase):
         cls.adjacent = Path(cls.tmp.name) / "ch_evil" / "2_QA_260930"
         cls.adjacent.mkdir(parents=True)
         (cls.adjacent / "x.mp4").write_bytes(b"\x00" * 32)
-        tmp_root = Path(tempfile.gettempdir()).resolve()
+        # 本物の設定を守るガード: 設定パスが環境変数で指定した隔離ディレクトリ配下にあり、
+        # かつ実ユーザーの ~/.config 配下でないことを確認する（tests/__init__.py が隔離を用意する）。
+        real_config = (Path(os.environ.get("ORIGINAL_HOME") or "") / ".config") if os.environ.get("ORIGINAL_HOME") else None
+        isolated = [Path(v) for k in ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR") if (v := os.environ.get(k))]
         for target in (Path(app_core.CHANNELS_CONFIG), Path(app_core.DASHBOARD_CONFIG)):
-            if not app_core.path_is_within(target, tmp_root):
-                raise unittest.SkipTest("設定パスが一時ディレクトリ配下でないため API テストを skip（本物の設定を守る）")
+            if real_config is not None and app_core.path_is_within(target, real_config):
+                raise unittest.SkipTest(f"設定パス {target} が実ユーザーの ~/.config 配下のため API テストを skip（本物の設定を守る）")
+            if not any(app_core.path_is_within(target, d) for d in isolated):
+                raise unittest.SkipTest(f"設定パス {target} が APP_CONFIG_DIR / STUDIO_CONFIG_DIR 配下でないため API テストを skip")
         channels = [{"id": "qa", "name": "QA", "folder": str(cls.root), "prefix": "QA"}]
         Path(app_core.CHANNELS_CONFIG).parent.mkdir(parents=True, exist_ok=True)
         Path(app_core.CHANNELS_CONFIG).write_text(json.dumps(channels), encoding="utf-8")

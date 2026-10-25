@@ -1,4 +1,8 @@
 """Adobeなしの素材生成と、チャンネル設定・既存構成との分離を検証する。"""
+try:
+    from . import _isolation  # noqa: F401  テスト隔離（tests パッケージとして読まれた場合）
+except ImportError:
+    import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import hashlib
 import json
 import os

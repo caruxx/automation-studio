@@ -1,4 +1,8 @@
 """exit_contract: 4 入口（pipeline / orchestrator / batch / studio.py）と humanizer が workflow.json の終了コード表を共有する。"""
+try:
+    from . import _isolation  # noqa: F401  テスト隔離（tests パッケージとして読まれた場合）
+except ImportError:
+    import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import json
 import sys
 import unittest

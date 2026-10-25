@@ -1,4 +1,8 @@
 """実際の素材を消さず、曲ID・選択・永久タイトル予約の契約を検証する。"""
+try:
+    from . import _isolation  # noqa: F401  テスト隔離（tests パッケージとして読まれた場合）
+except ImportError:
+    import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import array
 import math
 import json
