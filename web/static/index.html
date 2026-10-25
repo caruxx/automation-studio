@@ -4288,7 +4288,7 @@ async function applyAppUpdate(){
     const r=await fetch('/api/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
     const d=await r.json();
     if(!r.ok||!d.ok){throw new Error(d.detail||d.message||'更新に失敗しました')}
-    if(result)result.innerHTML=`${esc(d.message||'更新しました')}<br><strong>bash Python/start.sh で再起動してください。</strong>`;
+    if(result)result.innerHTML=`${esc(d.message||'更新しました')}<br><strong>bash Python/start.sh --replace で再起動してください。</strong>`;
   }catch(e){
     if(result)result.textContent='更新失敗: '+(e.message||e);
   }
@@ -4655,7 +4655,7 @@ async function saveSettings(){
         modal(`<div class="mo-title">アプリID を「${esc(appId)}」に変更しました</div>
           <div style="font-size:var(--text-sm);color:var(--text-secondary);line-height:1.8;margin-bottom:var(--space-3)">
             変更を有効にするには<strong style="color:var(--accent-warning)">サーバー再起動が必要</strong>です。ターミナルで:
-            <pre style="margin-top:var(--space-2);padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">lsof -ti:8888 | xargs kill -9 && bash Python/start.sh</pre>
+            <pre style="margin-top:var(--space-2);padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">bash Python/start.sh --replace</pre>
             再起動後、<code>~/.config/${esc(prevAppId)}/</code> → <code>~/.config/${esc(appId)}/</code> への自動コピーが走り、バナー通知が出ます。
           </div>
           <div class="btns" style="justify-content:flex-end;margin:0"><button class="btn btn-primary btn-sm" onclick="closeModal()">了解</button></div>`);

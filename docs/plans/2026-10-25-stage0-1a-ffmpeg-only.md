@@ -17,7 +17,7 @@
 5. テストは `Python/tests/` の unittest 形式に揃える。実行コマンドは `cd <repo> && APP_CONFIG_DIR=$(mktemp -d) STUDIO_CONFIG_DIR=$(mktemp -d) APP_SHARED_BASE=$(mktemp -d) .venv/bin/python -m unittest discover -s Python/tests -t Python -v`。本物の `~/.config` や Drive に書き込まないこと。
 6. サーバー起動・外部通信（SUNO、YouTube、OpenAI、VPS、SSH）をしない。`config/` 配下（git 管理外の稼働データ）を変更しない。
 7. 各タスクは 1 コミット以上。コミットメッセージは日本語で「何を・なぜ」、末尾に `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`。push しない（統括が許可を得てから行う）。
-8. コミット前に `git diff --cached` で Global Constraints 2 の文字列（`@caruvistar`、`/Users/caruvi`、`GoogleDrive-`）が含まれないことを grep で確認し、結果をレポートに貼る。
+8. コミット前に `git diff --cached` で Global Constraints 2 の文字列（`@<メールドメイン>`、`/Users/<ユーザー名>`、`GoogleDrive-<アカウント>`）が含まれないことを grep で確認し、結果をレポートに貼る。（実値のパターンは private 側の検査スクリプトに置く）
 
 ## 検証の原則
 
@@ -93,7 +93,7 @@
 1. Adobe 必須の記述（README の動作要件、OVERVIEW の 11 工程のうち psd/premiere/export の説明、SPEC の API 一覧の該当分）を ffmpeg 専用の記述に置き換える。`skills/app-premiere.md`、`skills/app-psd-composite.md` は `git rm`。`skills/app-export.md` は ffmpeg 書き出し（`app_ffrender`）の説明に書き換える。
 2. `AGENTS.md:367` の Drive 絶対パス（メールアドレスを含む）、`AGENTS.md:28` と `CLAUDE.md:17` の launchd 記述の矛盾（「2026-07-04 廃止・手動起動」に統一）、`AGENTS.md:375` の Codex 委譲テンプレートの repo 指定（Drive の `_claude` → `~/dev/automation-studio`）を直す。
 3. `docs/XSERVER_RESTORE_2026-09-06.md` は VPS の IP・SSH 鍵名・配信チャンネル名を含むため `git rm` する（統括が private の `dev-workspace/archive` へ退避済みであることを確認してから）。`docs/QUOTA_AUDIT_APPLICATION.md` と `docs/superpowers/plans/2026-09-06-*.md`、`UX_REVIEW_2026-07.md` のメールアドレス・`/Users/<名前>/` を `<USER>` / `<DRIVE>` に置換する。`package.sh:68` のユーザー名リテラルは環境変数 `$USER` に置き換える。
-4. 完了後 `git grep -n -E "@caruvistar|/Users/caruvi|GoogleDrive-abe" -- . ':!docs/ANALYSIS_*' ':!docs/SPEC_*' ':!docs/plans/*'` が 0 件。
+4. 完了後 `git grep -n -E "@<メールドメイン>|/Users/<ユーザー名>|GoogleDrive-<アカウント>" -- . ':!docs/ANALYSIS_*' ':!docs/SPEC_*' ':!docs/plans/*'` が 0 件。
 5. `SECURITY_NOTES.md` の AceDataCloud / Midjourney / Flow の節は「撤去済み（2026-06-07 D8）」の 1 行に置き換える。
 
 ---
