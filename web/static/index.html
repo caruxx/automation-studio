@@ -3205,7 +3205,8 @@ function aggregateProgressSix(completedStages,currentStage){
   }));
 }
 function progressSixLabelForStage(stage){
-  const normalized={plan:'suno',download:'suno',process_tracks:'rename',images:'bgimage',jsx:'premiere'}[stage]||stage||'';
+  // 段階 2c: サーバーは新工程名（select / composite / render）を返す。表示グループは旧キーのまま（段階 7 で UI 側も改名）。
+  const normalized={plan:'suno',download:'suno',process_tracks:'rename',images:'bgimage',jsx:'premiere',select:'rename',composite:'psd_composite',render:'export'}[stage]||stage||'';
   return PROGRESS_SIX_GROUPS.find(group=>group.stages.includes(normalized))?.label||normalized||'未定';
 }
 function renderProgressSix(segments,opts){
@@ -3239,7 +3240,7 @@ function progressSixForVideo(v){
   if(internalDone.has('meta'))completed.push('meta','localization','thumbnail');
   if(internalDone.has('upload'))completed.push('upload');
   const currentKey=internal.find(step=>step.current)?.key||'';
-  const currentStage={suno:'suno',bgimage:'bgimage',psd_composite:'psd_composite',images:'bgimage',jsx:'premiere',export:'export',meta:'meta',upload:'upload'}[currentKey]||'';
+  const currentStage={suno:'suno',bgimage:'bgimage',psd_composite:'psd_composite',composite:'psd_composite',images:'bgimage',jsx:'premiere',export:'export',render:'export',meta:'meta',upload:'upload'}[currentKey]||'';
   return aggregateProgressSix(completed,currentStage);
 }
 function workflowProgress(v){
