@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import unittest
@@ -26,7 +27,8 @@ def main() -> int:
     import tests as _tests  # noqa: F401  隔離を先に効かせる（tests/__init__ → _isolation）
 
     suite = unittest.defaultTestLoader.discover(str(PY_DIR / "tests"), pattern=args.pattern, top_level_dir=str(PY_DIR))
-    result = unittest.TextTestRunner(verbosity=args.verbosity, stream=sys.stderr).run(suite)
+    with contextlib.redirect_stdout(sys.stderr):  # アプリの print を stderr へ退避し、stdout は結果 JSON の 1 行だけにする
+        result = unittest.TextTestRunner(verbosity=args.verbosity, stream=sys.stderr).run(suite)
     summary = {
         "ran": result.testsRun,
         "failures": len(result.failures),
@@ -35,11 +37,13 @@ def main() -> int:
         "skipped_reasons": [f"{t.id()}: {r}" for t, r in result.skipped],
         "isolated_root": str(getattr(_tests, "TEST_ROOT", "") or ""),
     }
-    ok = result.wasSuccessful() and (args.allow_skip or not result.skipped)
+    ok = result.wasSuccessful() and (args.allow_skip or not result.skipped) and result.testsRun > 0
     summary["ok"] = ok
     print(json.dumps(summary, ensure_ascii=False))
     if result.skipped and not args.allow_skip:
         print("skip があるため失敗扱いにします（--allow-skip で緩和）", file=sys.stderr)
+    if result.testsRun == 0:
+        print("テストが 1 件も実行されていません（--pattern を確認）", file=sys.stderr)
     return 0 if ok else 1
 
 

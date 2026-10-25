@@ -76,15 +76,15 @@ class ApiBoundaryTest(unittest.TestCase):
         cls.adjacent = Path(cls.tmp.name) / "ch_evil" / "2_QA_260930"
         cls.adjacent.mkdir(parents=True)
         (cls.adjacent / "x.mp4").write_bytes(b"\x00" * 32)
-        # 本物の設定を守るガード: 設定パスが環境変数で指定した隔離ディレクトリ配下にあり、
-        # かつ実ユーザーの ~/.config 配下でないことを確認する（tests/__init__.py が隔離を用意する）。
-        real_config = (Path(os.environ.get("ORIGINAL_HOME") or "") / ".config") if os.environ.get("ORIGINAL_HOME") else None
-        isolated = [Path(v) for k in ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR") if (v := os.environ.get(k))]
+        # 本物の設定を守るガード: 設定パスが隔離ルート（AS_TESTS_ISOLATED_ROOT）または一時領域の配下に
+        # あるときだけ実行する。一時領域の外（本番 launchd の STUDIO_CONFIG_DIR など）なら skip。
+        import tempfile as _tf
+        safe_roots = [Path(_tf.gettempdir())]
+        if os.environ.get("AS_TESTS_ISOLATED_ROOT"):
+            safe_roots.append(Path(os.environ["AS_TESTS_ISOLATED_ROOT"]))
         for target in (Path(app_core.CHANNELS_CONFIG), Path(app_core.DASHBOARD_CONFIG)):
-            if real_config is not None and app_core.path_is_within(target, real_config):
-                raise unittest.SkipTest(f"設定パス {target} が実ユーザーの ~/.config 配下のため API テストを skip（本物の設定を守る）")
-            if not any(app_core.path_is_within(target, d) for d in isolated):
-                raise unittest.SkipTest(f"設定パス {target} が APP_CONFIG_DIR / STUDIO_CONFIG_DIR 配下でないため API テストを skip")
+            if not any(app_core.path_is_within(target, r) for r in safe_roots):
+                raise unittest.SkipTest(f"設定パス {target} が一時領域の外にあるため API テストを skip（本物の設定を守る）")
         channels = [{"id": "qa", "name": "QA", "folder": str(cls.root), "prefix": "QA"}]
         Path(app_core.CHANNELS_CONFIG).parent.mkdir(parents=True, exist_ok=True)
         Path(app_core.CHANNELS_CONFIG).write_text(json.dumps(channels), encoding="utf-8")
