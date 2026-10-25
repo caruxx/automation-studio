@@ -279,96 +279,24 @@ class QAWorker(StageWorker):
 # 台帳が一次情報だが、手動実行ぶんを拾うためフォルダ成果物も見る。
 # premiere だけはクリーンなファイル成果物が無い（Premiere プロジェクト内状態）ため
 # export mp4 を proxy にしつつ台帳併用。
-def _img_has(folder: Path, vol: int, *names: str) -> bool:
-    img = folder / "Image"
-    for n in names:
-        if (folder / n).exists() or (img / n).exists():
-            return True
-    return False
-
-
-def _bgimage_done(folder: Path, vol: int) -> bool:
-    return _img_has(folder, vol, f"vol{vol}.png", f"vol{vol}.jpg")
-
-
-def _suno_done(folder: Path, vol: int) -> bool:
-    """SUNO生成/DL済み。後処理後の music だけ残る既存volも完了扱い。"""
-    for sub in ("original_music", "music"):
-        root = folder / sub
-        if root.is_dir() and any(p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".m4a")
-                                 for p in root.iterdir()):
-            return True
-    return False
-
-
-def _rename_done(folder: Path, vol: int) -> bool:
-    root = folder / "music"
-    return root.is_dir() and any(p.is_file() and p.suffix.lower() in (".mp3", ".wav", ".m4a")
-                                 for p in root.iterdir())
-
-
-def _psd_done(folder: Path, vol: int) -> bool:
-    # template_psd 未設定なら step_psd_composite は no-op（True 即返し）→ 完了扱い。
-    try:
-        if not _pipe._should_run_psd(folder):
-            return True
-    except Exception:
-        pass
-    return _img_has(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
-
-
-def _premiere_done(folder: Path, vol: int) -> bool:
-    # ファイル成果物なし。export mp4 があれば premiere は確実に完了済み（台帳でも補完）。
-    return _has_export_mp4(folder)
-
-
-def _export_done(folder: Path, vol: int) -> bool:
-    return _has_export_mp4(folder)
-
-
-def _qa_done(folder: Path, vol: int) -> bool:
-    # qa_report.json があり passed:true のみ done。passed:false（不合格/検査不能）は
-    # done でも候補でもない保留状態＝人間が原因を直して qa_report.json を消すまで
-    # 後続 stage に進めない（壊れ mp4 で report 無し→再dispatchループ→ブレーカー
-    # 発動した vol87 の再発防止）。
-    p = folder / "qa_report.json"
-    if not p.exists():
-        return False
-    try:
-        return bool(json.loads(p.read_text(encoding="utf-8")).get("passed", False))
-    except Exception:
-        return False
-
-
-def _meta_done(folder: Path, vol: int) -> bool:
-    # step_meta は youtube_{title,description,tags}.txt を書き出す（title を代表に判定）。
-    return (folder / "youtube_title.txt").exists()
-
-
-def _localization_done(folder: Path, vol: int) -> bool:
-    return (folder / "youtube_localizations.json").exists()
-
-
-def _thumbnail_done(folder: Path, vol: int) -> bool:
-    return _img_has(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
-
-
-def _upload_done(folder: Path, vol: int) -> bool:
-    return (folder / "youtube_upload.json").exists()
-
+# 成果物による完了判定は stage_state（done_validator）へ集約した。旧工程名のキーは段階 2c の切替まで残す。
+import stage_state as _ss
 
 _ARTIFACT_DONE = {
-    "suno": _suno_done,
-    "rename": _rename_done,
-    "bgimage": _bgimage_done,
-    "psd_composite": _psd_done,
-    "premiere": _premiere_done,
-    "export": _export_done,
-    "qa": _qa_done,
-    "meta": _meta_done,
-    "localization": _localization_done,
-    "thumbnail": _thumbnail_done,
-    "upload": _upload_done,
+    "suno": _ss.suno_done,
+    "select": _ss.selection_processed,
+    "rename": _ss.rename_done,
+    "bgimage": _ss.bgimage_done,
+    "psd_composite": _ss.composite_done,
+    "composite": _ss.composite_done,
+    "premiere": _ss.export_done,
+    "export": _ss.export_done,
+    "render": _ss.export_done,
+    "qa": _ss.qa_done,
+    "meta": _ss.meta_done,
+    "localization": _ss.localization_done,
+    "thumbnail": _ss.thumbnail_done,
+    "upload": _ss.upload_done,
 }
 
 
@@ -390,9 +318,17 @@ def _ledger_stage_done(stage: str, vol: int, channel_id: str = "") -> bool:
 
 
 def _stage_artifact_done(stage: str, folder: Path, vol: int, channel_id: str = "") -> bool:
-    fn = _ARTIFACT_DONE.get(stage)
-    if fn and fn(folder, vol):
-        return True
+    """成果物 + input_hash（stage_state）で完了を判定し、無ければ台帳で補う。
+    記録があり入力が変わっている工程は、成果物や台帳に done があっても失効（未完了）。"""
+    try:
+        if _ss.is_stale(stage, folder, vol):
+            return False
+        if _ss.stage_done(stage, folder, vol):
+            return True
+    except Exception:
+        fn = _ARTIFACT_DONE.get(stage)
+        if fn and fn(folder, vol):
+            return True
     return _ledger_stage_done(stage, vol, channel_id)
 
 

@@ -3095,6 +3095,15 @@ _RESUME_OVERRIDE = {
 }
 
 
+def _record_stage_done(step: str, folder: Path, vol: int) -> None:
+    """工程成功時に stage_state へ input_hash 付きの完了を記録する（失敗しても pipeline は止めない）。"""
+    try:
+        import stage_state
+        stage_state.mark_done(step, folder, vol)
+    except Exception as exc:
+        print(f"  警告: 完了記録（.stage_state.json）を書けませんでした: {exc}")
+
+
 def _run_step_with_retry(name: str, step_func, *args, **kw):
     """単一 stage を policy に従って retry しつつ実行。
 
@@ -3352,6 +3361,7 @@ def main():
         # 成功は True のみ。"retryable" / False / その他文字列はすべて最終失敗として扱う。
         succeeded = (ok is True)
         if succeeded:
+            _record_stage_done(s, folder, args.vol)
             _ledger_call(ledger_sync, "report_step", args.vol, s, "done")
             if s == "rename":
                 _ledger_call(ledger_sync, "push_context", args.vol, folder)
