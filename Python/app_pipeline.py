@@ -35,6 +35,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -101,17 +102,17 @@ STEP_LABELS = {
 }
 
 
+_FFMPEG_STEP_LABELS = {
+    "psd_composite": "4/11 画像合成（画像エディタ・Adobeなし）",
+    "premiere": "5/11 動画構成（FFmpeg書き出しへ引き継ぎ）",
+    "export": "6/11 FFmpeg書き出し・曲名・タイムスタンプ生成",
+    "thumbnail": "10/11 サムネイル確認（画像合成出力を利用）",
+}
+
+
 def _step_label(step: str) -> str:
-    if _load_dashboard_config().get("production_mode") == "ffmpeg_only":
-        labels = {
-            "psd_composite": "4/11 画像合成（画像エディタ・Adobeなし）",
-            "premiere": "5/11 動画構成（FFmpeg書き出しへ引き継ぎ）",
-            "export": "6/11 FFmpeg書き出し・曲名・タイムスタンプ生成",
-            "thumbnail": "10/11 サムネイル確認（画像合成出力を利用）",
-        }
-        if step in labels:
-            return labels[step]
-    return STEP_LABELS[step]
+    """工程の表示名。段階 1a 以降は常に ffmpeg 専用構成の表記を使う。"""
+    return _FFMPEG_STEP_LABELS.get(step) or STEP_LABELS[step]
 
 
 _CHANNEL_CONFIG_FILENAME = ".app_channel_config.json"
@@ -344,23 +345,18 @@ def _run(cmd, label, timeout=None, env_overrides=None):
         return False
 
 
-def _preflight_premiere() -> tuple:
-    """Premiere Pro の起動 + CEP (Premiere Link) パネル疎通を確認。
-
-    Returns: (ok: bool, message: str)
-    pipeline の steps に "premiere" / "export" が含まれる場合のみ呼ぶ。
-    """
+def preflight_ffmpeg() -> list:
+    """ffmpeg 専用構成の実行環境検査。不足している項目名の一覧を返す（空なら合格）。"""
+    missing = []
+    for tool in ("ffmpeg", "ffprobe"):
+        if not shutil.which(tool):
+            missing.append(tool)
     try:
-        if str(BASE) not in sys.path:
-            sys.path.insert(0, str(BASE))
-        from app_premiere import _is_premiere_running, _panel_alive
-    except Exception as e:
-        return False, f"app_premiere の import に失敗: {e}"
-    if not _is_premiere_running():
-        return False, "Premiere Pro が起動していません。"
-    if not _panel_alive():
-        return False, "Premiere Link CEP パネルが応答していません（30 秒以内 ping なし）。"
-    return True, "Premiere Pro + CEP panel 疎通 OK"
+        import PIL  # noqa: F401
+    except Exception:
+        missing.append("pillow")
+    return missing
+
 
 
 RUNBOOK_HINT = " docs/runbook.md（共有ドライブ）に対応手順あり"
@@ -1421,265 +1417,22 @@ def _overlay_thumbnail_script(out_thumb: Path, cfg: dict, out_bg: Path = None) -
 
 
 def step_psd_composite(vol: int, folder: Path, via_api: bool, **kw):
-    """vol{N}.jpg + サムネイル.jpg を2枚出す画像合成。
+    """vol{N}.jpg + サムネイル.jpg を 2 枚出す画像合成（Pillow、Adobe は使わない）。
 
-    production_mode=ffmpeg_onlyでは既存のPillow合成を使用し、Adobeを呼ばない。
-    以下はstandard構成のPSDテンプレ合成仕様。
-
-    bgimage step で AI 生成した <vol_folder>/vol{N}.png を per-channel テンプレ
-    PSD の base スマートオブジェクト層に流し込み、LLM で生成した英語シーンコピーを
-    都市名_テキスト層に set_text、PLAY LIST 層の表示/非表示を切り替えて 2 枚書き出す。
-
-    出力:
-      <vol_folder>/vol{N}.jpg     — 都市名OFF / PLAY LIST ON  （Premiere 背景画像用）
-      <vol_folder>/サムネイル.jpg — 都市名ON  / PLAY LIST OFF （YouTube サムネ用）
-      <vol_folder>/scene_en.txt   — 生成された英語シーンコピーのキャッシュ
-
-    両出力が既に存在すればスキップ（再生成は APP_PSD_COMPOSITE_FORCE=1）。
-    後続 step_thumbnail は サムネイル.jpg があると自動スキップする仕様なので、
-    PSD 合成が成功すれば AI サムネ生成は走らない（フォールバックとして共存）。
+    bgimage step が生成した <vol_folder>/vol{N}.png を入力に、app_image_composite が
+    チャンネル設定 thumbnail_composition に従って背景用とサムネ用を書き出す。
+    工程名は互換のため psd_composite のままにしている（改名は別段階）。
 
     env:
-      APP_PSD_COMPOSITE_DISABLE=1   step 全体をスキップ
-      APP_PSD_COMPOSITE_FORCE=1     既存サムネ/背景があっても強制再合成（scene_*.txt は尊重）
-      APP_SCENE_TEXT_REGEN=1        scene_en.txt / scene_ja.txt も作り直す（既定: 既存を再利用）
+      APP_IMAGE_COMPOSITE_FORCE=1 / APP_PSD_COMPOSITE_FORCE=1  既存出力があっても強制再合成
     """
     print(f"\n{'='*60}")
     print(f"  {_step_label('psd_composite')}")
     print(f"{'='*60}")
+    from app_image_composite import compose_images
+    force = os.environ.get("APP_IMAGE_COMPOSITE_FORCE", os.environ.get("APP_PSD_COMPOSITE_FORCE", "")).strip() in ("1", "true", "yes")
+    return compose_images(folder, vol, _load_dashboard_config(), force=force)
 
-    if _load_dashboard_config().get("production_mode") == "ffmpeg_only":
-        from app_image_composite import compose_images
-        force = os.environ.get("APP_IMAGE_COMPOSITE_FORCE", os.environ.get("APP_PSD_COMPOSITE_FORCE", "")).strip() in ("1", "true", "yes")
-        return compose_images(folder, vol, _load_dashboard_config(), force=force)
-
-    if os.environ.get("APP_PSD_COMPOSITE_DISABLE", "").strip() in ("1", "true", "yes"):
-        print("  ⊘ APP_PSD_COMPOSITE_DISABLE=1 によりスキップ")
-        return True
-
-    force = os.environ.get("APP_PSD_COMPOSITE_FORCE", "").strip() in ("1", "true", "yes")
-    # FORCE は「画像合成のやり直し」専用フラグ。scene_en/scene_ja のテキストキャッシュ
-    # 再生成は別フラグ（APP_SCENE_TEXT_REGEN）で制御する。FORCE だけで日本語/英語コピーが
-    # 作り直されると、YouTube タイトル（scene_ja.txt 由来）とサムネ文字が不一致になる事故が
-    # 起きるため（vol5 で実際に発生）。既定では既存の scene_*.txt を尊重する。
-    scene_regen = os.environ.get("APP_SCENE_TEXT_REGEN", "").strip() in ("1", "true", "yes")
-    out_bg = folder / f"vol{vol}.jpg"
-    out_thumb = folder / "サムネイル.jpg"
-    if not force and out_bg.exists() and out_thumb.exists():
-        print(f"  ⊘ 既存 {out_bg.name} / {out_thumb.name} あり、スキップ（再生成は APP_PSD_COMPOSITE_FORCE=1）")
-        return True
-
-    # bgimage step が生成した AI 背景画像（必須入力）。
-    # フォールバック順: vol{N}.png → vol{N}_source.jpg（PNG 削除運用と両立）。
-    # vol{N}.jpg は Photoshop 出力（PLAY LIST 焼き付き）なので候補から除外する。
-    base_image = folder / f"vol{vol}.png"
-    if not base_image.exists():
-        fallback = folder / f"vol{vol}_source.jpg"
-        if fallback.exists():
-            base_image = fallback
-            print(f" vol{vol}.png 無し → フォールバック {fallback.name} を使用")
-    if not base_image.exists():
-        print(f"  ⚠ 背景画像 vol{vol}.png / vol{vol}_source.jpg どちらも無い（bgimage step を先に実行してください）→ スキップ")
-        return True
-
-    cfg = _load_dashboard_config()
-    channel_folder_str = (cfg.get("channel_folder") or "").strip()
-    if not channel_folder_str:
-        print("  ⚠ channel_folder 未設定（アクティブチャンネルを設定してください）→ スキップ")
-        return True
-    template_psd_name = (cfg.get("template_psd") or "").strip()
-    if not template_psd_name:
-        print("  ⚠ template_psd 未設定（.app_channel_config.json）→ スキップ")
-        return True
-    template_psd = Path(channel_folder_str) / "プロジェクト" / template_psd_name
-    if not template_psd.exists():
-        print(f"  ⚠ テンプレ PSD が存在しません: {template_psd} → スキップ（手動で配置してから再実行）")
-        return True
-
-    # vol 固有 PSD パスを構築（フォルダ名 "<vol>_<prefix>_<YYMMDD>" の prefix を抽出）。
-    # 例: "11_HN_260523" → "HN_vol11.psd"
-    # vol_folder 作成プロセス（POST /api/videos/create 等）でテンプレ PSD が自動配置される
-    # 前提なので、ここでは「無ければ即エラー」とする。コード側で勝手にコピーしてしまうと
-    # vol 作成プロセスの不具合に気づけないため、明示的に失敗させて運用者にフォローを促す。
-    fm = re.match(r"^\d+_([^_]+)", folder.name)
-    folder_prefix = fm.group(1) if fm else "vol"
-    # 正規名(ゼロ埋め無し) を優先。既存フォルダにありがちな ゼロ埋め名(sk_vol01.psd 等) や
-    # 末尾サフィックス差にも耐性を持たせる（候補が全滅したときだけ失敗させ運用者にフォローを促す）。
-    psd_path = folder / f"{folder_prefix}_vol{vol}.psd"
-    if not psd_path.exists():
-        cands = [psd_path]
-        try:
-            cands.append(folder / f"{folder_prefix}_vol{int(vol):02d}.psd")   # ゼロ埋め2桁
-        except (ValueError, TypeError):
-            pass
-        try:
-            for p in sorted(folder.glob(f"{folder_prefix}_vol*.psd")):
-                mm = re.search(r"vol0*(\d+)", p.stem)
-                if mm and int(mm.group(1)) == int(vol):
-                    cands.append(p)
-        except (ValueError, TypeError):
-            pass
-        found = next((c for c in cands if c.exists()), None)
-        if found:
-            psd_path = found
-        else:
-            try:
-                padded = f"{folder_prefix}_vol{int(vol):02d}.psd"
-            except (ValueError, TypeError):
-                padded = f"{folder_prefix}_vol0{vol}.psd"
-            print(f"  ❌ vol 固有 PSD が見つかりません: {folder_prefix}_vol{vol}.psd（ゼロ埋め名 {padded} も可）")
-            print(f"     期待される配置: {folder / f'{folder_prefix}_vol{vol}.psd'}")
-            print(f"     vol_folder 作成プロセスを確認してください（テンプレ {template_psd_name} の自動コピーが効いていない可能性）")
-            print(f"     復旧後に再実行: python3 app_pipeline.py {vol} --only psd_composite")
-            return False
-    print(f" vol 固有 PSD を使用: {psd_path.name}")
-
-    # NOTE: strip しない — PSD のレイヤー名には末尾スペースが含まれることがある
-    # （例: Harbor Notes hn_base.psd の "PLAY LIST " は末尾スペース必須）
-    base_layer = cfg.get("psd_base_layer") or "base"
-    toggle_layer = cfg.get("psd_toggle_layer") or "PLAY LIST"
-    # toggle 層を「背景=ON / サムネ=OFF で切替」ではなく「両出力で常時表示」にするか。
-    # competitor 踏襲: headline（例 SUKIMA "Playlist"）は背景/サムネ両方で出すのが正しい。
-    # 未設定/False なら従来の英語専用 toggle 挙動（orzz/Harbor Notes）と完全に同一。
-    toggle_always_visible = bool(cfg.get("psd_toggle_always_visible"))
-    psd_text_layer = cfg.get("psd_text_layer") or ""
-    psd_text_font = cfg.get("psd_text_font") or ""  # PostScript 名（例: "HelveticaNeue-UltraLight"）。空ならコード側でフォント指定しない
-    psd_text_align = str(cfg.get("psd_text_align") or "center").strip().lower()
-    if psd_text_align not in ("center", "left", "right"):
-        print(f"  警告: psd_text_align={psd_text_align!r} は無効なため 'center' を使用")
-        psd_text_align = "center"
-
-    # 英語シーンコピー生成（LLM）— scene_en.txt にキャッシュ。
-    # 文字のトーン/例/禁止語/構文はチャンネル別設定 scene_text_* から渡す（無ければ persona 中立）。
-    # scene_text_enabled=false なら文字を入れない（単一トグル方式に流れる）。
-    scene_enabled = cfg.get("scene_text_enabled")
-    scene_enabled = True if scene_enabled is None else bool(scene_enabled)
-    scene_file = folder / "scene_en.txt"
-    scene_text = ""
-    if not scene_enabled:
-        print("  ⊘ scene_text_enabled=false → シーン文字を入れない（単一トグル方式で続行）")
-    else:
-        if scene_file.exists() and not scene_regen:
-            try:
-                scene_text = scene_file.read_text(encoding="utf-8").strip()
-            except Exception:
-                scene_text = ""
-        if not scene_text:
-            persona = (cfg.get("persona") or "").strip()
-            cli = _load_suno_config().get("claude_cli", "claude")
-            scene_text = _generate_scene_copy_en(
-                cli=cli, persona=persona, folder_name=folder.name, vol=vol,
-                tone=(cfg.get("scene_text_tone") or ""),
-                examples=cfg.get("scene_text_examples") or [],
-                forbidden=cfg.get("scene_text_forbidden") or [],
-                structure=(cfg.get("scene_text_structure") or ""),
-                case=(cfg.get("scene_text_case") or "upper"),
-                punctuation=(cfg.get("scene_text_punctuation") or "none"),
-            )
-            if scene_text:
-                try:
-                    scene_file.write_text(scene_text + "\n", encoding="utf-8")
-                    print(f" scene_en: {scene_text!r}（{scene_file.name} に保存）")
-                except Exception as e:
-                    print(f"  ⚠ scene_en.txt 書き込み失敗: {e}（続行）")
-            else:
-                print("  ⚠ scene_en 生成失敗。空文字で続行（テキスト層は変更されません）")
-
-    # 日本語前向きキャッチコピー生成（LLM）— scene_ja.txt にキャッシュ。
-    # competitor 風サムネ（「Playlist.（英）大 + 日本語コピー1行 + 英語サブ小」）の
-    # 日本語コピー部分を担当。英語専用挙動とは scene_text_ja_enabled で完全分離する。
-    # scene_text_ja_enabled が未設定/false なら一切走らない（既存挙動と完全に同一）。
-    scene_ja_enabled = bool(cfg.get("scene_text_ja_enabled"))
-    scene_ja_text = ""
-    scene_ja_layer = (cfg.get("scene_text_ja_layer") or "").strip()
-    scene_ja_font = (cfg.get("scene_text_ja_font") or "").strip()
-    if scene_ja_enabled:
-        if not scene_ja_layer:
-            print("  ⚠ scene_text_ja_enabled=true だが scene_text_ja_layer 未設定 → 日本語コピーをスキップ（英語のみで続行）")
-        else:
-            scene_ja_file = folder / "scene_ja.txt"
-            if scene_ja_file.exists() and not scene_regen:
-                try:
-                    scene_ja_text = scene_ja_file.read_text(encoding="utf-8").strip()
-                except Exception:
-                    scene_ja_text = ""
-            if not scene_ja_text:
-                persona = (cfg.get("persona") or "").strip()
-                cli = _load_suno_config().get("claude_cli", "claude")
-                scene_ja_text = _generate_scene_copy_ja(
-                    cli=cli, persona=persona, folder_name=folder.name, vol=vol,
-                    tone=(cfg.get("scene_text_ja_tone") or ""),
-                    examples=cfg.get("scene_text_ja_examples") or [],
-                    forbidden=cfg.get("scene_text_ja_forbidden") or [],
-                    structure=(cfg.get("scene_text_ja_structure") or ""),
-                )
-                if scene_ja_text:
-                    try:
-                        scene_ja_file.write_text(scene_ja_text + "\n", encoding="utf-8")
-                        print(f" scene_ja: {scene_ja_text!r}（{scene_ja_file.name} に保存・layer={scene_ja_layer!r}）")
-                    except Exception as e:
-                        print(f"  ⚠ scene_ja.txt 書き込み失敗: {e}（続行）")
-                else:
-                    print("  ⚠ scene_ja 生成失敗。空文字で続行（日本語テキスト層は変更されません）")
-
-    # 書き出し解像度 — PSD キャンバスが 1280×720 等でも YouTube/Premiere 用に 1920×1080 へ
-    # アップサンプル（BICUBICSMOOTHER）。per-channel で psd_export_width/height を指定可能。
-    try:
-        target_width = int(cfg.get("psd_export_width") or 1920)
-    except (TypeError, ValueError):
-        target_width = 1920
-    try:
-        target_height = int(cfg.get("psd_export_height") or 1080)
-    except (TypeError, ValueError):
-        target_height = 1080
-
-    try:
-        sys.path.insert(0, str(BASE))
-        from app_photoshop import render_dual_thumbnail
-        extra = {}
-        if psd_text_layer:
-            extra["scene_text_layer"] = psd_text_layer
-        if psd_text_font:
-            extra["scene_text_font"] = psd_text_font
-        # 日本語コピー（competitor 風）— enabled かつ layer/text が揃ったときだけ渡す。
-        # 渡さなければ render_dual_thumbnail の挙動は従来の英語専用と完全に同一。
-        if scene_ja_enabled and scene_ja_layer and scene_ja_text:
-            extra["scene_text_ja"] = scene_ja_text
-            extra["scene_text_ja_layer"] = scene_ja_layer
-            if scene_ja_font:
-                extra["scene_text_ja_font"] = scene_ja_font
-        # 背景(vol{N}.jpg)を base レイヤーのみで出力 / テキストを元レイヤー位置で維持
-        # （per-channel 設定。キー無し＝従来挙動を完全維持＝他チャンネル不変）
-        if cfg.get("psd_bg_base_only"):
-            extra["bg_base_only"] = True
-        if cfg.get("psd_center_text") is False:
-            extra["center_text"] = False
-        result = render_dual_thumbnail(
-            psd_path=str(psd_path),
-            base_image=str(base_image),
-            scene_text=scene_text or "",
-            out_dir=str(folder),
-            vol_name=f"vol{vol}",
-            base_layer=base_layer,
-            playlist_layer=toggle_layer,
-            toggle_always_visible=toggle_always_visible,
-            target_width=target_width,
-            target_height=target_height,
-            scene_text_align=psd_text_align,
-            save_psd=True,
-            **extra,
-        )
-        print(f" bg: {Path(result.get('bg', '?')).name} / thumbnail: {Path(result.get('thumbnail', '?')).name}")
-        # per-channel 筆記体ブランド文字を常時オーバーレイ（thumbnail_script_text 設定時のみ）。
-        # 全 vol へ自動付与（PSD テンプレ常設の代替・PSD レンダリングを壊さない）。
-        _overlay_thumbnail_script(out_thumb, cfg, out_bg=out_bg)
-        return True
-    except FileNotFoundError as e:
-        print(f"  ⚠ ファイル不在: {e}")
-        return False
-    except Exception as e:
-        print(f"  ❌ PSD 合成失敗: {e}")
-        return False
 
 
 def _generate_scene_copy_en(*, cli: str, persona: str, folder_name: str, vol: int,
@@ -1825,15 +1578,17 @@ def _generate_scene_copy_ja(*, cli: str, persona: str, folder_name: str, vol: in
 
 
 def _export_engine() -> str:
-    """per-channel `export_engine`（"ame" | "ffmpeg"）。既定 "ame"。
+    """書き出しエンジンは常に "ffmpeg"（app_ffrender のループ連結方式）。
 
-    "ffmpeg" は app_ffrender.py（ループ連結方式）で premiere+export を置換する。
-    静止画ベースのチャンネル向け。Premiere/AME の物理シリアル制約と無関係なので
-    render_queue を経由せず CPU 並列で書き出せる。"""
-    if _load_dashboard_config().get("production_mode") == "ffmpeg_only":
-        return "ffmpeg"
-    eng = (_load_dashboard_config().get("export_engine") or "ame").strip().lower()
-    return eng if eng in ("ame", "ffmpeg") else "ame"
+    旧設定 export_engine / production_mode は app_core.effective_production_mode が
+    警告付きで読み替える。Premiere/AME 経路は段階 1a で廃止した。"""
+    try:
+        from app_core import effective_production_mode
+        effective_production_mode(_load_dashboard_config())
+    except Exception:
+        pass
+    return "ffmpeg"
+
 
 
 def _resolve_target_duration(kw: dict) -> int:
@@ -1853,34 +1608,14 @@ def _resolve_target_duration(kw: dict) -> int:
 
 
 def step_premiere(vol: int, folder: Path, via_api: bool, **kw):
+    """ffmpeg 専用: 配置は export（app_ffrender）が一括で行うため、この工程は何もしない。"""
     gate = _music_selection_gate(folder, processed=True)
     if gate:
         return gate
-    if _export_engine() == "ffmpeg":
-        print(" FFmpeg構成 → 動画配置をFFmpeg書き出しへ引き継ぎ"
-              "（ffrender が export 時に 音声/映像/字幕(SRT)/チャプター(TC) を一括生成）")
-        return True
-    duration = _resolve_target_duration(kw)
-    if _use_render_queue():
-        result = _enqueue_and_wait("premiere", vol, folder)
-        if result is not None:
-            return result
-        # フォールバック: 直接実行
-    if via_api:
-        r = _api_post("/api/premiere/run", {
-            "video_name": folder.name,
-            "duration": duration,
-        }, "Premiere 自動配置")
-        if not r:
-            return False
-        return _api_poll("/api/premiere/status", "Premiere 自動配置", timeout=3600)
-    else:
-        prproj = next(iter(folder.glob("*vol*.prproj")), None)
-        cmd = [sys.executable, str(BASE / "app_premiere.py"),
-               "--duration", str(duration)]
-        if prproj:
-            cmd += ["--project", str(prproj)]
-        return _run(cmd, STEP_LABELS["premiere"], timeout=3600)
+    print(" FFmpeg構成 → 動画配置をFFmpeg書き出しへ引き継ぎ"
+          "（ffrender が export 時に 音声/映像/字幕(SRT)/チャプター(TC) を一括生成）")
+    return True
+
 
 
 def _resolve_external_output_path(vol: int, folder: Path):
@@ -2072,39 +1807,12 @@ def _run_ffrender_export(vol: int, folder: Path, kw: dict) -> bool:
 
 
 def step_export(vol: int, folder: Path, via_api: bool, **kw):
+    """ffmpeg 専用: app_ffrender で音声+映像+字幕+TC を一括書き出し（Premiere/AME は廃止）。"""
     gate = _music_selection_gate(folder, processed=True)
     if gate:
         return gate
-    if _export_engine() == "ffmpeg":
-        return _run_ffrender_export(vol, folder, kw)
-    if _use_render_queue():
-        result = _enqueue_and_wait("export", vol, folder)
-        if result is not None:
-            return result
-        # フォールバック: 直接実行
-    if via_api:
-        r = _api_post("/api/premiere/export", {}, "書き出し")
-        if not r:
-            return False
-        return _api_poll("/api/premiere/status", "書き出し", timeout=7200)
-    else:
-        prproj = next(iter(folder.glob("*vol*.prproj")), None) or next(iter(folder.glob("*.prproj")), None)
-        cmd = [sys.executable, str(BASE / "app_premiere.py"), "--export-only"]
-        if prproj:
-            cmd += ["--project", str(prproj)]
-        # Web UI で設定された export_path を CLI 経路でも反映（API 経路と挙動を揃える）
-        ext_out = _resolve_external_output_path(vol, folder)
-        if ext_out:
-            cmd += ["--output-path", str(ext_out)]
-            print(f" 外部出力先: {ext_out}")
-        ok = _run(cmd, STEP_LABELS["export"], timeout=7200)
-        if ok is True and ext_out:
-            try:
-                expected = float(_load_dashboard_config().get("default_duration_sec") or 0)
-            except (TypeError, ValueError):
-                expected = 0.0
-            return _wait_for_mp4_ready(ext_out, expected_duration=expected, timeout=7200)
-        return ok
+    return _run_ffrender_export(vol, folder, kw)
+
 
 
 def step_meta(vol: int, folder: Path, via_api: bool, **kw):
@@ -3562,27 +3270,25 @@ def main():
         print("(dry-run) ここで終了します。")
         return
 
-    # ─── preflight チェック（Premiere/Export 工程を含む場合のみ） ───
-    # 起動していない Premiere に向けて長時間 SUNO を回した後で気付く事故を防ぐ。
-    # APP_PREFLIGHT_DISABLE=1 で抑止可能（CEP 不要なテスト時など）。
-    # export_engine=ffmpeg のチャンネルは Premiere/CEP を使わないので preflight 不要。
-    needs_premiere = any(s in ("premiere", "export") for s in steps) and _export_engine() != "ffmpeg"
-    if needs_premiere and os.environ.get("APP_PREFLIGHT_DISABLE", "").strip() not in ("1", "true", "yes"):
-        ok, msg = _preflight_premiere()
-        if not ok:
-            print(f"\n❌ preflight: {msg}")
+    # ─── preflight チェック（ffmpeg 専用構成の実行環境） ───
+    # 長時間 SUNO を回した後で ffmpeg 不在に気付く事故を防ぐ。APP_PREFLIGHT_DISABLE=1 で抑止可能。
+    needs_render = any(s in ("premiere", "export", "psd_composite") for s in steps)
+    if needs_render and os.environ.get("APP_PREFLIGHT_DISABLE", "").strip() not in ("1", "true", "yes"):
+        missing = preflight_ffmpeg()
+        if missing:
+            msg = "不足: " + ", ".join(missing)
+            print(f"\n preflight 失敗: {msg}")
             ch_name = _load_dashboard_config().get("channel_name", "(unknown channel)")
             _notify_line(
-                f"⚠️ [{ch_name}] vol.{args.vol} preflight 失敗\n"
+                f"[{ch_name}] vol.{args.vol} preflight 失敗\n"
                 f"原因: {msg}\n"
-                f"対応: Premiere Pro を起動し「ウィンドウ > 拡張機能 > Premiere Link」を開いてから再開: "
-                f"python3 app_pipeline.py {args.vol}"
+                f"対応: ffmpeg / ffprobe / Pillow を導入してから再開: python3 app_pipeline.py {args.vol}"
             )
             print(f"\n{'='*60}")
-            print(f"  ⛔ preflight 失敗のため pipeline を開始しません")
+            print(f"  preflight 失敗のため pipeline を開始しません")
             print(f"{'='*60}")
             sys.exit(EXIT_PREFLIGHT_FAIL)
-        print(f"\n preflight: {msg}")
+        print("\n preflight: ffmpeg / ffprobe / Pillow OK")
 
     # 各工程を順に実行
     # ポジショナル引数として渡すキー（vol / folder / via_api）は kw から除外して

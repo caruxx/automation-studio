@@ -522,16 +522,12 @@ def api_update_dashboard_config(update: DashboardConfigUpdate):
                 except Exception as _e:
                     print(f"⚠ default_duration_sec 削除に失敗: {_e}")
         elif k == "export_engine":
-            # 書き出しエンジン（per-channel）。app_pipeline._export_engine() と同じ正規化。
-            #   - "ame"   → Premiere/AME（既定）
-            #   - "ffmpeg" → app_ffrender ループ連結方式（静止画チャンネル向け）
-            #   - 不正値/空 → "ame" にフォールバック
-            eng = str(v or "ame").strip().lower()
-            config["export_engine"] = eng if eng in ("ame", "ffmpeg") else "ame"
+            # 段階 1a: 書き出しエンジンは常に ffmpeg（Premiere/AME 経路は廃止）。
+            config["export_engine"] = "ffmpeg"
         else:
             config[k] = v
-    if config.get("production_mode") == "ffmpeg_only":
-        config["export_engine"] = "ffmpeg"
+    config["production_mode"] = effective_production_mode(config)
+    config["export_engine"] = "ffmpeg"
     save_dashboard_config_smart(config)
     if update.file_prefix is not None and config.get("channel_folder"):
         channels = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
@@ -2755,7 +2751,7 @@ def api_video_detail(video_name: str):
         "mp4_size_mb": round(mp4_size / 1024 / 1024, 1) if mp4_size else 0,
         "description": desc_text,
         "export_path": export_path,
-        "export_engine": str(config.get("export_engine") or "ame").strip().lower(),
+        "export_engine": "ffmpeg",
         "upload_info": upload_info,
     }
 
@@ -9735,7 +9731,7 @@ def _build_orchestrator_channels():
             "youtube_channel_id": ch.get("youtube_channel_id", ""),
             "folder": folder,
             "priority": priority,
-            "export_engine": str(cc.get("export_engine", ch.get("export_engine", "ame")) or "ame").strip().lower(),
+            "export_engine": "ffmpeg",  # 段階 1a: 常に ffmpeg
             "autopilot_enabled": bool(cc.get("autopilot_enabled", ch.get("autopilot_enabled", False))),
             "autopilot_suspended_by_update": bool(cc.get("autopilot_suspended_by_update", False)),
             "vols": vols,

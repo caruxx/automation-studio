@@ -290,6 +290,26 @@ def save_json(path, data):
     except Exception:
         pass
 
+_LEGACY_PRODUCTION_WARNED = False
+
+
+def effective_production_mode(cfg) -> str:
+    """制作構成の単一リゾルバ。常に "ffmpeg_only" を返す（段階 1a で Adobe 経路を廃止）。
+
+    旧設定値（production_mode="standard" / export_engine="ame"）が残っていれば
+    プロセス内で 1 回だけ警告を出し、ffmpeg_only として扱う。"""
+    global _LEGACY_PRODUCTION_WARNED
+    cfg = cfg if isinstance(cfg, dict) else {}
+    mode = str(cfg.get("production_mode") or "").strip().lower()
+    engine = str(cfg.get("export_engine") or "").strip().lower()
+    legacy = (mode and mode != "ffmpeg_only") or (engine and engine != "ffmpeg")
+    if legacy and not _LEGACY_PRODUCTION_WARNED:
+        _LEGACY_PRODUCTION_WARNED = True
+        print(f"WARN legacy production setting ignored: production_mode={mode or '-'} "
+              f"export_engine={engine or '-'} -> ffmpeg_only")
+    return "ffmpeg_only"
+
+
 def get_dashboard_config():
     config = DEFAULT_DASHBOARD_CONFIG.copy()
     config.update(load_json(DASHBOARD_CONFIG, {}))
@@ -302,8 +322,8 @@ def get_dashboard_config():
     # 各所の `ch.get("folder")==config.get("channel_folder")` 比較を揃える。保存先はローカルのみ＝安全。
     if config.get("channel_folder"):
         config["channel_folder"] = _resolve_to_current_host(config["channel_folder"])
-    if config.get("production_mode") == "ffmpeg_only":
-        config["export_engine"] = "ffmpeg"
+    config["production_mode"] = effective_production_mode(config)
+    config["export_engine"] = "ffmpeg"
     return config
 
 

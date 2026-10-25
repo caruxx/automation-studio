@@ -1438,6 +1438,30 @@
         "scope": "per-machine",
         "max_parallel": 1
       }
+    },
+    "preflight": {
+      "aliases": [
+        "実行環境チェック",
+        "preflight",
+        "ffmpeg確認"
+      ],
+      "description": "ffmpeg 専用構成の実行環境検査（ffmpeg / ffprobe / Pillow）",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "preflight",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "ローカル実行環境の検査なので CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "per-machine",
+        "max_parallel": 1
+      }
     }
   }
 }

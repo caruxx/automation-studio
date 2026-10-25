@@ -221,12 +221,17 @@ def phase1_command(vol: int, channel_id: str) -> list[str]:
 
 
 def channel_export_engine(channel_folder: Path) -> str:
+    """常に "ffmpeg"。旧設定値は app_core.effective_production_mode が警告付きで読み替える。"""
     try:
         config = json.loads((channel_folder / ".app_channel_config.json").read_text(encoding="utf-8"))
     except Exception:
-        return "ame"
-    engine = str(config.get("export_engine") or "ame").strip().lower()
-    return engine if engine in {"ame", "ffmpeg"} else "ame"
+        config = {}
+    try:
+        from app_core import effective_production_mode
+        effective_production_mode(config)
+    except Exception:
+        pass
+    return "ffmpeg"
 
 
 def step_command(vol: int, channel_id: str, step: str) -> list[str]:
