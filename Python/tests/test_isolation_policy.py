@@ -20,20 +20,22 @@ print(json.dumps({k: os.environ.get(k) for k in ("APP_CONFIG_DIR", "STUDIO_CONFI
 """
 
 
+_SANDBOX = Path(tempfile.mkdtemp(prefix="as-isolation-sandbox-"))
+_INNER_TMP = _SANDBOX / "tmp"      # 子プロセスの TMPDIR（＝子から見た一時領域）
+_INNER_TMP.mkdir()
+
+
 def _outside_temp_dir() -> Path:
-    """一時領域（gettempdir）の外にあるディレクトリを、元の HOME 配下に作る（本番設定の置き場所を模す）。"""
-    base = Path(os.environ.get("ORIGINAL_HOME") or Path.home())
-    d = Path(tempfile.mkdtemp(prefix=".as-isolation-probe-", dir=base))
-    if d.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()):
-        import shutil
-        shutil.rmtree(d, ignore_errors=True)
-        raise unittest.SkipTest("HOME が一時領域の中にあるため、領域外のディレクトリを用意できません")
-    return d
+    """子プロセスの一時領域（TMPDIR=_INNER_TMP）の外にあるディレクトリ。本番設定の置き場所を模す。
+
+    実 HOME には書かず、親の一時領域内に sandbox を作り、その兄弟ディレクトリを「領域外」として使う。"""
+    return Path(tempfile.mkdtemp(prefix="outside-", dir=_SANDBOX))
 
 
 def _probe(env_overrides: dict) -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR", "APP_SHARED_BASE", "AS_TESTS_ISOLATED_ROOT", "ORIGINAL_HOME")}
+    env["TMPDIR"] = str(_INNER_TMP)  # 子の一時領域を sandbox 内に限定し、その外を「領域外」として検証する
     env.update(env_overrides)
     out = subprocess.run([sys.executable, "-c", PROBE, str(PY_DIR)], env=env, capture_output=True, text=True, check=True)
     return json.loads(out.stdout.strip().splitlines()[-1])
@@ -49,13 +51,18 @@ class IsolationPolicyTest(unittest.TestCase):
             before = sorted(p.name for p in outside.iterdir())
             got = _probe({"STUDIO_CONFIG_DIR": str(outside), "APP_SHARED_BASE": str(outside), "HOME": home})
             self.assertNotEqual(got["STUDIO_CONFIG_DIR"], str(outside))
-            tmp = Path(tempfile.gettempdir()).resolve()
+            tmp = _INNER_TMP.resolve()
             for k in ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR", "APP_SHARED_BASE", "HOME"):
                 self.assertTrue(Path(got[k]).resolve().is_relative_to(tmp), msg=f"{k}={got[k]}")
             self.assertEqual(got["ORIGINAL_HOME"], home)
             self.assertEqual(sorted(p.name for p in outside.iterdir()), before)
         finally:
             shutil.rmtree(outside, ignore_errors=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        shutil.rmtree(_SANDBOX, ignore_errors=True)
 
     def test_full_env_outside_temp_is_overridden(self):
         """3 つ全部が本番相当（一時領域の外）でも信用せず、上書きし、目印ファイルも書かない。"""
@@ -70,14 +77,14 @@ class IsolationPolicyTest(unittest.TestCase):
             shutil.rmtree(prod, ignore_errors=True)
 
     def test_full_env_inside_temp_is_kept_and_home_isolated(self):
-        with tempfile.TemporaryDirectory() as t:
+        with tempfile.TemporaryDirectory(dir=_INNER_TMP) as t:
             cfg = Path(t) / "cfg"
             cfg.mkdir()
             got = _probe({"APP_CONFIG_DIR": str(cfg), "STUDIO_CONFIG_DIR": str(cfg), "APP_SHARED_BASE": str(cfg)})
             self.assertEqual(got["APP_CONFIG_DIR"], str(cfg))
             self.assertTrue((cfg / ".migration_completed").exists())
             self.assertNotEqual(got["HOME"], os.environ.get("ORIGINAL_HOME") or os.environ["HOME"])
-            self.assertTrue(Path(got["HOME"]).resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()))
+            self.assertTrue(Path(got["HOME"]).resolve().is_relative_to(_INNER_TMP.resolve()))
 
     def test_stale_mark_is_not_trusted(self):
         got = _probe({"AS_TESTS_ISOLATED_ROOT": "/nonexistent/as-tests-old"})
