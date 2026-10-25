@@ -1,7 +1,7 @@
-# app-image-select: 背景画像の選択 + Premiere JSX 連動
+# app-image-select: 背景画像の選択
 
 動画フォルダ内の画像から **メイン1枚 + サブ N枚** を UI で選び、
-`selected_images.json` に保存 → Premiere JSX が優先読み込みしてタイムラインに配置する仕組み。
+`selected_images.json` に保存 → FFmpeg 書き出し（app_ffrender）が優先読み込みして配置する仕組み。
 
 ## データ契約: `selected_images.json`
 
@@ -20,7 +20,7 @@
 
 ## 判定ロジック
 
-### JSX 側: [Script/_[自動配置くん]premiere_long.jsx](../Script/_[自動配置くん]premiere_long.jsx)
+### 書き出し側: `Python/app_ffrender.py`（旧 Premiere JSX は 2026-10-25 段階 1a で削除。以下は同じ判定規約）
 
 1. `<workDir>/selected_images.json` を探す
 2. 存在すれば: 正規表現で `"main": "..."` と `"sub": [...]` を抽出
@@ -63,4 +63,4 @@
 - `main` にセットした画像を「サムネ」として使用したい場合は、ファイル名を `vol{num}.jpg` にリネームすれば
   自動で YouTube サムネイルにも採用される（`app-youtube-upload.md` 参照）
 - `selected_images.json` はバージョン管理せず、動画フォルダと一緒に Google ドライブで同期
-- JSX 側でパス区切りが `/` に統一される（ExtendScript 既定の Windows パス対策）
+- パス区切りは `/` に統一する

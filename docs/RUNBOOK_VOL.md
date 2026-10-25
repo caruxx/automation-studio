@@ -20,7 +20,7 @@ curl -fsS http://localhost:8888/api/config/migration-status >/dev/null
 
 失敗時:
 - SUNO 実行中なら、同時に SUNO を動かさず完了を待つ。
-- port 8888 が落ちていれば、launchd 常駐時は `bash setup_launchd.sh --sync`、非常駐時は `bash Python/start.sh`。
+- port 8888 が落ちていれば `bash Python/start.sh`（launchd 常駐は廃止）。
 - ネットワーク断や接続拒否は即中断せず、`curl` が 200 を返すまで待って再試行する。
 
 ## 1. Vol フォルダ作成
@@ -59,8 +59,7 @@ for v in json.load(sys.stdin).get("videos",[]):
 '
 ```
 
-- [ ] プロジェクトテンプレートが `rw_base.*` から `rw_volNN.*` にコピーされているか確認する。
-- [ ] Premiere / Photoshop 用ファイルが足りない場合は、作成 API の結果と channel template 設定を確認する。
+- [ ] フォルダが `{N}_{prefix}_{YYMMDD}` で作られていることを確認する（テンプレートのコピーは無い。2026-10-25 段階 1a）。
 
 失敗時:
 - `rw_volNN.*` が無い場合、同チャンネルの直近成功 vol と `rw_base.*` の存在を確認する。
@@ -117,48 +116,42 @@ python3 Python/codex_imagegen.py \
 - チャンネル識別子が欠けた場合は、チャンネルルールを満たしていないので再生成する。
 - `codex_imagegen.py` が timeout した場合は API / Codex CLI の状態を確認し、必要なら timeout を延長して再実行する。
 
-## 5. PSD 合成
+## 5. 画像合成（工程名 psd_composite・Pillow）
 
-- [ ] Photoshop は単一リソースなので必ず guard 経由で実行する。
-- [ ] 文字レイヤーのフォントは変更しない。
 - [ ] dry-run で解決結果を確認する。
 
 ```bash
 python3 Python/studio.py psd --vol N --dry-run
 ```
 
-- [ ] PSD 合成を実行する。
+- [ ] 画像合成を実行する。
 
 ```bash
-python3 Python/parallel_guard.py psd -- \
-  python3 Python/app_pipeline.py N --only psd_composite
+python3 Python/app_pipeline.py N --only psd_composite
 ```
 
 - [ ] `volN.jpg` と `サムネイル.jpg` が出ていることを確認する。
 
 失敗時:
-- Photoshop 接続不可: Photoshop 起動、UXP/CEP パネル、`cep_extension/install.sh` を確認する。
 - 背景画像が見つからない: 4 に戻り `volN.png` を作る。
-- フォント差し替えが発生した場合は、成果物を採用せずテンプレ PSD と文字レイヤー設定を確認する。
+- Pillow が無い: `python3 Python/studio.py preflight --json` で確認して導入する。
 
-## 6. Premiere 以降のパイプライン
+## 6. 書き出し以降のパイプライン（FFmpeg）
 
-- [ ] Premiere / AME は単一リソースなので guard 経由で実行する。
 - [ ] dry-run で解決結果を確認する。
 
 ```bash
-python3 Python/studio.py pipeline --vol N --from premiere --dry-run
+python3 Python/studio.py pipeline --vol N --from export --dry-run
 ```
 
-- [ ] Premiere 以降を実行する。ffmpeg エンジン設定の場合は ffmpeg でレンダし、QA、メタ、localization、予約アップロードまで進む。
+- [ ] 書き出し以降を実行する。`app_ffrender.py` でレンダし、QA、メタ、localization、予約アップロードまで進む。
 
 ```bash
-python3 Python/parallel_guard.py premiere -- \
-  python3 Python/app_pipeline.py N --from premiere
+python3 Python/app_pipeline.py N --from export
 ```
 
 失敗時:
-- Premiere preflight で止まる: `export_engine=ffmpeg` か Premiere 実機利用かを channel 設定で確認する。
+- preflight で止まる: `python3 Python/studio.py preflight --json` で ffmpeg / ffprobe / Pillow を確認する。
 - MP4 が無い: export step のログを確認し、`python3 Python/app_pipeline.py N --from export` で再開する。
 - メタ生成で quota / LLM エラー: `python3 Python/app_pipeline.py N --from meta` で再開する。
 - YouTube OAuth エラー: `python3 Python/app_youtube.py --auth-only` または channel auth の手順で再認証する。トークンや secret はドキュメントに保存しない。

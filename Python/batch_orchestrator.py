@@ -82,11 +82,24 @@ def server_responding() -> bool:
         return False
 
 
+def _port_listening(port: int = 8888) -> bool:
+    try:
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"], capture_output=True, text=True, timeout=10)
+        return bool(out.stdout.strip())
+    except Exception:
+        return False
+
+
 def ensure_server() -> None:
-    if server_responding():
-        print("preflight server: ok")
-        return
-    print("preflight server: not responding; starting with bash Python/start.sh")
+    for attempt in range(3):
+        if server_responding():
+            print("preflight server: ok")
+            return
+        time.sleep(2)
+    if _port_listening():
+        # 稼働中のサーバーを勝手に置き換えない（制作中の処理を SIGTERM で中断しないため）
+        raise RuntimeError("localhost:8888 は LISTEN しているが応答しない。手動で確認してから再実行する: bash Python/start.sh --replace")
+    print("preflight server: not responding and nothing listening; starting with bash Python/start.sh")
     preflight_log = ROOT / "logs" / "batch" / "preflight_server.log"
     preflight_log.parent.mkdir(parents=True, exist_ok=True)
     stream = preflight_log.open("ab")
@@ -221,12 +234,17 @@ def phase1_command(vol: int, channel_id: str) -> list[str]:
 
 
 def channel_export_engine(channel_folder: Path) -> str:
+    """常に "ffmpeg"。旧設定値は app_core.effective_production_mode が警告付きで読み替える。"""
     try:
         config = json.loads((channel_folder / ".app_channel_config.json").read_text(encoding="utf-8"))
     except Exception:
-        return "ame"
-    engine = str(config.get("export_engine") or "ame").strip().lower()
-    return engine if engine in {"ame", "ffmpeg"} else "ame"
+        config = {}
+    try:
+        from app_core import effective_production_mode
+        effective_production_mode(config)
+    except Exception:
+        pass
+    return "ffmpeg"
 
 
 def step_command(vol: int, channel_id: str, step: str) -> list[str]:

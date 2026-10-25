@@ -9,14 +9,13 @@ orzz. ダッシュボード = YouTube BGM チャンネルの動画制作を全�
 - [skills/](skills/) — 機能別スキル
 
 ## 正規入口
-- AI / 人間の正規の入口は `_claude` ルートから `python3 Python/studio.py`。
+- AI / 人間の正規の入口はリポジトリのルート（`~/dev/automation-studio`）から `python3 Python/studio.py`。
 - 個別コマンドを直接叩く前に `python3 Python/studio.py <intent> --vol <N> --dry-run` で解決結果を確認する。
 - `Python/routes.json` の `via_api_safe=false` は `--via-api` 禁止。理由は `via_api_unsafe_reason` を参照する。
 
 ## 開発時の鉄則
-- ⚠ サーバーは uvicorn **reload無し**。launchd 常駐時のコード変更反映 + 再起動は `_claude` ルートで `bash setup_launchd.sh --sync`。非常駐時だけ `bash Python/start.sh`。
-- launchd 状態確認: `launchctl list | grep automation`
-- ⚠ Premiere JSX は **JSX Launcher 拡張経由でのみ**実行（AppleScript不可）。
+- ⚠ サーバーは uvicorn **reload無し**。コード変更後は `bash Python/start.sh --replace` で再起動する（稼働中なら SIGTERM で止めてから起動。launchd 常駐は 2026-07-04 に廃止）。
+- Adobe（Premiere / Photoshop / AME）は 2026-10-25 段階 1a で廃止。`production_mode` は `ffmpeg_only` のみ。書き出しは `app_ffrender.py`、サムネ合成は Pillow。
 - ⚠ pipeline stage 追加時は `STEPS` / `STEP_LABELS` / `STEP_FUNCS` / `RETRY_POLICY` の**4箇所を一貫更新**。
 - sentinel exit: 0成功 / 1失敗 / 75 unattended_login / 76 retryable / 77 quota_exhausted / 78 preflight_fail
 - SUNO新規バッチは全テイク取得後、Automation Studioのハートで各タイトルから1テイクを採用する。79はmusic_selection_pending（手動選択待ち）で、自動再投入・再生成しない。詳しくは`docs/music/semi-auto-selection.md`。タイトルは永久台帳でCreate前に予約し、原本は保持する。
@@ -29,21 +28,21 @@ orzz. ダッシュボード = YouTube BGM チャンネルの動画制作を全�
 | リソース | 使う処理 | 並列性 |
 |---|---|---|
 | SUNO ブラウザ | 楽曲生成・DL | **単一**（vol 跨ぎは順次。workspace 名を vol 別 `sk_vol3`/`sk_vol4` にして混在 DL 回避） |
-| Premiere/AME | premiere・export | **単一** |
-| Photoshop | psd_composite | **単一** |
+| ffmpeg（書き出し） | export | 並列可（CPU 律速） |
+| Pillow（画像合成） | psd_composite | 並列可 |
 | Claude/Codex (LLM) | meta・localization・scene_text・SUNO GhostWriter・bgimage | competition 注意 |
 | ffmpeg | 楽曲後処理 | 並列可（CPU） |
 | YouTube | upload | チャンネル別 token |
 
 - ⚠ upload は vol フォルダ単位の `.youtube_upload.lock` で排他 + marker/YouTube 実在確認の三重ガード。再アップロードが必要な時だけ `APP_FORCE_REUPLOAD=1`
-- **並列 OK（別リソース）**: `export(Premiere)` ∥ `別vol SUNO生成(ブラウザ+codex)` ／ `DL(SUNO)` ∥ `サムネ(bgimage=codex画像 + psd_composite=Photoshop)` ／ `後処理(ffmpeg)` ∥ `別vol サムネ`
-- **並列 NG（同一リソース→順次）**: premiere 同士・SUNO 同士・Photoshop 同士
+- **並列 OK（別リソース）**: `export(ffmpeg)` ∥ `別vol SUNO生成(ブラウザ+codex)` ／ `DL(SUNO)` ∥ `サムネ(bgimage=codex画像 + psd_composite=Pillow)` ／ `後処理(ffmpeg)` ∥ `別vol サムネ`
+- **並列 NG（同一リソース→順次）**: SUNO 同士
 - ⚠ LLM step（meta/localization）を `--via-api` で実行すると `_api_post` の **10 秒 timeout** で必ず失敗 → **via-api 無し CLI**（`python3 app_pipeline.py <vol> --only meta`、claude_proposer 直接）で実行
-- ⚠ premiere/export の「✅完了」ログは `_api_poll` の **早期誤判定**あり → mp4 サイズ安定 + ffprobe で実完了を裏取り
+- ⚠ export の「完了」ログは `_api_poll` の **早期誤判定**あり → mp4 サイズ安定 + ffprobe で実完了を裏取り
 - ⚠ 複数 vol の SUNO は **workspace を vol 別**にして混在 DL を防ぐ。生成リクエスト送信 ≠ レンダリング完了（DL 前に待機 or cache miss 再試行）
 
-## サブエージェント（.claude/agents/）
-ドメイン別に委譲: music / image / video / publish / analysis / pipeline / web（詳細 AGENTS_DESIGN §2）。
+## サブエージェント
+ドメイン別に委譲: music / image / video / publish / analysis / pipeline / web（詳細 AGENTS_DESIGN §2。`.claude/agents/` はこのリポジトリには含まれない。ドメイン知識は `skills/<domain>.md`）。
 全エージェント model=opus・tools 無制限（完全権限委譲。Bash でサーバー再起動して検証まで自走）。
 
 ## 言語

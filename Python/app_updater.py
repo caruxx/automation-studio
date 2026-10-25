@@ -273,7 +273,7 @@ def apply_from_dir(src_root: Path, root: Path = ROOT_DIR) -> dict[str, Any]:
         "new_version": incoming,
         "backup": str(backup),
         "copied": copied,
-        "message": "更新を適用しました。bash Python/start.sh で再起動してください。",
+        "message": "更新を適用しました。bash Python/start.sh --replace で再起動してください。",
     }
 
 
@@ -357,7 +357,7 @@ def rollback(root: Path = ROOT_DIR) -> dict[str, Any]:
         "current_version": current,
         "restored_version": read_version(latest),
         "backup": str(latest),
-        "message": "ロールバックしました。bash Python/start.sh で再起動してください。",
+        "message": "ロールバックしました。bash Python/start.sh --replace で再起動してください。",
     }
 
 

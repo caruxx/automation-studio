@@ -562,7 +562,7 @@ def evaluate(channels: list[dict], *, dry_run: bool = True,
     candidates: list[Candidate] = []
     for ch in channels:
         ch_id = ch.get("channel_id", "")
-        export_engine = str(ch.get("export_engine") or "ame").strip().lower()
+        export_engine = "ffmpeg"  # 段階 1a: Premiere/AME 経路は廃止
         for v in ch.get("vols", []):
             vol = int(v.get("vol", 0))
             folder = Path(v.get("folder", ""))

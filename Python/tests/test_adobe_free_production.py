@@ -88,30 +88,36 @@ class AdobeFreeProductionTest(unittest.TestCase):
     def test_mode_forces_ffmpeg_and_skips_adobe_dispatch(self):
         with patch.object(pipeline, "_load_dashboard_config", return_value=self.config), \
              patch.object(pipeline, "_music_selection_gate", return_value=None), \
-             patch.object(pipeline, "_enqueue_and_wait", side_effect=AssertionError("Adobe queue")), \
              patch.object(pipeline, "_api_post", side_effect=AssertionError("Adobe API")), \
              patch.object(pipeline, "_run_ffrender_export", return_value=True) as render:
+            self.assertFalse(hasattr(pipeline, "_enqueue_and_wait"))
             self.assertEqual(pipeline._export_engine(), "ffmpeg")
             self.assertTrue(pipeline.step_premiere(1, self.folder, True))
             self.assertTrue(pipeline.step_export(1, self.folder, True))
             render.assert_called_once()
             self.assertNotIn("PSD", pipeline._step_label("psd_composite"))
+        # 段階 1a: 旧設定 export_engine=ame が残っていても常に ffmpeg（警告のみ）
         with patch.object(pipeline, "_load_dashboard_config", return_value={"export_engine": "ame"}):
-            self.assertEqual(pipeline._export_engine(), "ame")
-            self.assertIn("PSD", pipeline._step_label("psd_composite"))
+            self.assertEqual(pipeline._export_engine(), "ffmpeg")
+            self.assertNotIn("PSD", pipeline._step_label("psd_composite"))
 
     def test_registration_seed_has_no_adobe_templates(self):
-        req = studio.ChannelCreate(name="QA", folder=str(self.channel), production_mode="ffmpeg_only",
-                                  template_prproj="old.prproj", template_psd="old.psd")
+        req = studio.ChannelCreate(name="QA", folder=str(self.channel))
+        self.assertEqual(req.production_mode, "ffmpeg_only")
+        legacy = studio.ChannelCreate(name="QA", folder=str(self.channel), production_mode="standard")
+        self.assertEqual(legacy.production_mode, "ffmpeg_only")
+        self.assertEqual(studio.DashboardConfigUpdate(production_mode="standard").production_mode, "ffmpeg_only")
+        self.assertIsNone(studio.DashboardConfigUpdate().production_mode)
         studio._create_empty_channel_config(self.channel, req)
         seed = json.loads((self.channel / ".app_channel_config.json").read_text())
         self.assertEqual(seed["export_engine"], "ffmpeg")
-        self.assertEqual(seed["template_prproj"], "")
-        self.assertEqual(seed["template_psd"], "")
+        self.assertEqual(seed["production_mode"], "ffmpeg_only")
+        self.assertNotIn("template_prproj", seed)
+        self.assertNotIn("template_psd", seed)
         self.assertFalse(seed["scene_text_enabled"])
         self.assertIn("production_mode", app_core.PER_CHANNEL_KEYS)
         self.assertIn("thumbnail_composition", app_core.PER_CHANNEL_KEYS)
-        self.assertEqual(studio.ChannelCreate(name="legacy", folder="unused").production_mode, "standard")
+        self.assertEqual(studio.ChannelCreate(name="legacy", folder="unused").production_mode, "ffmpeg_only")
 
     def test_video_creation_does_not_copy_stale_adobe_templates(self):
         cfg = {**self.config, "channel_folder": str(self.channel),
@@ -147,3 +153,69 @@ class AdobeFreeProductionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FfmpegOnlyDefaultTest(unittest.TestCase):
+    """設定が欠落していても Adobe 経路に落ちないことを検証する（段階 1a）。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.temp.name) / "2_QA_260929"
+        self.folder.mkdir()
+        self.empty_config = {}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_export_engine_is_ffmpeg_when_settings_missing(self):
+        with patch.object(pipeline, "_load_dashboard_config", return_value=self.empty_config):
+            self.assertEqual(pipeline._export_engine(), "ffmpeg")
+        with patch.object(pipeline, "_load_dashboard_config", return_value={"export_engine": "ame"}):
+            self.assertEqual(pipeline._export_engine(), "ffmpeg")
+
+    def test_psd_composite_uses_pillow_when_settings_missing(self):
+        with patch.dict(sys.modules, {"app_photoshop": None, "app_premiere": None}), \
+             patch.object(pipeline, "_load_dashboard_config", return_value=self.empty_config), \
+             patch.object(images, "compose_images", return_value=True) as compose, \
+             patch.object(pipeline, "_run", side_effect=AssertionError("Adobe must not run")), \
+             patch.object(pipeline, "_api_post", side_effect=AssertionError("Adobe must not run")):
+            self.assertTrue(pipeline.step_psd_composite(2, self.folder, False))
+        compose.assert_called_once()
+
+    def test_premiere_step_is_noop_and_export_uses_ffrender(self):
+        with patch.object(pipeline, "_load_dashboard_config", return_value=self.empty_config), \
+             patch.object(pipeline, "_music_selection_gate", return_value=None), \
+             patch.object(pipeline, "_run", side_effect=AssertionError("Adobe must not run")), \
+             patch.object(pipeline, "_api_post", side_effect=AssertionError("Adobe must not run")), \
+             patch.object(pipeline, "_run_ffrender_export", return_value=True) as ffrender:
+            self.assertTrue(pipeline.step_premiere(2, self.folder, False))
+            self.assertTrue(pipeline.step_export(2, self.folder, False))
+        ffrender.assert_called_once()
+
+    def test_preflight_reports_missing_tools(self):
+        with patch.object(pipeline.shutil, "which", return_value=None):
+            missing = pipeline.preflight_ffmpeg()
+        self.assertIn("ffmpeg", missing)
+        self.assertIn("ffprobe", missing)
+        with patch.object(pipeline.shutil, "which", return_value="/usr/local/bin/tool"):
+            self.assertEqual(pipeline.preflight_ffmpeg(), [])
+
+    def test_studio_preflight_intent_emits_json(self):
+        import subprocess
+        import shutil
+        env = dict(os.environ)
+        for key in ("APP_CONFIG_DIR", "STUDIO_CONFIG_DIR"):
+            if key not in env:
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                env[key] = d
+        proc = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parents[1] / "studio.py"), "preflight", "--json"],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+        last = [ln for ln in proc.stdout.strip().splitlines() if ln.startswith("{")][-1]
+        data = json.loads(last)
+        self.assertEqual(data.get("intent"), "preflight")
+        self.assertIn("missing", data)
+        self.assertIsInstance(data["missing"], list)
+        self.assertEqual(data.get("ok"), not data["missing"])

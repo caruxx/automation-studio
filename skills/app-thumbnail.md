@@ -10,7 +10,7 @@
 YouTube サムネイルを AI で自動生成する。**ベンチマーク分析（concept / visual_direction）からプロンプト文を動的構築**し、Codex（gpt-image-2）で生成、候補から 1 枚を `thumbnail.png` に昇格する。
 
 > ⚠ 背景画像（`step_bgimage` → [app-bgimage.md](./app-bgimage.md)）とは**別 step・別ロジック**。背景画像は「参照画像を渡して色/光を寄せる」が固定テンプレ寄り、サムネは「ベンチ分析からプロンプト文を組み立てる」動的構築。混同しない。
-> ⚠ PSD 合成（`step_psd_composite` → [app-psd-composite.md](./app-psd-composite.md)）が先に `サムネイル.jpg` を出していれば、この AI サムネ生成は**スキップ**される（フォールバックとして共存）。
+> ⚠ 画像合成（`step_psd_composite` → [image.md](./image.md)）が先に `サムネイル.jpg` を出していれば、この AI サムネ生成は**スキップ**される（フォールバックとして共存）。
 
 ## プロンプトの作り方（動的構築・固定テンプレではない）
 
@@ -75,7 +75,7 @@ Codex に `app_benchmark_thumbnail.get_picked_paths(limit=1)` の先頭 1 枚を
 ## 関連
 
 - [app-bgimage.md](./app-bgimage.md) — 背景画像（別 step。参照画像で寄せる固定テンプレ寄り）
-- [app-psd-composite.md](./app-psd-composite.md) — PSD 合成（先に `サムネイル.jpg` を出すと AI サムネはスキップ）
+- [image.md](./image.md) — 画像合成（先に `サムネイル.jpg` を出すと AI サムネはスキップ）
 - [app-image-select.md](./app-image-select.md) — `vol{N}.jpg` リネームで YouTube サムネ採用
 - [app-workflow.md](./app-workflow.md) — 全工程フロー（STEP 8 にサムネ生成の概要）
 - [Python/app_image_prompt.py](../Python/app_image_prompt.py) — `normalize_visual_direction` / `build_gpt_image2_prompt`

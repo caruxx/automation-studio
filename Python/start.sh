@@ -1,6 +1,6 @@
 #!/bin/bash
 # Automation Studio 起動スクリプト
-# 任意のPCから実行可能（共有ドライブ版）
+# リポジトリ直下の .venv（Python 3.12 以上）で app.py を起動する。
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,13 +8,15 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="${APP_LOG_DIR:-$HOME/Library/Logs/AutomationStudio}"
 TODAY="$(date +%Y-%m-%d)"
 LOG_FILE="$LOG_DIR/server-$TODAY.log"
+VENV_DIR="${APP_VENV_DIR:-$ROOT_DIR/.venv}"
+PORT="${APP_PORT:-8888}"
 
 echo "=================================="
 echo "  Automation Studio"
 echo "=================================="
 echo "  Server : $SCRIPT_DIR/app.py"
-echo "  Web    : $SCRIPT_DIR/../web/static/"
-echo "  Config : ${HOME}/.config/orzz/"
+echo "  Web    : $ROOT_DIR/web/static/"
+echo "  Venv   : $VENV_DIR"
 echo "=================================="
 echo ""
 
@@ -33,50 +35,74 @@ if [[ "${1:-}" == "--rotate-logs-only" ]]; then
     exit 0
 fi
 
-# 依存パッケージチェック
-# pip 名と import 名は一致しないことが多いので、明示的なマッピング表を持つ。
-# 左: pip install で使う名前 / 右: python -c "import X" で使う名前
-# （単純に hyphen→underscore で済まないため、setup.sh の旧ロジックは
-#  google-auth が入っていると google-auth-oauthlib を skip するバグがあった）
-DEPS=(
-    "fastapi|fastapi"
-    "uvicorn|uvicorn"
-    "google-auth|google.auth"
-    "google-auth-oauthlib|google_auth_oauthlib"
-    "google-auth-httplib2|google_auth_httplib2"
-    "google-api-python-client|googleapiclient"
-    "playwright|playwright"
-    "python-multipart|python_multipart"
-    "apscheduler|apscheduler"
-)
+# 仮想環境: 無ければ作成し、requirements.lock から依存を入れる
+find_python() {
+    for cand in python3.12 python3.13 python3; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+                echo "$cand"; return 0
+            fi
+        fi
+    done
+    return 1
+}
 
-MISSING=""
-for entry in "${DEPS[@]}"; do
-    pip_name="${entry%%|*}"
-    import_name="${entry##*|}"
-    if ! python3 -c "import $import_name" 2>/dev/null; then
-        MISSING="$MISSING $pip_name"
+if [[ ! -f "$ROOT_DIR/requirements.lock" ]]; then
+    echo "requirements.lock が見つかりません: $ROOT_DIR/requirements.lock" >&2
+    exit 1
+fi
+
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    PY="$(find_python || true)"
+    if [[ -z "$PY" ]]; then
+        echo "Python 3.12 以上が見つかりません（brew install python@3.12）" >&2
+        exit 1
     fi
-done
-
-if [[ -n "$MISSING" ]]; then
-    echo "不足パッケージをインストール中:$MISSING"
-    pip3 install --user $MISSING 2>/dev/null || pip3 install $MISSING
-    echo ""
+    echo "仮想環境を作成します: $VENV_DIR ($PY)"
+    "$PY" -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+    "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.lock"
 fi
 
-# ポート確認 — 既に8888が使われていたら停止
-if lsof -ti:8888 >/dev/null 2>&1; then
-    echo "ポート8888が使用中です。既存プロセスを停止します..."
-    lsof -ti:8888 | xargs kill -9 2>/dev/null || true
-    sleep 1
+# 依存の同期: requirements.lock のハッシュが前回導入時と違えば入れ直す（旧版のまま起動しない）
+LOCK_SHA="$(shasum -a 256 "$ROOT_DIR/requirements.lock" | cut -d' ' -f1)"
+MARK="$VENV_DIR/.requirements.lock.sha256"
+if [[ ! -f "$MARK" || "$(cat "$MARK" 2>/dev/null)" != "$LOCK_SHA" ]] \
+   || ! "$VENV_DIR/bin/python" -c 'import fastapi, uvicorn, apscheduler, googleapiclient, PIL, numpy, python_multipart' 2>/dev/null; then
+    echo "依存を requirements.lock から同期します"
+    "$VENV_DIR/bin/pip" install --quiet -r "$ROOT_DIR/requirements.lock"
+    echo "$LOCK_SHA" > "$MARK"
 fi
 
-# 起動（必ず共有ドライブの app.py を使用）
+# ポート確認（LISTEN しているプロセスだけを見る）
+listen_pids() {
+    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true
+}
+wait_port_free() {
+    local n=0
+    while [[ -n "$(listen_pids)" && $n -lt 20 ]]; do sleep 0.5; n=$((n+1)); done
+    [[ -z "$(listen_pids)" ]]
+}
+if [[ "${1:-}" == "--replace" ]]; then
+    # 稼働中のサーバーを SIGTERM で止めてから起動する（kill -9 は使わない）
+    PIDS="$(listen_pids)"
+    if [[ -n "$PIDS" ]]; then
+        echo "ポート $PORT の既存プロセス ($PIDS) に停止を要求します"
+        kill $PIDS 2>/dev/null || true
+        if ! wait_port_free; then
+            echo "既存プロセスが 10 秒以内に止まりませんでした。手動で確認してください: lsof -nP -iTCP:$PORT -sTCP:LISTEN" >&2
+            exit 1
+        fi
+    fi
+elif ! wait_port_free; then
+    echo "ポート $PORT は使用中です。入れ替えるなら bash Python/start.sh --replace を使ってください" >&2
+    exit 1
+fi
+
 cd "$SCRIPT_DIR"
 rotate_logs
 if [[ "${APP_LOG_TO_STDOUT:-0}" == "1" ]]; then
-    exec python3 "$SCRIPT_DIR/app.py"
+    exec "$VENV_DIR/bin/python" "$SCRIPT_DIR/app.py"
 fi
 echo "Log    : $LOG_FILE"
-exec python3 "$SCRIPT_DIR/app.py" >> "$LOG_FILE" 2>&1
+exec "$VENV_DIR/bin/python" "$SCRIPT_DIR/app.py" >> "$LOG_FILE" 2>&1

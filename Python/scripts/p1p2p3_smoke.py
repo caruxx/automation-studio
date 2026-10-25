@@ -133,12 +133,12 @@ def test_p1(base: str, r: TestResult) -> None:
     else:
         r.record("P1-4 quota module", "FAIL", res.stderr[:120])
 
-    # P1-5 (preflight): app_pipeline._preflight_premiere() が呼べる
+    # P1-5 (preflight): app_pipeline.preflight_ffmpeg() が list を返す（2026-10-25 段階 1a で Premiere 確認から差し替え）
     res = _sp.run([sys.executable, "-c",
-                   "import sys; sys.path.insert(0, 'Python'); import app_pipeline; ok,msg = app_pipeline._preflight_premiere(); print(type(ok).__name__, type(msg).__name__)"],
+                   "import sys; sys.path.insert(0, 'Python'); import app_pipeline; m = app_pipeline.preflight_ffmpeg(); print(type(m).__name__, len(m))"],
                   capture_output=True, text=True, timeout=10)
-    if res.returncode == 0 and "bool" in res.stdout and "str" in res.stdout:
-        r.record("P1-5 _preflight_premiere() returns (bool, str)", "PASS")
+    if res.returncode == 0 and res.stdout.startswith("list"):
+        r.record("P1-5 preflight_ffmpeg() returns list", "PASS", res.stdout.strip())
     else:
         r.record("P1-5 preflight", "FAIL", res.stderr[:120])
 
@@ -160,23 +160,8 @@ def test_p1(base: str, r: TestResult) -> None:
 
 def test_p2(base: str, r: TestResult, skip_render: bool = False) -> None:
     print(f"\n{DIM}── P2（中期：N チャンネル並列 + 物理制約） ──{RESET}")
-    # P2-1 render queue
-    if skip_render:
-        r.record("P2-1 render queue API", "SKIP", "--skip-render")
-    else:
-        code, payload = _get(base, "/api/render-queue")
-        if code == 200 and "counts" in (payload or {}):
-            c = payload["counts"]
-            r.record("P2-1 GET /api/render-queue", "PASS",
-                     f"pending={c.get('pending',0)} running={c.get('running',0)}")
-        else:
-            r.record("P2-1 render queue", "FAIL", f"http {code}")
-        code, payload = _get(base, "/api/render-queue/throughput?days=7")
-        if code == 200 and "queue_throughput_per_day" in (payload or {}):
-            r.record("P2-1 GET /api/render-queue/throughput", "PASS",
-                     f"~{payload.get('queue_throughput_per_day',0)} vol/day")
-        else:
-            r.record("P2-1 throughput", "FAIL", f"http {code}")
+    # P2-1 render queue: 2026-10-25 段階 1a で廃止（API ごと削除）
+    r.record("P2-1 render queue API", "SKIP", "render queue は廃止（ffmpeg 直接書き出し）")
 
     # P2-2 channel registry
     code, payload = _get(base, "/api/channels")

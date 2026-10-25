@@ -112,7 +112,7 @@ Task 3 の検証時に1つ選び、**以降のタスクでは同じものを使�
 JS を Python 文字列から取り出して構文検査する。
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 python3 -c "import sys; sys.path.insert(0,'Python'); import suno_fast_dl; open('/tmp/hook.js','w').write(suno_fast_dl.FAST_DECRYPT_HOOK)"
 node --check /tmp/hook.js && echo "JS SYNTAX OK"
 ```
@@ -122,7 +122,7 @@ node --check /tmp/hook.js && echo "JS SYNTAX OK"
 - [ ] **Step 3: Python の構文チェック**
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 python3 -m py_compile Python/suno_fast_dl.py && echo "PY OK"
 ```
 
@@ -180,7 +180,7 @@ SUNO に依存せずに検証する。`about:blank` を開き、フックを注�
 検証用スクリプトは `Python/scripts/suno_fast_transfer_check.py` として作成する。
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 python3 Python/scripts/suno_fast_transfer_check.py
 ```
 
@@ -243,7 +243,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 件数と最初の3件・最後の3件を出力するだけのもの（ダウンロードはしない）。
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 python3 Python/scripts/suno_fast_rows_check.py --workspace "$WS"
 ```
 
@@ -319,7 +319,7 @@ ffmpeg -y -loglevel error -i <src> -vn -c:a libmp3lame -b:a 320k -map_metadata -
 指定ワークスペースの先頭1曲だけを取得して `/tmp/suno_fast_check/` に保存する。
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 python3 Python/scripts/suno_fast_one_check.py --workspace "$WS"
 ffprobe -v error -show_entries format=duration,bit_rate -show_entries stream=codec_name,channels -of default=nw=1 /tmp/suno_fast_check/*.mp3
 ```
@@ -403,7 +403,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - [ ] **Step 3: 構文チェック**
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 python3 -m py_compile Python/suno_fast_dl.py Python/suno_auto_create.py && echo "PY OK"
 ```
 
@@ -414,7 +414,7 @@ python3 -m py_compile Python/suno_fast_dl.py Python/suno_auto_create.py && echo 
 1 vol 相当のワークスペースに対して既存の入口から実行する。
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 APP_KEEP_BROWSER=0 python3 Python/suno_auto_create.py --download-only \
   --workspace "$WS" --target /tmp/suno_fast_vol
 ls -la /tmp/suno_fast_vol/
@@ -437,7 +437,7 @@ done
 - [ ] **Step 5: legacy 経路が生きていることを確認する**
 
 ```bash
-cd "/Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude"
+cd "<DRIVE>/_claude"
 APP_SUNO_DL_MODE=legacy APP_KEEP_BROWSER=0 python3 Python/scripts/suno_fast_vol_check.py \
   --workspace "$WS" --target /tmp/suno_legacy_check 2>&1 | head -30
 ```

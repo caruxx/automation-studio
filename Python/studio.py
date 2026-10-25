@@ -304,9 +304,23 @@ def run_update(args: argparse.Namespace) -> int:
         data = {"ok": False, "intent": "update", "message": str(e)}
     print(json.dumps(data, ensure_ascii=False, indent=2))
     if data.get("ok") and (data.get("backup") or data.get("restored_version")):
-        print("次の操作: bash Python/start.sh で再起動してください。")
+        print("次の操作: bash Python/start.sh --replace で再起動してください。")
     emit({"ok": bool(data.get("ok")), "intent": "update", **data})
     return 0 if data.get("ok") else 1
+
+
+def run_preflight(args: argparse.Namespace) -> int:
+    """ffmpeg 専用構成の実行環境検査。欠けている項目を JSON で返す。"""
+    try:
+        import app_pipeline
+        missing = list(app_pipeline.preflight_ffmpeg())
+    except Exception as e:
+        emit({"ok": False, "intent": "preflight", "missing": [], "error": str(e)})
+        return 1
+    if not args.json:
+        print("preflight: " + ("OK" if not missing else "不足 " + ", ".join(missing)))
+    emit({"ok": not missing, "intent": "preflight", "missing": missing})
+    return 0 if not missing else 78
 
 
 def run_config(args: argparse.Namespace) -> int:
@@ -542,6 +556,7 @@ def main() -> int:
     parser.add_argument("--switch", action="store_true", help="--channel が active と違う場合に明示切替")
     parser.add_argument("--via-api", action="store_true", help="API 経由で実行")
     parser.add_argument("--dry-run", action="store_true", help="実行せず解決後のコマンドだけ表示")
+    parser.add_argument("--json", action="store_true", help="最終行の JSON 出力だけを使う呼び出し側向けのフラグ（既定で JSON は常に出る）")
     parser.add_argument("--from", dest="from_step", help="pipeline の再開 step")
     parser.add_argument("--publish-date", default="YYYY-MM-DD")
     parser.add_argument("--prompt", default="lounge jazz BGM, elegant cafe atmosphere")
@@ -610,6 +625,9 @@ def main() -> int:
 
     if args.intent == "config":
         return run_config(args)
+
+    if args.intent == "preflight":
+        return run_preflight(args)
 
     if args.intent == "autopilot":
         return run_autopilot(args)

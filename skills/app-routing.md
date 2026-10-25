@@ -11,7 +11,7 @@ python3 Python/studio.py --explain meta
 python3 Python/studio.py resolve 78
 python3 Python/studio.py bgimage --vol 78 --dry-run
 python3 Python/studio.py bgimage --vol 78
-python3 Python/studio.py pipeline --vol 78 --from premiere
+python3 Python/studio.py pipeline --vol 78 --from export
 ```
 
 `--dry-run` は解決後の CLI コマンドまたは curl 相当を表示するだけで、副作用はない。
@@ -19,14 +19,13 @@ python3 Python/studio.py pipeline --vol 78 --from premiere
 
 ## Web サーバー再起動
 
-launchd 常駐時はコードがローカルミラーから起動するため、コード変更の反映と再起動をまとめて行う。
+launchd 常駐は 2026-07-04 に廃止。コード変更後は手動で再起動する。
 
 ```bash
-bash setup_launchd.sh --sync
-launchctl list | grep automation
+bash Python/start.sh --replace   # 稼働中なら SIGTERM で止めてから起動
 ```
 
-非常駐時だけ直接起動する。
+初回や停止中は `bash Python/start.sh` で起動する。
 
 ```bash
 bash Python/start.sh
@@ -75,7 +74,7 @@ python3 Python/studio.py meta --vol 78 --via-api  # 拒否される
 
 - 1 エージェント = 1 チャンネル、または 1 ドメイン（music/image/video/qa/publish）
 - 同じチャンネルの同じ vol に対して、複数エージェントが同時にファイル生成・投稿・設定保存をしない
-- Premiere / export は render queue が物理直列化するが、手動作業側でも同時操作を避ける
+- export は FFmpeg で CPU 律速。同一 vol の同時書き出しは避ける（render queue は 2026-10-25 段階 1a で廃止）
 - vol 番号だけで判断せず、`studio.py resolve <vol> --channel <id>` か `/api/resolve-vol/{vol}?channel_id=<id>` で folder を確認する
 
 ## Autopilot

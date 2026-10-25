@@ -26,7 +26,7 @@ import time
 import threading
 from pathlib import Path
 from app_track_title import public_timecode_line
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections import deque
 
 from fastapi import FastAPI, WebSocket, HTTPException, UploadFile, File, Request, Response
@@ -93,8 +93,6 @@ WEB_DIR = SHARED_BASE / "web"
 PYTHON_DIR = SHARED_BASE / "Python"
 # パイプライン本体スクリプト（複数ドメイン=pipeline/images が参照する共有定数。D9）
 PIPELINE_SCRIPT = PYTHON_DIR / "app_pipeline.py"
-# Premiere 連携スクリプト（premiere/render-queue の両ドメインが参照する共有定数。D9）
-PREMIERE_SCRIPT = PYTHON_DIR / "app_premiere.py"
 
 # 設定ファイル（ローカル: PC固有の設定）
 DASHBOARD_CONFIG = CONFIG_DIR / "dashboard_config.json"
@@ -235,8 +233,6 @@ DEFAULT_DASHBOARD_CONFIG = {
     # ─── チャンネル基本 ───
     "channel_name": "orzz.",
     "channel_folder": _auto_paths.get("channel_folder", ""),
-    "template_prproj": "260207_orzz_base.prproj",
-    "template_psd": "orzz_base.psd",
     # PSD テンプレ内のレイヤー名（チャンネルごとにカスタム可）
     "psd_base_layer": "base",            # 画像差し替え対象 SO レイヤー名（WW: Chicago_Willis）
     "psd_toggle_layer": "PLAY LIST",     # 表示/非表示で 2 種類書き出すレイヤー名（WW: WORKSPACE）
@@ -290,6 +286,26 @@ def save_json(path, data):
     except Exception:
         pass
 
+_LEGACY_PRODUCTION_WARNED = False
+
+
+def effective_production_mode(cfg) -> str:
+    """制作構成の単一リゾルバ。常に "ffmpeg_only" を返す（段階 1a で Adobe 経路を廃止）。
+
+    旧設定値（production_mode="standard" / export_engine="ame"）が残っていれば
+    プロセス内で 1 回だけ警告を出し、ffmpeg_only として扱う。"""
+    global _LEGACY_PRODUCTION_WARNED
+    cfg = cfg if isinstance(cfg, dict) else {}
+    mode = str(cfg.get("production_mode") or "").strip().lower()
+    engine = str(cfg.get("export_engine") or "").strip().lower()
+    legacy = (mode and mode != "ffmpeg_only") or (engine and engine != "ffmpeg")
+    if legacy and not _LEGACY_PRODUCTION_WARNED:
+        _LEGACY_PRODUCTION_WARNED = True
+        print(f"WARN legacy production setting ignored: production_mode={mode or '-'} "
+              f"export_engine={engine or '-'} -> ffmpeg_only")
+    return "ffmpeg_only"
+
+
 def get_dashboard_config():
     config = DEFAULT_DASHBOARD_CONFIG.copy()
     config.update(load_json(DASHBOARD_CONFIG, {}))
@@ -302,8 +318,8 @@ def get_dashboard_config():
     # 各所の `ch.get("folder")==config.get("channel_folder")` 比較を揃える。保存先はローカルのみ＝安全。
     if config.get("channel_folder"):
         config["channel_folder"] = _resolve_to_current_host(config["channel_folder"])
-    if config.get("production_mode") == "ffmpeg_only":
-        config["export_engine"] = "ffmpeg"
+    config["production_mode"] = effective_production_mode(config)
+    config["export_engine"] = "ffmpeg"
     return config
 
 
@@ -314,21 +330,20 @@ PER_CHANNEL_KEYS = {
     "persona", "rival_channels",
     "spreadsheet_channel_detail_url", "spreadsheet_growth_tracking_url",
     "benchmark_pinned_names", "benchmark_filter", "benchmark_extra_urls",
-    "channel_icon", "template_prproj", "template_psd", "export_path",
-    "production_mode", "thumbnail_composition",  # FFmpegのみの制作構成と画像合成設定
-    "export_engine",  # 書き出しエンジン: "ame"(Premiere/AME・既定) / "ffmpeg"(app_ffrender ループ連結方式・静止画チャンネル向け)
-    "psd_base_layer", "psd_toggle_layer", "psd_image_subdir",
+    "channel_icon", "export_path",
+    "production_mode", "thumbnail_composition",  # 制作構成（常に ffmpeg_only）と画像合成設定
+    "export_engine",  # 互換のため保持。段階 1a 以降は常に "ffmpeg" に正規化される
+    "psd_image_subdir",  # 画像合成の差し替え画像フォルダ（名前は互換のため psd_ のまま）
     "scene_text_enabled", "scene_text_case", "scene_text_punctuation",
     "scene_text_tone", "scene_text_examples",
     "scene_text_forbidden", "scene_text_structure",  # 文字入れ（シーンテキスト）設定（チャンネル別）
-    "export_ignore_list",  # AME 書き出し watcher が無視する video_name のリスト（2 PC 間自動同期）
     "publish_mode",  # P3-3: 公開方式（unlisted=限定公開 / public=即時公開 / delayed=N時間後自動公開）
     "publish_delay_hours",  # P2-7: upload 後の公開ゲート（0=即時、>0=N時間後 public化）
     "publish_time_jst",  # Phase G: フォルダ日付に対する予約公開時刻（HH:MM / JST）
     "reference_image_dir",  # step_bgimage: 参照画像フォルダ（空なら Picked → rival thumbs にフォールバック）
     "reference_image",  # step_bgimage: 固定参照画像（最優先。水辺プロムナード等の代表参照）
     "reference_image_mix_mode",  # fixed_only / identity_plus_benchmark / benchmark_only
-    "default_duration_sec",  # Premiere 自動配置の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
+    "default_duration_sec",  # 動画の規定尺（秒）。未設定/0 以下なら 10800 (3h) にフォールバック
     "ffrender",  # app_ffrender のチャンネル別挙動（intro_sound / song_order / intro_visual など）
     "priority",  # U3: orchestrator policy 配分の channel 優先度（大きいほど優先。既定 100）
     "autopilot_enabled",  # U3: 自動運転 ON/OFF（保存のみ。実 scheduler 起動は別途 GO 後）
@@ -739,8 +754,6 @@ def sync_channel_registry(verbose: bool = True) -> list:
             entry = {
                 "id": cid, "name": name, "folder": str(d),
                 "prefix": infer_file_prefix_from_folder(d) or "",
-                "template_prproj": cc.get("template_prproj", ""),
-                "template_psd": cc.get("template_psd", ""),
                 "youtube_url": "", "youtube_channel_id": "", "handle": "", "icon_cache": {},
             }
             if _add(entry) and verbose:
@@ -1281,19 +1294,73 @@ def _safe_user_path(p):
         resolved = Path(p).expanduser().resolve(strict=False)
     except Exception:
         raise HTTPException(400, "不正なパスです")
-    if resolved.is_symlink():
-        raise HTTPException(403, "シンボリックリンクは許可されていません")
+    # resolve() は symlink を辿るので、許可 root との包含判定は実体パスで行う
     allowed_roots = [HOME.resolve(), Path("/Volumes").resolve()]
-    if not any(str(resolved).startswith(str(root)) for root in allowed_roots):
+    if not any(path_is_within(resolved, root) for root in allowed_roots):
         raise HTTPException(403, f"許可されていないパスです: {resolved}")
-    # ~/Library 以下は CloudStorage だけ許可（.ssh, .config など秘密情報の保護）
+    # ~/Library 以下は CloudStorage / Application Support だけ許可（.ssh, .config など秘密情報の保護）
     lib = (HOME / "Library").resolve()
-    if str(resolved).startswith(str(lib)):
+    if path_is_within(resolved, lib):
         cloud = (HOME / "Library/CloudStorage").resolve()
         app_sup = (HOME / "Library/Application Support").resolve()
-        if not (str(resolved).startswith(str(cloud)) or str(resolved).startswith(str(app_sup))):
+        if not (path_is_within(resolved, cloud) or path_is_within(resolved, app_sup)):
             raise HTTPException(403, "Library 配下の機密領域へのアクセスは禁止されています")
     return resolved
+
+
+def path_is_within(path, root) -> bool:
+    """実体パス（symlink 解決後）で path が root 配下かを判定する。隣接 prefix（/a/b と /a/bc）は拒否。"""
+    try:
+        Path(path).resolve(strict=False).relative_to(Path(root).resolve(strict=False))
+        return True
+    except (ValueError, OSError, RuntimeError):  # RuntimeError: symlink ループ
+        return False
+
+
+def resolve_asset_in_folder(folder, asset: str, *, allowed_ext=None) -> Path:
+    """vol フォルダ配下の素材を、相対パスまたは絶対パスから安全に解決する。
+
+    - 相対パスは folder 基準。絶対パスは実体が folder 配下にあるときだけ許可。
+    - ".." や NUL、空文字は拒否。symlink は実体パスで包含判定する。
+    - allowed_ext（小文字の拡張子集合、例 {".mp4", ".png"}）を指定すると拡張子を限定する。
+    違反時は HTTPException(400/403/404)。"""
+    raw = str(asset or "").strip()
+    if not raw or "\x00" in raw or "\0" in raw:
+        raise HTTPException(400, "asset が不正です")
+    parts = Path(raw).parts
+    if ".." in parts:
+        raise HTTPException(400, "asset に .. は使えません")
+    try:
+        root = Path(folder).resolve(strict=False)
+        candidate = Path(raw).expanduser()
+        target = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(400, "asset を解決できません")
+    if not path_is_within(target, root):
+        raise HTTPException(403, "asset が動画フォルダの外を指しています")
+    if allowed_ext is not None and target.suffix.lower() not in allowed_ext:
+        raise HTTPException(400, f"許可されていないファイル形式です: {target.suffix}")
+    if not target.is_file():
+        raise HTTPException(404, "ファイルが見つかりません")
+    return target
+
+
+def resolve_folder_in_registered_channels(folder) -> Optional[Path]:
+    """絶対パスで渡された動画フォルダが、登録チャンネルのいずれかの直下にある vol フォルダなら実体パスを返す。"""
+    try:
+        target = Path(folder).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not parse_video_folder_name(target.name):
+        return None
+    for ch in get_channels():
+        root = (ch.get("folder") or "").strip()
+        if not root:
+            continue
+        root_p = Path(_resolve_to_current_host(root)).expanduser()
+        if path_is_within(target, root_p) and target.parent.resolve(strict=False) == root_p.resolve(strict=False):
+            return target
+    return None
 
 
 def get_channels():

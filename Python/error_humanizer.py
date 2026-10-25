@@ -9,7 +9,7 @@ from typing import Any
 ACTION_URLS = {
     "suno_login": "/#suno",
     "youtube_quota": "/#ledger",
-    "premiere_preflight": "/#premiere",
+    "preflight": "/#settings",
     "youtube_auth": "/#youtube",
     "youtube_analytics_api": "https://console.developers.google.com/apis/api/youtubeanalytics.googleapis.com/overview",
     "settings": "/#settings",
@@ -37,10 +37,10 @@ SENTINELS = {
         "action_url": ACTION_URLS["youtube_quota"],
     },
     78: {
-        "code": "premiere_preflight_failed",
-        "title": "Premiere Proの準備ができていません",
-        "next_action": "Premiere Proを起動し、Premiere Linkパネルを開いてから再実行してください。",
-        "action_url": ACTION_URLS["premiere_preflight"],
+        "code": "preflight_failed",
+        "title": "書き出しの実行環境が足りません",
+        "next_action": "ffmpeg / ffprobe / Pillow が見つかりません。brew install ffmpeg と .venv の再作成（bash Python/start.sh）を行い、python3 Python/studio.py preflight --json で確認してから再実行してください。",
+        "action_url": ACTION_URLS["preflight"],
     },
 }
 
@@ -65,7 +65,7 @@ PATTERNS = [
         "action_url": ACTION_URLS["youtube_auth"],
     }),
     (re.compile(r"quotaExceeded|quota|クオータ", re.I), SENTINELS[77]),
-    (re.compile(r"Premiere|CEP|Premiere Link|preflight", re.I), SENTINELS[78]),
+    (re.compile(r"preflight|ffprobe|ffmpeg が見つかりません", re.I), SENTINELS[78]),
     (re.compile(r"SUNO|login|ログイン|cookie|Cookie|UnattendedLoginRequired", re.I), SENTINELS[75]),
     (re.compile(r"timeout|timed out|429|5\d\d|temporar|一時的|retry", re.I), SENTINELS[76]),
 ]

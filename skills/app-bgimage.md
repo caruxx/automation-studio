@@ -1,12 +1,12 @@
 # app-bgimage: 背景画像の自動生成（パイプライン STEP 3）
 
-パイプラインの **STEP 3** として走る、Premiere 自動配置の直前工程。ベンチマーク参照画像 + チャンネル
+パイプラインの **STEP 3** として走る、画像合成の直前工程。ベンチマーク参照画像 + チャンネル
 ペルソナ（コンセプト）を OpenAI gpt-image-2（codex_imagegen.py）に渡し、動画フォルダ直下に
 `vol{N}.png` を 1 枚生成する。
 
 ## 目的
 
-- **Premiere JSX のフォールバック規約に従う**: JSX は `selected_images.json` が無い場合 `vol{N}.png` / `vol{N}-1.png`
+- **背景画像の既定名に従う**: 書き出し（app_ffrender）は `selected_images.json` が無い場合 `vol{N}.png` / `vol{N}-1.png`
   を背景画像として読む（[app-image-select.md](./app-image-select.md) 参照）。STEP 3 ではこの **フォールバック先**
   を必ず満たすように 1 枚生成し、ユーザーが画像を選ばなくても破綻しないようにする。
 - **ベンチマーク分析から動的にプロンプト構築**（commit ad0c82d 以降）: サムネ（`step_thumbnail`）と同じく、
@@ -32,7 +32,7 @@
 
 - app-bgimage は **「無人パイプラインの最低限の保険」**。常時 1 枚は揃う。
 - ユーザーが codex で複数枚作って手動で main/sub を組みたい場合は app-image-select / app-series-proposals。
-- 3 つは併存可能。bgimage が生成した `vol{N}.png` は app-image-select で `main` に明示採用すれば JSX が優先する。
+- 3 つは併存可能。bgimage が生成した `vol{N}.png` は app-image-select で `main` に明示採用すれば書き出しが優先する。
 
 ## データソース
 
@@ -259,7 +259,7 @@ per-channel `.app_channel_config.json` の `rival_channels[]` が空、または
 ### 既定アセット流用は不採用
 「既定の汎用背景画像 (`default_bg.png`) を流用する」案も検討したが、不採用。理由:
 - チャンネルごとにブランドが違うため、共通の汎用画像は浮く
-- Premiere JSX 側ですでに「画像が無ければ音声のみ配置」フォールバックが効くため、ここで無理に画像を当てる必要がない
+- 書き出し（app_ffrender）は背景画像が無いと失敗するため、STEP 3 で必ず 1 枚そろえる（汎用画像で誤魔化さず、チャンネルに合う画像を生成する）
 
 ## トラブルシューティング
 

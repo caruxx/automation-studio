@@ -113,6 +113,6 @@ YouTube Data API v3:
 
 ## 関連スキル
 
-- [app-psd-composite.md](app-psd-composite.md) — サムネ/背景画像合成
+- [image.md](image.md) — サムネ/背景画像合成
 - [app-youtube-upload.md](app-youtube-upload.md) — 既存のアップロード（snippet 投入）
 - [app-workflow.md](app-workflow.md) — pipeline 全体

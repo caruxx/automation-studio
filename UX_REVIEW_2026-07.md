@@ -1,5 +1,7 @@
 # Automation Studio UI/UX 棚卸し（2026-07-18）
 
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `SPEC.md`（正本）と `skills/app-export.md`、計画は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` を参照。本文書は履歴として保持する。
+
 実画面巡回（Chrome 1440x900、orzz チャンネル、サーバー稼働中 localhost:8888）と DOM/CSS 検査で実施。
 2026-06-11 の UX_REVIEW.md の後継。前回の C1〜C4（進捗表現・用語・ジャーゴン・赤色規約）の修正は一覧レベルでは維持されているが、**構造レベルの不統一と、修正後に入った新レイアウトの崩れ**が今回の主対象。
 
@@ -62,7 +64,7 @@
 - 案: × は「削除しました - 元に戻す(5s)」のスナックバー明示。♥ は「優先度マーク（ファイル名に反映）」等、実際の効果を表す語に。
 
 ### D9. ジャーゴン露出の残り(前回C3の未完部分+新規) [D]
-- 書き出しページ: 全行に絶対パス2行（/Users/caruvi/Library/CloudStorage/...）。行の主情報が vol 名ではなくパスになっている。パスは details/ツールチップへ。
+- 書き出しページ: 全行に絶対パス2行（<USER_HOME>/Library/CloudStorage/...）。行の主情報が vol 名ではなくパスになっている。パスは details/ツールチップへ。
 - 実行履歴: `reaped as stale > 21600s`、再現コマンド `python3 app_pipeline.py 124 --from export` が詳細列に生表示。日本語要約+コピー用に格納。
 - SUNO: `instrumental_filler` `cli-default` `<channel>_volN`。
 - ホームのチャンネルカード: 「次: suno / premiere / export」の工程名が英語内部名（一覧の 6工程名「楽曲/画像/動画/検査/メタ/公開」と不一致 - D3 とも連動）。

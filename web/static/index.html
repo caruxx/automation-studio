@@ -13,7 +13,6 @@
 <link rel="stylesheet" href="/static/css/assembly-timeline.css?v=20260711-width-fit">
 <link rel="stylesheet" href="/static/css/assembly-timeline-filmora.css?v=20260711-toolbar2">
 <link rel="stylesheet" href="/static/css/assembly-preview.css?v=20260711-editor2">
-<link rel="stylesheet" href="/static/css/assembly-premiere-layout.css?v=20260712-text-ux1">
 <style>
 .atl-transition{position:relative;z-index:8;align-self:flex-start;margin:2px -22px 0;min-width:88px;padding:3px 6px;border:1px solid #8ea0b8;border-radius:12px;background:#17202c;color:#edf2f7;font-size:10px;white-space:nowrap}.atl-overlap{width:34px;align-self:stretch;margin:8px -17px;z-index:6;background:repeating-linear-gradient(135deg,#5aa1d966 0 4px,#17243a99 4px 8px)}.atl-overlap-audio{background:repeating-linear-gradient(135deg,#b786e766 0 4px,#3d2b5599 4px 8px)}.atl-now-playing-chip{cursor:pointer;background:#4b3d19;border-color:#c8a23d}.atl-position-grid{display:grid;grid-template-columns:repeat(3,42px);grid-template-rows:repeat(3,28px);gap:5px}.atl-position-grid button{border:1px solid #566171;background:#202733}.atl-position-grid button.active{background:#4e8cff}.atl-style-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.atl-preview-canvas{position:relative;min-width:0}.atl-now-playing-overlay{position:absolute;pointer-events:none;max-width:85%;font-weight:600;text-align:center}.atl-pos-top-left{top:var(--atl-text-margin,6%);left:var(--atl-text-margin,4%)}.atl-pos-top-center{top:var(--atl-text-margin,6%);left:50%;transform:translateX(-50%)}.atl-pos-top-right{top:var(--atl-text-margin,6%);right:var(--atl-text-margin,4%)}.atl-pos-middle-left{top:50%;left:var(--atl-text-margin,4%);transform:translateY(-50%)}.atl-pos-center{top:50%;left:50%;transform:translate(-50%,-50%)}.atl-pos-middle-right{top:50%;right:var(--atl-text-margin,4%);transform:translateY(-50%)}.atl-pos-bottom-left{bottom:var(--atl-text-margin,6%);left:var(--atl-text-margin,4%)}.atl-pos-bottom-center{bottom:var(--atl-text-margin,6%);left:50%;transform:translateX(-50%)}.atl-pos-bottom-right{bottom:var(--atl-text-margin,6%);right:var(--atl-text-margin,4%)}
 </style>
@@ -1258,7 +1257,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
   </div>
   <div class="topbar-right">
     <div id="globalStatus" class="topbar-chip" style="display:flex;align-items:center;gap:6px;cursor:pointer" onmouseenter="showLogPopover()" onmouseleave="scheduleHideLogPopover()" onclick="toggleLogPopoverPin(event)" title="ホバー: 全タスクログ表示  /  クリック: ピン留め"><span class="status-dot status-idle"></span><span class="status-text">待機中</span></div>
-    <div id="ameStatusChip" class="topbar-chip" style="display:none;align-items:center;gap:6px;cursor:pointer" onclick="go('automation');setTimeout(()=>document.getElementById('ameQueueCard')?.scrollIntoView({behavior:'smooth'}),200)" title="自動化タブで詳細を見る"></div>
     <div id="youtubeStatusChip" class="topbar-chip" style="display:none;align-items:center;gap:6px;cursor:pointer;background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(239,68,68,.05));border-color:rgba(239,68,68,.4)" onclick="go('youtube')" title="YouTube アップロードログを開く"></div>
     <span id="clock" class="clock-text"></span>
     <button class="btn btn-primary btn-sm" id="topbarNewVideoBtn" onclick="showCreateVideoModal()">+ 新規動画</button>
@@ -1306,8 +1304,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
     <details class="nav-more">
       <summary>工程ツール</summary>
       <button class="nav-btn" data-p="suno" aria-label="SUNO" onclick="go('suno')"><span class="nav-label">SUNO</span></button>
-      <button class="nav-btn" data-p="premiere" aria-label="Premiere" onclick="go('premiere')"><span class="nav-label">Premiere</span></button>
-      <button class="nav-btn" data-p="export" aria-label="書き出し" onclick="go('export')"><span class="nav-label">書き出し</span></button>
       <button class="nav-btn" data-p="youtube" aria-label="YouTube" onclick="go('youtube')"><span class="nav-label">YouTube</span></button>
       <button class="nav-btn" data-p="live" aria-label="ライブ配信" onclick="go('live')"><span class="nav-label">ライブ配信</span></button>
     </details>
@@ -1388,17 +1384,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
       </div>
     </details>
 
-    <!-- Render Queue（P2-1 — Premiere/Export シリアライズキュー） -->
-    <details id="renderQueueCard" class="card" style="margin-bottom:14px">
-      <summary class="card-header" style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:var(--space-2)">
-        <div class="sec-title" style="margin:0;flex:1">書き出しキュー(Premiere/Media Encoder)</div>
-        <span id="rqSummary" class="fh" style="font-weight:normal;font-size:var(--text-xs)"></span>
-        <button class="btn btn-ghost btn-sm" onclick="event.preventDefault();event.stopPropagation();loadRenderQueue()">更新</button>
-      </summary>
-      <div id="rqBody" style="padding-top:var(--space-3)">
-        <div class="fh">パネルを開くと取得</div>
-      </div>
-    </details>
 
     <div class="card" id="dashWeeklyCard" style="margin-bottom:14px;display:none">
       <div class="card-header"><div class="section-heading"><div class="sec-title">今週のタスク（運用サイクル）</div></div><button class="btn btn-ghost btn-sm" onclick="loadWeeklyTasks()">更新</button></div>
@@ -2159,74 +2144,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
 
   </div>
 
-  <!-- ===== 書き出し（独立タブ） ===== -->
-  <div class="page" id="p-export">
-    <div class="page-head">
-      <div>
-        <div class="section-heading"><span class="product-icon adobe-me lg">Me</span><div class="page-title">書き出し</div></div>
-        <div class="fh" style="margin-top:2px">vol単位の書き出しは vol詳細 → 書き出しタブ から。このページはキュー横断の管理用です</div>
-      </div>
-    </div>
-
-    <!-- 書き出し候補リスト -->
-    <div class="card">
-      <div class="card-header" style="margin-bottom:var(--space-3)">
-        <div>
-          <div class="sec-title" style="margin:0">書き出し候補</div>
-          <div class="fh" style="margin-top:2px">prproj + 楽曲 + SRT がそろっていて mp4 が無い動画を一覧表示します</div>
-        </div>
-        <div class="btns" style="margin:0">
-          <button class="btn btn-secondary btn-sm" onclick="loadExportCandidates()">再スキャン</button>
-          <button class="btn btn-ghost btn-sm" onclick="resetExportHidden()">無視リストをリセット</button>
-        </div>
-      </div>
-      <div id="exportCandidatesList"></div>
-    </div>
-
-    <!-- 自動書き出しキュー -->
-    <div class="card" style="margin-top:var(--space-4)">
-      <div class="card-header" style="margin-bottom:var(--space-3)">
-        <div>
-          <div class="sec-title" style="margin:0">自動書き出しキュー（AME）</div>
-          <div class="fh" style="margin-top:2px">候補が見つかったら自動でキュー → Media Encoder へ投入 → 完了検知 → YouTube アップロード</div>
-        </div>
-        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer;padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm)">
-          <input type="checkbox" id="exportWatcherToggle" onchange="toggleExportWatcher()" style="width:18px;height:18px"> <strong>ウォッチャー ON</strong>
-        </label>
-      </div>
-      <div style="margin-bottom:var(--space-3);font-size:var(--text-sm);color:var(--text-secondary)">
-        書き出し先: <code id="exportPathPreview" style="color:var(--text-primary)">（基本設定の「書き出しパス」を使用、空ならチャンネルフォルダ内）</code>
-      </div>
-      <div class="btns" style="margin-bottom:var(--space-3)">
-        <button class="btn btn-secondary btn-sm" onclick="loadExportQueue()">再読込</button>
-        <button class="btn btn-secondary btn-sm" onclick="scanExportNow()">即時スキャン</button>
-        <button class="btn btn-ghost btn-sm" onclick="clearDoneExportQueue()">完了履歴をクリア</button>
-        <button class="btn btn-ghost btn-sm" onclick="stopAllExportQueue()" title="実行中を kill / 待機中を停止。履歴は残る">全停止</button>
-        <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="resetExportQueue()" title="実行中を kill して全アイテム（履歴含む）を削除します。取り消せません">完全リセット</button>
-      </div>
-      <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);margin-bottom:var(--space-2);cursor:pointer">
-        <input type="checkbox" id="autoUploadAfterExport" onchange="saveAutoUploadAfterExport()" style="width:16px;height:16px"> 書き出し完了後に YouTube へ自動アップロード（ベンチマーク参考のメタ生成 + タイムスタンプ反映）
-      </label>
-      <div id="ameQueueCard" style="display:none;margin-bottom:var(--space-3)"></div>
-      <div id="exportQueueList"></div>
-    </div>
-
-    <!-- 無視リスト管理 -->
-    <div class="card" style="margin-top:var(--space-4)">
-      <div class="card-header" style="margin-bottom:var(--space-3)">
-        <div>
-          <div class="section-heading"><div class="sec-title">書き出し無視リスト</div></div>
-          <div class="fh" style="margin-top:2px">ここに登録された動画はウォッチャーが検知しません。完了済 / 別経路で書き出した動画を入れて再検知を防ぎます。<strong>2 PC 間で自動同期</strong>（チャンネルフォルダ内に保存）。</div>
-        </div>
-        <div class="btns" style="margin:0">
-          <button class="btn btn-ghost btn-sm" onclick="loadIgnoreList()">再読込</button>
-        </div>
-      </div>
-      <div id="exportIgnoreList" style="font-size:var(--text-sm)"></div>
-    </div>
-  </div>
-
-  <!-- ===== SUNO ===== -->
   <div class="page" id="p-suno">
     <div class="page-head">
       <div>
@@ -2279,76 +2196,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
   </div>
 
   <!-- ===== Calendar ===== -->
-  <!-- ===== Premiere ===== -->
-  <div class="page" id="p-premiere">
-    <div class="page-head"><div><div class="section-heading"><span class="product-icon adobe-pr lg">Pr</span><div class="page-title">Premiere Pro</div></div><div class="fh" style="margin-top:2px">接続の復旧と一括レンダー用です。vol単位の編集は vol詳細 → 編集タブ から</div></div></div>
-    <div class="g2">
-      <div>
-        <div class="card" style="padding-bottom:12px">
-          <div class="card-header" style="margin-bottom:var(--space-3)">
-            <div class="sec-title" style="margin:0">Premiere Link</div>
-            <button class="btn btn-ghost btn-sm" onclick="checkPremiere()">再確認</button>
-          </div>
-          <!-- 接続ステータス -->
-          <div id="prStatus" style="font-size:var(--text-sm);margin-bottom:10px;color:var(--text-tertiary)">確認中...</div>
-          <!-- 未応答時の復旧ボタン -->
-          <div id="prRecover" style="display:none;margin-bottom:10px;padding:var(--space-2);background:var(--bg-base);border:1px solid var(--border-default);border-radius:var(--radius-sm)">
-            <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:6px">パネルが応答していません。次のどちらかを試してください：</div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="btn btn-ghost btn-sm" onclick="reopenPanel()">パネルを開く</button>
-              <button class="btn btn-secondary btn-sm" onclick="restartPremiere()">Premiere を再起動</button>
-            </div>
-            <div style="font-size:var(--text-2xs);color:var(--text-tertiary);margin-top:6px">※「パネルを開く」は自動化メニュー操作です。権限が必要な場合はアクセシビリティ設定を確認してください。</div>
-          </div>
-          <!-- アクティビティログ -->
-          <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">アクティビティ</div>
-          <div id="prPanelLog" style="background:var(--bg-base);border:1px solid var(--border-default);border-radius:var(--radius-sm);padding:var(--space-2);font-size:var(--text-xs);font-family:var(--font-mono);height:120px;overflow-y:auto;color:var(--text-secondary)">
-            <div style="color:var(--text-tertiary)">パネルに接続すると表示されます</div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="sec-title">対象動画</div>
-          <div class="ff">
-            <select class="fs" id="prVideo">
-              <option value="">現在 Premiere で開いているプロジェクトを使用</option>
-            </select>
-            <div class="fh">指定するとその動画の <code>.prproj</code> を自動で開いてから JSX を実行します</div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="sec-title">ループ設定</div>
-          <div class="fr">
-            <div class="ff"><label class="fl">時</label><input type="number" class="fi" id="prH" value="3" min="0" max="12" style="text-align:center"></div>
-            <div class="ff"><label class="fl">分</label><input type="number" class="fi" id="prM" value="0" min="0" max="59" style="text-align:center"></div>
-            <div class="ff"><label class="fl">秒</label><input type="number" class="fi" id="prS" value="0" min="0" max="59" style="text-align:center"></div>
-          </div>
-          <div class="ff" style="margin-top:10px">
-            <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer">
-              <input type="checkbox" id="prExport" style="width:16px;height:16px;accent-color:var(--accent-primary)"> 完了後に書き出し（YouTube 1080p: H.264 8Mbps VBR）
-            </label>
-          </div>
-          <div class="btns">
-            <button class="btn btn-primary" onclick="runPremiere()">自動配置を実行</button>
-            <button class="btn btn-secondary" onclick="regenerateSrt()">字幕だけ再生成</button>
-            <button class="btn btn-secondary" onclick="exportOnly()">書き出しのみ</button>
-          </div>
-        </div>
-      </div>
-      <div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:var(--space-2)">
-          <span class="sec-title" style="margin:0">実行ログ</span>
-          <button class="btn btn-ghost btn-sm" onclick="clrLog('prLogs')">クリア</button>
-        </div>
-        <div class="log" id="prLogs" style="height:460px"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===== Photoshop ページは撤去（サムネ制作フロー1本化）=====
-       文字入れ(PSD合成)は各動画の「画像」タブ → 「サムネを制作」/「文字だけ再合成」、
-       または一括バー「サムネ一括制作」に統合（正規パイプライン psd_composite）。 -->
-
-  <!-- ===== YouTube ===== -->
   <div class="page" id="p-youtube">
     <div class="page-head"><div><div class="section-heading"><span class="product-icon service youtube lg"><img src="https://www.google.com/s2/favicons?sz=64&domain=youtube.com" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'"><span class="icon-fallback">YT</span></span><div class="page-title">YouTube</div></div><div class="fh" style="margin-top:2px">vol単位の公開設定は 制作 → vol詳細 → 公開準備 から。このページは一括・復旧用です</div></div></div>
     <div class="card" style="margin-bottom:var(--space-5)">
@@ -2698,71 +2545,16 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
           <div class="fh">大容量の書き出し動画を外部ストレージに保存する場合。「参照」ボタンで <code>/Volumes</code>（外付けHDD）から選択できます。</div>
         </div>
 
-        <div class="ff"><label class="fl">制作構成</label><select class="fi" id="cfgProductionMode" onchange="syncProductionModeUi()"><option value="standard">従来の制作構成</option><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select><div class="fh">Adobeなしでは、画像エディタで加工し、FFmpegで動画・曲名表示・タイムスタンプを作成します。</div></div>
-        <!-- 書き出しエンジン（per-channel）。ame=Premiere/AME（既定） / ffmpeg=ループ連結方式（静止画チャンネル向け） -->
-        <div class="ff" data-adobe-only>
-          <label class="fl"><span class="product-icon sm adobe-me">Me</span> 書き出しエンジン</label>
-          <select class="fi" id="cfgExportEngine" style="max-width:320px" title="ame=Premiere/AME（既定）。ffmpeg=静止画ベースのチャンネル向けのループ連結方式。Premiere/AME 不要・render_queue を経由せず CPU 並列で書き出します。詳細は SPEC.md の「書き出しエンジン切替」節。">
-            <option value="ame">Premiere / AME（既定）</option>
-            <option value="ffmpeg">ffmpeg（ループ連結方式）</option>
-          </select>
-          <div class="fh" style="margin-top:4px">
-            <strong>ffmpeg</strong> は<strong>静止画ベースのチャンネル向け</strong>。premiere / export 工程を ffmpeg のループ連結方式（<code>app_ffrender.py</code>）に置換し、<strong>Premiere/AME 不要・render_queue の物理シリアル制約なしで CPU 並列</strong>に書き出します（preflight も自動スキップ）。モーションやテロップ編集が必要なチャンネルは <strong>ame</strong>（既定）のままにしてください。詳細は SPEC.md の「書き出しエンジン切替」節を参照。
-          </div>
-        </div>
+        <div class="ff"><label class="fl">制作構成</label><select class="fi" id="cfgProductionMode" onchange="syncProductionModeUi()"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select><div class="fh">Adobeなしでは、画像エディタで加工し、FFmpegで動画・曲名表示・タイムスタンプを作成します。</div></div>
 
-        <!-- 新動画フォルダ作成時のテンプレート（.prproj / .psd）選択 -->
+        <!-- 画像合成の入力設定（チャンネル別） -->
         <div style="margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-default)">
-          <div data-adobe-only>
-          <div class="fl" style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2)">
-            新規動画作成時のテンプレートファイル
-            <button class="btn btn-ghost btn-sm" onclick="loadTemplateOptions()" title="チャンネルフォルダを再スキャン">再読込</button>
-          </div>
-          <div class="fh" style="margin-bottom:var(--space-2)">
-            「+ 新規動画」で動画フォルダを作る時、このテンプレを <code>vol{N}</code> 名でコピーします。<br>
-            候補は <code>{チャンネルフォルダ}/プロジェクト/</code>（または <code>Project/</code>・直下）配下の <code>.prproj</code> / <code>.psd</code> から自動収集されます。
-          </div>
           <div class="fr">
-            <div class="ff">
-              <label class="fl"><span class="product-icon sm adobe-pr">Pr</span> Premiere テンプレ</label>
-              <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center">
-                <select class="fs" id="cfgTemplatePrproj" style="flex:1;min-width:180px"><option value="">— 一覧から選択 —</option></select>
-                <button class="btn btn-secondary btn-sm" onclick="pickTemplateFile('prproj')" title="Finder から .prproj を選択">ファイルから選ぶ</button>
-              </div>
-              <input type="text" class="fi" id="cfgTemplatePrprojCustom" style="margin-top:4px" placeholder="ファイル名 or 絶対パス（任意・直接入力）">
-              <div class="fh" id="cfgTemplatePrprojHint" style="margin-top:4px"></div>
-            </div>
-            <div class="ff">
-              <label class="fl"><span class="product-icon sm adobe-ps">Ps</span> Photoshop テンプレ</label>
-              <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center">
-                <select class="fs" id="cfgTemplatePsd" style="flex:1;min-width:180px"><option value="">— 一覧から選択 —</option></select>
-                <button class="btn btn-secondary btn-sm" onclick="pickTemplateFile('psd')" title="Finder から .psd を選択">ファイルから選ぶ</button>
-              </div>
-              <input type="text" class="fi" id="cfgTemplatePsdCustom" style="margin-top:4px" placeholder="ファイル名 or 絶対パス（任意・直接入力）">
-              <div class="fh" id="cfgTemplatePsdHint" style="margin-top:4px"></div>
-            </div>
-          </div>
-          <div id="cfgTemplateSearchDirs" class="fh" style="margin-top:var(--space-2);font-family:var(--font-mono);font-size:var(--text-2xs);color:var(--text-tertiary)"></div>
-
-          <div class="fh" style="margin:var(--space-3) 0 var(--space-2)">PSD テンプレ内のレイヤー名（このチャンネル用）</div>
-          <div class="fr">
-            <div class="ff">
-              <label class="fl">背景画像 SO レイヤー名</label>
-              <input type="text" class="fi" id="cfgPsdBaseLayer" placeholder="base">
-              <div class="fh">差し替え対象のスマートオブジェクト名。例: WW なら <code>Chicago_Willis</code>、orzz なら <code>base</code>。</div>
-            </div>
-            <div class="ff">
-              <label class="fl">トグル文字レイヤー名</label>
-              <input type="text" class="fi" id="cfgPsdToggleLayer" placeholder="PLAY LIST">
-              <div class="fh">表示版（vol*.jpg）と非表示版（サムネイル.jpg）で 2 枚書き出す対象。例: WW はチャンネル名を使用。</div>
-            </div>
             <div class="ff">
               <label class="fl">差し替え画像の置き場</label>
               <input type="text" class="fi" id="cfgPsdImageSubdir" placeholder="image">
               <div class="fh">動画フォルダ内のサブディレクトリ名。<code>{動画フォルダ}/{ここで指定}/*.png</code> の最初の画像が使われます。</div>
             </div>
-          </div>
-
           </div>
           <!-- 動画の規定尺（チャンネル別） -->
           <div class="ff" style="border-top:1px dashed var(--border-default);padding-top:var(--space-3);margin-top:var(--space-3)">
@@ -2904,7 +2696,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
               <div class="fh" id="newChNamingPreview">既存動画がある場合は <code>1_WW_260327</code> などから自動推定します。</div>
             </div>
             <div class="btns" style="margin:0">
-              <select class="fi" id="newChProductionMode" aria-label="新規チャンネルの制作構成"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option><option value="standard">従来の制作構成</option></select><button class="btn btn-primary" onclick="addChannel()">追加</button>
+              <select class="fi" id="newChProductionMode" aria-label="新規チャンネルの制作構成"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select><button class="btn btn-primary" onclick="addChannel()">追加</button>
             </div>
           </div>
         </details>
@@ -3627,11 +3419,9 @@ function renderRoute(s){
     }else loadVideos();
   }
   if(n==='automation'){loadAutomationConfig();loadAutopilot();}
-  if(n==='export')loadExportTab();
   if(n==='benchmark'&&_uiChannelId!=='all')window.AnalysisJ2?.load?.();
   if(n==='settings'&&_uiChannelId!=='all'){checkSetup();checkCredentials();loadBenchmarkConfig();loadCacheInfo();loadDiscordConfig();checkAppVersion();checkUpdateGuard();groupSettingsCards();refreshQuickSetup();buildCfgToc();setTimeout(checkOnboardingState,150);setTimeout(()=>E2UI?.switchSettingsTab?.(s.settingsTab||'channel',true),0)}
   if(n==='benchmark')setTimeout(checkOnboardingState,150);
-  if(n==='premiere'){loadPrVideoSelect();checkPremiere();startPanelLogPoll();}else{stopPanelLogPoll();}
   if(n==='youtube')loadYoutubeHistory();
   if(n==='ledger'){loadLedger();loadTokenHealth();}
   if(n==='live'){loadLivePage();startLivePoll();}else{stopLivePoll();}
@@ -3983,7 +3773,7 @@ async function addChannel(){
   if(!folder){toast('フォルダを指定してください','w');return}
   if(!name && !url){toast('チャンネル名 or YouTube URL のいずれかを入力','w');return}
   try{
-    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'New Channel',folder,prefix,production_mode:document.getElementById('newChProductionMode')?.value||'standard',youtube_url:url,create_folder:true,open_in_finder:false})});
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'New Channel',folder,prefix,production_mode:document.getElementById('newChProductionMode')?.value||'ffmpeg_only',youtube_url:url,create_folder:true,open_in_finder:false})});
     if(!r.ok){const e=await r.json().catch(()=>({}));toast('追加失敗: '+(e.detail||r.status),'e');return}
     document.getElementById('newChYoutubeUrl').value='';
     document.getElementById('newChName').value='';
@@ -4034,7 +3824,7 @@ async function openChannelOnboardingWizard(){
       <div class="ff"><label class="fl">チャンネル名</label><input type="text" class="fi" id="onboardName" placeholder="例: Night Jazz Room"></div>
       <div class="ff"><label class="fl">動画フォルダ prefix</label><input type="text" class="fi" id="onboardPrefix" placeholder="例: NJ"></div>
     </div>
-    <div class="ff"><label class="fl">制作構成</label><select class="fi" id="onboardProductionMode"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option><option value="standard">従来の制作構成</option></select></div>
+    <div class="ff"><label class="fl">制作構成</label><select class="fi" id="onboardProductionMode"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select></div>
     <div class="ff">
       <label class="fl">チャンネルフォルダ</label>
       <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
@@ -4117,7 +3907,7 @@ async function createChannelFromOnboardingWizard(){
   if(!folder){toast('フォルダを指定してください','w');return}
   if(status)status.textContent='チャンネル作成中...';
   try{
-    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,folder,prefix,production_mode:document.getElementById('onboardProductionMode')?.value||'standard',youtube_url,create_folder:true,open_in_finder:false})});
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,folder,prefix,production_mode:document.getElementById('onboardProductionMode')?.value||'ffmpeg_only',youtube_url,create_folder:true,open_in_finder:false})});
     if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||r.status)}
     const d=await r.json();
     _onboardingWizardChannelId=d.channel?.id||'';
@@ -4293,11 +4083,8 @@ async function editChannelPersona(id){
 let _lastConfig=null;
 function isAdobeFree(){return _lastConfig?.dashboard?.production_mode==='ffmpeg_only'}
 function syncProductionModeUi(){
-  const free=document.getElementById('cfgProductionMode')?.value==='ffmpeg_only';
-  const engine=document.getElementById('cfgExportEngine');
-  if(engine){if(free)engine.value='ffmpeg';engine.disabled=free}
+  const free=true;  // 段階 1a: 制作構成は ffmpeg_only のみ
   document.querySelectorAll('[data-adobe-only]').forEach(el=>el.style.display=free?'none':'');
-  const nav=document.querySelector('.nav-btn[data-p="premiere"]');if(nav)nav.style.display=isAdobeFree()?'none':'';
 }
 
 /* ブランド表記は「Automation Studio」固定（チャンネル別ブランド名は廃止） */
@@ -4309,7 +4096,7 @@ function applyBrand(_dc){
 async function loadConfig(){try{
   const r=await _nativeFetch('/api/config'),d=await r.json(),s=d.suno||{},dc=d.dashboard||{};
   _lastConfig=d;
-  if(document.getElementById("cfgProductionMode"))document.getElementById("cfgProductionMode").value=dc.production_mode||"standard";
+  if(document.getElementById("cfgProductionMode"))document.getElementById("cfgProductionMode").value="ffmpeg_only";
   applyBrand(dc);
   // SUNO 設定（設定タブ）
   const $=id=>document.getElementById(id);
@@ -4335,10 +4122,6 @@ async function loadConfig(){try{
   if($('cfgFolder'))$('cfgFolder').value=dc.channel_folder||'';
   if($('cfgExport'))$('cfgExport').value=dc.export_path||'';
   // 書き出しエンジン（チャンネル別）。未設定/不正値は ame（既定）にフォールバック
-  if($('cfgExportEngine')){
-    const eng=(dc.export_engine||'ame').toString().trim().toLowerCase();
-    $('cfgExportEngine').value=['ame','ffmpeg'].includes(eng)?eng:'ame';
-  }
   syncProductionModeUi();
   if($('cfgApiKey'))$('cfgApiKey').value=s.api_key||'';
   if($('cfgClaudeCli'))$('cfgClaudeCli').value=s.claude_cli||'claude';
@@ -4363,11 +4146,7 @@ async function loadConfig(){try{
   if($('cfgRivals'))$('cfgRivals').value=(dc.rival_channels||[]).join('\n');
   if($('cfgYtApiKey'))$('cfgYtApiKey').value=dc.youtube_api_key||'';
   if($('cfgSheetsApiKey'))$('cfgSheetsApiKey').value=dc.sheets_api_key||'';
-  // テンプレートファイル（チャンネル別保存）
-  loadTemplateOptions(dc.template_prproj||'',dc.template_psd||'').catch(()=>{});
-  // PSD テンプレ内のレイヤー名（チャンネル別）
-  if($('cfgPsdBaseLayer'))$('cfgPsdBaseLayer').value=dc.psd_base_layer||'base';
-  if($('cfgPsdToggleLayer'))$('cfgPsdToggleLayer').value=dc.psd_toggle_layer||'PLAY LIST';
+  // 画像合成の差し替え画像フォルダ（チャンネル別）
   if($('cfgPsdImageSubdir'))$('cfgPsdImageSubdir').value=dc.psd_image_subdir||'image';
   // Premiere 自動配置の規定尺（秒・チャンネル別）。未設定/0 以下なら空欄（フォールバック 10800）
   if($('cfgDefaultDurationSec')){
@@ -4509,7 +4288,7 @@ async function applyAppUpdate(){
     const r=await fetch('/api/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
     const d=await r.json();
     if(!r.ok||!d.ok){throw new Error(d.detail||d.message||'更新に失敗しました')}
-    if(result)result.innerHTML=`${esc(d.message||'更新しました')}<br><strong>bash Python/start.sh で再起動してください。</strong>`;
+    if(result)result.innerHTML=`${esc(d.message||'更新しました')}<br><strong>bash Python/start.sh --replace で再起動してください。</strong>`;
   }catch(e){
     if(result)result.textContent='更新失敗: '+(e.message||e);
   }
@@ -4653,8 +4432,7 @@ async function _autoSaveSettingsNow(){
       channel_name:$('cfgName')?.value||'',
       channel_folder:$('cfgFolder')?.value||'',
       export_path:$('cfgExport')?.value||'',
-      production_mode:$('cfgProductionMode')?.value||'standard',
-      export_engine:$('cfgExportEngine')?.value||'ame',
+      production_mode:$('cfgProductionMode')?.value||'ffmpeg_only',
       persona,
       rival_channels:rivals,
       spreadsheet_channel_detail_url:($('cfgSheetDetail')?.value||'').trim(),
@@ -4722,7 +4500,7 @@ function wireSettingsAutoSave(){
   const ids=[
     'cfgPersona','cfgRivals',
     'cfgFilePrefix',
-    'cfgName','cfgFolder','cfgExport','cfgExportEngine',
+    'cfgName','cfgFolder','cfgExport',
     'cfgSheetDetail','cfgSheetGrowth',
     'cfgYtApiKey','cfgSheetsApiKey',
     'cfgReferenceImage',
@@ -4819,13 +4597,6 @@ async function saveSettings(){
       return;
     }
   }
-  // テンプレート選択値（select 優先、なければ手入力フィールド）
-  const tplPrproj=(document.getElementById('cfgTemplatePrproj')?.value
-    || document.getElementById('cfgTemplatePrprojCustom')?.value || '').trim();
-  const tplPsd=(document.getElementById('cfgTemplatePsd')?.value
-    || document.getElementById('cfgTemplatePsdCustom')?.value || '').trim();
-  const psdBaseLayer=(document.getElementById('cfgPsdBaseLayer')?.value || '').trim();
-  const psdToggleLayer=(document.getElementById('cfgPsdToggleLayer')?.value || '').trim();
   const psdImageSubdir=(document.getElementById('cfgPsdImageSubdir')?.value || '').trim();
   // step_bgimage: 参照画像フォルダ（空文字でフォールバックに戻す）
   const referenceImage=(document.getElementById('cfgReferenceImage')?.value || '').trim();
@@ -4834,18 +4605,13 @@ async function saveSettings(){
     channel_name:document.getElementById('cfgName').value,
     channel_folder:document.getElementById('cfgFolder').value,
     export_path:document.getElementById('cfgExport').value,
-    production_mode:document.getElementById('cfgProductionMode')?.value||'standard',
-    export_engine:document.getElementById('cfgExportEngine')?.value||'ame',
+    production_mode:document.getElementById('cfgProductionMode')?.value||'ffmpeg_only',
     persona:persona,
     rival_channels:rivals,
     spreadsheet_channel_detail_url:document.getElementById('cfgSheetDetail').value.trim(),
     spreadsheet_growth_tracking_url:document.getElementById('cfgSheetGrowth').value.trim(),
     youtube_api_key:document.getElementById('cfgYtApiKey').value.trim(),
     sheets_api_key:document.getElementById('cfgSheetsApiKey').value.trim(),
-    template_prproj:tplPrproj,
-    template_psd:tplPsd,
-    psd_base_layer:psdBaseLayer,
-    psd_toggle_layer:psdToggleLayer,
     psd_image_subdir:psdImageSubdir,
     reference_image:referenceImage,
     reference_image_dir:referenceImageDir,
@@ -4889,7 +4655,7 @@ async function saveSettings(){
         modal(`<div class="mo-title">アプリID を「${esc(appId)}」に変更しました</div>
           <div style="font-size:var(--text-sm);color:var(--text-secondary);line-height:1.8;margin-bottom:var(--space-3)">
             変更を有効にするには<strong style="color:var(--accent-warning)">サーバー再起動が必要</strong>です。ターミナルで:
-            <pre style="margin-top:var(--space-2);padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">lsof -ti:8888 | xargs kill -9 && bash Python/start.sh</pre>
+            <pre style="margin-top:var(--space-2);padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">bash Python/start.sh --replace</pre>
             再起動後、<code>~/.config/${esc(prevAppId)}/</code> → <code>~/.config/${esc(appId)}/</code> への自動コピーが走り、バナー通知が出ます。
           </div>
           <div class="btns" style="justify-content:flex-end;margin:0"><button class="btn btn-primary btn-sm" onclick="closeModal()">了解</button></div>`);
@@ -4978,79 +4744,12 @@ async function testReferenceImageDirDryRun(){
 
 /* ==== Dashboard ==== */
 /* ==== Render Queue（P2-1） ==== */
-async function loadRenderQueue(){
-  const body=document.getElementById('rqBody');
-  const sum=document.getElementById('rqSummary');
-  if(!body) return;
-  body.innerHTML='<div class="fh">読み込み中...</div>';
-  try{
-    const [r1, r2]=await Promise.all([
-      fetch('/api/render-queue?limit=20'),
-      fetch('/api/render-queue/throughput?days=7'),
-    ]);
-    if(!r1.ok || !r2.ok){body.innerHTML='<div class="fh">取得失敗</div>';return}
-    const list=await r1.json();
-    const stat=await r2.json();
-    const counts=list.counts||{};
-    if(sum) sum.textContent=`待機 ${counts.pending||0} / 実行中 ${counts.running||0} / 直近 7日の完了 ${stat.queue_throughput_per_day||0} vol/日`;
-    let h=`<div class="rq-stats">
-      <div class="rq-stat"><div class="rq-stat-label">待機</div><div class="rq-stat-value">${counts.pending||0}</div><div class="rq-stat-sub">並んでいる</div></div>
-      <div class="rq-stat"><div class="rq-stat-label">実行中</div><div class="rq-stat-value">${counts.running||0}</div><div class="rq-stat-sub">処理中（必ず ≤ 1）</div></div>
-      <div class="rq-stat"><div class="rq-stat-label">Throughput</div><div class="rq-stat-value">${stat.queue_throughput_per_day||0}</div><div class="rq-stat-sub">vol/day（直近 ${stat.window_days||7}d 平均）</div></div>
-      <div class="rq-stat"><div class="rq-stat-label">理論 Capacity</div><div class="rq-stat-value">${stat.estimated_daily_capacity||'-'}</div><div class="rq-stat-sub">vol/day（avg duration から逆算）</div></div>
-      <div class="rq-stat"><div class="rq-stat-label">Premiere avg</div><div class="rq-stat-value">${_fmtSec(stat.by_stage_avg_sec?.premiere)}</div><div class="rq-stat-sub">1 vol あたり</div></div>
-      <div class="rq-stat"><div class="rq-stat-label">Export avg</div><div class="rq-stat-value">${_fmtSec(stat.by_stage_avg_sec?.export)}</div><div class="rq-stat-sub">1 vol あたり</div></div>
-    </div>`;
-    const jobs=list.jobs||[];
-    if(jobs.length===0){
-      h+='<div class="fh">ジョブ履歴はまだありません。Premiere 配置や書き出しが実行されるとここに並びます（パイプラインを <code>APP_USE_RENDER_QUEUE=1</code> で起動した場合）。</div>';
-    }else{
-      h+='<div class="rq-jobs">';
-      jobs.forEach(j=>{
-        const meta=`${esc(j.channel_name||'?')} • ${esc(j.video_name||'')}`;
-        const dur=j.duration_sec!=null?` • ${_fmtSec(j.duration_sec)}`:'';
-        const cancel = j.status==='pending'
-          ? `<button class="btn btn-ghost btn-sm" style="font-size:var(--text-2xs);padding:2px 8px" onclick="rqCancel(${j.id})">取消</button>`
-          : '';
-        h+=`<div class="rq-job-row" title="${esc(j.error_message||'')}">
-          <div class="rq-id">#${j.id}</div>
-          <div class="rq-stage">${esc(j.stage)}</div>
-          <div class="rq-status ${esc(j.status)}">${esc(j.status)}</div>
-          <div class="rq-vol">vol.${j.vol}</div>
-          <div class="rq-meta">${meta}${dur}</div>
-          <div>${cancel}</div>
-        </div>`;
-      });
-      h+='</div>';
-    }
-    body.innerHTML=h;
-  }catch(e){body.innerHTML='<div class="fh">エラー: '+esc(e.message||e)+'</div>'}
-}
-
 function _fmtSec(sec){
   if(!sec || sec<=0) return '-';
   const m=Math.floor(sec/60), s=sec%60;
   return m>0?`${m}m${String(s).padStart(2,'0')}s`:`${s}s`;
 }
 
-async function rqCancel(id){
-  if(!confirm(`render queue ジョブ #${id} を取消しますか？`)) return;
-  try{
-    const r=await fetch(`/api/render-queue/${id}/cancel`,{method:'POST'});
-    if(!r.ok){const e=await r.json().catch(()=>({}));toast('取消失敗: '+(e.detail||r.statusText),'e');return}
-    loadRenderQueue();
-  }catch(e){toast('取消失敗: '+e.message,'e')}
-}
-
-// パネル開閉時にロード（初期は閉じてるので軽量）
-document.addEventListener('DOMContentLoaded', ()=>{
-  const card=document.getElementById('renderQueueCard');
-  if(card){
-    card.addEventListener('toggle', ()=>{
-      if(card.open) loadRenderQueue();
-    });
-  }
-});
 
 /* P0-A: サムネ一括生成UI（右パネル+7段ステッパー+詳細ワークフロー）の表示トグル。
    既定は非表示（動画一覧を主役に）。状態は localStorage に保持。 */
@@ -5823,10 +5522,7 @@ async function handleVideoNextAction(name,kind,stage,videoId){
   if(kind==='youtube'&&videoId){window.open(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,'_blank','noopener');return}
   if(kind==='schedule'){showVideoDetail(name);setTimeout(()=>setTab('meta'),100);return}
   if(kind==='error'){showVideoDetail(name);toast('詳細画面でエラー内容と実行履歴を確認してください','w');return}
-  if(kind==='premiere'){
-    modal({title:'Premiereで配置',body:'Premiere Proを起動し、動画詳細の「編集」タブ最下部にある「Premiere 連携（自動配置）」から実行してください。'});return
-  }
-  if(kind==='run'&&stage){
+  if((kind==='run'||kind==='premiere')&&stage){  // premiere は段階 1a で ffmpeg 書き出しへ引き継ぐ工程（続きを実行と同じ）
     try{
       const r=await fetch(`/api/videos/${encodeURIComponent(name)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:[stage]})});
       const d=await r.json();
@@ -6095,9 +5791,9 @@ async function showVideoDetail(name, fromRouter=false){
           </span>
           <span class="aeb-group" title="制作・編集工程">
             <span class="aeb-group-title">編集</span>
-            <label title="Photoshop テンプレで vol{N}.jpg + サムネイル.jpg を 2 枚出し（1920×1080）"><input type="checkbox" data-step="psd_composite" checked> PSD合成</label>
-            <label title="Premiere に音源・画像を自動配置します"><input type="checkbox" data-step="premiere" checked> 配置</label>
-            <label title="Adobe Media Encoder で MP4 を書き出します"><input type="checkbox" data-step="export" checked> 書き出し</label>
+            <label title="画像エディタ（Pillow）で vol{N}.jpg + サムネイル.jpg を 2 枚出し（1920×1080）"><input type="checkbox" data-step="psd_composite" checked> 画像合成</label>
+            <label title="配置は FFmpeg 書き出しに統合されています（この工程は自動で通過）"><input type="checkbox" data-step="premiere" checked> 配置</label>
+            <label title="FFmpeg で MP4 を書き出します（音声・映像・字幕・タイムコード）"><input type="checkbox" data-step="export" checked> 書き出し</label>
             <label title="AI でタイトル候補・説明文・タグを生成します"><input type="checkbox" data-step="meta" checked> メタ</label>
           </span>
           <span class="aeb-group" title="公開工程">
@@ -6117,59 +5813,6 @@ async function showVideoDetail(name, fromRouter=false){
 
           <div class="tab-panel on" data-t="edit">
             <div id="assemblyTimeline" class="atl" role="region" aria-label="編集タイムライン"><div class="empty">タイムラインを読み込み中...</div></div>
-            <!-- Premiere 連携は互換機能として編集画面の末尾へ統合。既定は閉じた状態。 -->
-            <details class="card" id="premiereIntegration" style="margin-top:var(--space-3);${isAdobeFree()?'display:none;':''}">
-              <summary style="cursor:pointer;user-select:none;font-weight:var(--font-semibold);color:var(--text-primary);display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
-                <span class="product-icon adobe-pr sm">Pr</span>
-                Premiere 連携（自動配置）
-                ${d.export_engine==='ffmpeg'?'<span style="font-size:var(--text-xs);font-weight:var(--font-normal);color:var(--text-tertiary)">（このチャンネルは ffmpeg 書き出しのため通常不要）</span>':''}
-              </summary>
-              <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--border-default)">
-                <section>
-                  <div class="sec-title">自動配置</div>
-                  <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3)">
-                    ${d.readiness.premiere?'✓ .prproj あり':'○ .prproj 未作成'}<br>
-                    ${d.readiness.mp4?`✓ MP4書き出し済 (${d.mp4_size_mb}MB)`:'○ MP4未書き出し'}
-                  </div>
-
-                  <div class="fr" style="margin-bottom:10px">
-                    <div class="ff"><label class="fl" for="dvPrH">目標動画尺（時）</label><input type="number" class="fi" id="dvPrH" value="3" min="0" max="12" style="text-align:center"></div>
-                    <div class="ff"><label class="fl" for="dvPrM">目標動画尺（分）</label><input type="number" class="fi" id="dvPrM" value="0" min="0" max="59" style="text-align:center"></div>
-                    <div class="ff"><label class="fl" for="dvPrS">目標動画尺（秒）</label><input type="number" class="fi" id="dvPrS" value="0" min="0" max="59" style="text-align:center"></div>
-                  </div>
-                  <div class="ff">
-                    <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer">
-                      <input type="checkbox" id="dvPrExport" style="width:16px;height:16px;accent-color:var(--accent-primary)"> 完了後に書き出し（YouTube 1080p）
-                    </label>
-                  </div>
-
-                  <div class="btns">
-                    <button class="btn btn-primary btn-sm" onclick="runPremiereForVideo('${esc(name)}')">▶ 自動配置を実行</button>
-                    ${d.mp4_file?`<button class="btn btn-secondary btn-sm" onclick="openF('${esc(d.mp4_file)}')">MP4を開く</button>`:''}
-                    <button class="btn btn-ghost btn-sm" onclick="go('premiere')" title="共通ログや過去履歴を見る">詳細ログを Premiere ページで開く</button>
-                  </div>
-                  <div class="fh" style="margin-top:10px">
-                    実行時に <code>mych_vol${d.num}.prproj</code> を自動オープンしてから JSX を送信します。Premiere Pro が起動していない場合は先に起動してください。<br>
-                    <strong>ログはこのページ上部の「実行中ログ」セクション</strong>に表示されます（折りたたみ可）。
-                  </div>
-                </section>
-
-                <!-- 画像差し替え（配置済みタイムラインに対して後から実行） -->
-                <section style="margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border-default)">
-                  <div class="sec-title">画像だけ差し替え</div>
-                  <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:14px;line-height:1.7">
-                    既存の <code>.prproj</code> タイムラインに対して、画像だけを後から差し替えます。<br>
-                    音声・字幕・タイムコードは変更されません。V1 の既存画像は置き換わります。
-                  </div>
-                  <div style="font-size:12px;color:var(--text-tertiary);margin-bottom:14px;padding:10px 12px;background:var(--bg-elevated);border-radius:var(--radius-md);border-left:3px solid var(--accent-primary)">
-                    前提: <strong>上記の自動配置が一度完了済み</strong>であること（タイムラインが存在する）。
-                  </div>
-                  <div class="btns">
-                    <button class="btn btn-secondary btn-sm" onclick="placeImagesOnly('${esc(name)}')">画像のみ差し替えを実行</button>
-                  </div>
-                </section>
-              </div>
-            </details>
           </div>
 
           <div class="tab-panel" data-t="meta">
@@ -6493,7 +6136,7 @@ async function showVideoDetail(name, fromRouter=false){
                   <div class="image2-studio-sub">背景生成、文字入れ、画像重ね、レイヤー編集をひとつの制作画面にまとめています。</div>
                 </div>
                 <div class="btns" style="margin:0">
-                  <button class="btn btn-ghost btn-sm" onclick="copySceneTextToCompositor('${esc(name)}')">PSD欄からコピー</button>
+                  <button class="btn btn-ghost btn-sm" id="ciSceneGenBtn_${esc(name)}" onclick="generateSceneTextFor('${esc(name)}')">シーンテキスト自動生成</button>
                   <button class="btn btn-ghost btn-sm" onclick="initLayerEditor('${esc(name)}',true)">再読み込み</button>
                   <button class="btn btn-secondary btn-sm" onclick="loadLayerTemplate('${esc(name)}',true)">テンプレ読込</button>
                   <button class="btn btn-secondary btn-sm" onclick="saveLayerTemplate('${esc(name)}')">テンプレ保存</button>
@@ -6638,68 +6281,6 @@ async function showVideoDetail(name, fromRouter=false){
               </div>
             </div>
 
-            <!-- Photoshop でサムネ生成（生成 → サムネ の 2 ステップ目） -->
-            <div class="card" id="psThumbCard_${esc(name)}" style="margin-top:var(--space-3)">
-              <div class="card-header">
-                <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
-                  <span class="product-icon adobe-ps sm">Ps</span>
-                  ④ Photoshop で文字入れ（個別実行）
-                  <span id="psThumbStatus_${esc(name)}" class="badge badge-neutral" style="font-size:var(--text-2xs)">確認中…</span>
-                </div>
-                <div class="btns" style="margin:0">
-                  <button class="btn btn-ghost btn-sm" onclick="checkPhotoshopFor('${esc(name)}')">接続確認</button>
-                  <button class="btn btn-ghost btn-sm" onclick="psListLayersFor('${esc(name)}')" title="アクティブな PSD のレイヤー名を一覧">レイヤー確認</button>
-                </div>
-              </div>
-
-              <div class="fh" style="margin-bottom:var(--space-2);line-height:1.7">
-                上で生成した画像（<code>{動画フォルダ}/{画像置き場}/</code> の最初の 1 枚）を PSD テンプレの <strong>背景 SO</strong> に差し替え、<br>
-                <strong>トグル文字レイヤー</strong> を表示版（<code>vol{N}.jpg</code>）と非表示版（<code>サムネイル.jpg</code>）の 2 枚を動画フォルダ直下に書き出します。
-              </div>
-
-              <div class="fr">
-                <div class="ff">
-                  <label class="fl">背景 SO レイヤー名</label>
-                  <input type="text" class="fi" id="psBaseLayer_${esc(name)}" placeholder="(設定値を使用)">
-                  <div class="fh">空欄なら基本設定の値を使用</div>
-                </div>
-                <div class="ff">
-                  <label class="fl">トグル文字レイヤー</label>
-                  <input type="text" class="fi" id="psToggleLayer_${esc(name)}" placeholder="(設定値を使用)">
-                </div>
-                <div class="ff">
-                  <label class="fl">画像置き場</label>
-                  <input type="text" class="fi" id="psImageSubdir_${esc(name)}" placeholder="(設定値を使用)">
-                </div>
-              </div>
-
-              <div class="ff" style="margin-top:var(--space-2)">
-                <label class="fl">シーンテキスト（Harbor Notes 2層対立式モード）</label>
-                <div style="display:flex;gap:var(--space-2);align-items:stretch">
-                  <input type="text" class="fi" id="psSceneText_${esc(name)}" placeholder="例: BLUE HORIZON / 午後の余韻" style="flex:1">
-                  <button class="btn btn-ghost btn-sm" id="psSceneGenBtn_${esc(name)}" onclick="generateSceneTextFor('${esc(name)}')" title="AI画像をClaude vision で分析し、ベンチマーク文字規則に従って英大文字2-3語を自動生成">自動生成</button>
-                </div>
-                <div class="fh">入力時は <strong>render_dual_thumbnail</strong> 経路で実行：<br>
-                  ・<code>都市名_テキスト</code> 層にこのテキストを中央配置<br>
-                  ・<code>vol{N}.jpg</code> = 都市名OFF / PLAY LIST ON（Premiere背景画像用）<br>
-                  ・<code>サムネイル.jpg</code> = 都市名ON / PLAY LIST OFF（YouTubeサムネ用）<br>
-                  空欄なら従来の単一トグル方式で実行（後方互換）。<br>
-                  自動生成：ベンチマーク規則（英大文字2-3語、静寂&海&内省トーン、既存ワード回避）で生成</div>
-              </div>
-
-              <div class="ff" style="margin-top:var(--space-2)">
-                <label class="fl">テキスト差し替え（任意・複数行・従来モード用）</label>
-                <textarea class="ft" id="psTextReplacements_${esc(name)}" rows="2" placeholder="LAYER名=置換テキスト&#10;例: TITLE=Golden Hour Reverie"></textarea>
-                <div class="fh">1 行 1 件、<code>レイヤー名=新しいテキスト</code> 形式（任意）。シーンテキスト空欄時のみ使用</div>
-              </div>
-
-              <div class="btns" style="margin-top:var(--space-2)">
-                <button class="btn btn-primary" id="psThumbBtn_${esc(name)}" onclick="runPhotoshopThumbsFor('${esc(name)}')">▶ サムネ生成（vol*.jpg + サムネイル.jpg）</button>
-              </div>
-
-              <div id="psThumbResult_${esc(name)}" style="margin-top:var(--space-3);display:none"></div>
-              <div id="psThumbLog_${esc(name)}" style="margin-top:var(--space-2);padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);max-height:140px;overflow-y:auto;display:none"></div>
-            </div>
           </div>
 
           <div class="tab-panel" data-t="suno">
@@ -6877,7 +6458,6 @@ async function showVideoDetail(name, fromRouter=false){
                 <div class="fh">書き出し済みなのに未認識のときは、MP4 を選んで読み込むと公開設定とアップロードで使えるようになります。</div>
                 <div id="mp4CandidateList" style="margin-top:var(--space-2)"></div>
               </div>
-              ${d.export_engine!=='ffmpeg'&&!d.readiness.premiere?'<div class="fh" style="color:var(--accent-warning);margin-top:var(--space-2)">Premiere プロジェクトが未作成です。「編集」タブ最下部の「Premiere 連携（自動配置）」を実行してください。</div>':''}
             </div>
             <div class="tab-next">
               <button class="btn btn-ghost btn-sm" onclick="setTab('images')">← 画像に戻る</button>
@@ -7119,18 +6699,6 @@ async function clearSelectedImages(name){
 }
 
 /* 既存タイムラインに画像のみ後から配置 */
-async function placeImagesOnly(name){
-  if(!confirm(`Premiere の既存プロジェクトに画像だけ配置しますか？\n音声/字幕は触りません。既存の V1 画像は置き換わります。`))return;
-  try{
-    const r=await fetch('/api/premiere/place-images',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name})});
-    if(r.ok){
-      toast('画像配置を開始（ログはこのページに表示）','s');
-      _streamPremiereToDetailLog(`▶ 画像のみ差し替え: ${name}`);
-    }
-    else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
-  }catch(e){toast('接続エラー','e')}
-}
-
 // ─── 画像生成 共通ログ表示 ───
 function _flowLogEl(name){return document.getElementById('imgGenLog_'+name)}
 function _flowAppend(name,line,cls){
@@ -7545,9 +7113,8 @@ function setTab(t){
   _curTab=t;
   document.querySelectorAll('#p-videos .tab').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
   document.querySelectorAll('#p-videos .tab-panel').forEach(p=>p.classList.toggle('on',p.dataset.t===t));
-  // images タブを開いたら Photoshop 接続を自動チェック
+  // images タブを開いたら背景プレビューと画像エディタを初期化
   if(t==='images' && _curVideo){
-    setTimeout(()=>checkPhotoshopFor(_curVideo),200);
     setTimeout(()=>loadBgImagePreview(_curVideo),250);
     setTimeout(()=>initLayerEditor(_curVideo,false),350);
   }
@@ -7621,7 +7188,7 @@ async function loadVideoEditCandidates(name){
 async function pollVideoEdit(id,op){
   try{const d=await (await fetch(`/api/video-edit/status?job_id=${encodeURIComponent(id)}`)).json(),pct=Number(d.progress||0);document.getElementById('veProgressBar').style.width=pct+'%';document.getElementById('veProgressText').textContent=d.status==='queued'?`待機中（${d.queue_position||1}番目）`:`${d.status} ${pct.toFixed(1)}%`;
     if(d.status==='completed'){
-      const out=d.output_path,isImg=op==='extract_frame',result=document.getElementById('veResult');result.style.display='block';result.innerHTML=`<div class="fh">出力: <code>${esc(out)}</code></div>${isImg?`<img src="/api/video-edit/preview?path=${encodeURIComponent(out)}" style="max-width:100%;max-height:360px;margin-top:10px">`:`<video controls src="/api/video-edit/preview?path=${encodeURIComponent(out)}" style="width:100%;max-height:420px;margin-top:10px"></video>`}<div class="btns">${isImg?`<button class="btn btn-primary btn-sm" onclick="setTab('images')">サムネに使う →</button>`:`<button class="btn btn-primary btn-sm" onclick="document.getElementById('veInput').value='${esc(out)}'">この動画を続けて編集</button>`}<button class="btn btn-secondary btn-sm" onclick="openF('${esc(out)}')">Finderで表示</button></div>`;document.getElementById('veRunBtn').disabled=false;toast('編集が完了しました','s');return}
+      const out=d.output_path,isImg=op==='extract_frame',result=document.getElementById('veResult');result.style.display='block';result.innerHTML=`<div class="fh">出力: <code>${esc(out)}</code></div>${isImg?`<img src="/api/video-edit/preview?video_name=${encodeURIComponent(_curVideo||'')}&path=${encodeURIComponent(out)}" style="max-width:100%;max-height:360px;margin-top:10px">`:`<video controls src="/api/video-edit/preview?video_name=${encodeURIComponent(_curVideo||'')}&path=${encodeURIComponent(out)}" style="width:100%;max-height:420px;margin-top:10px"></video>`}<div class="btns">${isImg?`<button class="btn btn-primary btn-sm" onclick="setTab('images')">サムネに使う →</button>`:`<button class="btn btn-primary btn-sm" onclick="document.getElementById('veInput').value='${esc(out)}'">この動画を続けて編集</button>`}<button class="btn btn-secondary btn-sm" onclick="openF('${esc(out)}')">Finderで表示</button></div>`;document.getElementById('veRunBtn').disabled=false;toast('編集が完了しました','s');return}
     if(d.status==='failed'){throw Error(d.error||'編集失敗')}setTimeout(()=>pollVideoEdit(id,op),1000);
   }catch(e){toast(e.message,'e');document.getElementById('veRunBtn').disabled=false}
 }
@@ -11823,10 +11390,9 @@ function downloadAllLogs(){
 }
 async function pollStatus(){
   try{
-    const [sR,pR,aR,yR]=await Promise.all([
+    const [sR,pR,yR]=await Promise.all([
       fetch('/api/suno/status'),
       fetch('/api/pipeline/status').catch(()=>null),
-      fetch('/api/ame/queue').catch(()=>null),
       fetch('/api/youtube/status').catch(()=>null),
     ]);
     const d=await sR.json();
@@ -11867,29 +11433,6 @@ async function pollStatus(){
           }else{
             chip.style.display='none';
           }
-        }
-      }
-    }catch(_){}
-    // AME チップ更新
-    try{
-      const ame=aR?await aR.json():null;
-      const chip=document.getElementById('ameStatusChip');
-      if(chip && ame){
-        const running=ame.running_count||0;
-        const pending=ame.pending_count||0;
-        const total=running+pending;
-        if(total>0){
-          // 進行中ジョブの進捗
-          const cur=ame.current_index!=null?ame.queue[ame.current_index]:null;
-          const prog=cur?.progress||{};
-          const sizeMB=prog.size_bytes?(prog.size_bytes/1024/1024).toFixed(0)+'MB':'';
-          const rateKB=prog.rate_bytes_per_sec?Math.round(prog.rate_bytes_per_sec/1024)+'KB/s':'';
-          const phaseLabel={writing:'書込中',stabilizing:'仕上げ中',waiting:'待機中',done:'完了',timeout:'タイムアウト'}[prog.phase]||prog.phase||'';
-          chip.style.display='inline-flex';
-          chip.innerHTML=`<span style="font-size:13px"></span><span class="status-text">${running?'書出':'待機'} ${ame.queue.length-pending}/${ame.queue.length}${sizeMB?' ・'+esc(sizeMB):''}${rateKB?' ・'+esc(rateKB):''}</span>`;
-          chip.title=`AME キュー: 実行中 ${running} / 待機 ${pending} / 完了 ${ame.done_count||0} / エラー ${ame.error_count||0}\n${phaseLabel?'状態: '+phaseLabel:''}\nクリックで自動化タブを開く`;
-        }else{
-          chip.style.display='none';
         }
       }
     }catch(_){}
@@ -12068,230 +11611,7 @@ async function saveNewPrompt(){
   closeModal();loadPrompts();toast('保存しました','s');
 }
 
-/* ==== 自動書き出しキュー（Sprint 4-E） ==== */
-let _exportPollTimer=null;
-async function loadExportRules(){
-  try{
-    const r=await fetch('/api/export/rules');
-    if(!r.ok)return;
-    const d=await r.json();
-    const t=document.getElementById('exportWatcherToggle');
-    if(t)t.checked=!!d.watcher_enabled;
-    // 書き出し先プレビュー
-    const cfgR=await fetch('/api/config');const cfg=await cfgR.json();
-    const ep=cfg.dashboard?.export_path||'';
-    const prev=document.getElementById('exportPathPreview');
-    if(prev)prev.textContent=ep||'（チャンネルフォルダ内）';
-  }catch(e){}
-}
-async function toggleExportWatcher(){
-  const enabled=document.getElementById('exportWatcherToggle')?.checked||false;
-  try{
-    await fetch('/api/export/rules',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({watcher_enabled:enabled})});
-    toast(enabled?'ウォッチャー ON（30秒毎にスキャン）':'ウォッチャー OFF','s');
-    if(enabled){loadExportQueue();_scheduleExportPoll(3000)}
-    else{if(_exportPollTimer){clearTimeout(_exportPollTimer);_exportPollTimer=null}}
-  }catch(e){toast('設定変更失敗','e')}
-}
-function _scheduleExportPoll(ms){
-  if(_exportPollTimer)clearTimeout(_exportPollTimer);
-  _exportPollTimer=setTimeout(()=>{loadExportQueue();_scheduleExportPoll(5000)},ms);
-}
-/* AME 詳細キューカード（自動化タブ上部 / 実行中のみ表示） */
-function renderAmeQueueCard(ame){
-  const card=document.getElementById('ameQueueCard');
-  if(!card)return;
-  if(!ame || ((ame.running_count||0)+(ame.pending_count||0))===0){
-    card.style.display='none';
-    return;
-  }
-  card.style.display='block';
-  const phaseLabel={writing:'書込中',stabilizing:'仕上げ中',waiting:'待機中',done:'完了',timeout:'タイムアウト'};
-  const items=(ame.queue||[]).filter(it=>it.status==='running'||it.status==='pending');
-  const rows=items.map((it,i)=>{
-    const prog=it.progress||{};
-    const sizeMB=prog.size_bytes?(prog.size_bytes/1024/1024).toFixed(1):'';
-    const rateKB=prog.rate_bytes_per_sec?Math.round(prog.rate_bytes_per_sec/1024):0;
-    const elapsed=prog.elapsed_sec||0;
-    const mm=String(Math.floor(elapsed/60)).padStart(2,'0');
-    const ss=String(elapsed%60).padStart(2,'0');
-    const isRunning=it.status==='running';
-    const phaseTxt=phaseLabel[prog.phase]||prog.phase||'';
-    const stableSec=prog.stable_for_sec||0;
-    const ariaPct=isRunning?Math.min(95,Math.floor(stableSec*5)):0; // 安定検知でなんとなく増える疑似%
-    return `<div style="padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-md);margin-bottom:var(--space-2);border-left:3px solid ${isRunning?'var(--accent-primary)':'var(--border-default)'}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2);flex-wrap:wrap;gap:var(--space-2)">
-        <div style="font-weight:var(--font-semibold);color:var(--text-primary)">
-          ${esc(it.video_name||'(unknown)')}
-          <span class="badge ${isRunning?'badge-info':'badge-neutral'}" style="margin-left:var(--space-2)">${isRunning?'書出中':'待機'}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:var(--space-2)">
-          <span style="font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-tertiary)">${mm}:${ss}</span>
-          ${!isRunning && it.fingerprint?`<button class="btn btn-ghost btn-xs" title="このアイテムをキューから削除し、無視リストへ追加（再検知されません）" onclick="dequeueAndIgnore('${esc(it.fingerprint)}','${esc(it.video_name||'')}')" style="padding:2px 8px">非表示</button>`:''}
-        </div>
-      </div>
-      ${isRunning?`<div role="progressbar" aria-valuenow="${ariaPct}" aria-valuemin="0" aria-valuemax="100" style="height:6px;background:var(--bg-overlay);border-radius:var(--radius-xs);overflow:hidden;margin-bottom:var(--space-2)">
-        <div style="width:${ariaPct}%;height:100%;background:linear-gradient(90deg,var(--accent-primary),var(--brand-accent));transition:width .6s ease"></div>
-      </div>`:''}
-      <div style="display:flex;gap:var(--space-3);font-size:var(--text-xs);color:var(--text-secondary);flex-wrap:wrap">
-        ${sizeMB?`<span>サイズ ${esc(sizeMB)} MB</span>`:''}
-        ${rateKB?`<span>速度 ${esc(String(rateKB))} KB/s</span>`:''}
-        ${phaseTxt?`<span>状態: ${esc(phaseTxt)}</span>`:''}
-        ${stableSec?`<span>安定 ${esc(String(stableSec))}s</span>`:''}
-      </div>
-    </div>`;
-  }).join('');
-  card.innerHTML=`<div class="card" style="padding:var(--space-4)">
-    <div class="card-header" style="margin-bottom:var(--space-3)">
-      <div class="sec-title" style="margin:0">Adobe Media Encoder キュー</div>
-      <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
-        <span class="badge badge-info">実行 ${ame.running_count||0}</span>
-        <span class="badge badge-neutral">待機 ${ame.pending_count||0}</span>
-        <span class="badge badge-success">完了 ${ame.done_count||0}</span>
-        ${ame.error_count?`<span class="badge badge-danger">エラー ${ame.error_count}</span>`:''}
-      </div>
-    </div>
-    <div class="fh" style="margin-bottom:var(--space-2)">AME での書き出し進捗。サイズが安定すると完了判定。</div>
-    ${rows||'<div class="fh">アクティブなジョブはありません。</div>'}
-  </div>`;
-}
-
-/* ==== 書き出しタブ：候補リスト・非表示・完了制御 ====
-   無視リストはバックエンド（チャンネル別、Google Drive 同期）に保持。
-   旧 localStorage キーが残っていれば初回ロード時にバックエンドへ移行する。 */
-const _EXPORT_HIDDEN_KEY='export_hidden_v1';
-const _EXPORT_DONE_KEY='export_done_v1';
-const _AUTO_UPLOAD_KEY='auto_upload_after_export_v1';
-let _ignoreSet=new Set();   // バックエンドの無視リストキャッシュ
-
-async function _migrateLegacyHidden(){
-  try{
-    const old=[...new Set([
-      ...(JSON.parse(localStorage.getItem(_EXPORT_HIDDEN_KEY)||'[]')||[]),
-      ...(JSON.parse(localStorage.getItem(_EXPORT_DONE_KEY)||'[]')||[]),
-    ])].filter(Boolean);
-    if(!old.length)return;
-    for(const name of old){
-      try{await fetch('/api/export/ignore-list',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name})})}catch{}
-    }
-    localStorage.removeItem(_EXPORT_HIDDEN_KEY);
-    localStorage.removeItem(_EXPORT_DONE_KEY);
-    console.log(`[ignore-list] 旧 localStorage の ${old.length} 件をバックエンドへ移行`);
-  }catch(e){console.warn('migrate hidden failed:',e)}
-}
-
-async function _refreshIgnoreSet(){
-  try{
-    const r=await fetch('/api/export/ignore-list');
-    if(r.ok){const d=await r.json();_ignoreSet=new Set(d.items||[])}
-  }catch{}
-}
-
-async function hideExportCandidate(name){
-  if(!name)return;
-  await fetch('/api/export/ignore-list',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name})});
-  await _refreshIgnoreSet();
-  loadExportCandidates();
-  loadIgnoreList();
-  toast(`${name} を無視リストへ追加`,'i');
-}
-async function markExportDone(name){
-  // 完了マークも内部実装は ignore list と同じ（再検知させない）
-  return hideExportCandidate(name);
-}
-async function unhideFromIgnoreList(name){
-  if(!name)return;
-  await fetch('/api/export/ignore-list/'+encodeURIComponent(name),{method:'DELETE'});
-  await _refreshIgnoreSet();
-  loadExportCandidates();
-  loadIgnoreList();
-  toast(`${name} を無視リストから外しました`,'s');
-}
-async function resetExportHidden(){
-  if(!confirm('無視リストを全てクリアして書き出し候補を再表示しますか？\n（チャンネル別設定。2 PC 間で同期されます）'))return;
-  await fetch('/api/export/ignore-list',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_names:[]})});
-  await _refreshIgnoreSet();
-  loadExportCandidates();
-  loadIgnoreList();
-  toast('無視リストをクリアしました','s');
-}
-async function loadIgnoreList(){
-  const el=document.getElementById('exportIgnoreList');
-  if(!el)return;
-  await _refreshIgnoreSet();
-  const items=[..._ignoreSet].sort();
-  if(!items.length){el.innerHTML='<div class="fh">無視リストは空です。</div>';return}
-  el.innerHTML=`<div style="display:flex;flex-wrap:wrap;gap:var(--space-2)">`+
-    items.map(n=>`<span style="display:inline-flex;align-items:center;gap:var(--space-2);padding:var(--space-1) var(--space-2);background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs)">
-      <span>${esc(n)}</span>
-      <button class="btn btn-ghost btn-xs" style="padding:0 6px" title="無視リストから外す" onclick="unhideFromIgnoreList('${esc(n)}')">解除</button>
-    </span>`).join('')+
-    `</div><div class="fh" style="margin-top:var(--space-2)">${items.length} 件 ・ 「解除」で個別に外すか、上の「無視リストをリセット」で全クリアできます</div>`;
-}
-async function saveAutoUploadAfterExport(){
-  const enabled=!!document.getElementById('autoUploadAfterExport')?.checked;
-  try{
-    const r=await fetch('/api/export/rules');
-    const cur=r.ok?await r.json():{};
-    cur.auto_upload_after_export=enabled;
-    if(!cur.auto_upload_privacy)cur.auto_upload_privacy='unlisted';
-    await fetch('/api/export/rules',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(cur)});
-    toast(enabled?'書き出し後の自動アップロードを有効化':'自動アップロードを無効化','s');
-  }catch{toast('設定保存に失敗','e')}
-}
-async function _loadAutoUploadCheckbox(){
-  const el=document.getElementById('autoUploadAfterExport');if(!el)return;
-  try{
-    const r=await fetch('/api/export/rules');
-    if(!r.ok)return;
-    const d=await r.json();
-    el.checked=!!d.auto_upload_after_export;
-  }catch{}
-}
-function loadExportTab(){
-  _migrateLegacyHidden();
-  _loadAutoUploadCheckbox();
-  loadExportCandidates();
-  loadExportRules&&loadExportRules();
-  loadExportQueue();
-  loadIgnoreList();
-  _scheduleExportPoll(3000);
-}
-async function loadExportCandidates(){
-  const list=document.getElementById('exportCandidatesList');if(!list)return;
-  list.innerHTML='<div class="fh">スキャン中...</div>';
-  try{
-    // バックエンド側で無視リストは既に適用済（/api/export/scan?include_ignored=false）
-    const r=await fetch('/api/export/scan',{method:'POST'});
-    if(!r.ok){list.innerHTML='<div class="fh" style="color:var(--accent-danger)">スキャン失敗</div>';return}
-    const d=await r.json();
-    const cands=d.completable||[];
-    _ignoreSet=new Set(d.ignore_list||[]);
-    if(!cands.length){
-      list.innerHTML=`<div class="fh" style="padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-sm)">書き出し可能な動画はありません${_ignoreSet.size?`（${_ignoreSet.size} 件は無視リストでスキップ）`:''}。</div>`;
-      return;
-    }
-    list.innerHTML=cands.map(c=>`
-      <div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface);margin-bottom:var(--space-2)">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(c.video_name)} <span class="fh">/ ${esc(_exportChannelName(c.video_name,c.folder||c.prproj_path))}</span></div>
-          ${_exportPathsDetails([{label:'Premiereプロジェクト',path:c.prproj_path}])}
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="queueExportItem('${esc(c.video_name)}')">キューに追加</button>
-        <button class="btn btn-ghost btn-sm" onclick="markExportDone('${esc(c.video_name)}')" title="完了マーク（無視リストへ追加）">完了</button>
-        <button class="btn btn-ghost btn-sm" onclick="hideExportCandidate('${esc(c.video_name)}')" title="無視リストへ追加（再検知されません）">無視</button>
-      </div>`).join('');
-  }catch(e){list.innerHTML='<div class="fh" style="color:var(--accent-danger)">通信エラー</div>'}
-}
-async function queueExportItem(name){
-  try{
-    const r=await fetch('/api/export/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name})});
-    const d=await r.json();
-    if(d.status==='queued'){toast(`${name} をキュー追加`,'s');loadExportCandidates();loadExportQueue();_scheduleExportPoll(3000)}
-    else toast(d.detail||'追加できませんでした','i');
-  }catch{toast('通信エラー','e')}
-}
-
+/* ==== 汎用ヘルパー（旧 書き出しタブ由来） ==== */
 function _fmtBytes(b){
   if(!b||b<0)return '';
   if(b<1024)return b+' B';
@@ -12299,164 +11619,22 @@ function _fmtBytes(b){
   if(b<1024*1024*1024)return (b/1024/1024).toFixed(1)+' MB';
   return (b/1024/1024/1024).toFixed(2)+' GB';
 }
+
 function copyUiText(value,successMessage='コピーしました'){
   navigator.clipboard.writeText(String(value||'')).then(()=>toast(successMessage,'s')).catch(()=>toast('コピーに失敗しました','e'));
 }
-function _exportChannelName(videoName,path){
-  const exact=(_channels||[]).find(c=>path&&c.folder&&String(path).startsWith(c.folder));
-  if(exact)return exact.name||exact.channel_name||exact.id;
-  const prefix=String(videoName||'').match(/^\d+_([^_]+)_/)?.[1]||'';
-  const byPrefix=(_channels||[]).find(c=>prefix&&String(c.prefix||c.file_prefix||'').toLowerCase()===prefix.toLowerCase());
-  return byPrefix?.name||byPrefix?.channel_name||_lastConfig?.dashboard?.channel_name||'チャンネル未設定';
-}
-function _exportPathsDetails(paths){
-  const rows=(paths||[]).filter(x=>x.path);
-  if(!rows.length)return '';
-  return `<details style="margin-top:var(--space-1)"><summary class="fh" style="cursor:pointer">ファイルの場所</summary>${rows.map(x=>`<div style="display:flex;align-items:center;gap:var(--space-2);margin-top:var(--space-1)"><span class="fh">${esc(x.label)}</span><button class="btn btn-ghost btn-sm" title="${esc(x.path)}" onclick="event.preventDefault();copyUiText(decodeURIComponent('${encodeURIComponent(x.path)}'),'パスをコピーしました')">パスをコピー</button></div>`).join('')}</details>`;
-}
+
 function _fmtMmSs(s){
   if(!s||s<0)return '';
   s=Math.floor(s);
   const m=Math.floor(s/60), ss=s%60;
   return `${m}:${String(ss).padStart(2,'0')}`;
 }
-function _phaseLabel(phase){
-  return ({
-    waiting_appear: 'AME 起動 / mp4 出現待ち',
-    writing: '書き出し中',
-    stabilizing: '終盤処理（安定待ち）',
-    done: '完了',
-    appear_timeout: 'AME 取りこぼしの可能性',
-    stable_timeout: 'AME 応答停止の可能性',
-  })[phase]||phase||'';
-}
-async function loadExportQueue(){
-  const list=document.getElementById('exportQueueList');if(!list)return;
-  try{
-    // /api/ame/queue は items + progress(phase/size/rate/elapsed) を含む
-    const r=await fetch('/api/ame/queue');
-    if(!r.ok){list.innerHTML='<div class="fh">取得失敗</div>';return}
-    const d=await r.json();
-    const items=d.queue||[];
-    if(!items.length){list.innerHTML='<div class="fh" style="padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-sm)">キューは空です。上の候補リストから追加するか、ウォッチャーをONにしてください。</div>';return}
-    const sorted=items.slice().sort((a,b)=>(b.added_at||'').localeCompare(a.added_at||''));
-    // running または pending（next 待機）があれば自動でポーリングを継続して進捗を更新
-    const hasActive=items.some(x=>x.status==='running'||x.status==='pending');
-    if(hasActive)_scheduleExportPoll(3000);
-    list.innerHTML=sorted.map(x=>{
-      const badge=({pending:'<span class="badge badge-warning">待機中</span>',
-        running:'<span class="badge badge-info">実行中</span>',
-        done:'<span class="badge badge-success">完了</span>',
-        error:'<span class="badge badge-danger">エラー</span>'})[x.status]||x.status;
-      const showCancel=x.status==='pending'||x.status==='error'||x.status==='running'||x.status==='done';
-      const cancelLabel=x.status==='running'?'停止':(x.status==='pending'?'キャンセル':'削除');
-      // running の進捗表示
-      const p=x.progress||{};
-      let progressHtml='';
-      if(x.status==='running'){
-        const phaseTxt=_phaseLabel(p.phase);
-        const sizeTxt=_fmtBytes(p.size_bytes);
-        const rateTxt=p.rate_bytes_per_sec>0?_fmtBytes(p.rate_bytes_per_sec)+'/s':'';
-        const elapsedTxt=_fmtMmSs(p.elapsed_sec);
-        const stableTxt=p.stable_for_sec>0?` 安定 ${p.stable_for_sec}秒`:'';
-        progressHtml=`<div style="font-size:var(--text-xs);color:var(--accent-primary);margin-top:4px;font-family:var(--font-mono)">
-          ${phaseTxt} ${elapsedTxt?'経過'+elapsedTxt:''} ${sizeTxt||''} ${rateTxt||''}${stableTxt}
-        </div>`;
-      } else if(x.status==='error' && p.phase){
-        // エラー時も最終 phase を表示しておくと原因切り分けに役立つ
-        progressHtml=`<div style="font-size:var(--text-xs);color:var(--accent-danger);margin-top:2px;font-family:var(--font-mono)">phase=${esc(p.phase)}${p.elapsed_sec?` / ${_fmtMmSs(p.elapsed_sec)}`:''}</div>`;
-      }
-      return `<div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg-surface);margin-bottom:var(--space-2)">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(x.video_name)} <span class="fh">/ ${esc(_exportChannelName(x.video_name,x.folder||x.prproj_path))}</span> ${badge}</div>
-          ${_exportPathsDetails([{label:'Premiereプロジェクト',path:x.prproj_path},{label:'書き出し先',path:x.output_path}])}
-          ${progressHtml}
-          ${x.error?`<div style="font-size:var(--text-xs);color:var(--accent-danger);margin-top:2px">${esc(x.error)}</div>`:''}
-        </div>
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);text-align:right;flex-shrink:0;font-family:var(--font-mono)">
-          ${x.added_at?`<div>追加 ${x.added_at.slice(11,19)}</div>`:''}
-          ${x.completed_at?`<div>完了 ${x.completed_at.slice(11,19)}</div>`:''}
-        </div>
-        ${showCancel?`<button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="cancelExportItem('${x.fingerprint}')">${cancelLabel}</button>`:''}
-      </div>`;
-    }).join('');
-  }catch(e){list.innerHTML='<div class="fh" style="color:var(--accent-danger)">取得エラー</div>'}
-}
-async function scanExportNow(){
-  try{
-    const r=await fetch('/api/export/scan',{method:'POST'});
-    const d=await r.json();
-    const candidates=d.completable||[];
-    if(!candidates.length){toast('完成条件を満たす動画はありません','i');return}
-    if(!confirm(`${candidates.length} 件の動画が完成条件を満たしています。キューに追加しますか？\n\n` + candidates.map(c=>'・'+c.video_name).join('\n')))return;
-    let added=0;
-    for(const c of candidates){
-      try{
-        const rr=await fetch('/api/export/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:c.video_name})});
-        if(rr.ok){const dd=await rr.json();if(dd.status==='queued')added++;}
-      }catch(e){}
-    }
-    toast(`${added} 件をキューに追加`,'s');
-    loadExportQueue();
-    if(added>0)_scheduleExportPoll(3000);
-  }catch(e){toast('スキャン失敗','e')}
-}
-async function cancelExportItem(fp){
-  /* 個別キャンセル: pending → 削除、running → subprocess kill して error 化 */
-  try{
-    const r=await fetch('/api/export/queue/'+encodeURIComponent(fp)+'/cancel',{method:'POST'});
-    const d=await r.json();
-    if(d&&d.action==='killed') toast('実行中ジョブを停止','i');
-    else if(d&&d.action==='marked_error') toast('停止（kill 失敗）','w');
-    loadExportQueue();
-  }catch(e){toast('キャンセル失敗','e')}
-}
-async function stopAllExportQueue(){
-  if(!confirm('実行中・待機中のジョブを全停止しますか？\n（実行中の subprocess は kill されます。完了/エラー履歴は残ります）'))return;
-  try{
-    const r=await fetch('/api/export/queue/stop-all',{method:'POST'});
-    const d=await r.json();
-    toast(`${(d.stopped||[]).length} 件を停止`,'s');
-    loadExportQueue();
-  }catch(e){toast('停止失敗','e')}
-}
-async function resetExportQueue(){
-  if(!confirm('キューを完全リセットしますか？\n実行中の subprocess を kill して、すべてのアイテム（履歴含む）を削除します。'))return;
-  try{
-    const r=await fetch('/api/export/queue/reset',{method:'POST'});
-    const d=await r.json();
-    toast(`${d.cleared||0} 件をリセット`,'s');
-    loadExportQueue();
-  }catch(e){toast('リセット失敗','e')}
-}
-async function dequeueAndIgnore(fp,videoName){
-  /* キューからの削除＋無視リスト追加（再検知防止） */
-  if(!fp)return;
-  try{
-    await fetch('/api/export/queue/'+encodeURIComponent(fp)+'?ignore=true',{method:'DELETE'});
-    await _refreshIgnoreSet();
-    loadExportQueue();
-    loadIgnoreList();
-    loadExportCandidates();
-    toast(`${videoName||fp} を無視リストへ追加`,'i');
-  }catch(e){toast('失敗','e')}
-}
-async function clearDoneExportQueue(){
-  if(!confirm('完了・エラー履歴をクリアしますか？\n（クリアと同時に無視リストへ追加し、再検知を防ぎます）'))return;
-  try{
-    await fetch('/api/export/queue/clear-done?to_ignore=true',{method:'POST'});
-    await _refreshIgnoreSet();
-    loadExportQueue();
-    loadIgnoreList();
-    loadExportCandidates();
-    toast('クリア + 無視リストへ追加しました','s');
-  }catch(e){toast('失敗','e')}
-}
 
 /* ==== 自動化設定（チャンネル別） ==== */
 async function loadAutomationConfig(){
   setAutomationSaveStatus('loading','読み込み中');
-  // 書き出し関連は書き出しタブへ移設（loadExportTab）。ここでは触らない。
+  // 書き出し関連の設定は段階 1a で廃止（AME キュー）。ここでは触らない。
   try{
     const [cr,ar,pr]=await Promise.all([
       fetch('/api/config'),
@@ -12596,23 +11774,7 @@ async function createVideo(){
   if(data.status==='ok'){
     closeModal();
     const created=data.created||[];
-    const warnings=data.warnings||[];
     toast(`vol.${data.num} を作成: ${data.folder}${created.length?' / '+created.length+' ファイル生成':''}`,'s');
-    if(warnings.length){
-      // 警告は modal で必ず確認させる（テンプレ未設定で .prproj/.psd が生成されない問題を見逃さないため）
-      const html=`<div class="mo-title" style="color:var(--accent-warning)">⚠ テンプレート未生成</div>
-        <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3);line-height:1.7">
-          <code>${esc(data.folder)}</code> は作成しましたが、以下の理由で <strong>.prproj / .psd が生成されていません</strong>:
-        </div>
-        <ul style="margin:0 0 var(--space-3);padding-left:var(--space-4);font-size:var(--text-sm);color:var(--accent-warning)">
-          ${warnings.map(w=>`<li>${esc(w)}</li>`).join('')}
-        </ul>
-        <div class="btns" style="margin:0">
-          <button class="btn btn-primary" onclick="closeModal();go('settings');setTimeout(()=>document.getElementById('cfgTemplatePrproj')?.scrollIntoView({behavior:'smooth',block:'center'}),200)">基本設定でテンプレを選ぶ</button>
-          <button class="btn btn-secondary" onclick="closeModal()">あとで</button>
-        </div>`;
-      modal(html);
-    }
     loadVideos();loadDashboard();
   }
   else toast('失敗','e');
@@ -12681,8 +11843,6 @@ async function checkOnboardingState(){
     if(!(dc.persona||'').trim())missing.push({label:'ペルソナ（ベンチマーク分析ページ）',target:'cfgPersona'});
     if(!(dc.file_prefix||'').trim()&&dc.file_prefix!=='vol')missing.push({label:'動画フォルダ prefix',target:'cfgFilePrefix'});
     if(!((s.api_key||'').trim()||(s.claude_cli||'').trim()||(s.codex_cli||'').trim()))missing.push({label:'LLM API キー or CLI',target:'cfgApiKey'});
-    if(dc.production_mode!=='ffmpeg_only'&&!(dc.template_prproj||'').trim())missing.push({label:'Premiere テンプレ',target:'cfgTemplatePrproj'});
-    if(dc.production_mode!=='ffmpeg_only'&&!(dc.template_psd||'').trim())missing.push({label:'Photoshop テンプレ',target:'cfgTemplatePsd'});
     // 未設定フィールドに data-required-empty 属性を付ける（CSS でハイライト）
     _highlightMissingFields(missing.map(m=>m.target));
     if(missing.length){
@@ -12699,7 +11859,7 @@ async function checkOnboardingState(){
 function _highlightMissingFields(missingIds){
   const targetSet=new Set(missingIds||[]);
   // 既存の対象候補は固定リスト（それ以外には付けない）
-  const allRequiredIds=['cfgName','cfgFolder','cfgPersona','cfgFilePrefix','cfgApiKey','cfgTemplatePrproj','cfgTemplatePsd'];
+  const allRequiredIds=['cfgName','cfgFolder','cfgPersona','cfgFilePrefix','cfgApiKey'];
   for(const id of allRequiredIds){
     const el=document.getElementById(id);
     if(!el)continue;
@@ -12757,232 +11917,6 @@ function _filterRivals(){
 }
 
 /* OS ネイティブのファイル選択ダイアログでテンプレを選ぶ（macOS osascript） */
-async function pickTemplateFile(kind){
-  const ext=kind==='psd'?'psd':'prproj';
-  const channelFolder=document.getElementById('cfgFolder')?.value||'';
-  const initial=channelFolder?(channelFolder.replace(/\/$/,'')+'/プロジェクト'):'';
-  const prompt=ext==='prproj'?'Premiere テンプレ (.prproj) を選択':'Photoshop テンプレ (.psd) を選択';
-  try{
-    const r=await fetch('/api/finder/pick-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({extensions:[ext],initial,prompt})});
-    const d=await r.json();
-    if(!r.ok){toast('ダイアログ起動失敗: '+(d.detail||r.status),'e');return}
-    if(d.status==='canceled'||!d.path){return}
-    // チャンネルフォルダ配下のテンプレなら filename だけ、外部なら絶対パスを保存
-    const target=kind==='psd'?'cfgTemplatePsd':'cfgTemplatePrproj';
-    const customId=target+'Custom';
-    const inChannel=channelFolder && d.path.startsWith(channelFolder.replace(/\/$/,''));
-    const valueToStore=inChannel?d.filename:d.path;
-    // セレクトに同名候補があれば選択、なければ custom 欄へ流し込み
-    const sel=document.getElementById(target);
-    const opt=sel?Array.from(sel.options).find(o=>o.value===d.filename):null;
-    if(opt){sel.value=d.filename;const ci=document.getElementById(customId);if(ci)ci.value=''}
-    else{if(sel)sel.value='';const ci=document.getElementById(customId);if(ci)ci.value=valueToStore}
-    toast(`選択: ${d.filename}${inChannel?'':' (外部パス)'}`,'s');
-    // 自動保存トリガ
-    if(typeof _autoSaveSettingsNow==='function')_autoSaveSettingsNow();
-  }catch(e){toast('接続エラー','e')}
-}
-
-/* ==== テンプレートファイル選択（基本設定） ==== */
-async function loadTemplateOptions(curPrproj,curPsd){
-  const selPr=document.getElementById('cfgTemplatePrproj');
-  const selPs=document.getElementById('cfgTemplatePsd');
-  const customPr=document.getElementById('cfgTemplatePrprojCustom');
-  const customPs=document.getElementById('cfgTemplatePsdCustom');
-  const hintPr=document.getElementById('cfgTemplatePrprojHint');
-  const hintPs=document.getElementById('cfgTemplatePsdHint');
-  const dirsEl=document.getElementById('cfgTemplateSearchDirs');
-  if(!selPr||!selPs)return;
-  // current 値はパラメータ優先、なければ既存 select の value を保持
-  const wantPr=curPrproj!==undefined?curPrproj:(selPr.value||customPr?.value||'');
-  const wantPs=curPsd!==undefined?curPsd:(selPs.value||customPs?.value||'');
-  try{
-    const r=await fetch('/api/templates/list');
-    const d=await r.json();
-    const prList=d.prproj||[];
-    const psList=d.psd||[];
-    selPr.innerHTML='<option value="">— 選択 —</option>'+prList.map(it=>`<option value="${esc(it.filename)}">${esc(it.filename)}</option>`).join('');
-    selPs.innerHTML='<option value="">— 選択 —</option>'+psList.map(it=>`<option value="${esc(it.filename)}">${esc(it.filename)}</option>`).join('');
-    // 値復元: マスタにあればそれを selected、なければ custom テキスト欄へ
-    const prHas=prList.some(it=>it.filename===wantPr);
-    const psHas=psList.some(it=>it.filename===wantPs);
-    if(prHas){selPr.value=wantPr;if(customPr)customPr.value=''}
-    else{selPr.value='';if(customPr)customPr.value=wantPr||''}
-    if(psHas){selPs.value=wantPs;if(customPs)customPs.value=''}
-    else{selPs.value='';if(customPs)customPs.value=wantPs||''}
-    if(hintPr)hintPr.innerHTML=prList.length?`候補 ${prList.length} 件`:'<span style="color:var(--accent-warning)">候補なし。<code>{チャンネルフォルダ}/プロジェクト/</code> に <code>.prproj</code> を配置してください。</span>';
-    if(hintPs)hintPs.innerHTML=psList.length?`候補 ${psList.length} 件`:'<span style="color:var(--accent-warning)">候補なし。<code>{チャンネルフォルダ}/プロジェクト/</code> に <code>.psd</code> を配置してください。</span>';
-    if(dirsEl){
-      const dirs=d.search_dirs||[];
-      dirsEl.innerHTML=dirs.length?`検索先: ${dirs.map(p=>'<code>'+esc(p.split('/').slice(-2).join('/'))+'</code>').join(' / ')}`:'';
-    }
-  }catch(e){
-    if(hintPr)hintPr.textContent='候補の読み込みに失敗';
-    if(hintPs)hintPs.textContent='';
-  }
-}
-
-/* ==== Premiere ==== */
-async function loadPrVideoSelect(){
-  try{
-    const r=await fetch('/api/videos'),d=await r.json(),s=document.getElementById('prVideo');
-    if(!s)return;
-    const cur=s.value;
-    s.innerHTML='<option value="">現在 Premiere で開いているプロジェクトを使用</option>';
-    (d.videos||[]).forEach(v=>{
-      const t=v.title||v.name;
-      s.innerHTML+=`<option value="${esc(v.name)}">vol.${v.num} - ${esc(t)}</option>`;
-    });
-    if(cur)s.value=cur;
-    else if(d.videos&&d.videos.length>0)s.value=d.videos[0].name;
-  }catch(e){}
-}
-async function checkPremiere(){
-  const el=document.getElementById('prStatus');el.innerHTML='確認中...';
-  try{
-    const [rc, rp] = await Promise.all([fetch('/api/premiere/check'), fetch('/api/premiere/panel-status')]);
-    const dc=await rc.json(), dp=await rp.json();
-    const proj=esc(dc.project||'');
-    if(dc.connected){
-      el.innerHTML=`<span class="badge badge-success">接続OK</span> ${proj}`;
-    } else {
-      el.innerHTML=`<span class="badge badge-danger">未接続</span> <span style="color:var(--text-tertiary);font-size:12px">${esc(dc.reason||'')}</span>`;
-    }
-    _renderPanelLog(dp);
-  }catch(e){el.innerHTML='<span class="badge badge-danger">エラー</span>'}
-}
-function _renderPanelLog(dp){
-  const c=document.getElementById('prPanelLog');if(!c)return;
-  const rec=document.getElementById('prRecover');
-  if(!dp||!dp.alive){
-    const age=dp&&dp.ping_age!=null?` (最終応答: ${dp.ping_age}秒前)`:'';
-    c.innerHTML=`<div style="color:var(--text-tertiary)">注意: パネル未応答${age}<br>下の復旧ボタンで自動対応できます</div>`;
-    if(rec)rec.style.display='block';
-    return;
-  }
-  if(rec)rec.style.display='none';
-  const logs=dp.logs||[];
-  if(!logs.length){c.innerHTML='<div style="color:var(--text-tertiary)">ログなし</div>';return;}
-  c.innerHTML=logs.map(l=>{
-    const col=l.type==='error'?'var(--accent-danger)':l.type==='done'?'var(--accent-success)':'var(--text-tertiary)';
-    return `<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${esc(l.t)}</span> ${esc(l.msg)}</div>`;
-  }).join('');
-}
-let _prPanelPollTimer=null;
-function startPanelLogPoll(){
-  stopPanelLogPoll();
-  _prPanelPollTimer=setInterval(async()=>{
-    try{
-      const r=await fetch('/api/premiere/panel-status'),d=await r.json();
-      const el=document.getElementById('prStatus');
-      if(el&&el.innerHTML.includes('確認中'))return;
-      // ステータスバッジだけ更新
-      if(el){
-        const badge=el.querySelector('.badge');
-        if(badge){badge.className=d.alive?'badge badge-success':'badge badge-danger';badge.textContent=d.alive?'接続OK':'未接続';}
-      }
-      _renderPanelLog(d);
-    }catch(e){}
-  },3000);
-}
-function stopPanelLogPoll(){if(_prPanelPollTimer){clearInterval(_prPanelPollTimer);_prPanelPollTimer=null;}}
-async function reopenPanel(){
-  toast('パネルを自動で開いています...','i');
-  try{
-    const r=await fetch('/api/premiere/reopen-panel',{method:'POST'});
-    const d=await r.json().catch(()=>({}));
-    if(r.ok&&d.ok){toast('パネル起動成功','s');setTimeout(checkPremiere,2000);}
-    else{toast(d.detail||d.reason||'起動失敗','e');}
-  }catch(e){toast('通信エラー','e');}
-}
-async function restartPremiere(){
-  if(!confirm('Premiere Pro を強制終了して再起動します。未保存の変更は失われます。続行しますか？'))return;
-  toast('Premiere を再起動しています...','i');
-  try{
-    const r=await fetch('/api/premiere/restart',{method:'POST'});
-    const d=await r.json().catch(()=>({}));
-    if(r.ok&&d.ok){toast('再起動しました。15秒ほど待って再確認してください','s');setTimeout(checkPremiere,15000);}
-    else{toast(d.detail||d.reason||'再起動失敗','e');}
-  }catch(e){toast('通信エラー','e');}
-}
-async function runPremiere(){
-  const h=parseInt(document.getElementById('prH').value)||0,m=parseInt(document.getElementById('prM').value)||0,s=parseInt(document.getElementById('prS').value)||0;
-  if(!h&&!m&&!s){toast('時間を設定','e');return}
-  clrLog('prLogs');const ex=document.getElementById('prExport').checked;
-  const vn=document.getElementById('prVideo')?.value||undefined;
-  const body={duration_h:h,duration_m:m,duration_s:s,auto_export:ex};
-  if(vn)body.video_name=vn;
-  const r=await fetch('/api/premiere/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(r.ok){startPoll('premiere','prLogs');toast(vn?`${vn} で実行開始`:'実行開始（現在開いているプロジェクトを使用）','s')}
-  else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
-}
-/* Premiere ステータスを動画詳細内の persist log にストリーム */
-let _detailPremiereLogTimer=null;
-function _streamPremiereToDetailLog(label){
-  if(_detailPremiereLogTimer){clearInterval(_detailPremiereLogTimer);_detailPremiereLogTimer=null}
-  if(label)_plAppend(label);
-  let last=0;
-  const tick=async()=>{
-    try{
-      const r=await fetch('/api/premiere/status');const d=await r.json();
-      const logs=d.logs||[];
-      if(logs.length>last){for(let i=last;i<logs.length;i++)_plAppend(logs[i]);last=logs.length}
-      if(d.running){_setPlStatus('実行中…')}
-      else{_setPlStatus(logs.length?'完了':'待機中');clearInterval(_detailPremiereLogTimer);_detailPremiereLogTimer=null}
-    }catch(e){}
-  };
-  tick();
-  _detailPremiereLogTimer=setInterval(tick,1000);
-}
-
-async function runPremiereForVideo(name){
-  const h=parseInt(document.getElementById('dvPrH').value)||0;
-  const m=parseInt(document.getElementById('dvPrM').value)||0;
-  const s=parseInt(document.getElementById('dvPrS').value)||0;
-  if(!h&&!m&&!s){toast('時間を設定','e');return}
-  const ex=document.getElementById('dvPrExport').checked;
-  const r=await fetch('/api/premiere/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration_h:h,duration_m:m,duration_s:s,auto_export:ex,video_name:name})});
-  if(r.ok){
-    toast('自動配置を開始（ログはこのページに表示）','s');
-    _streamPremiereToDetailLog(`▶ 自動配置: ${name} (${h}h${m}m${s}s)${ex?' + 書き出し':''}`);
-  }
-  else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
-}
-async function regenerateSrt(){clrLog('prLogs');await fetch('/api/premiere/regenerate-srt',{method:'POST'});startPoll('premiere','prLogs');toast('字幕再生成','s')}
-async function exportOnly(){clrLog('prLogs');await fetch('/api/premiere/export',{method:'POST'});startPoll('premiere','prLogs');toast('書き出し開始','s')}
-
-/* ============= Photoshop 単独ページの JS は撤去（サムネ制作フロー1本化）=============
-   旧 loadPsVideoSelect / checkPhotoshop / _psLog / _parseTextReplacements / psListLayers /
-   runPsdCompositePipeline / runPhotoshopThumbs / _renderPsResult / updatePsPreview は削除。
-   文字入れ(PSD合成)は makeThumbnail()（正規パイプライン psd_composite）に統合。
-   各動画の「画像」タブ内 Photoshop 操作は下記 *For 系（checkPhotoshopFor / runPhotoshopThumbsFor 等）を使用。 */
-
-/* ============= 動画詳細「画像」タブ内の Photoshop サムネ生成 ============= */
-async function checkPhotoshopFor(name){
-  const badge=document.getElementById(`psThumbStatus_${name}`);
-  if(!badge)return;
-  badge.className='badge badge-neutral';badge.textContent='確認中…';
-  try{
-    const r=await fetch('/api/photoshop/check'),d=await r.json();
-    if(d.connected){
-      badge.className='badge badge-success';
-      const doc=d.active_document?` (${d.active_document})`:'';
-      badge.textContent=`接続OK${doc}`;
-    }else{
-      badge.className='badge badge-danger';
-      badge.textContent=d.reason||'未接続';
-    }
-  }catch(e){badge.className='badge badge-danger';badge.textContent='エラー';}
-}
-
-function _psThumbLog(name, msg, type){
-  const el=document.getElementById(`psThumbLog_${name}`);if(!el)return;
-  el.style.display='block';
-  const t=new Date().toLocaleTimeString('ja-JP',{hour12:false});
-  const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
-  el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
-  el.scrollTop=el.scrollHeight;
-}
 
 /* ===== サムネ制作 一気通貫（正規パイプライン bgimage→psd_composite）=====
    主CTA「サムネを制作」: run-pipeline に steps を渡し、/api/pipeline/status をポーリングして進捗表示。
@@ -13042,12 +11976,6 @@ function _ciThumbLog(name, msg, type){
   const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
   el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
   el.scrollTop=el.scrollHeight;
-}
-
-function copySceneTextToCompositor(name){
-  const ps=document.getElementById(`psSceneText_${name}`);
-  const ci=document.getElementById(`ciSceneText_${name}`);
-  if(ci&&ps){ci.value=ps.value||'';ci.focus();}
 }
 
 async function runImageCompositorFor(name){
@@ -13501,44 +12429,21 @@ async function saveLayerEditorCanvas(name){
   }catch(e){_layerLog(name,'✕ '+e.message,'error');toast('通信エラー','e');}
 }
 
-function _parsePsTextRepl(name){
-  const raw=(document.getElementById(`psTextReplacements_${name}`)?.value||'').trim();
-  if(!raw)return null;
-  const out={};
-  for(const line of raw.split('\n')){
-    const i=line.indexOf('=');
-    if(i<=0)continue;
-    out[line.slice(0,i).trim()]=line.slice(i+1);
-  }
-  return Object.keys(out).length?out:null;
-}
-
-async function psListLayersFor(name){
-  _psThumbLog(name,'▶ レイヤー一覧を取得','info');
-  try{
-    const r=await fetch('/api/photoshop/layers'),d=await r.json();
-    if(!r.ok){_psThumbLog(name,'✕ '+(d.detail||'失敗'),'error');return;}
-    const layers=d.layers||[];
-    if(!layers.length){_psThumbLog(name,'(レイヤーなし。アクティブな PSD はある？)','info');return;}
-    _psThumbLog(name,`✓ ${layers.length} 件:`,'done');
-    for(const l of layers){_psThumbLog(name,`  [${l.kind}] ${l.path}`,'info');}
-  }catch(e){_psThumbLog(name,'✕ '+e.message,'error');}
-}
-
 async function generateSceneTextFor(name){
-  const btn=document.getElementById(`psSceneGenBtn_${name}`);
-  const input=document.getElementById(`psSceneText_${name}`);
-  if(btn){btn.disabled=true;btn.textContent='生成中…';}
-  _psThumbLog(name,'シーンテキスト自動生成: Claude vision 呼び出し中（数十秒）…','info');
+  // Image2 Layout Studio のシーンテキスト欄に、AI 背景画像から生成した英語フレーズを入れる
+  const btn=document.getElementById(`ciSceneGenBtn_${name}`);
+  const input=document.getElementById(`ciSceneText_${name}`);
+  if(btn){btn.disabled=true;btn.textContent='生成中...';}
+  _ciThumbLog(name,'シーンテキスト自動生成: Vision 呼び出し中（数十秒）','info');
   try{
-    const r=await fetch('/api/photoshop/generate-scene-text',{
+    const r=await fetch('/api/scene-text/generate',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({video_name:name})
     });
     const d=await r.json().catch(()=>({}));
     if(!r.ok){
-      _psThumbLog(name,'✕ '+(d.detail||'生成失敗'),'error');
+      _ciThumbLog(name,'失敗: '+(d.detail||'生成失敗'),'error');
       toast(d.detail||'生成失敗','e');
       return;
     }
@@ -13546,112 +12451,14 @@ async function generateSceneTextFor(name){
       input.value=d.scene_text||'';
       input.focus();
     }
-    _psThumbLog(name,`✓ 生成: "${d.scene_text}" (元画像: ${d.image_path})`,'done');
+    _ciThumbLog(name,`生成: "${d.scene_text}" (元画像: ${d.image_path})`,'done');
     toast(`生成: ${d.scene_text}`,'s');
   }catch(e){
-    _psThumbLog(name,'✕ '+e.message,'error');
+    _ciThumbLog(name,'通信エラー: '+e.message,'error');
     toast('通信エラー','e');
   }finally{
-    if(btn){btn.disabled=false;btn.textContent='自動生成';}
+    if(btn){btn.disabled=false;btn.textContent='シーンテキスト自動生成';}
   }
-}
-
-async function runPhotoshopThumbsFor(name){
-  const btn=document.getElementById(`psThumbBtn_${name}`);
-  if(btn){btn.disabled=true;btn.textContent='生成中...';}
-
-  // シーンテキスト入力 → render_dual_thumbnail 経路へ分岐（Harbor Notes 2層対立式）
-  const sceneText=(document.getElementById(`psSceneText_${name}`)?.value||'').trim();
-  const bo=(document.getElementById(`psBaseLayer_${name}`)?.value||'').trim();
-  const so=(document.getElementById(`psImageSubdir_${name}`)?.value||'').trim();
-
-  if(sceneText){
-    // === 新経路: render_dual_thumbnail (2層対立式) ===
-    const body={video_name:name, scene_text:sceneText};
-    if(bo)body.base_layer=bo;
-    if(so)body.image_subdir=so;
-
-    _psThumbLog(name,`▶ サムネ生成 (2層対立式): ${name} / scene="${sceneText}"`,'info');
-    try{
-      const r=await fetch('/api/photoshop/render-dual-thumbnail',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      const d=await r.json().catch(()=>({}));
-      if(!r.ok){
-        _psThumbLog(name,'✕ '+(d.detail||'失敗'),'error');
-        toast(d.detail||'失敗','e');
-        return;
-      }
-      _psThumbLog(name,`✓ 背景画像 (vol{N}.jpg): ${d.bg}`,'done');
-      _psThumbLog(name,`✓ サムネイル.jpg: ${d.thumbnail}`,'done');
-      // 既存の _renderPsThumbResult は with_toggle/thumbnail フィールドを期待するので互換変換
-      _renderPsThumbResult(name,{with_toggle:d.bg, thumbnail:d.thumbnail});
-      toast('サムネ 2 枚生成完了 (2層対立式)','s');
-      refreshListsQuiet();
-    }catch(e){
-      _psThumbLog(name,'✕ '+e.message,'error');
-      toast('通信エラー','e');
-    }finally{
-      if(btn){btn.disabled=false;btn.textContent='▶ サムネ生成（vol*.jpg + サムネイル.jpg）';}
-    }
-    return;
-  }
-
-  // === 従来経路: render_thumbnails_for_video (単一トグル方式、後方互換) ===
-  const body={
-    video_name:name,
-    text_replacements:_parsePsTextRepl(name),
-  };
-  const to=(document.getElementById(`psToggleLayer_${name}`)?.value||'').trim();
-  if(bo)body.base_layer=bo;
-  if(to)body.toggle_layer=to;
-  if(so)body.image_subdir=so;
-
-  _psThumbLog(name,`▶ サムネ生成 (従来モード): ${name}`,'info');
-  try{
-    const r=await fetch('/api/photoshop/render-for-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok){
-      _psThumbLog(name,'✕ '+(d.detail||'失敗'),'error');
-      toast(d.detail||'失敗','e');
-      return;
-    }
-    _psThumbLog(name,`✓ PSD: ${d.psd}`,'done');
-    if(d.swap_image)_psThumbLog(name,`✓ 差し替え画像: ${d.swap_image}`,'done');
-    else _psThumbLog(name,'⚠ 差し替え画像なし（画像置き場が空。画像生成だけ先に実行？）','info');
-    _psThumbLog(name,`✓ ${d.with_toggle}`,'done');
-    _psThumbLog(name,`✓ ${d.thumbnail}`,'done');
-    _renderPsThumbResult(name,d);
-    toast('サムネ 2 枚生成完了','s');
-    // workflow チップを更新
-    refreshListsQuiet();
-  }catch(e){
-    _psThumbLog(name,'✕ '+e.message,'error');
-    toast('通信エラー','e');
-  }finally{
-    if(btn){btn.disabled=false;btn.textContent='▶ サムネ生成（vol*.jpg + サムネイル.jpg）';}
-  }
-}
-
-function _renderPsThumbResult(name, d){
-  const wrap=document.getElementById(`psThumbResult_${name}`);
-  if(!wrap)return;
-  wrap.style.display='block';
-  const v=Date.now();
-  const buildUrl=p=>{
-    const base=p.split('/').pop();
-    return `/api/videos/${encodeURIComponent(name)}/image-file/${encodeURIComponent(base)}?v=${v}`;
-  };
-  wrap.innerHTML=`
-    <div style="display:flex;gap:var(--space-3);flex-wrap:wrap">
-      <div style="flex:1;min-width:240px">
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">トグル ON（${esc(d.with_toggle.split('/').pop())}）</div>
-        <img src="${buildUrl(d.with_toggle)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="vol thumbnail" onerror="this.outerHTML='<div style=\\'color:var(--text-tertiary);word-break:break-all\\'>${esc(d.with_toggle)}</div>'">
-      </div>
-      <div style="flex:1;min-width:240px">
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">トグル OFF（サムネイル.jpg）</div>
-        <img src="${buildUrl(d.thumbnail)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="thumbnail" onerror="this.outerHTML='<div style=\\'color:var(--text-tertiary);word-break:break-all\\'>${esc(d.thumbnail)}</div>'">
-      </div>
-    </div>
-  `;
 }
 
 /* ==== YouTube Desc ==== */
@@ -14125,20 +12932,20 @@ async function runThumbAnalysis(){
   statusEl.textContent='アップロード中…';
   resEl.innerHTML='';
   try{
-    let uploaded_paths=[];
+    let upload_ids=[];
     if(files.length){
       const fd=new FormData();
       files.forEach(f=>fd.append('files',f));
       const up=await fetch('/api/analysis/thumbnails-upload',{method:'POST',body:fd});
       if(!up.ok){throw new Error('アップロード失敗 '+up.status)}
       const upd=await up.json();
-      uploaded_paths=upd.paths||[];
+      if(upd.upload_id)upload_ids=[upd.upload_id];
     }
     statusEl.textContent='Claude Vision で分析中… (60-120s)';
     const r=await fetch('/api/analysis/thumbnails',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({urls,uploaded_paths,context_hint:ctxTa.value||''})
+      body:JSON.stringify({urls,upload_ids,context_hint:ctxTa.value||''})
     });
     if(!r.ok){const t=await r.text();throw new Error('分析失敗: '+t)}
     const d=await r.json();
@@ -15971,6 +14778,5 @@ _audio.addEventListener('play',()=>{document.getElementById('bpPlayBtn').textCon
 <script src="/static/js/video-visual-editor.js"></script>
 <script src="/static/js/assembly-timeline-filmora.js?v=20260712-audio-preview4"></script>
 <script src="/static/js/assembly-placement.js"></script>
-<script src="/static/js/assembly-premiere-layout.js?v=20260712-audio-preview4"></script>
 </body>
 </html>

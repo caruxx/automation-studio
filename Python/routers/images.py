@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """画像生成ルータ（D9）。codex画像生成/背景画像/参照フォルダ/チャンネル横断サムネ一括/サムネ承認状態/シリーズ画像案。重い処理はハンドラ内ローカルimport、app_coreの土台シンボルを全取り込み。"""
+import os
 from fastapi import APIRouter
 from typing import Any, Dict, List, Optional
 from app_core import *  # noqa: F401,F403  土台シンボル(stdlib/fastapi/foundation)を全取り込み
@@ -48,10 +49,14 @@ def _channel_layout_template_path(folder: Path) -> Path:
 
 
 def _resolve_video_folder(video_name: Optional[str], video_folder: Optional[str]) -> Path:
-    if video_folder:
-        folder = Path(video_folder).expanduser()
-    elif video_name:
+    """video_name（アクティブチャンネル配下）を標準入力にする。video_folder は互換のため受けるが、
+    登録チャンネル直下の vol フォルダ（実体パス）に限る（S03: 任意フォルダへの読み書きを封じる）。"""
+    if video_name:
         folder = resolve_video_folder(video_name)
+    elif video_folder:
+        folder = resolve_folder_in_registered_channels(video_folder)
+        if folder is None:
+            raise HTTPException(400, "video_folder は登録チャンネル直下の動画フォルダのみ指定できます")
     else:
         raise HTTPException(400, "video_folder か video_name のいずれかが必要")
     if not folder.exists():
@@ -65,25 +70,51 @@ def _video_vol_number(folder: Path) -> Optional[str]:
 
 
 def _find_compositor_base_image(folder: Path, image_subdir: str = "image") -> Optional[Path]:
+    def _ok(p: Path) -> bool:
+        # symlink や実体が動画フォルダ外のものは合成元にしない
+        return p.is_file() and not p.is_symlink() and path_is_within(p, folder)
+
     vol_num = _video_vol_number(folder)
     if vol_num:
         for cand_name in (f"vol{vol_num}.png", f"vol{vol_num}_source.jpg"):
             cand = folder / cand_name
-            if cand.exists():
+            if _ok(cand):
                 return cand
     for pat in ("vol*.png", "vol*_source.jpg"):
         for cand in sorted(folder.glob(pat)):
-            if cand.name.endswith("_source.jpg") or cand.suffix.lower() == ".png":
+            if (cand.name.endswith("_source.jpg") or cand.suffix.lower() == ".png") and _ok(cand):
                 return cand
     for sub in (image_subdir, "Image", "image"):
         d = folder / sub
-        if not d.exists():
+        if not d.is_dir() or d.is_symlink() or not path_is_within(d, folder):
             continue
         for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
-            found = sorted(d.glob(ext))
+            found = [p for p in sorted(d.glob(ext)) if _ok(p)]
             if found:
                 return found[0]
     return None
+
+
+def _assert_safe_output(path: Path, root: Path) -> None:
+    """保存先が symlink でなく、実体が root 配下であることを確認する（S03: 領域外への上書き防止）。"""
+    if path.is_symlink() or not path_is_within(path, root):
+        raise HTTPException(400, f"保存先が許可領域の外を指しています: {path.name}")
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """保存先ディレクトリ内に一意な通常ファイルを作って書き、置換する（固定名の一時ファイルが symlink だった場合の追従を防ぐ）。"""
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _scan_local_font_families() -> List[Dict[str, Any]]:
@@ -150,7 +181,10 @@ def api_image_compositor_render_dual_thumbnail(req: ImageCompositorRenderRequest
     """Photoshop なしで vol{N}.jpg + サムネイル.jpg を生成するテスト版。"""
     cfg = get_dashboard_config()
     folder = _resolve_video_folder(req.video_name, req.video_folder)
-    image_subdir = req.image_subdir or cfg.get("psd_image_subdir") or "image"
+    image_subdir = str(req.image_subdir or cfg.get("psd_image_subdir") or "image").strip()
+    if (not image_subdir or Path(image_subdir).is_absolute() or ".." in Path(image_subdir).parts
+            or not path_is_within(folder / image_subdir, folder)):
+        raise HTTPException(400, "image_subdir は動画フォルダ配下のサブフォルダ名で指定してください")
     base_image = _find_compositor_base_image(folder, image_subdir=image_subdir)
     if not base_image:
         raise HTTPException(404, f"背景画像が見つかりません: {folder}")
@@ -199,6 +233,9 @@ def api_image_compositor_render_dual_thumbnail(req: ImageCompositorRenderRequest
     toggle_always_visible = bool(cfg.get("psd_toggle_always_visible")) if req.toggle_always_visible is None else bool(req.toggle_always_visible)
     bg_base_only = bool(cfg.get("psd_bg_base_only")) if req.bg_base_only is None else bool(req.bg_base_only)
 
+    for out_name in (f"{vol_name}.jpg" if vol_name else "", "サムネイル.jpg"):
+        if out_name:
+            _assert_safe_output(folder / out_name, folder)
     try:
         import app_image_compositor as comp
         result = comp.render_dual_thumbnail(
@@ -269,6 +306,8 @@ def api_image_compositor_save_canvas(req: ImageCompositorCanvasSaveRequest):
         img = Image.open(io.BytesIO(data))
         img.load()
         out = folder / filename
+        if out.is_symlink() or not path_is_within(out, folder):
+            raise HTTPException(400, "保存先が動画フォルダの外を指しています")
         out.parent.mkdir(parents=True, exist_ok=True)
         ext = out.suffix.lower()
         if ext in (".jpg", ".jpeg"):
@@ -349,9 +388,12 @@ def api_image_compositor_save_template(req: ImageCompositorTemplateRequest):
     }
     path = _layout_template_path(folder)
     channel_path = _channel_layout_template_path(folder)
+    _assert_safe_output(path, folder)
+    _assert_safe_output(channel_path, folder.parent)
     try:
-        path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-        channel_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        body = json.dumps(out, ensure_ascii=False, indent=2)
+        _write_text_atomic(path, body)
+        _write_text_atomic(channel_path, body)
         return {"ok": True, "path": str(path), "channel_path": str(channel_path), "template": out}
     except Exception as e:
         raise HTTPException(500, f"テンプレート保存失敗: {e}")

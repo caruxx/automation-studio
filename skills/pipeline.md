@@ -16,7 +16,7 @@
 
 ## 並列可否
 - routes.json を基準にする。
-- SUNO / Premiere+AME / Photoshop は単一ロック。
+- SUNO ブラウザだけが単一ロック（Premiere/AME/Photoshop は 2026-10-25 段階 1a で廃止）。
 - opt-in ラッパ: `python3 Python/parallel_guard.py <intent> -- <cmd...>`
 
 ## 典型手順
@@ -27,7 +27,7 @@
 
 ## 失敗時の対処
 - 途中停止: `--from <止まった工程>`。
-- Premiere preflight: `export_engine=ffmpeg` なら Premiere 不要、それ以外は実機起動。
+- preflight exit 78: ffmpeg / ffprobe / Pillow を導入する（`python3 Python/studio.py preflight --json`）。
 - 並列事故が怖い操作: `parallel_guard.py` で包む。
 
 ## 複数 vol のリレー式 batch
@@ -67,7 +67,7 @@ post slot2:                                        vol148 phase2 ------>
 ```
 
 - phase1: `app_pipeline.py N --only suno --channel-id <id> --auto`。orchestrator の逐次ループで同時に2本起動しない。SUNO lock は `suno_auto_create.py` 内部に任せ、外側の `parallel_guard.py` では包まない。
-- 画像先行: phase1開始と同時に `bgimage → psd_composite` を別スレッドで開始する。PSD合成はスレッドロックでvol間直列にし、各step内部のPhotoshop lockも維持する。失敗時だけphase2冒頭で対象stepを再実行する。`--no-prefetch-image` で従来配置へ戻せる。
+- 画像先行: phase1開始と同時に `bgimage → psd_composite`（Pillow 合成）を別スレッドで開始する。
 - phase2: 画像先行有効時は `premiere` から `upload` まで順に実行する。画像先行無効時は従来どおり `bgimage` から始める。
 - `step_suno()` が生成、Workspace DL、`app_process_tracks.py` まで担当するため、phase1 後に `rename` step は重ねない。
 - phase1 は SUNO browser lock により全 vol 直列。phase1 完了直後にその vol の phase2 を投入し、次 vol の phase1 を開始する。

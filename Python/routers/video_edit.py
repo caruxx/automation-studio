@@ -1,13 +1,13 @@
 """Background API for the non-destructive ffmpeg editor."""
 from __future__ import annotations
-import json, threading, time, uuid, shutil
+import json, math, re, threading, time, uuid, shutil
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from app_core import get_channels, resolve_video_folder
+from app_core import get_channels, resolve_video_folder, resolve_asset_in_folder, path_is_within, _find_exported_mp4, _resolve_to_current_host, _resolve_external_export_dir, get_dashboard_config
 from app_video_edit import run_edit, run_queue, generate_editor_assets
 from resource_lock import acquire_resource
 
@@ -43,34 +43,128 @@ def _vol_folder(name: str) -> Optional[Path]:
         root=ch.get("folder") or ""
         if root:
             try:
-                found=resolve_video_folder(name, channel_root=root)
+                found=resolve_video_folder(name, channel_root=_resolve_to_current_host(root))
             except HTTPException:
                 continue
             if found: return Path(found).resolve()
     return None
 
+MEDIA_EXT={".mp4",".mov",".mkv",".m4a",".mp3",".wav",".png",".jpg",".jpeg",".webp"}
+
+def _require_folder(video_name: Optional[str]) -> Path:
+    """video_name を必須にし、登録チャンネル配下の vol フォルダ（実体パス）を返す。"""
+    if not (video_name or "").strip(): raise HTTPException(400, "video_name が必要です")
+    folder=_vol_folder(video_name)
+    if not folder: raise HTTPException(404, "video_name が見つかりません")
+    return folder
+
+def _exported_mp4_for(folder: Path, video_name: str) -> Optional[Path]:
+    """この vol の書き出し済み mp4（vol フォルダ外。export_path 直下など）。名前に vol 番号を含む .mp4 だけ。"""
+    try:
+        exported=_find_exported_mp4(folder, video_name)
+    except Exception:
+        return None
+    if exported is None: return None
+    m=re.match(r"^(\d+)_", video_name or "")
+    if not m: return None
+    p=Path(exported).resolve(strict=False)
+    if p.suffix.lower()!=".mp4" or not p.is_file(): return None
+    if not re.search(rf"vol0*{int(m.group(1))}(?!\d)", p.stem): return None
+    if path_is_within(p, folder): return p
+    # vol フォルダ外は「アクティブチャンネルの vol」かつ「そのチャンネルの export_path 配下」に限る
+    try:
+        active=Path(_resolve_to_current_host(get_dashboard_config().get("channel_folder") or "")).expanduser().resolve(strict=False)
+        ext_dir=_resolve_external_export_dir()
+    except Exception:
+        return None
+    if ext_dir is None or Path(folder).resolve(strict=False).parent!=active: return None
+    if not path_is_within(p, ext_dir): return None
+    return p
+
+def _resolve_media(folder: Path, video_name: str, raw: str, *, allow_exported: bool=False) -> Path:
+    """vol フォルダ配下の素材だけを許可する。相対・絶対どちらも可。
+    allow_exported=True（読み取り用途: preview / assets / 編集入力）のときだけ、この vol の書き出し済み mp4 も許可する。"""
+    try:
+        return resolve_asset_in_folder(folder, raw, allowed_ext=MEDIA_EXT)
+    except HTTPException as exc:
+        if exc.status_code==403 and allow_exported:
+            exported=_exported_mp4_for(folder, video_name)
+            try:
+                wanted=Path(str(raw)).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                raise exc
+            if exported is not None and wanted==exported:
+                return exported
+        raise
+
+# 操作ごとに受け付ける params のキー（S02: 利用者が送った任意キー（_cleanup 等）を ffmpeg 層へ通さない）
+_ALLOWED_PARAMS={
+    "trim":{"start","end","reencode"},
+    "concat":{"input_paths"},
+    "loop_to_duration":{"duration","fade_out"},
+    "fade":{"video_in","video_out","audio_in","audio_out"},
+    "replace_audio":{"audio_path","volume_db"},
+    "burn_overlay":{"overlay_type","text","overlay_path","x","y","w","h","position","size","opacity"},
+    "extract_frame":{"time"},
+    "convert":{"resolution","fps","format"},
+}
+_NUMERIC_PARAMS={"start","end","duration","fade_out","video_in","video_out","audio_in","audio_out","volume_db","x","y","w","h","size","opacity","time","fps"}
+_RE_RESOLUTION=re.compile(r"^\d{2,5}x\d{2,5}$")
+_RE_POSITION=re.compile(r"^[0-9A-Za-z()*+\-/.: ]{1,80}$")
+_FORMATS={"mp4","mov","mkv","webm"}
+
+def _sanitize_params(operation: str, raw: dict[str,Any]) -> dict[str,Any]:
+    allowed=_ALLOWED_PARAMS.get(operation)
+    if allowed is None: raise HTTPException(400, f"未知の操作です: {operation}")
+    out: dict[str,Any]={}
+    for key, val in (raw or {}).items():
+        k=str(key)
+        if k.startswith("_"): raise HTTPException(400, f"params に内部キーは指定できません: {k}")
+        if k not in allowed: continue
+        if k in _NUMERIC_PARAMS:
+            if val in (None, ""): continue
+            try: num=float(val)
+            except (TypeError, ValueError): raise HTTPException(400, f"{k} は数値で指定してください")
+            if not math.isfinite(num) or abs(num) > 1e7: raise HTTPException(400, f"{k} の値が範囲外です")
+            if k in ("duration","start","end","time") and num > 86400: raise HTTPException(400, f"{k} は 86400 秒以下で指定してください")
+            out[k]=num; continue
+        if k=="reencode":
+            out[k]=val if isinstance(val,bool) else str(val).strip().lower() in ("1","true","yes","on"); continue
+        if k=="resolution":
+            v=str(val).strip()
+            if v and not _RE_RESOLUTION.match(v): raise HTTPException(400, "resolution は 幅x高さ（例 1920x1080）で指定してください")
+            if v: out[k]=v
+            continue
+        if k=="format":
+            v=str(val).strip().lstrip(".").lower()
+            if v and v not in _FORMATS: raise HTTPException(400, f"format は {sorted(_FORMATS)} のいずれかです")
+            if v: out[k]=v
+            continue
+        if k=="overlay_type":
+            v=str(val).strip().lower()
+            if v not in ("text","image"): raise HTTPException(400, "overlay_type は text か image です")
+            out[k]=v; continue
+        if k=="position":
+            v=str(val).strip()
+            if v and not _RE_POSITION.match(v): raise HTTPException(400, "position に使えない文字が含まれています")
+            if v: out[k]=v
+            continue
+        if k=="text":
+            v=str(val)[:300]
+            if "\x00" in v: raise HTTPException(400, "text が不正です")
+            out[k]=v; continue
+        out[k]=val  # input_paths / audio_path / overlay_path はこの後パス検証する
+    return out
+
 def _validated(req: EditRequest) -> dict[str,Any]:
-    p=Path(req.input_path).expanduser()
-    if not p.is_absolute(): raise HTTPException(400, "input_path は絶対パスで指定してください")
-    p=p.resolve()
-    if not p.is_file(): raise HTTPException(404, f"入力ファイルがありません: {p}")
-    if req.video_name:
-        folder=_vol_folder(req.video_name)
-        if not folder: raise HTTPException(404, "video_name が見つかりません")
-        try: p.relative_to(folder)
-        except ValueError: raise HTTPException(400, "video_name を指定した入力は対応 vol 配下に限ります")
-    params=dict(req.params); params["input_path"]=str(p)
+    folder=_require_folder(req.video_name)
+    p=_resolve_media(folder, req.video_name, req.input_path, allow_exported=True)
+    params=_sanitize_params(req.operation, dict(req.params or {})); params["input_path"]=str(p)
     for key in ("input_paths","audio_path","overlay_path"):
         if key in params:
             vals=params[key] if isinstance(params[key],list) else [params[key]]
-            checked=[]
-            for raw in vals:
-                q=Path(raw).expanduser()
-                if not q.is_absolute() or not q.resolve().is_file(): raise HTTPException(400, f"{key} の絶対パスが不正です: {raw}")
-                if req.video_name:
-                    try: q.resolve().relative_to(_vol_folder(req.video_name))
-                    except ValueError: raise HTTPException(400, f"{key} は対応 vol 配下に限ります")
-                checked.append(str(q.resolve()))
+            checked=[str(_resolve_media(folder, req.video_name, str(raw))) for raw in vals if str(raw).strip()]
+            if not checked: raise HTTPException(400, f"{key} が空です")
             params[key]=checked if isinstance(params[key],list) else checked[0]
     return params
 
@@ -144,15 +238,18 @@ def history(limit: int=20):
     return {"history":sorted(rows,key=lambda j:j.get("created_at",0),reverse=True)[:max(1,min(limit,50))]}
 
 @router.get("/preview")
-def preview(path: str):
-    p=Path(path).expanduser().resolve()
-    if not p.is_file(): raise HTTPException(404, "動画ファイルが見つかりません")
+def preview(video_name: str="", asset: str="", path: str=""):
+    """vol フォルダ配下の素材だけを配信する。asset（相対）または path（絶対。実体が vol 配下のもの）。"""
+    folder=_require_folder(video_name)
+    p=_resolve_media(folder, video_name, asset or path, allow_exported=True)
     return FileResponse(str(p))
 
 @router.get("/assets")
-def assets(path: str, count: int=8):
+def assets(video_name: str="", asset: str="", path: str="", count: int=8):
+    folder=_require_folder(video_name)
+    p=_resolve_media(folder, video_name, asset or path, allow_exported=True)
     try:
-        data=generate_editor_assets(path, ASSET_CACHE, count)
+        data=generate_editor_assets(str(p), ASSET_CACHE, count)
         key=data["cache_key"]
         return {"cache_key":key,"duration":data["duration"],"cached":data["cached"],"frames":[f"/api/video-edit/asset/{key}/{p.name}" for p in data["frames"]],"waveform":f"/api/video-edit/asset/{key}/{data['waveform'].name}"}
     except Exception as e: raise HTTPException(500, f"編集素材生成失敗: {e}")
@@ -169,12 +266,8 @@ def asset(cache_key: str, filename: str):
 @router.post("/adopt")
 def adopt(req: AdoptRequest):
     if not req.confirmed: raise HTTPException(400,"確認が必要です")
-    folder=_vol_folder(req.video_name)
-    if not folder: raise HTTPException(404,"video_name が見つかりません")
-    output=Path(req.output_path).expanduser().resolve(); target=Path(req.target_path).expanduser().resolve()
-    try: output.relative_to(folder); target.relative_to(folder)
-    except ValueError: raise HTTPException(400,"出力と差し替え先は対応 vol 配下に限ります")
-    if not output.is_file() or not target.is_file(): raise HTTPException(404,"出力または差し替え先がありません")
+    folder=_require_folder(req.video_name)
+    output=_resolve_media(folder, req.video_name, req.output_path); target=_resolve_media(folder, req.video_name, req.target_path)
     stamp=time.strftime("%Y%m%d_%H%M%S"); backup=target.with_name(f"{target.stem}.backup_{stamp}{target.suffix}")
     for n in range(1, 1000):
         if not backup.exists(): break
@@ -190,10 +283,12 @@ def adopt(req: AdoptRequest):
 
 @router.post("/use-thumbnail")
 def use_thumbnail(req: ThumbnailUseRequest):
-    folder=_vol_folder(req.video_name)
-    if not folder: raise HTTPException(404,"video_name が見つかりません")
-    src=Path(req.frame_path).expanduser().resolve()
-    if not src.is_file(): raise HTTPException(404,"フレームがありません")
+    folder=_require_folder(req.video_name)
+    if "\x00" in str(req.frame_path or ""): raise HTTPException(400,"frame_path が不正です")
+    try: src=Path(req.frame_path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError): raise HTTPException(400,"frame_path が不正です")
+    if not (path_is_within(src, ASSET_CACHE) or path_is_within(src, folder)): raise HTTPException(403,"フレームは編集素材キャッシュか vol 配下に限ります")
+    if src.suffix.lower() not in (".png",".jpg",".jpeg",".webp") or not src.is_file(): raise HTTPException(404,"フレームがありません")
     out_dir=folder/"thumbnail_materials"; out_dir.mkdir(exist_ok=True)
     out=out_dir/f"video_frame_{time.strftime('%Y%m%d_%H%M%S')}{src.suffix.lower()}"; shutil.copy2(src,out)
     return {"status":"ok","path":str(out)}

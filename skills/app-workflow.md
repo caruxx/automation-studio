@@ -16,7 +16,7 @@
 bash Python/start.sh       # http://localhost:8888/
 ```
 
-左サイドバー: `📊 ダッシュボード / 🎬 コンテンツ / 📅 カレンダー / 🎵 SUNO / 🎨 Premiere / 📤 YouTube / 🔔 通知 / ⚙️ 設定`
+左サイドバー: `ダッシュボード / コンテンツ / ベンチマーク / 設定 / 履歴 / SUNO / YouTube / ライブ`（Premiere と書き出しのページは 2026-10-25 段階 1a で廃止）
 
 詳細は [app-web-dashboard.md](./app-web-dashboard.md)。
 
@@ -30,8 +30,7 @@ bash Python/start.sh       # http://localhost:8888/
 
 ## フォルダ作成 → 即コンテンツ一覧に追加
 
-「+ 新規動画」から公開日を指定 → `{num}_{prefix}_{YYMMDD}` フォルダと .prproj/.psd を自動生成
-（[app-create-folder.md](./app-create-folder.md)）。
+「+ 新規動画」から公開日を指定 → `{num}_{prefix}_{YYMMDD}` フォルダを自動生成（テンプレートのコピーは無い）。
 **この時点でコンテンツ一覧に追加され、以降 11 工程の進捗がステッパーで可視化される。**
 
 ## ワークフロー 11 工程
@@ -66,37 +65,28 @@ bash Python/start.sh       # http://localhost:8888/
 ### STEP 3: 背景画像生成（動画詳細「画像」タブ）
 - ベンチマーク（picked or rival_channels の thumbs プール）から N 枚ランダム選択 →
   チャンネル persona を載せたプロンプトで `codex_imagegen.py` を起動 → `vol{N}.png` を 1 枚生成
-- **Premiere JSX のフォールバック規約に必ず一致させる**（JSX は `selected_images.json` 不在時に `vol{N}.png` を読む）
+- 背景画像は `selected_images.json` があればそれを優先。無ければ `vol{N}.jpg` → `vol{N}.png` → `vol{N}-1.*` の順で app_ffrender が読む
 - 既存 `vol{N}.png/.jpg` あれば既定でスキップ（`APP_BGIMAGE_FORCE=1` で上書き）
 - 「上書き再生成」UI ボタン / `POST /api/bgimage/run` でも単発実行可能
 - 詳細: [app-bgimage.md](./app-bgimage.md)
 - 完了条件: `vol{N}.png` または `vol{N}.jpg` がフォルダ直下に存在 → 3/11 ✓
 
-### STEP 4: PSD 合成（動画詳細「画像」タブ）
-- 背景画像（STEP 3）+ シーンテキストを Photoshop の PSD テンプレに流し込み、`vol{N}.jpg`（サムネ本体）+ `サムネイル.jpg` を 2 枚出し
-- 文字（シーンテキスト）のトーン / 例 / 禁止語は per-channel `scene_text_*` 設定で制御（空なら persona 中立）
-- 正規サムネフロー = `bgimage`(背景) → `psd_composite`(文字入れ)。AI 直接生成（STEP 10）は PSD 合成が使えない時のフォールバック
-- 詳細: [app-psd-composite.md](./app-psd-composite.md)
+### STEP 4: 画像合成（動画詳細「画像」タブ / 工程名 psd_composite）
+- 背景画像（STEP 3）+ シーンテキストを Pillow で合成し、`vol{N}.jpg`（動画背景）+ `サムネイル.jpg`（YouTube 用）を 2 枚出し（Image2 Layout Studio）
+- 文字（シーンテキスト）のトーン / 例 / 禁止語は per-channel `scene_text_*` 設定で制御。「シーンテキスト自動生成」ボタン = `POST /api/scene-text/generate`
+- 正規サムネフロー = `bgimage`(背景) → `psd_composite`(画像合成)。AI 直接生成（STEP 10）は合成が使えない時のフォールバック
+- 詳細: [image.md](./image.md)
 - 完了条件: `vol{N}.jpg` または `サムネイル.jpg` が存在 → 4/11 ✓
 
-### STEP 5: Premiere 自動配置（動画詳細「配置」タブ）
-- 「▶ この動画で Premiere 自動配置を実行」→ `vol_vol{N}.prproj` を自動オープン → JSX 送信
-- JSX の処理:
-  1. music/*.mp3 を A1 にループ配置（z_付き優先）
-  2. audio-spectrum01.mp4 を V2（不透明度20%、ルミナンスキー）
-  3. V1 に画像配置（`selected_images.json` or STEP 3 で生成した `vol{N}.png` にフォールバック）
-  4. SRT 字幕・タイムコード生成（Python 側で実測ベースに再生成）
-  5. ハードリミッター & 終了20秒フェードアウト
-- 詳細: [app-premiere.md](./app-premiere.md)
-- 任意: その前に動画詳細「画像」タブから **メイン + サブ** を手動選択しておくと
-  JSX がそれを優先（[app-image-select.md](./app-image-select.md)）
-- 完了条件: `subtitles_*.srt` が存在 → 5/11 ✓
+### STEP 5: 配置（工程名 premiere。自動で通過）
+- 2026-10-25 段階 1a 以降、配置は STEP 6 の FFmpeg 書き出しに統合されている。この工程は何もせず成功する
+- 完了条件: なし（STEP 6 で `subtitles_*.srt` が生成される）→ 5/11 ✓
 
-### STEP 6: 書き出し（動画詳細「書き出し」タブ / 🎨 Premiere）
-- 「完了後に書き出し」チェック → Media Encoder に YouTube 1080p プリセットで自動キュー
-- 外部 SSD パスにも対応（`dashboard_config.json` の `export_path`）
+### STEP 6: 書き出し（FFmpeg）
+- `app_ffrender.py` が音声・映像（静止画ループ）・字幕(SRT)・タイムコード(TC) を一括生成。構成の正本は `.ffrender_manifest.json`
+- 外部 SSD パスにも対応（チャンネル設定 `export_path`）
 - 詳細: [app-export.md](./app-export.md)
-- 完了条件: `*vol{N}.mp4` が存在 → 6/11 ✓
+- 完了条件: `{prefix}_vol{N}.mp4` が存在 → 6/11 ✓
 
 ### STEP 7: QA チェック（書き出し直後・自動）
 - 解像度（1920x1080） / アスペクト（16:9） / 尺（≧ 動画予定時間） / コーデック（H.264）を ffprobe で検証
@@ -169,9 +159,8 @@ Web UI から手動で実行する代わりに、以下を組み合わせれば*
 
 | レイヤー | 役割 | 詳細 |
 |---------|------|------|
-| APScheduler | 毎週月・金 9:00 に vol.X+1 をフル自動 / 毎朝 7:00 に分析リフレッシュ / AME 深夜 ON/OFF / スポット実行 | [app-schedule.md](./app-schedule.md) |
+| APScheduler | 毎週月・金 9:00 に vol.X+1 をフル自動 / 毎朝 7:00 に分析リフレッシュ / スポット実行 | [app-schedule.md](./app-schedule.md) |
 | 認証 + Cloudflare Tunnel + PWA | 外出先スマホから操作。Discord 通知で実行確認、緊急時は QR 経由でログイン | [app-remote-access.md](./app-remote-access.md) |
-| AME 書き出しキュー | 完成条件マッチ（prproj + music + srt、mp4 なし）を自動 enqueue → AME 投入 → ファイルサイズ安定化で完了検知 | 自動化タブ / `export_rules.json` |
 | マスター設定 | 上記すべてを 1 画面で管理（プロンプト / SUNO パラメータ / スケジュール / リモート / インポート・エクスポート） | [app-master-config.md](./app-master-config.md) |
 | 徹底パクリ進化 | 動画詳細メタタブで ✓パクる/✗避ける/+進化 を Claude が提案、ベンチマーク参照サイドパネル付き | [app-imitate-evolve.md](./app-imitate-evolve.md) |
 
@@ -179,12 +168,11 @@ Web UI から手動で実行する代わりに、以下を組み合わせれば*
 
 ```
 {num}_{prefix}_{YYMMDD}/
-├── vol_vol{num}.prproj          # Premiere プロジェクト
-├── vol_vol{num}.psd             # サムネイルPSD
-├── vol_vol{num}.mp4             # 書き出し済み（外部SSDにも対応）
+├── {prefix}_vol{num}.mp4         # 書き出し済み（外部SSDにも対応）
+├── .ffrender_manifest.json      # 書き出し構成の正本
 ├── vol{num}.jpg / サムネイル.jpg  # サムネイル
 ├── *.png / *.jpg                  # 背景画像（ロケーション）
-├── selected_images.json          # 画像選択結果（JSX連動）
+├── selected_images.json          # 画像選択結果
 ├── music/                        # 処理済みMP3（フェードアウト済み）
 ├── original_music/               # オリジナルMP3バックアップ
 ├── subtitles_{num}.srt           # 実測SRT
@@ -192,13 +180,12 @@ Web UI から手動で実行する代わりに、以下を組み合わせれば*
 ├── youtube_title.txt             # タイトル
 ├── youtube_description.txt       # 説明文
 ├── youtube_tags.txt              # タグ
-├── youtube_upload.json           # アップロード完了マーカー
-└── Adobe Premiere Pro */         # キャッシュ
+└── youtube_upload.json           # アップロード完了マーカー
 ```
 
 ## 命名規則
 - フォルダ: `{連番}_{prefix}_{YYMMDD}` 例: `67_vol_260405`
-- プロジェクト: `vol_vol{連番}.prproj` 例: `vol_vol67.prproj`
+- 動画: `{prefix}_vol{連番}.mp4` 例: `vol_vol67.mp4`
 - いいね楽曲: `z_` プレフィックス（タイムライン先頭配置）
 
 ## 関連スキル索引
@@ -206,15 +193,14 @@ Web UI から手動で実行する代わりに、以下を組み合わせれば*
 | スキル | 役割 |
 |--------|------|
 | [app-web-dashboard.md](./app-web-dashboard.md) | Web Studio 全体構造・API 一覧 |
-| [app-create-folder.md](./app-create-folder.md) | フォルダ + .prproj 作成 |
+| [app-create-folder.md](./app-create-folder.md) | フォルダ作成 |
 | [app-rename-audio.md](./app-rename-audio.md) | SUNO DL 後のリネーム + 音声処理（サムネ/ペルソナ、rename-only モード） |
 | [app-suno-download.md](./app-suno-download.md) | SUNO Workspace 楽曲の一括 DL（fetch インターセプタ） |
 | [app-track-player.md](./app-track-player.md) | 楽曲メディアプレイヤー + いいね + 削除 |
 | [app-ai-propose.md](./app-ai-propose.md) | Claude CLI による JSON 提案パターン |
 | [app-bgimage.md](./app-bgimage.md) | 背景画像の自動生成（パイプライン STEP 3） |
-| [app-image-select.md](./app-image-select.md) | 画像選択 + JSX連動 |
-| [app-premiere.md](./app-premiere.md) | Pymiere + JSX 自動配置 |
-| [app-export.md](./app-export.md) | Media Encoder 書き出し |
+| [app-image-select.md](./app-image-select.md) | 画像選択（`selected_images.json`） |
+| [app-export.md](./app-export.md) | FFmpeg 書き出し（app_ffrender） |
 | [app-youtube-desc.md](./app-youtube-desc.md) | 説明文生成 |
 | [app-youtube-upload.md](./app-youtube-upload.md) | YouTube アップロード |
 | [app-competitor-spreadsheet.md](./app-competitor-spreadsheet.md) | J-0後のData APIベンチマーク分析（旧スプシ経路の廃止メモ）|

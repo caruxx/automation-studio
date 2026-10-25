@@ -23,7 +23,7 @@
 | 3 | `zzz_song.mp3` |
 
 z プレフィックスの数 = いいね数。
-[app-rename-audio](./app-rename-audio.md) や JSX 側（z_ 優先再生）と契約が揃っている。
+[app-rename-audio](./app-rename-audio.md) や書き出し側（app_ffrender の z_ 優先配置）と契約が揃っている。
 
 ## API
 

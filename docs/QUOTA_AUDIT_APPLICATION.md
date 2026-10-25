@@ -3,7 +3,7 @@
 作成: 2026-07-04 / 対象フォーム: YouTube API Services - Audit and Quota Extension Form
 (https://support.google.com/youtube/contact/yt_api_form)
 
-> 提出はユーザー(abe_kota@caruvistar.jp)のGoogleアカウントで行う。本ドラフトの[ ]内は提出前に確認・記入。
+> 提出はユーザー（本人）のGoogleアカウントで行う。本ドラフトの[ ]内は提出前に確認・記入。
 
 ---
 

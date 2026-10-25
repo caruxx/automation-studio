@@ -70,6 +70,11 @@ def _escape_drawtext(text: str) -> str:
     return text.replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'").replace("%", r"\%")
 
 
+def _escape_filter_path(path: Path) -> str:
+    """フィルタグラフの引数に埋め込むパスのエスケープ（drawtext の textfile= 用）。"""
+    return str(path).replace("\\", r"\\").replace("'", r"\'").replace(":", r"\:").replace(",", r"\,").replace(";", r"\;").replace("[", r"\[").replace("]", r"\]")
+
+
 def build_command(operation: str, params: dict[str, Any], output: Path) -> list[str]:
     src = Path(params["input_path"])
     base = ["nice", "-n", str(params.get("nice", 10)), "ffmpeg", "-hide_banner", "-y"]
@@ -114,8 +119,16 @@ def build_command(operation: str, params: dict[str, Any], output: Path) -> list[
         if overlay_type == "image":
             image=Path(params["overlay_path"]); filt=f"[1:v]scale={size}:-1,format=rgba,colorchannelmixer=aa={opacity}[ov];[0:v][ov]overlay={pos}"
             return base+["-i",str(src),"-i",str(image),"-filter_complex",filt,"-c:v","libx264","-c:a","copy",str(output)]
-        text=_escape_drawtext(str(params.get("text", ""))); x,y=pos.split(":",1)
-        filt=f"drawtext=text='{text}':fontsize={size}:fontcolor=white@{opacity}:x={x}:y={y}"
+        # 本文はフィルタグラフに埋め込まず textfile= で渡す（引用符や , ; [ ] による注入を防ぐ）。
+        # ファイルは引用符を含まない安全な一時パスに置き、expansion=none で %{...} の展開も止める。
+        import tempfile
+        fd, tmp_name = tempfile.mkstemp(prefix="drawtext_", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(str(params.get("text", "")))
+        text_file=Path(tmp_name)
+        params.setdefault("_cleanup", []).append(str(text_file))
+        x,y=pos.split(":",1)
+        filt=f"drawtext=textfile='{_escape_filter_path(text_file)}':expansion=none:fontsize={size}:fontcolor=white@{opacity}:x={x}:y={y}"
         return base+["-i",str(src),"-vf",filt,"-c:v","libx264","-c:a","copy",str(output)]
     if op == "extract_frame":
         return base+["-ss",str(float(params.get("time",0))),"-i",str(src),"-frames:v","1","-q:v","2",str(output)]
