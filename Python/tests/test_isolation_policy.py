@@ -97,6 +97,15 @@ class IsolationPolicyTest(unittest.TestCase):
             inside_db = _INNER_TMP / "own.sqlite3"
             got = _probe({"APP_MUSIC_CATALOG_DB": str(inside_db)})
             self.assertEqual(got["APP_MUSIC_CATALOG_DB"], str(inside_db))  # 一時領域内の指定は尊重
+            # 隔離済み環境を継承した子プロセスで指定し直しても、領域外の値は引き継がない（冪等経路）
+            got = _probe({"AS_TESTS_ISOLATED_ROOT": os.environ.get("AS_TESTS_ISOLATED_ROOT", ""),
+                          "APP_CONFIG_DIR": os.environ["APP_CONFIG_DIR"], "STUDIO_CONFIG_DIR": os.environ["STUDIO_CONFIG_DIR"],
+                          "APP_SHARED_BASE": os.environ["APP_SHARED_BASE"], "HOME": os.environ["HOME"],
+                          "TMPDIR": tempfile.gettempdir(),
+                          "STUDIO_DRIVE_BASE": str(outside), "APP_MUSIC_CATALOG_DB": str(outside / "music.sqlite3")})
+            self.assertEqual(got["AS_TESTS_ISOLATED_ROOT"], os.environ.get("AS_TESTS_ISOLATED_ROOT", ""))
+            self.assertIsNone(got["STUDIO_DRIVE_BASE"])
+            self.assertIsNone(got["APP_MUSIC_CATALOG_DB"])
         finally:
             import shutil
             shutil.rmtree(outside, ignore_errors=True)

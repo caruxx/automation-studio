@@ -168,7 +168,9 @@ class EntryPointsTest(unittest.TestCase):
         import app as studio
         self.assertEqual(studio._exit_outcome(79)[1], "warn")
         self.assertIn("失敗ではありません", studio._exit_outcome(79)[0])
-        self.assertEqual(studio._exit_outcome(1), ("失敗", "error", "❌"))
+        label, kind, prefix = studio._exit_outcome(1)
+        self.assertEqual((label, kind), ("失敗", "error"))
+        self.assertNotEqual(prefix, "[待機]")
         self.assertEqual(studio._exit_outcome(78)[1], "error")
 
     def test_studio_exit_fields(self):

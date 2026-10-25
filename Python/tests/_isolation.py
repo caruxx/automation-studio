@@ -43,11 +43,22 @@ def _env_is_isolated() -> bool:
     return all(os.environ.get(k) and _within(Path(os.environ[k]), _temp_root()) for k in ISOLATED_KEYS)
 
 
+def _drop_unsafe_aliases() -> None:
+    """本物の Drive / 共有設定を指しうる別名と、一時領域外の楽曲カタログ DB を環境から取り除く。
+    隔離済み（冪等）の経路でも呼ぶ: 子プロセスで指定し直された値を引き継がない。"""
+    for k in DROPPED_KEYS:
+        os.environ.pop(k, None)
+    db = os.environ.get("APP_MUSIC_CATALOG_DB")
+    if db and not _within(Path(db), _temp_root()):
+        os.environ.pop("APP_MUSIC_CATALOG_DB", None)
+
+
 def _bootstrap() -> Path:
     mark = os.environ.get(_MARK)
     if mark and Path(mark).is_dir() and _env_is_isolated() \
             and all(_within(Path(os.environ[k]), Path(mark)) for k in ISOLATED_KEYS) \
             and _within(Path(os.environ.get("HOME", "")), Path(mark)):
+        _drop_unsafe_aliases()
         return Path(mark)  # 既に隔離済み（冪等）。残骸の変数だけでは信用しない
     if "app_core" in sys.modules:
         raise RuntimeError(
@@ -55,11 +66,7 @@ def _bootstrap() -> Path:
             "テストモジュールの冒頭で _isolation を import するか、python Python/scripts/run_tests.py で実行してください。")
 
     root = Path(tempfile.mkdtemp(prefix="as-tests-")).resolve()
-    for k in DROPPED_KEYS:
-        os.environ.pop(k, None)
-    db = os.environ.get("APP_MUSIC_CATALOG_DB")
-    if db and not _within(Path(db), _temp_root()):
-        os.environ.pop("APP_MUSIC_CATALOG_DB", None)
+    _drop_unsafe_aliases()
     home = root / "home"
     home.mkdir(parents=True, exist_ok=True)
     if _env_is_isolated():
