@@ -117,6 +117,7 @@ def _sanitize_params(operation: str, raw: dict[str,Any]) -> dict[str,Any]:
             try: num=float(val)
             except (TypeError, ValueError): raise HTTPException(400, f"{k} は数値で指定してください")
             if not math.isfinite(num) or abs(num) > 1e7: raise HTTPException(400, f"{k} の値が範囲外です")
+            if k in ("duration","start","end","time") and num > 86400: raise HTTPException(400, f"{k} は 86400 秒以下で指定してください")
             out[k]=num; continue
         if k=="reencode":
             out[k]=val if isinstance(val,bool) else str(val).strip().lower() in ("1","true","yes","on"); continue

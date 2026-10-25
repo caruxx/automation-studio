@@ -147,7 +147,9 @@ class ApiBoundaryTest(unittest.TestCase):
         cmd = ave.build_command("burn_overlay", params, out)
         vf = cmd[cmd.index("-vf") + 1]
         self.assertIn("textfile=", vf)
+        self.assertIn(":expansion=none:", vf)
         self.assertNotIn("movie=", vf)
+        self.assertNotIn("'", Path(params["_cleanup"][0]).name)
         self.assertNotIn(str(self.outside), " ".join(cmd))
         text_file = Path(params["_cleanup"][0])
         self.assertEqual(text_file.read_text(encoding="utf-8"), evil)
@@ -157,6 +159,12 @@ class ApiBoundaryTest(unittest.TestCase):
         with self.assertRaises(HTTPException):
             ve._sanitize_params("loop_to_duration", {"duration": "inf"})
         self.assertFalse(ve._sanitize_params("trim", {"reencode": "false"})["reencode"])
+        with self.assertRaises(HTTPException):
+            ve._sanitize_params("loop_to_duration", {"duration": 1e6})
+        pct = ve._sanitize_params("burn_overlay", {"overlay_type": "text", "text": "50%OFF"})
+        pct["input_path"] = str(self.vol / "clip.mp4")
+        cmd2 = ave.build_command("burn_overlay", pct, self.vol / "out2.mp4")
+        tf = Path(pct["_cleanup"][0]); self.assertEqual(tf.read_text(encoding="utf-8"), "50%OFF"); tf.unlink()
 
     def test_exported_mp4_allowed_only_for_reading(self):
         import routers.video_edit as ve
