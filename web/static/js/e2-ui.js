@@ -105,11 +105,6 @@
     card('e2CardRecentError', `<div class="e2-health-bad">${esc(h.plain_ja).slice(0,120)}</div><div class="e2-card-sub">${esc(h.next_action)}</div><details class="e2-card-sub"><summary>詳細ログ</summary>${esc(tech)}</details>${link('ledger','ログを見る')}`);
   }
 
-  function renderQueue(rq){
-    const c = rq?.counts || {};
-    card('e2CardRenderQueue', `<div class="e2-card-kpi">${Number(c.pending||0)}/${Number(c.running||0)}</div><div>待機 / 実行中</div>${link('automation','書き出しキューを見る',"setTimeout(()=>document.getElementById('renderQueueCard')?.scrollIntoView({behavior:'smooth'}),200);")}`);
-  }
-
   function renderAutopilotCard(ws, stock){
     const chs = ws?.channels || [];
     const on = chs.filter(c=>c.autopilot_enabled).length;
@@ -692,14 +687,6 @@
     const el = $(id);
     if(!el) return;
     el.type = el.type === 'password' ? 'text' : 'password';
-  }
-
-  async function settingValue(key){
-    const item = (state.catalog?.settings || []).find(x=>x.key===key);
-    const qs = new URLSearchParams({key});
-    if(item?.scope === 'channel' && state.activeChannelId) qs.set('channel_id', state.activeChannelId);
-    const d = await fetchJson('/api/settings-catalog/value?' + qs.toString());
-    return d.current?.value || '';
   }
 
   async function renderReferencePreviewTool(){

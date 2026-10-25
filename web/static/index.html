@@ -1257,7 +1257,6 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
   </div>
   <div class="topbar-right">
     <div id="globalStatus" class="topbar-chip" style="display:flex;align-items:center;gap:6px;cursor:pointer" onmouseenter="showLogPopover()" onmouseleave="scheduleHideLogPopover()" onclick="toggleLogPopoverPin(event)" title="ホバー: 全タスクログ表示  /  クリック: ピン留め"><span class="status-dot status-idle"></span><span class="status-text">待機中</span></div>
-    <div id="ameStatusChip" class="topbar-chip" style="display:none;align-items:center;gap:6px;cursor:pointer" onclick="go('automation');setTimeout(()=>document.getElementById('ameQueueCard')?.scrollIntoView({behavior:'smooth'}),200)" title="自動化タブで詳細を見る"></div>
     <div id="youtubeStatusChip" class="topbar-chip" style="display:none;align-items:center;gap:6px;cursor:pointer;background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(239,68,68,.05));border-color:rgba(239,68,68,.4)" onclick="go('youtube')" title="YouTube アップロードログを開く"></div>
     <span id="clock" class="clock-text"></span>
     <button class="btn btn-primary btn-sm" id="topbarNewVideoBtn" onclick="showCreateVideoModal()">+ 新規動画</button>
@@ -2697,7 +2696,7 @@ details.ct-rp-section[open]>summary::before{content:'▼ '}
               <div class="fh" id="newChNamingPreview">既存動画がある場合は <code>1_WW_260327</code> などから自動推定します。</div>
             </div>
             <div class="btns" style="margin:0">
-              <select class="fi" id="newChProductionMode" aria-label="新規チャンネルの制作構成"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option><option value="standard">従来の制作構成</option></select><button class="btn btn-primary" onclick="addChannel()">追加</button>
+              <select class="fi" id="newChProductionMode" aria-label="新規チャンネルの制作構成"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select><button class="btn btn-primary" onclick="addChannel()">追加</button>
             </div>
           </div>
         </details>
@@ -3774,7 +3773,7 @@ async function addChannel(){
   if(!folder){toast('フォルダを指定してください','w');return}
   if(!name && !url){toast('チャンネル名 or YouTube URL のいずれかを入力','w');return}
   try{
-    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'New Channel',folder,prefix,production_mode:document.getElementById('newChProductionMode')?.value||'standard',youtube_url:url,create_folder:true,open_in_finder:false})});
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'New Channel',folder,prefix,production_mode:document.getElementById('newChProductionMode')?.value||'ffmpeg_only',youtube_url:url,create_folder:true,open_in_finder:false})});
     if(!r.ok){const e=await r.json().catch(()=>({}));toast('追加失敗: '+(e.detail||r.status),'e');return}
     document.getElementById('newChYoutubeUrl').value='';
     document.getElementById('newChName').value='';
@@ -3825,7 +3824,7 @@ async function openChannelOnboardingWizard(){
       <div class="ff"><label class="fl">チャンネル名</label><input type="text" class="fi" id="onboardName" placeholder="例: Night Jazz Room"></div>
       <div class="ff"><label class="fl">動画フォルダ prefix</label><input type="text" class="fi" id="onboardPrefix" placeholder="例: NJ"></div>
     </div>
-    <div class="ff"><label class="fl">制作構成</label><select class="fi" id="onboardProductionMode"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option><option value="standard">従来の制作構成</option></select></div>
+    <div class="ff"><label class="fl">制作構成</label><select class="fi" id="onboardProductionMode"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select></div>
     <div class="ff">
       <label class="fl">チャンネルフォルダ</label>
       <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
@@ -3908,7 +3907,7 @@ async function createChannelFromOnboardingWizard(){
   if(!folder){toast('フォルダを指定してください','w');return}
   if(status)status.textContent='チャンネル作成中...';
   try{
-    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,folder,prefix,production_mode:document.getElementById('onboardProductionMode')?.value||'standard',youtube_url,create_folder:true,open_in_finder:false})});
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,folder,prefix,production_mode:document.getElementById('onboardProductionMode')?.value||'ffmpeg_only',youtube_url,create_folder:true,open_in_finder:false})});
     if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||r.status)}
     const d=await r.json();
     _onboardingWizardChannelId=d.channel?.id||'';
@@ -5523,10 +5522,7 @@ async function handleVideoNextAction(name,kind,stage,videoId){
   if(kind==='youtube'&&videoId){window.open(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,'_blank','noopener');return}
   if(kind==='schedule'){showVideoDetail(name);setTimeout(()=>setTab('meta'),100);return}
   if(kind==='error'){showVideoDetail(name);toast('詳細画面でエラー内容と実行履歴を確認してください','w');return}
-  if(kind==='premiere'){
-    modal({title:'Premiereで配置',body:'Premiere Proを起動し、動画詳細の「編集」タブ最下部にある「Premiere 連携（自動配置）」から実行してください。'});return
-  }
-  if(kind==='run'&&stage){
+  if((kind==='run'||kind==='premiere')&&stage){  // premiere は段階 1a で ffmpeg 書き出しへ引き継ぐ工程（続きを実行と同じ）
     try{
       const r=await fetch(`/api/videos/${encodeURIComponent(name)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:[stage]})});
       const d=await r.json();
@@ -5795,9 +5791,9 @@ async function showVideoDetail(name, fromRouter=false){
           </span>
           <span class="aeb-group" title="制作・編集工程">
             <span class="aeb-group-title">編集</span>
-            <label title="Photoshop テンプレで vol{N}.jpg + サムネイル.jpg を 2 枚出し（1920×1080）"><input type="checkbox" data-step="psd_composite" checked> PSD合成</label>
-            <label title="Premiere に音源・画像を自動配置します"><input type="checkbox" data-step="premiere" checked> 配置</label>
-            <label title="Adobe Media Encoder で MP4 を書き出します"><input type="checkbox" data-step="export" checked> 書き出し</label>
+            <label title="画像エディタ（Pillow）で vol{N}.jpg + サムネイル.jpg を 2 枚出し（1920×1080）"><input type="checkbox" data-step="psd_composite" checked> 画像合成</label>
+            <label title="配置は FFmpeg 書き出しに統合されています（この工程は自動で通過）"><input type="checkbox" data-step="premiere" checked> 配置</label>
+            <label title="FFmpeg で MP4 を書き出します（音声・映像・字幕・タイムコード）"><input type="checkbox" data-step="export" checked> 書き出し</label>
             <label title="AI でタイトル候補・説明文・タグを生成します"><input type="checkbox" data-step="meta" checked> メタ</label>
           </span>
           <span class="aeb-group" title="公開工程">
@@ -6140,7 +6136,7 @@ async function showVideoDetail(name, fromRouter=false){
                   <div class="image2-studio-sub">背景生成、文字入れ、画像重ね、レイヤー編集をひとつの制作画面にまとめています。</div>
                 </div>
                 <div class="btns" style="margin:0">
-                  <button class="btn btn-ghost btn-sm" onclick="copySceneTextToCompositor('${esc(name)}')">PSD欄からコピー</button>
+                  <button class="btn btn-ghost btn-sm" id="ciSceneGenBtn_${esc(name)}" onclick="generateSceneTextFor('${esc(name)}')">シーンテキスト自動生成</button>
                   <button class="btn btn-ghost btn-sm" onclick="initLayerEditor('${esc(name)}',true)">再読み込み</button>
                   <button class="btn btn-secondary btn-sm" onclick="loadLayerTemplate('${esc(name)}',true)">テンプレ読込</button>
                   <button class="btn btn-secondary btn-sm" onclick="saveLayerTemplate('${esc(name)}')">テンプレ保存</button>
@@ -11400,7 +11396,6 @@ async function pollStatus(){
       fetch('/api/pipeline/status').catch(()=>null),
       fetch('/api/youtube/status').catch(()=>null),
     ]);
-    const aR=null;  // AME キューは段階 1a で廃止（チップは非表示のまま）
     const d=await sR.json();
     // 全タスクログ集約（右上チップのホバーで参照）
     try{ _updateLogPopoverData('suno', d.logs||[]); }catch(_){}
@@ -11439,29 +11434,6 @@ async function pollStatus(){
           }else{
             chip.style.display='none';
           }
-        }
-      }
-    }catch(_){}
-    // AME チップ更新
-    try{
-      const ame=aR?await aR.json():null;
-      const chip=document.getElementById('ameStatusChip');
-      if(chip && ame){
-        const running=ame.running_count||0;
-        const pending=ame.pending_count||0;
-        const total=running+pending;
-        if(total>0){
-          // 進行中ジョブの進捗
-          const cur=ame.current_index!=null?ame.queue[ame.current_index]:null;
-          const prog=cur?.progress||{};
-          const sizeMB=prog.size_bytes?(prog.size_bytes/1024/1024).toFixed(0)+'MB':'';
-          const rateKB=prog.rate_bytes_per_sec?Math.round(prog.rate_bytes_per_sec/1024)+'KB/s':'';
-          const phaseLabel={writing:'書込中',stabilizing:'仕上げ中',waiting:'待機中',done:'完了',timeout:'タイムアウト'}[prog.phase]||prog.phase||'';
-          chip.style.display='inline-flex';
-          chip.innerHTML=`<span style="font-size:13px"></span><span class="status-text">${running?'書出':'待機'} ${ame.queue.length-pending}/${ame.queue.length}${sizeMB?' ・'+esc(sizeMB):''}${rateKB?' ・'+esc(rateKB):''}</span>`;
-          chip.title=`AME キュー: 実行中 ${running} / 待機 ${pending} / 完了 ${ame.done_count||0} / エラー ${ame.error_count||0}\n${phaseLabel?'状態: '+phaseLabel:''}\nクリックで自動化タブを開く`;
-        }else{
-          chip.style.display='none';
         }
       }
     }catch(_){}
@@ -11663,7 +11635,7 @@ function _fmtMmSs(s){
 /* ==== 自動化設定（チャンネル別） ==== */
 async function loadAutomationConfig(){
   setAutomationSaveStatus('loading','読み込み中');
-  // 書き出し関連は書き出しタブへ移設（loadExportTab）。ここでは触らない。
+  // 書き出し関連の設定は段階 1a で廃止（AME キュー）。ここでは触らない。
   try{
     const [cr,ar,pr]=await Promise.all([
       fetch('/api/config'),
@@ -11803,23 +11775,7 @@ async function createVideo(){
   if(data.status==='ok'){
     closeModal();
     const created=data.created||[];
-    const warnings=data.warnings||[];
     toast(`vol.${data.num} を作成: ${data.folder}${created.length?' / '+created.length+' ファイル生成':''}`,'s');
-    if(warnings.length){
-      // 警告は modal で必ず確認させる（テンプレ未設定で .prproj/.psd が生成されない問題を見逃さないため）
-      const html=`<div class="mo-title" style="color:var(--accent-warning)">⚠ テンプレート未生成</div>
-        <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3);line-height:1.7">
-          <code>${esc(data.folder)}</code> は作成しましたが、以下の理由で <strong>.prproj / .psd が生成されていません</strong>:
-        </div>
-        <ul style="margin:0 0 var(--space-3);padding-left:var(--space-4);font-size:var(--text-sm);color:var(--accent-warning)">
-          ${warnings.map(w=>`<li>${esc(w)}</li>`).join('')}
-        </ul>
-        <div class="btns" style="margin:0">
-          <button class="btn btn-primary" onclick="closeModal();go('settings')">基本設定でテンプレを選ぶ</button>
-          <button class="btn btn-secondary" onclick="closeModal()">あとで</button>
-        </div>`;
-      modal(html);
-    }
     loadVideos();loadDashboard();
   }
   else toast('失敗','e');
@@ -12021,12 +11977,6 @@ function _ciThumbLog(name, msg, type){
   const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
   el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
   el.scrollTop=el.scrollHeight;
-}
-
-function copySceneTextToCompositor(name){
-  const ps=document.getElementById(`psSceneText_${name}`);
-  const ci=document.getElementById(`ciSceneText_${name}`);
-  if(ci&&ps){ci.value=ps.value||'';ci.focus();}
 }
 
 async function runImageCompositorFor(name){
@@ -12481,10 +12431,11 @@ async function saveLayerEditorCanvas(name){
 }
 
 async function generateSceneTextFor(name){
-  const btn=document.getElementById(`psSceneGenBtn_${name}`);
-  const input=document.getElementById(`psSceneText_${name}`);
-  if(btn){btn.disabled=true;btn.textContent='生成中…';}
-  _psThumbLog(name,'シーンテキスト自動生成: Claude vision 呼び出し中（数十秒）…','info');
+  // Image2 Layout Studio のシーンテキスト欄に、AI 背景画像から生成した英語フレーズを入れる
+  const btn=document.getElementById(`ciSceneGenBtn_${name}`);
+  const input=document.getElementById(`ciSceneText_${name}`);
+  if(btn){btn.disabled=true;btn.textContent='生成中...';}
+  _ciThumbLog(name,'シーンテキスト自動生成: Vision 呼び出し中（数十秒）','info');
   try{
     const r=await fetch('/api/scene-text/generate',{
       method:'POST',
@@ -12493,7 +12444,7 @@ async function generateSceneTextFor(name){
     });
     const d=await r.json().catch(()=>({}));
     if(!r.ok){
-      _psThumbLog(name,'✕ '+(d.detail||'生成失敗'),'error');
+      _ciThumbLog(name,'失敗: '+(d.detail||'生成失敗'),'error');
       toast(d.detail||'生成失敗','e');
       return;
     }
@@ -12501,37 +12452,14 @@ async function generateSceneTextFor(name){
       input.value=d.scene_text||'';
       input.focus();
     }
-    _psThumbLog(name,`✓ 生成: "${d.scene_text}" (元画像: ${d.image_path})`,'done');
+    _ciThumbLog(name,`生成: "${d.scene_text}" (元画像: ${d.image_path})`,'done');
     toast(`生成: ${d.scene_text}`,'s');
   }catch(e){
-    _psThumbLog(name,'✕ '+e.message,'error');
+    _ciThumbLog(name,'通信エラー: '+e.message,'error');
     toast('通信エラー','e');
   }finally{
-    if(btn){btn.disabled=false;btn.textContent='自動生成';}
+    if(btn){btn.disabled=false;btn.textContent='シーンテキスト自動生成';}
   }
-}
-
-function _renderPsThumbResult(name, d){
-  const wrap=document.getElementById(`psThumbResult_${name}`);
-  if(!wrap)return;
-  wrap.style.display='block';
-  const v=Date.now();
-  const buildUrl=p=>{
-    const base=p.split('/').pop();
-    return `/api/videos/${encodeURIComponent(name)}/image-file/${encodeURIComponent(base)}?v=${v}`;
-  };
-  wrap.innerHTML=`
-    <div style="display:flex;gap:var(--space-3);flex-wrap:wrap">
-      <div style="flex:1;min-width:240px">
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">トグル ON（${esc(d.with_toggle.split('/').pop())}）</div>
-        <img src="${buildUrl(d.with_toggle)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="vol thumbnail" onerror="this.outerHTML='<div style=\\'color:var(--text-tertiary);word-break:break-all\\'>${esc(d.with_toggle)}</div>'">
-      </div>
-      <div style="flex:1;min-width:240px">
-        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">トグル OFF（サムネイル.jpg）</div>
-        <img src="${buildUrl(d.thumbnail)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="thumbnail" onerror="this.outerHTML='<div style=\\'color:var(--text-tertiary);word-break:break-all\\'>${esc(d.thumbnail)}</div>'">
-      </div>
-    </div>
-  `;
 }
 
 /* ==== YouTube Desc ==== */

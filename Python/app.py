@@ -2327,8 +2327,6 @@ def api_list_videos():
             action = {"kind": "youtube", "label": "YouTubeで見る", "video_id": video_id}
         elif done_map.get("upload") or scheduled:
             action = {"kind": "schedule", "label": "予約を確認", "video_id": video_id}
-        elif next_stage == "premiere":
-            action = {"kind": "premiere", "label": "Premiereで配置", "stage": next_stage}
         else:
             action = {"kind": "run", "label": "続きを実行", "stage": next_stage}
 
