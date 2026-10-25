@@ -192,6 +192,21 @@ class ApiBoundaryTest(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 ve._resolve_media(self.vol, self.vol.name, str(stray), allow_exported=True)
 
+    def test_render_dual_thumbnail_refuses_symlinked_vol_output(self):
+        import io
+        from PIL import Image
+        Image.new("RGB", (64, 64), (9, 9, 9)).save(self.vol / "vol2.png")
+        victim = Path(self.tmp.name) / "victim_vol.jpg"
+        victim.write_bytes(b"orig")
+        os.symlink(victim, self.vol / "vol2.jpg")
+        try:
+            r = self.client.post("/api/image-compositor/render-dual-thumbnail", json={"video_name": self.vol.name, "scene_text": "HI"})
+            self.assertEqual(r.status_code, 400, r.text)
+            self.assertEqual(victim.read_bytes(), b"orig")
+        finally:
+            (self.vol / "vol2.jpg").unlink(missing_ok=True)
+            (self.vol / "vol2.png").unlink(missing_ok=True)
+
     def test_image_compositor_rejects_escaping_subdir_and_symlinked_output(self):
         r = self.client.post("/api/image-compositor/render-dual-thumbnail", json={"video_name": self.vol.name, "image_subdir": "../../"})
         self.assertEqual(r.status_code, 400)

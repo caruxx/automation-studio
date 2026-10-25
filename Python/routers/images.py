@@ -102,9 +102,19 @@ def _assert_safe_output(path: Path, root: Path) -> None:
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    """保存先ディレクトリ内に一意な通常ファイルを作って書き、置換する（固定名の一時ファイルが symlink だった場合の追従を防ぐ）。"""
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _scan_local_font_families() -> List[Dict[str, Any]]:
@@ -223,7 +233,7 @@ def api_image_compositor_render_dual_thumbnail(req: ImageCompositorRenderRequest
     toggle_always_visible = bool(cfg.get("psd_toggle_always_visible")) if req.toggle_always_visible is None else bool(req.toggle_always_visible)
     bg_base_only = bool(cfg.get("psd_bg_base_only")) if req.bg_base_only is None else bool(req.bg_base_only)
 
-    for out_name in (f"vol{vol_name}.jpg" if vol_name else "", "サムネイル.jpg"):
+    for out_name in (f"{vol_name}.jpg" if vol_name else "", "サムネイル.jpg"):
         if out_name:
             _assert_safe_output(folder / out_name, folder)
     try:

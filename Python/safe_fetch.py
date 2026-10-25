@@ -85,9 +85,15 @@ def open_url(url: str, timeout: float, ip: str) -> Tuple[int, dict, Callable[...
         raise
     headers = {k.lower(): v for k, v in resp.getheaders()}
 
+    def _socket():
+        # Connection: close の応答では http.client が conn.sock を None にして応答側がソケットを持つ
+        raw = getattr(getattr(resp, "fp", None), "raw", None)
+        return getattr(raw, "_sock", None) or conn.sock
+
     def read(n: int, timeout_sec: float | None = None) -> bytes:
-        if timeout_sec is not None and conn.sock is not None:
-            conn.sock.settimeout(max(0.05, timeout_sec))
+        sock = _socket()
+        if timeout_sec is not None and sock is not None:
+            sock.settimeout(max(0.05, timeout_sec))
         return resp.read1(n)  # 1 回の recv 相当で返る（締め切りを細かく確認できる）
 
     return resp.status, headers, read, conn.close
