@@ -14,14 +14,17 @@ class NormalizeTest(unittest.TestCase):
     def test_naive_is_kept_as_local(self):
         self.assertEqual(ps.normalize_scheduled_local("2026-10-26T12:00:00"), dt.datetime(2026, 10, 26, 12, 0))
 
-    def test_utc_z_and_offset_become_naive_local(self):
+    def test_utc_z_and_offset_become_naive_jst(self):
         z = ps.normalize_scheduled_local("2026-07-09T00:00:00Z")
+        lower_z = ps.normalize_scheduled_local("2026-07-09T00:00:00z")
         off = ps.normalize_scheduled_local("2026-07-09T00:00:00+00:00")
-        self.assertIsNotNone(z)
-        self.assertIsNone(z.tzinfo)
+        self.assertEqual(z, dt.datetime(2026, 7, 9, 9, 0))  # UTC 00:00 → JST 09:00、OS の TZ に依存しない
+        self.assertEqual(z, lower_z)
         self.assertEqual(z, off)
-        expected = dt.datetime(2026, 7, 9, tzinfo=dt.timezone.utc).astimezone().replace(tzinfo=None)
-        self.assertEqual(z, expected)
+
+    def test_jst_offset_is_kept_as_is(self):
+        self.assertEqual(ps.normalize_scheduled_local("2026-10-26T12:00:00+09:00"), dt.datetime(2026, 10, 26, 12, 0))
+        self.assertEqual(ps.normalize_scheduled_local(" 2026-10-26 "), dt.datetime(2026, 10, 26, 0, 0))
 
     def test_invalid_values(self):
         for v in ("", None, "not-a-date", "2026-13-40T00:00:00Z", 123):
@@ -58,9 +61,34 @@ class PlanTest(unittest.TestCase):
     def test_invalid_is_skipped(self):
         self.assertEqual(ps.plan_scheduled_publish_recovery("garbage", now=NOW), ("invalid", None))
 
+    def test_utc_now_is_converted_to_jst_before_compare(self):
+        now_utc = dt.datetime(2026, 10, 25, 6, 0, tzinfo=dt.timezone.utc)  # = JST 15:00
+        kind, run_at = ps.plan_scheduled_publish_recovery("2026-10-25T15:30:00", now=now_utc)
+        self.assertEqual(kind, "future")
+        self.assertEqual(run_at, dt.datetime(2026, 10, 25, 15, 30))
+
+    def test_negative_window_is_clamped_to_zero(self):
+        kind, _ = ps.plan_scheduled_publish_recovery((NOW - dt.timedelta(seconds=1)).isoformat(), now=NOW, max_stale_days=-3)
+        self.assertEqual(kind, "stale")
+
     def test_zero_window_treats_any_past_as_stale(self):
         kind, _ = ps.plan_scheduled_publish_recovery((NOW - dt.timedelta(minutes=1)).isoformat(), now=NOW, max_stale_days=0)
         self.assertEqual(kind, "stale")
+
+
+class ResolveEnvTest(unittest.TestCase):
+    def test_values(self):
+        self.assertEqual(ps.resolve_recover_max_stale_days(None), (7, None))
+        self.assertEqual(ps.resolve_recover_max_stale_days("  "), (7, None))
+        self.assertEqual(ps.resolve_recover_max_stale_days("14"), (14, None))
+        self.assertEqual(ps.resolve_recover_max_stale_days("0"), (0, None))
+        days, warn = ps.resolve_recover_max_stale_days("-3")
+        self.assertEqual(days, 0)
+        self.assertIn("負数", warn)
+        for bad in ("abc", "7.5"):
+            days, warn = ps.resolve_recover_max_stale_days(bad)
+            self.assertEqual(days, 7, msg=bad)
+            self.assertIn("整数ではない", warn)
 
 
 if __name__ == "__main__":

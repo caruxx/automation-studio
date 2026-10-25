@@ -56,7 +56,10 @@ DEFAULT_RECOVER_MAX_STALE_DAYS = 7
 
 
 def normalize_scheduled_local(value: Any) -> Optional[_dt.datetime]:
-    """scheduled_publish_at をローカル時刻の naive datetime に正規化する。解釈できなければ None。"""
+    """scheduled_publish_at を JST の naive datetime に正規化する。解釈できなければ None。
+
+    スケジューラは Asia/Tokyo 固定（app.py の AsyncIOScheduler）なので、OS の TZ に依存せず JST に揃える。
+    naive の値は従来どおり JST のローカル時刻として扱う。"""
     text = str(value or "").strip()
     if not text:
         return None
@@ -67,8 +70,24 @@ def normalize_scheduled_local(value: Any) -> Optional[_dt.datetime]:
     except Exception:
         return None
     if parsed.tzinfo is not None:
-        parsed = parsed.astimezone().replace(tzinfo=None)
+        parsed = parsed.astimezone(JST).replace(tzinfo=None)
     return parsed
+
+
+def resolve_recover_max_stale_days(raw: Any, default: int = DEFAULT_RECOVER_MAX_STALE_DAYS) -> tuple[int, Optional[str]]:
+    """環境変数 APP_PUBLISH_RECOVER_MAX_STALE_DAYS を解釈する。
+
+    戻り値 (days, warning): 空なら既定、負数は 0 に丸め、整数以外は既定に戻す。丸めた・戻した場合は warning に理由を返す。"""
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return default, None
+    try:
+        days = int(text)
+    except ValueError:
+        return default, f"APP_PUBLISH_RECOVER_MAX_STALE_DAYS={text!r} は整数ではないため既定値 {default} を使います"
+    if days < 0:
+        return 0, f"APP_PUBLISH_RECOVER_MAX_STALE_DAYS={days} は負数のため 0 として扱います"
+    return days, None
 
 
 def plan_scheduled_publish_recovery(
@@ -84,14 +103,14 @@ def plan_scheduled_publish_recovery(
       ("overdue", run_at) 過去だが max_stale_days 以内 → now+1 分で即時投入
       ("stale", run_at)   max_stale_days より古い → 再登録せず警告のみ（一斉公開事故の防止）
       ("invalid", None)   解釈不能
-    now は naive ローカル時刻（省略時は datetime.now()）。
+    now は JST の naive 時刻（省略時は datetime.now(JST) を naive 化。aware を渡せば JST に変換する）。
     """
     run_at = normalize_scheduled_local(value)
     if run_at is None:
         return "invalid", None
-    current = now if now is not None else _dt.datetime.now()
+    current = now if now is not None else _dt.datetime.now(JST)
     if current.tzinfo is not None:
-        current = current.astimezone().replace(tzinfo=None)
+        current = current.astimezone(JST).replace(tzinfo=None)
     if run_at >= current:
         return "future", run_at
     if current - run_at > _dt.timedelta(days=max(0, int(max_stale_days))):

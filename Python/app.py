@@ -8579,12 +8579,16 @@ async def _recover_scheduled_publishes():
     if not chs or _scheduler is None:
         return
     import datetime as _dt
-    from publish_schedule import plan_scheduled_publish_recovery as _plan_recovery, DEFAULT_RECOVER_MAX_STALE_DAYS
-    try:
-        max_stale_days = int((os.environ.get("APP_PUBLISH_RECOVER_MAX_STALE_DAYS") or "").strip() or DEFAULT_RECOVER_MAX_STALE_DAYS)
-    except ValueError:
-        max_stale_days = DEFAULT_RECOVER_MAX_STALE_DAYS
-    now_local = _dt.datetime.now()
+    from publish_schedule import (
+        JST as _JST,
+        plan_scheduled_publish_recovery as _plan_recovery,
+        resolve_recover_max_stale_days as _resolve_stale_days,
+    )
+    max_stale_days, stale_warn = _resolve_stale_days(os.environ.get("APP_PUBLISH_RECOVER_MAX_STALE_DAYS"))
+    if stale_warn:
+        print(f"[publish] 警告: {stale_warn}")
+    # スケジューラ（Asia/Tokyo）に合わせ JST の naive 時刻で統一する
+    now_local = _dt.datetime.now(_JST).replace(tzinfo=None)
     n_recovered = 0
     n_stale = 0
     for ch in chs:
