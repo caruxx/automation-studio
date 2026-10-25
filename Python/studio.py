@@ -319,6 +319,56 @@ def run_update(args: argparse.Namespace) -> int:
     return 0 if data.get("ok") else 1
 
 
+def run_vps_runs(args: argparse.Namespace) -> int:
+    """run / run-status / run-resume / run-cancel: VPS の runs API を AI トークンで呼ぶ。stdout は JSON 1 行。
+
+    終了コード: 0 成功 / 1 失敗 / 2 使い方 / 79 run が blocked（待機）。"""
+    import vps_runs
+    from exit_codes import ExitCode
+    intent = args.intent_name
+    try:
+        if intent == "run":
+            vol = (args.vol or args.resolve_num or "").strip() if isinstance(args.vol or args.resolve_num, str) else (args.vol or args.resolve_num)
+            if not vol:
+                emit({"ok": False, "intent": intent, "error": "usage", "message": "--vol が必要です"})
+                return int(ExitCode.USAGE)
+            channel_key = (args.channel or get_active_channel_info().get("id") or "").strip()
+            if not channel_key:
+                emit({"ok": False, "intent": intent, "error": "usage", "message": "--channel かアクティブチャンネルが必要です（VPS の channel_key）"})
+                return int(ExitCode.USAGE)
+            data = vps_runs.create_run(channel_key, int(vol), request_id=args.request_id, intent=args.intent, from_step=args.from_step)
+        elif intent == "run-status":
+            if args.run_id:
+                data = vps_runs.get_run(args.run_id)
+            else:
+                channel_key = (args.channel or get_active_channel_info().get("id") or "").strip() or None
+                data = vps_runs.list_runs(channel_key=channel_key, state=args.state, limit=20)
+        elif intent == "run-resume":
+            if not args.run_id:
+                emit({"ok": False, "intent": intent, "error": "usage", "message": "--run-id が必要です"})
+                return int(ExitCode.USAGE)
+            data = vps_runs.resume_run(args.run_id, from_step=args.from_step)
+        elif intent == "run-cancel":
+            if not args.run_id:
+                emit({"ok": False, "intent": intent, "error": "usage", "message": "--run-id が必要です"})
+                return int(ExitCode.USAGE)
+            data = vps_runs.cancel_run(args.run_id)
+        else:
+            return 2
+    except vps_runs.VpsRunsError as exc:
+        emit({"ok": False, "intent": intent, "error": exc.code, "message": str(exc), "detail": exc.detail})
+        return int(ExitCode.USAGE) if exc.code in ("vps_not_configured", "invalid_request") else int(ExitCode.FAIL)
+    data.pop("_status", None)
+    state = data.get("state")
+    out = {"ok": state not in ("failed",), "intent": intent, **data}
+    if not args.json:
+        print(f"{intent}: run {data.get('id', '-')} state={state} attempts={data.get('attempts', '-')}", file=sys.stderr)
+    emit(out)
+    if state == "blocked":
+        return int(ExitCode.SELECTION_PENDING)
+    return 0 if out["ok"] else int(ExitCode.FAIL)
+
+
 def run_preflight(args: argparse.Namespace) -> int:
     """ffmpeg 専用構成の実行環境検査。欠けている項目を JSON で返す。"""
     try:
@@ -568,6 +618,10 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="実行せず解決後のコマンドだけ表示")
     parser.add_argument("--json", action="store_true", help="最終行の JSON 出力だけを使う呼び出し側向けのフラグ（既定で JSON は常に出る）")
     parser.add_argument("--from", dest="from_step", help="pipeline の再開 step")
+    parser.add_argument("--run-id", type=int, help="run-status / run-resume / run-cancel の対象 run")
+    parser.add_argument("--request-id", help="run の冪等キー（省略時は自動生成）")
+    parser.add_argument("--intent", default="pipeline", help="run が VPS に発行する intent（既定 pipeline）")
+    parser.add_argument("--state", help="run-status の一覧フィルタ")
     parser.add_argument("--publish-date", default="YYYY-MM-DD")
     parser.add_argument("--prompt", default="lounge jazz BGM, elegant cafe atmosphere")
     parser.add_argument("--count", default="20")
@@ -638,6 +692,10 @@ def main() -> int:
 
     if args.intent == "preflight":
         return run_preflight(args)
+
+    if args.intent in ("run", "run-status", "run-resume", "run-cancel"):
+        args.intent_name = args.intent
+        return run_vps_runs(args)
 
     if args.intent == "autopilot":
         return run_autopilot(args)
