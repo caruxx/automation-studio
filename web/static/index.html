@@ -3196,8 +3196,13 @@ const PROGRESS_SIX_GROUPS=[
   {key:'meta',label:'メタ',stages:['meta','localization','thumbnail']},
   {key:'publish',label:'公開',stages:['upload']},
 ];
+// 段階 2c: サーバーの新工程名（select / composite / render）を 6 区分の旧キーへ写す（表示キーの改名は段階 7）。
+const STAGE_NAME_TO_DISPLAY={select:['rename'],composite:['psd_composite'],render:['premiere','export']};
+function displayStageNames(stage){return STAGE_NAME_TO_DISPLAY[stage]||[stage];}
 function aggregateProgressSix(completedStages,currentStage){
-  const done=completedStages instanceof Set?completedStages:new Set(completedStages||[]);
+  const raw=completedStages instanceof Set?[...completedStages]:(completedStages||[]);
+  const done=new Set(raw.flatMap(displayStageNames));
+  currentStage=displayStageNames(currentStage||'')[0]||'';
   return PROGRESS_SIX_GROUPS.map(group=>({
     ...group,
     complete:group.stages.every(stage=>done.has(stage)),
@@ -11470,7 +11475,7 @@ async function pollStatus(){
       if(gBar){gBar.style.display='block';gFill.style.width=pct+'%'}
       setTimeout(pollStatus,1500);
     }else if(pipelineRunning){
-      const phaseLabel={suno:'楽曲生成',rename:'楽曲加工',premiere:'自動配置',export:'書き出し',meta:'メタ生成',upload:'アップロード'}[pipelinePhase]||pipelinePhase;
+      const phaseLabel={suno:'楽曲生成',select:'楽曲選定',rename:'楽曲加工',bgimage:'背景画像',composite:'画像合成',psd_composite:'画像合成',premiere:'自動配置',render:'書き出し',export:'書き出し',qa:'検査',meta:'メタ生成',localization:'多言語',thumbnail:'サムネ',upload:'アップロード'}[pipelinePhase]||pipelinePhase;
       e.innerHTML=`<span class="status-dot status-running"></span><span class="status-text">${esc(pipelineStepInfo)} ${esc(phaseLabel.slice(0,16))}</span>`;
       if(gBar){gBar.style.display='block';gFill.style.width='50%'}
       setTimeout(pollStatus,2000);

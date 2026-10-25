@@ -2263,7 +2263,7 @@ def api_list_videos():
             continue
 
     stage_groups = (
-        ("music", "楽曲", ("suno", "rename")),
+        ("music", "楽曲", ("suno", "select", "rename")),
         ("image", "画像", ("bgimage", "composite")),
         ("video", "動画", ("render",)),
         ("qa", "検査", ("qa",)),
