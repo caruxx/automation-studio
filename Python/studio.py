@@ -334,6 +334,7 @@ def run_vps_runs(args: argparse.Namespace) -> int:
     # 入力検査は --dry-run でも同じに通す（事前確認で「通る」と誤判断させない）
     vol_n = 0
     channel_key = ""
+    request_id = ""
     if intent == "run":
         raw = args.vol or args.resolve_num
         try:
@@ -347,6 +348,8 @@ def run_vps_runs(args: argparse.Namespace) -> int:
             return _usage("--channel かアクティブチャンネルが必要です（VPS の channel_key）")
         if args.request_id is not None and not (8 <= len(args.request_id) <= 128):
             return _usage("--request-id は 8〜128 文字")
+        # 冪等キーは送信前に確定し、失敗時の出力にも載せる（再実行で同じ vol に run を二重起票しない）
+        request_id = args.request_id or vps_runs.new_request_id()
     elif intent in ("run-resume", "run-cancel") and not args.run_id:
         return _usage("--run-id が必要です")
 
@@ -355,10 +358,12 @@ def run_vps_runs(args: argparse.Namespace) -> int:
         preview = {"ok": True, "intent": intent, "dry_run": True}
         if intent == "run":
             preview.update({"method": "POST", "path": "/api/runs",
-                            "payload": {"request_id": args.request_id or "(auto)", "channel_key": channel_key, "vol": vol_n,
+                            "payload": {"request_id": request_id, "channel_key": channel_key, "vol": vol_n,
                                         "workflow_version": vps_runs.workflow_version(), "intent": args.run_intent, "from_step": args.from_step}})
         elif intent == "run-status":
-            preview.update({"method": "GET", "path": f"/api/runs/{args.run_id}" if args.run_id else "/api/runs"})
+            preview.update({"method": "GET", "path": f"/api/runs/{args.run_id}" if args.run_id else "/api/runs",
+                            "query": None if args.run_id else {"channel_key": (args.channel or get_active_channel_info().get("id") or "") or None,
+                                                                "state": args.state, "limit": 20}})
         else:
             preview.update({"method": "POST", "path": f"/api/runs/{args.run_id}/{intent.split('-', 1)[1]}"})
         emit(preview)
@@ -366,7 +371,7 @@ def run_vps_runs(args: argparse.Namespace) -> int:
 
     try:
         if intent == "run":
-            data = vps_runs.create_run(channel_key, vol_n, request_id=args.request_id, intent=args.run_intent, from_step=args.from_step)
+            data = vps_runs.create_run(channel_key, vol_n, request_id=request_id, intent=args.run_intent, from_step=args.from_step)
         elif intent == "run-status":
             if args.run_id:
                 data = vps_runs.get_run(args.run_id)
@@ -380,10 +385,19 @@ def run_vps_runs(args: argparse.Namespace) -> int:
         else:
             return 2
     except vps_runs.VpsRunsError as exc:
-        emit({"ok": False, "intent": intent, "error": exc.code, "message": str(exc), "detail": exc.detail})
-        return int(ExitCode.USAGE) if exc.code in ("vps_not_configured", "invalid_request") else int(ExitCode.FAIL)
-    data.pop("_status", None)
+        out = {"ok": False, "intent": intent, "error": exc.code, "message": str(exc), "detail": exc.detail}
+        if request_id:
+            out["request_id"] = request_id  # 再実行時は --request-id にこの値を渡せば同じ run に当たる
+        emit(out)
+        if exc.code in ("vps_not_configured", "invalid_request"):
+            return int(ExitCode.USAGE)
+        if exc.code in ("vps_unreachable", "previous_job_still_leased") or exc.status == 503:
+            return int(ExitCode.RETRYABLE)  # 待てば通る状態は失敗に数えない
+        return int(ExitCode.FAIL)
+    http_status = data.pop("_status", None)
     state = data.get("state")
+    if intent == "run" and http_status in (200, 201):
+        data["created"] = http_status == 201  # 201 新規 / 200 既存（同じ request_id）
     if "intent" in data:
         data["run_intent"] = data.pop("intent")  # VPS 側の intent（pipeline 等）は別キーにし、intent は CLI 名を保つ
     out = {"ok": state not in ("failed",), "intent": intent, **data}

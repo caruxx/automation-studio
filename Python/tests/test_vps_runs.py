@@ -125,7 +125,9 @@ class StudioIntentTest(unittest.TestCase):
         def fake_request(method, path, *, payload=None, query=None, **kw):
             calls.append((method, path, payload, query))
             if path == "/api/runs" and method == "POST":
-                return {"id": 11, "state": "queued", "attempts": 1, "_status": 200}
+                if payload["request_id"] == "req-fixed-dup1":
+                    raise vps_runs.VpsRunsError("vps_unreachable", "POST /api/runs 失敗: timeout")
+                return {"id": 11, "state": "queued", "attempts": 1, "_status": 201}
             if path.endswith("/resume"):
                 return {"id": 11, "state": "queued", "attempts": 2, "_status": 200}
             if path.endswith("/cancel"):
@@ -144,8 +146,11 @@ class StudioIntentTest(unittest.TestCase):
             self.assertEqual(studio.run_vps_runs(self._args(intent_name="run-cancel", run_id=11)), 0)
             self.assertEqual(studio.run_vps_runs(self._args(intent_name="run-resume")), 2)             # --run-id なし
             self.assertEqual(studio.run_vps_runs(self._args(intent_name="run", vol=None)), 2)
+            self.assertEqual(studio.run_vps_runs(self._args(intent_name="run", vol="12", request_id="req-fixed-dup1")), 76)  # 通信断は再試行可
         lines = [json.loads(l) for l in out.getvalue().strip().splitlines()]
         self.assertEqual(lines[0]["id"], 11)
+        self.assertTrue(lines[0]["created"])
+        self.assertEqual(lines[-1]["request_id"], "req-fixed-dup1")  # 失敗時も冪等キーを出す
         self.assertTrue(all("_status" not in l for l in lines))
         self.assertEqual(calls[0][2]["request_id"], "req-fixed-0002")
         self.assertEqual(calls[0][2]["channel_key"], "edm")
@@ -189,6 +194,34 @@ class StudioIntentTest(unittest.TestCase):
         self.assertEqual(dry[0]["payload"]["vol"], 12)  # 実送信と同じ int
         self.assertEqual(dry[1]["path"], "/api/runs/5/cancel")
         self.assertNotIn("ai_token", json.dumps(dry))
+
+    def test_auto_request_id_is_fixed_before_send_and_reported_on_failure(self):
+        import studio
+        seen = []
+        def fake_request(method, path, *, payload=None, query=None, **kw):
+            seen.append(payload["request_id"])
+            raise vps_runs.VpsRunsError("vps_unreachable", "timeout")
+        out = io.StringIO()
+        with patch("vps_runs.request", fake_request), patch("sys.stdout", out), \
+                patch.object(studio, "get_active_channel_info", lambda: {"id": "edm"}):
+            with patch("sys.argv", ["studio.py", "run", "--vol", "12", "--json"]):
+                self.assertEqual(studio.main(), 76)
+            with patch("sys.argv", ["studio.py", "run", "--vol", "12", "--json", "--dry-run"]):
+                self.assertEqual(studio.main(), 0)
+        lines = [json.loads(l) for l in out.getvalue().strip().splitlines()]
+        self.assertEqual(lines[0]["request_id"], seen[0])
+        self.assertTrue(lines[0]["request_id"].startswith("req-"))
+        self.assertTrue(lines[1]["payload"]["request_id"].startswith("req-"))  # dry-run でも実際の値（"(auto)" ではない）
+
+    def test_token_with_control_characters_is_rejected_without_leaking(self):
+        with tempfile.TemporaryDirectory() as t:
+            cfg = Path(t) / "worker.json"
+            cfg.write_text(json.dumps({"base_url": "https://v", "ai_token": "secret-with\nnewline"}), encoding="utf-8")
+            with patch.dict(os.environ, {"APP_WORKER_CONFIG": str(cfg)}):
+                with self.assertRaises(vps_runs.VpsRunsError) as cm:
+                    vps_runs.load_settings()
+                self.assertEqual(cm.exception.code, "vps_not_configured")
+                self.assertNotIn("secret-with", str(cm.exception))
 
     def test_cli_not_configured_exits_2(self):
         with tempfile.TemporaryDirectory() as t:

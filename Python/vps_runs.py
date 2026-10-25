@@ -44,6 +44,9 @@ def load_settings() -> dict[str, str]:
     ai_token = str(data.get("ai_token") or "").strip()
     if not base_url or not ai_token:
         raise VpsRunsError("vps_not_configured", f"base_url と ai_token を {path} に設定してください（ai:runs スコープの AI トークン）")
+    # ヘッダに使えない文字（改行・制御文字・非 ASCII）が混ざると urllib が値ごと例外に出すため、ここで値を含めずに拒否する
+    if any(ord(c) < 33 or ord(c) > 126 for c in ai_token) or not base_url.startswith(("https://", "http://")):
+        raise VpsRunsError("vps_not_configured", f"{path} の ai_token または base_url に使えない文字が含まれています（値は表示しません）")
     return {"base_url": base_url, "ai_token": ai_token}
 
 
