@@ -211,6 +211,24 @@ def register_download(folder, saved, workspace, expected):
     return batch_id
 
 
+def _legacy_music_name(title):
+    """段階 2a より前の採用ファイル名（テイク番号を残す旧規則）。既存 vol の処理済み判定にだけ使う。"""
+    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", str(title)).strip() + ".mp3"
+
+
+def selected_music_names(takes):
+    """採用テイク → music/ のファイル名（naming.music_filename。テイク番号を除き、同名は ` -2` で採番）。
+
+    takes の順（title_key, clip_id）で決定的に採番する。戻り値は {clip_id: filename}。"""
+    from naming import music_filename
+    names = {}
+    for take in takes:
+        if not take.get("selected"):
+            continue
+        names[take["clip_id"]] = music_filename(take["title"], taken=names.values())
+    return names
+
+
 def _state(conn, batch_id):
     row = conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
     if not row: raise ValueError("楽曲バッチが見つかりません")
@@ -236,11 +254,12 @@ def _state(conn, batch_id):
     state["ready"] = state["download_complete"] and all(sum(t["selected"] for t in group) == 1 for group in groups.values())
     state["processed"] = state["ready"] and state["processed_revision"] == state["revision"]
     if state["processed"]:
-        names = {re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", t["title"]).strip() + ".mp3"
-                 for t in takes if t["selected"]}
+        names = set(selected_music_names(takes).values())
+        legacy = {_legacy_music_name(t["title"]) for t in takes if t["selected"]}  # 旧規則で処理済みの既存 vol も認める
         music = Path(state["folder"]) / "music"
-        state["processed"] = music.is_dir() and {p.name for p in music.glob("*.mp3")} == names and all(
-            (music / name).stat().st_size > 0 for name in names)
+        actual = {p.name for p in music.glob("*.mp3")} if music.is_dir() else set()
+        matched = names if actual == names else (legacy if actual == legacy else None)
+        state["processed"] = matched is not None and all((music / name).stat().st_size > 0 for name in matched)
     return state
 
 
@@ -418,10 +437,11 @@ def process_selected(folder, processor, dry_run=False, force=False):
         # 既存の未管理音声は上書きしない。
         if music.exists() and state["processed_revision"] < 0 and any(music.iterdir()):
             raise ValueError("music/に既存の音声があります。既存動画を保護するため後処理を停止しました")
+        names = selected_music_names(state["takes"])  # テイク番号 (1) 等を除いた公開用の曲名で保存する
         for take in state["takes"]:
             if not take["selected"]: continue
-            name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", take["title"]).strip() + ".mp3"
-            if name == ".mp3" or (stage / name).exists(): raise ValueError("採用タイトルのファイル名が重複しています")
+            name = names[take["clip_id"]]
+            if (stage / name).exists(): raise ValueError("採用タイトルのファイル名が重複しています")
             processor(safe_file(folder, take["file"]), stage / name)
             if not (stage / name).is_file() or not (stage / name).stat().st_size:
                 raise ValueError("後処理済み音声が出力されていません")
