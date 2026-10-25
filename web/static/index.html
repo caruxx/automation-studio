@@ -5363,7 +5363,7 @@ async function loadDashboard(){
       vs=(d.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{
         const done=new Set(v.completed||[]);
         if(v.has_thumb)done.add('bgimage').add('psd_composite').add('thumbnail');
-        return {name:v.name,num:v.vol,title:'',publish_date:v.publish_date,channel_id:ch.channel_id,has_music:done.has('rename'),has_mp4:done.has('export'),has_upload:!!v.is_uploaded,progress:{done_stages:[...done],next_stage:v.current||''}};
+        return {name:v.name,num:v.vol,title:'',publish_date:v.publish_date,channel_id:ch.channel_id,has_music:done.has('rename'),has_mp4:(done.has('export')||done.has('render')),has_upload:!!v.is_uploaded,progress:{done_stages:[...done],next_stage:v.current||''}};
       }));
     }else{
       const d=await (await fetch('/api/videos')).json();vs=d.videos||[];
