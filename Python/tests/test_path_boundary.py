@@ -133,6 +133,33 @@ class ApiBoundaryTest(unittest.TestCase):
         r = self.client.post("/api/image-compositor/template", json={"video_name": self.vol.name, "template": {"layers": []}})
         self.assertEqual(r.status_code, 200, r.text)
 
+    def test_thumbnail_upload_validates_images_and_returns_ids(self):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(buf, "PNG")
+        r = self.client.post("/api/analysis/thumbnails-upload", files=[("files", ("a.png", buf.getvalue(), "image/png"))])
+        self.assertEqual(r.status_code, 200, r.text)
+        uid = r.json()["upload_id"]
+        self.assertTrue(uid.isalnum())
+        self.assertNotIn("path", r.text)
+        saved = list((Path(studio._THUMB_UPLOAD_ROOT) / uid).iterdir())
+        self.assertEqual([p.name for p in saved], ["00.png"])
+        r = self.client.post("/api/analysis/thumbnails-upload", files=[("files", ("evil.png", b"<html>not image</html>", "image/png"))])
+        self.assertEqual(r.status_code, 400)
+
+    def test_thumbnail_analysis_rejects_bad_urls_and_unknown_upload_ids(self):
+        r = self.client.post("/api/analysis/thumbnails", json={"urls": ["http://127.0.0.1/a.png"]})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/analysis/thumbnails", json={"urls": ["https://169.254.169.254/latest/meta-data"]})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/analysis/thumbnails", json={"upload_ids": ["../../etc"]})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/analysis/thumbnails", json={"upload_ids": ["0123456789abcdef0123456789abcdef"]})
+        self.assertEqual(r.status_code, 404)
+        r = self.client.post("/api/analysis/thumbnails", json={"uploaded_paths": [str(self.outside)]})
+        self.assertEqual(r.status_code, 400)  # 旧フィールドは無視され、画像なしとして 400
+
 
 if __name__ == "__main__":
     unittest.main()

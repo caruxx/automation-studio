@@ -445,24 +445,23 @@ def analyze_thumbnail_elements(
         }
     """
     import tempfile
-    import urllib.request
 
     local_paths = [Path(p) for p in (image_paths or []) if Path(p).exists()]
     tmp_dir = None
     downloaded = []
     if url_list:
+        # S04: 取得は safe_fetch に集約（https / 内部アドレス拒否 / redirect 再検証 / image/* / 容量上限）
+        from safe_fetch import SafeFetchError, fetch_image
         tmp_dir = Path(tempfile.mkdtemp(prefix="orzz_thumb_"))
         for i, url in enumerate(url_list):
             try:
-                ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
-                if ext not in {"png", "jpg", "jpeg", "webp"}:
-                    ext = "jpg"
+                data, ctype = fetch_image(url)
+                ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(ctype, "jpg")
                 dst = tmp_dir / f"thumb_{i:02d}.{ext}"
-                with urllib.request.urlopen(url, timeout=60) as response, dst.open("wb") as out:
-                    shutil.copyfileobj(response, out)
+                dst.write_bytes(data)
                 downloaded.append(dst)
-            except Exception as e:
-                print(f"  ⚠ URL 取得失敗: {url} ({e})")
+            except SafeFetchError as e:
+                print(f"  URL 取得拒否: {url} ({e})")
         local_paths.extend(downloaded)
 
     if not local_paths:

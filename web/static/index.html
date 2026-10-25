@@ -12933,20 +12933,20 @@ async function runThumbAnalysis(){
   statusEl.textContent='アップロード中…';
   resEl.innerHTML='';
   try{
-    let uploaded_paths=[];
+    let upload_ids=[];
     if(files.length){
       const fd=new FormData();
       files.forEach(f=>fd.append('files',f));
       const up=await fetch('/api/analysis/thumbnails-upload',{method:'POST',body:fd});
       if(!up.ok){throw new Error('アップロード失敗 '+up.status)}
       const upd=await up.json();
-      uploaded_paths=upd.paths||[];
+      if(upd.upload_id)upload_ids=[upd.upload_id];
     }
     statusEl.textContent='Claude Vision で分析中… (60-120s)';
     const r=await fetch('/api/analysis/thumbnails',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({urls,uploaded_paths,context_hint:ctxTa.value||''})
+      body:JSON.stringify({urls,upload_ids,context_hint:ctxTa.value||''})
     });
     if(!r.ok){const t=await r.text();throw new Error('分析失敗: '+t)}
     const d=await r.json();

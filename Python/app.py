@@ -4883,38 +4883,95 @@ def api_analysis_cache_info():
 # ─── API: サムネ要素分析（Vision） ───
 
 class ThumbnailAnalysisRequest(BaseModel):
-    urls: Optional[List[str]] = None       # 画像URL 一覧
-    uploaded_paths: Optional[List[str]] = None  # サーバ側に保存済みの画像パス（POST /api/analysis/thumbnails-upload 経由）
+    urls: Optional[List[str]] = None        # 画像 URL 一覧（https のみ。safe_fetch で検証して取得）
+    upload_ids: Optional[List[str]] = None  # POST /api/analysis/thumbnails-upload が返した upload_id
     context_hint: Optional[str] = None
+
+
+_THUMB_UPLOAD_ROOT = CONFIG_DIR / "thumb_uploads"
+_THUMB_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+_THUMB_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _thumb_upload_dir(upload_id: str) -> Path:
+    """upload_id（英数と -_ のみ）を専用領域配下のディレクトリに解決する。"""
+    uid = str(upload_id or "").strip()
+    if not uid or not all(c.isalnum() or c in "-_" for c in uid) or len(uid) > 64:
+        raise HTTPException(400, "upload_id が不正です")
+    d = (_THUMB_UPLOAD_ROOT / uid).resolve()
+    if not path_is_within(d, _THUMB_UPLOAD_ROOT):
+        raise HTTPException(400, "upload_id が不正です")
+    return d
+
+
+def _save_image_bytes(dst_dir: Path, index: int, content: bytes, name_hint: str = "") -> Path:
+    """画像であることを Pillow で確認し、実形式に合わせた拡張子で保存する。"""
+    import io
+    from PIL import Image
+    if not content:
+        raise HTTPException(400, "空のファイルです")
+    if len(content) > _THUMB_UPLOAD_MAX_BYTES:
+        raise HTTPException(413, "画像が大きすぎます（10MB まで）")
+    try:
+        with Image.open(io.BytesIO(content)) as img:
+            fmt = (img.format or "").lower()
+            img.verify()
+    except Exception:
+        raise HTTPException(400, f"画像として読めません: {Path(name_hint or 'file').name}")
+    ext = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}.get(fmt)
+    if not ext:
+        raise HTTPException(400, f"対応していない画像形式です: {fmt or 'unknown'}")
+    dst = dst_dir / f"{index:02d}{ext}"
+    dst.write_bytes(content)
+    return dst
 
 
 @app.post("/api/analysis/thumbnails-upload")
 async def api_thumbnails_upload(files: List[UploadFile] = File(...)):
-    """画像をサーバ一時領域に保存し、分析関数に渡せるパス一覧を返す"""
-    import tempfile
-    dst_dir = Path(tempfile.mkdtemp(prefix="orzz_thumb_upload_"))
-    saved = []
-    for f in files:
-        ext = Path(f.filename or "img").suffix.lower() or ".jpg"
-        if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
-            ext = ".jpg"
-        dst = dst_dir / f"{len(saved):02d}{ext}"
+    """画像をサーバの専用領域（CONFIG_DIR/thumb_uploads/<upload_id>/）に保存し、upload_id を返す。
+    パスは返さない（S04: 利用者に紐付く ID だけを後続 API に渡す）。"""
+    import uuid
+    upload_id = uuid.uuid4().hex
+    dst_dir = _thumb_upload_dir(upload_id)
+    dst_dir.mkdir(parents=True, exist_ok=False)
+    saved = 0
+    for f in files[:20]:
         content = await f.read()
-        dst.write_bytes(content)
-        saved.append(str(dst))
-    return {"paths": saved}
+        _save_image_bytes(dst_dir, saved, content, f.filename or "")
+        saved += 1
+    if not saved:
+        raise HTTPException(400, "画像がありません")
+    return {"upload_id": upload_id, "count": saved}
 
 
 @app.post("/api/analysis/thumbnails")
 def api_analyze_thumbnails(req: ThumbnailAnalysisRequest):
     """競合サムネ画像を Claude Vision で要素抽出。**コピー生成ではなく要素抽出→自チャンネルへの落とし込み**が目的。"""
     from app_benchmark_analyze import analyze_thumbnail_elements
+    from safe_fetch import SafeFetchError, fetch_image
     suno_cfg = get_suno_config()
     cli_cmd = suno_cfg.get("claude_cli") or "claude"
+    image_paths: list[str] = []
+    for uid in (req.upload_ids or [])[:10]:
+        d = _thumb_upload_dir(uid)
+        if not d.is_dir():
+            raise HTTPException(404, f"upload_id が見つかりません: {uid}")
+        image_paths.extend(str(p) for p in sorted(d.iterdir()) if p.suffix.lower() in _THUMB_IMAGE_EXT)
+    fetched_dir = None
+    if req.urls:
+        import tempfile
+        _THUMB_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+        fetched_dir = Path(tempfile.mkdtemp(prefix="thumb_url_", dir=str(_THUMB_UPLOAD_ROOT)))
+        for i, url in enumerate(req.urls[:10]):
+            try:
+                data, _ctype = fetch_image(url)
+            except SafeFetchError as e:
+                raise HTTPException(400, f"URL を取得できません: {e}")
+            image_paths.append(str(_save_image_bytes(fetched_dir, i, data, url)))
     try:
         result = analyze_thumbnail_elements(
-            image_paths=req.uploaded_paths or [],
-            url_list=req.urls or [],
+            image_paths=image_paths,
+            url_list=[],
             context_hint=req.context_hint or "",
             cli_cmd=cli_cmd,
         )
@@ -4938,6 +4995,15 @@ def api_analyze_thumbnails(req: ThumbnailAnalysisRequest):
         if "解析対象の画像がありません" in msg:
             raise HTTPException(400, msg)
         raise HTTPException(500, msg)
+    finally:
+        # 取得・アップロードした画像は分析後に消す
+        try:
+            if fetched_dir is not None:
+                shutil.rmtree(fetched_dir, ignore_errors=True)
+            for uid in (req.upload_ids or [])[:10]:
+                shutil.rmtree(_thumb_upload_dir(uid), ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ─── API: Sheets URL 取り込み ───
