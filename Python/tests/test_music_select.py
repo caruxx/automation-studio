@@ -72,6 +72,27 @@ class ScoringTest(unittest.TestCase):
             self.assertAlmostEqual(m["silence_ratio"], 3.0 / 14.0, places=3)  # 末尾 2 秒は除外
             self.assertEqual(m["trailing_silence_sec"], 2.0)
             self.assertEqual((m["lufs"], m["true_peak"]), (-22.4, -18.5))
+            # ffmpeg が失敗したら無音率・ラウドネスは測定不能（0 にしない）
+            bad = Path(t) / "ffmpeg_bad"
+            bad.write_text("#!/bin/sh\nexit 1\n")
+            bad.chmod(bad.stat().st_mode | stat.S_IEXEC)
+            m2 = ms.measure(Path(t) / "x.mp3", ffmpeg=str(bad), ffprobe=str(probe))
+            self.assertEqual((m2["duration_sec"], m2["silence_ratio"], m2["lufs"]), (14.0, None, None))
+            self.assertTrue(ms.score(m2, None, ms.policy_from(None))["unmeasured"])
+            # 終了 0 でも Summary が無ければ測定不能
+            nosum = Path(t) / "ffmpeg_nosum"
+            nosum.write_text("#!/bin/sh\necho '[silencedetect] silence_start: 1.0' >&2\n")
+            nosum.chmod(nosum.stat().st_mode | stat.S_IEXEC)
+            m3 = ms.measure(Path(t) / "x.mp3", ffmpeg=str(nosum), ffprobe=str(probe))
+            self.assertIsNone(m3["silence_ratio"])
+
+    def test_effective_duration_excludes_trailing_silence(self):
+        pol = ms.policy_from(None)
+        r = ms.score({"duration_sec": 300.0, "silence_ratio": 0.0, "lufs": -14.0, "trailing_silence_sec": 240.0}, None, pol)
+        self.assertFalse(r["passed"])  # 実質 60 秒は最小尺 120 秒未満
+        self.assertEqual(r["effective_duration_sec"], 60.0)
+        r = ms.score({"duration_sec": 300.0, "silence_ratio": 0.0, "lufs": -14.0, "trailing_silence_sec": 10.0}, None, pol)
+        self.assertTrue(r["passed"])
 
     def test_prompt_fit_parsing(self):
         self.assertIsNone(ms.prompt_fit("A", "", llm=lambda q: "0.9"))

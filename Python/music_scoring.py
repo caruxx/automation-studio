@@ -80,6 +80,8 @@ def measure(path: Path, *, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe", tim
                               "-af", "silencedetect=noise=-35dB:d=0.5,ebur128=peak=true", "-f", "null", "-"],
                              capture_output=True, text=True, timeout=timeout)
         text = res.stderr or ""
+        if res.returncode != 0 or not _LUFS_RE.search(text):
+            return out  # ffmpeg が失敗した／ebur128 の Summary が無い → 無音率・ラウドネスは測定不能のまま
         starts = [float(x) for x in _SILENCE_START_RE.findall(text)]
         ends = [float(x) for x in _SILENCE_END_RE.findall(text)]
         durations = [float(x) for x in _SILENCE_RE.findall(text)]
@@ -142,6 +144,8 @@ def score(m: dict[str, Any], fit: Optional[float], policy: Optional[dict[str, An
     unmeasured = False
 
     d = m.get("duration_sec")
+    if d is not None and m.get("trailing_silence_sec"):
+        d = max(0.0, d - float(m["trailing_silence_sec"]))  # 末尾の無音は後処理で削られるので実質の尺で判定する
     if d is None:
         passed = False
         unmeasured = True
@@ -191,4 +195,5 @@ def score(m: dict[str, Any], fit: Optional[float], policy: Optional[dict[str, An
 
     total_w = sum(pw for pw, _ in parts)
     value = round(100.0 * sum(pw * pv for pw, pv in parts) / total_w, 1) if total_w > 0 else 0.0
-    return {"score": value, "passed": passed, "unmeasured": unmeasured, "reasons": reasons}
+    return {"score": value, "passed": passed, "unmeasured": unmeasured, "reasons": reasons,
+            "effective_duration_sec": d}

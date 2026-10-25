@@ -102,6 +102,26 @@ class RenameRuleTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.folder / "music").glob("*.mp3")), ["Silver Avenue(1).mp3"])
         self.assertTrue(catalog.get_review(batch)["processed"])
 
+    def test_reselecting_one_group_in_legacy_vol_keeps_all_legacy_names(self):
+        """旧規則の vol で 1 群だけ選び直して再処理しても、他の曲の名前は旧名のまま。"""
+        batch = self._register(["Silver Avenue(1)", "Night Walk(2)"])
+        catalog.choose_take(batch, "clip-1", True)
+        catalog.choose_take(batch, "clip-2", True)
+        state = catalog.get_review(batch)
+        (self.folder / "music").mkdir()
+        for name in ("Silver Avenue(1).mp3", "Night Walk(2).mp3"):
+            (self.folder / "music" / name).write_bytes(b"legacy")
+        with catalog.transaction() as conn:
+            conn.execute("UPDATE batches SET processed_revision=revision WHERE id=?", (state["id"],))
+        catalog.choose_take(batch, "clip-0", True)  # Silver Avenue を選び直す（revision が進む）
+        st = catalog.get_review(batch)
+        self.assertFalse(st["processed"])
+        self.assertEqual(st["processed_naming"], "legacy")
+        catalog.process_selected(self.folder, shutil.copyfile)
+        self.assertEqual(sorted(p.name for p in (self.folder / "music").glob("*.mp3")),
+                         ["Night Walk(2).mp3", "Silver Avenue(1).mp3"])
+        self.assertTrue(catalog.get_review(batch)["processed"])
+
     def test_mixed_names_are_unprocessed_and_nfd_listing_is_processed(self):
         import unicodedata
         batch = self._register(["ガーデン(1)"])

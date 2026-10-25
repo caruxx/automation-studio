@@ -253,21 +253,34 @@ def _state(conn, batch_id):
         len(group) == 2 and all(t["available"] for t in group) for group in groups.values())
     state["ready"] = state["download_complete"] and all(sum(t["selected"] for t in group) == 1 for group in groups.values())
     state["processed"] = state["ready"] and state["processed_revision"] == state["revision"]
-    state["processed_naming"] = None  # "new" / "legacy": music/ がどの規則で作られているか
+    from naming import _name_key
+    music = Path(state["folder"]) / "music"
+    actual = {p.name for p in music.glob("*.mp3")} if music.is_dir() else set()
+    actual_keys = {_name_key(n) for n in actual}
+    # music/ がどの規則で作られているか（"new" / "legacy" / None）。選び直しで revision が進んでも、
+    # 一度旧規則で処理した vol は旧名を保つ必要があるため、全テイクの旧名と照合して判定する。
+    state["processed_naming"] = None
+    if state["processed_revision"] >= 0 and actual_keys:
+        legacy_all = {_name_key(_legacy_music_name(t["title"])) for t in takes}
+        try:
+            new_all = {_name_key(n) for n in selected_music_names(takes).values()}
+        except ValueError:
+            new_all = set()
+        legacy_only = legacy_all - new_all
+        if actual_keys & legacy_only:
+            state["processed_naming"] = "legacy"
+        elif actual_keys & new_all:
+            state["processed_naming"] = "new"
     if state["processed"]:
-        from naming import _name_key
         try:
             names = set(selected_music_names(takes).values())
         except ValueError:
             names = set()
         legacy = {_legacy_music_name(t["title"]) for t in takes if t["selected"]}  # 旧規則で処理済みの既存 vol も認める
-        music = Path(state["folder"]) / "music"
-        actual = {p.name for p in music.glob("*.mp3")} if music.is_dir() else set()
-        actual_keys = {_name_key(n) for n in actual}
         if names and actual_keys == {_name_key(n) for n in names}:
-            matched, state["processed_naming"] = actual, "new"
+            matched = actual
         elif actual_keys == {_name_key(n) for n in legacy}:
-            matched, state["processed_naming"] = actual, "legacy"
+            matched = actual
         else:
             matched = None
         state["processed"] = matched is not None and all((music / name).stat().st_size > 0 for name in matched)
@@ -372,29 +385,36 @@ def load_music_selection_config(folder):
 def choose_take_ai(batch_id, clip_id):
     """AI の採用。1 つのトランザクション内で「後処理中でない」「その群にまだ採用が無い」を確認してから採用する。
 
-    測定中に人がハートを付けていたら何もせず False（人の採用を尊重）。採用できたら True。"""
+    戻り値: "selected"（採用した）/ "human"（測定中に人が採用していた）/ "processing"（後処理中で見送り）/
+    "unavailable"（対象テイクが無い）。人の採用は上書きしない。"""
     with transaction() as conn:
         batch = _state(conn, batch_id)
         if batch["processing"]:
-            return False
+            return "processing"
         take = next((t for t in batch["takes"] if t["clip_id"] == clip_id), None)
         if not take or not take["available"]:
-            return False
+            return "unavailable"
         if any(t["selected"] for t in batch["takes"] if t["title_key"] == take["title_key"]):
-            return False
+            return "human"
         conn.execute("UPDATE takes SET selected=1 WHERE batch_id=? AND clip_id=?", (batch_id, clip_id))
         conn.execute("UPDATE batches SET revision=revision+1 WHERE id=?", (batch_id,))
         _event(conn, "ai_selected", {"batch_id": batch_id, "clip_id": clip_id})
         _export(conn, batch_id)
-        return True
+        return "selected"
 
 
 def ai_select_attempts(batch_id):
     """AI 選曲の試行回数（品質待機・測定不能で止まった回数。段階 3 の再生成判断に使う）。"""
     with transaction() as conn:
-        row = conn.execute("SELECT COUNT(*) AS n FROM events WHERE kind='ai_select_failed' AND detail_json LIKE ?",
-                           (f'%"batch_id": "{batch_id}"%',)).fetchone()
-        return int(row["n"]) if row else 0
+        rows = conn.execute("SELECT detail_json FROM events WHERE kind='ai_select_failed'").fetchall()
+    n = 0
+    for r in rows:
+        try:
+            if json.loads(r["detail_json"]).get("batch_id") == batch_id:
+                n += 1
+        except (TypeError, ValueError):
+            continue
+    return n
 
 
 def _upsert_score(conn, batch_id, clip_id, m, fit, result):
@@ -433,7 +453,7 @@ def select_takes_ai(folder, *, policy=None, measurer=None, llm=None, prompt="", 
     for take in state["takes"]:
         groups.setdefault(take["title_key"], []).append(take)
     result = {"batch_id": state["id"], "groups_total": len(groups), "groups_selected_by_ai": 0,
-              "groups_human": 0, "groups_failed": 0, "groups_unmeasured": 0, "scores": {},
+              "groups_human": 0, "groups_failed": 0, "groups_unmeasured": 0, "groups_skipped": 0, "scores": {},
               "dry_run": bool(dry_run), "blocked_reason": None, "attempt": ai_select_attempts(state["id"])}
     failed_titles = []
     for key, takes in groups.items():
@@ -460,10 +480,13 @@ def select_takes_ai(folder, *, policy=None, measurer=None, llm=None, prompt="", 
                 result["groups_unmeasured"] += 1
             failed_titles.append(takes[0]["title"])
             continue
-        if dry_run or choose_take_ai(state["id"], best[0]["clip_id"]):
+        outcome = "selected" if dry_run else choose_take_ai(state["id"], best[0]["clip_id"])
+        if outcome == "selected":
             result["groups_selected_by_ai"] += 1
-        else:
+        elif outcome == "human":
             result["groups_human"] += 1  # 測定中に人が採用した
+        else:
+            result["groups_skipped"] += 1  # 後処理中、または対象テイクが消えた
     ai_targets = result["groups_selected_by_ai"] + result["groups_failed"]
     if not dry_run:
         final = get_review(state["id"])
