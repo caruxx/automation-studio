@@ -1,7 +1,7 @@
 # Automation Studio 仕様書
 
 クリエイター向け動画制作自動化システム。
-SUNO 楽曲生成 → Premiere タイムライン自動配置 → YouTube アップロードまでを
+SUNO 楽曲生成 → 画像合成 → FFmpeg 書き出し → YouTube アップロードまでを一つの Web UI と CLI から連動実行する。
 **単一の Web ダッシュボード (localhost:8888) で 11 工程管理**する。
 
 ---
@@ -22,8 +22,8 @@ AI が生成した BGM を編集・投稿する YouTube チャンネル運営を
 | バックエンド | FastAPI (Python 3) + Uvicorn |
 | フロントエンド | 静的 HTML + Vanilla JS（ビルド不要） |
 | ブラウザ自動操作 | Playwright (sync API, persistent profile) |
-| 動画編集 | Adobe Premiere Pro + Pymiere (CDP) + ExtendScript JSX |
-| 書き出し | Adobe Media Encoder (JSX 経由キュー) |
+| 書き出し | FFmpeg（`app_ffrender.py`。静止画ループ + 音声 + SRT + タイムコード） |
+| サムネ合成 | Pillow（`app_image_composite.py`） |
 | YouTube アップロード | YouTube Data API v3 + OAuth |
 | AI | Claude CLI（第一候補、API 未使用）/ Gemini / ChatGPT |
 | 通知 | Discord Webhook |
@@ -37,7 +37,7 @@ AI が生成した BGM を編集・投稿する YouTube チャンネル運営を
 │                    Web Dashboard (localhost:8888)             │
 │  ┌──────────────┐  ┌──────────────────────────────────────┐  │
 │  │   Sidebar    │  │ Pages: ダッシュボード / コンテンツ     │  │
-│  │ 📊 🎬 📅 🎵 🎨 │  │        / SUNO / Premiere / YouTube      │  │
+│  │ 📊 🎬 📅 🎵    │  │        / SUNO / YouTube / ライブ        │  │
 │  │  📤 🔔 ⚙️    │  │        / 通知 / 設定                   │  │
 │  └──────────────┘  └──────────────────────────────────────┘  │
 └────────────────────┬─────────────────────────────────────────┘
@@ -46,7 +46,7 @@ AI が生成した BGM を編集・投稿する YouTube チャンネル運営を
           │  FastAPI: app.py (組み立て+runtime core)│
           │  + app_core.py (共通土台)             │
           │  + routers/ (benchmark/images/        │
-          │     premiere_photoshop/youtube)        │
+          │     scene_text/youtube/analytics/live) │
           └────┬───────┬───────────────────────┘
                │       │
        ┌───────▼──┐  ┌─▼──────────────────┐
@@ -55,13 +55,13 @@ AI が生成した BGM を編集・投稿する YouTube チャンネル運営を
        └─┬──┬──┬──┘  │  動画フォルダ)       │
          │  │  │    └─────────────────────┘
     ┌────▼┐┌▼┐ └─────────┐
-    │SUNO ││Premiere    │YouTube
-    │gen  ││(Pymiere+JSX)│upload
+    │SUNO ││ffrender    │YouTube
+    │gen  ││(ffmpeg)    │upload
     └──┬──┘└─────┬──────┘└────┬─────┘
        │         │             │
  ┌─────▼─┐  ┌────▼─────┐  ┌────▼──────┐
- │Playwright  │Adobe Premiere │ google-api │
- │→suno.com   │+ Media Encoder│-python-client│
+ │Playwright  │ffmpeg/ffprobe │ google-api │
+ │→suno.com   │+ Pillow       │-python-client│
  └─────┬─┘  └──────────┘  └─────┬─────┘
        │                         │
  ┌─────▼──────┐               ┌──▼──────────┐
@@ -86,7 +86,6 @@ _claude/                         # プロジェクトルート
 │   ├── routers/                 # ドメイン別 APIRouter（D9 段階分割）
 │   │   ├── benchmark.py         #   ベンチ分析軸（thumbnail/concept/title/description）
 │   │   ├── images.py            #   codex 画像/背景/channel-thumbnail/サムネ承認/series
-│   │   ├── premiere_photoshop.py #  Premiere JSX / Photoshop(UXP) / scene-text
 │   │   └── youtube.py           #   YouTube API/upload/履歴/説明文/通知
 │   ├── start.sh                 # 起動スクリプト
 │   ├── setup.sh                 # 依存パッケージ導入
@@ -94,11 +93,9 @@ _claude/                         # プロジェクトルート
 │   ├── app_process_tracks.py   # 楽曲リネーム + ffmpeg 後処理（サムネ/ペルソナ）
 │   ├── app_sheets.py  # Google スプシ CSV 取得 + パース + マッチング
 │   ├── claude_proposer.py       # Claude CLI 提案ヘルパー（タイトル/説明/タグ）
-│   ├── app_premiere.py         # Premiere JSX 送信 + SRT 生成
 │   ├── app_ffrender.py         # ループ連結方式レンダラー（export_engine=ffmpeg・AME 代替）
 │   ├── app_youtube.py   # YouTube 投稿
 │   ├── app_notify.sh      # Discord 通知
-│   └── YouTube_1080p_Optimized.epr   # Media Encoder プリセット
 ├── web/static/
 │   └── index.html               # ダッシュボード UI（全 JS 同梱）
 └── skills/                      # 個別スキル解説 (Claude Code 用)
@@ -108,21 +105,10 @@ _claude/                         # プロジェクトルート
     ├── app-rename-audio.md
     ├── app-ai-propose.md
     ├── app-image-select.md
-    ├── app-premiere.md
     ├── app-export.md
     ├── app-youtube-desc.md
     ├── app-youtube-upload.md
     └── app-notify.md
-```
-
-### 関連スクリプト
-
-```
-_claude/Script/
-├── _[自動配置くん]premiere_long.jsx    # メイン JSX（音声/字幕/画像配置）
-├── _place_images_only.jsx               # 画像のみ後から配置 JSX
-├── [タイムスタンプ]create_timestamp.jsx # タイムコード生成（単体利用）
-└── app_export_ame.jsx        # Media Encoder 書き出し
 ```
 
 ### 設定ファイル (`~/.config/{app_id}/`)
@@ -134,8 +120,7 @@ channels.json            # 複数チャンネル切替用（v2: icon_cache 付�
 benchmark_config.json    # ベンチマーク設定（v2: チャンネル横断で共通利用）
 master_prompts.json      # v2: プロンプト上書き（8 種。空でハードコードにフォールバック）
 schedule_jobs.json       # v2: APScheduler ジョブ定義（cron / date トリガー）
-export_rules.json        # v2: AME ウォッチャー有効化 / 完成判定ルール
-export_queue.json        # v2: 書き出しキューの実行状態
+export_rules.json        # 書き出し先ルール（互換のため保持。AME ウォッチャーは 2026-10-25 段階 1a で廃止）
 auth_token.txt           # v2: リモートアクセス用トークン（600 perms）
 prompts.json             # SUNO プロンプトライブラリ
 youtube_client_secret.json   # Google OAuth クライアントシークレット
@@ -150,13 +135,12 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 
 ```
 {num}_{prefix}_{YYMMDD}/               # 例: 77_vol_260415
-├── vol_vol{num}.prproj           # Premiere プロジェクト
-├── vol_vol{num}.psd              # サムネイル PSD
-├── vol_vol{num}.mp4              # 書き出し済 MP4
+├── {prefix}_vol{num}.mp4         # 書き出し済 MP4
+├── .ffrender_manifest.json       # 書き出し構成の正本
 ├── vol{num}.jpg                    # YouTube サムネイル
 ├── サムネイル.jpg                  # サムネ別名
 ├── *.png / *.jpg                   # 背景画像候補
-├── selected_images.json           # 画像選択結果（JSX 連動）
+├── selected_images.json           # 画像選択結果
 ├── music/                          # 処理済 MP3
 ├── original_music/                 # SUNO DL 直後のオリジナル MP3
 ├── subtitles_{num}.srt             # 実測 SRT 字幕
@@ -164,8 +148,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 ├── youtube_title.txt               # YouTube タイトル（Claude 提案 or 手動）
 ├── youtube_description.txt         # YouTube 説明文
 ├── youtube_tags.txt                # YouTube タグ（改行 or カンマ区切り）
-├── youtube_upload.json             # アップロード完了マーカー
-└── Adobe Premiere Pro */           # Premiere キャッシュ
+└── youtube_upload.json             # アップロード完了マーカー
 ```
 
 ---
@@ -173,7 +156,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 ## 4. ワークフロー（11 工程）
 
 ```
-[plan] → SUNO生成 → リネーム → 背景画像 → PSD合成 → Premiere配置 → 書き出し → QA → 動画メタ → 多言語化 → AIサムネ → アップロード
+[plan] → SUNO生成 → リネーム → 背景画像 → 画像合成 → 配置(自動通過) → FFmpeg書き出し → QA → 動画メタ → 多言語化 → AIサムネ → アップロード
 ```
 
 工程の真実源は `app_pipeline.py` の `STEPS`。`--from-benchmark`（無人運用）時は先頭に `plan` が付き 12 工程（`STEPS_WITH_PLAN`）。
@@ -184,19 +167,19 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 | 1 | `suno` | SUNO タブ / 楽曲タブ | `music/*.mp3` が 1 本以上 | suno_auto_create.py |
 | 2 | `rename` | 楽曲タブ | `music/*.mp3`（処理済み） | app_process_tracks.py |
 | 3 | `bgimage` | 画像タブ | `vol{N}.png` or `vol{N}.jpg` | app_image_prompt.py / codex_imagegen.py |
-| 4 | `psd_composite` | 画像タブ | `vol{N}.jpg` + `サムネイル.jpg` | app_photoshop.py |
-| 5 | `premiere` | 配置タブ | `subtitles_*.srt` | app_premiere.py |
-| 6 | `export` | 書き出しタブ | `vol_vol*.mp4` | app_premiere.py `--export` |
+| 4 | `psd_composite` | 画像タブ（Image2 Layout Studio） | `vol{N}.jpg` + `サムネイル.jpg` | app_image_composite.py（Pillow） |
+| 5 | `premiere` | （自動通過） | — | app_pipeline.py `step_premiere`（何もしない） |
+| 6 | `export` | 編集タブ | `{prefix}_vol*.mp4` + `subtitles_*.srt` | app_ffrender.py |
 | 7 | `qa` | （書き出し直後・自動） | QA 全 4 軸 pass | app_pipeline.py `step_qa` |
 
-> **書き出しエンジン切替（per-channel `export_engine`）** — 既定 `"ame"`（Premiere/AME）。`.app_channel_config.json` に `"export_engine": "ffmpeg"` を設定すると、静止画ベースのチャンネルで `premiere`+`export` を **ループ連結方式**（[app_ffrender.py](Python/app_ffrender.py)）に置換する。`premiere` step はスキップされ、`export` step が ffmpeg だけで「音声フル尺生成＋静止画を 1 GOP だけエンコード→`-stream_loop`/MPEG-TS でロスレス連結＋mov_text字幕＋SRT/TC生成」を一括実行。**Premiere/AME 不要 → render_queue（物理シリアル制約）を経由せず CPU 並列**。preflight も自動スキップ。出力は `/tmp` scratch で組み立て→宛先へ 1 回コピー（Drive sync storm 回避）。曲順・音声は `~/.cache/ffrender/<vol>/` にキャッシュし、**画像差し替え再レンダは ~10 秒**（音声再エンコード省略）。実測（11_HN/3h・静止画）: 映像組み立て ~5s・初回フル ~6 分（音声エンコード律速）・AME 24-40 分比で大幅短縮、出力スペックは AME と一致（H.264 1920x1080 / 29.97 / yuv420p / tv·bt709 / AAC 48k 2ch）。
+> **書き出しエンジン** — 2026-10-25 段階 1a 以降は FFmpeg（`app_ffrender.py`）のみ。`production_mode` は `ffmpeg_only` だけで、旧値 `standard` / `export_engine=ame` は警告付きで読み替える。
 >
 > **レンダーマニフェスト `.ffrender_manifest.json`（構成の正本）** — vol フォルダに保存。曲順・使用画像・尺・音声設定・焼き込み設定を固定する。`--from-premiere` で **Premiere の配置済みタイムラインを Premiere Link 経由で読み取り**（曲順=`getMediaPath`、尺=seq end、画像=V トラック）manifest 化（＝直感的に Premiere で編集→ffmpeg で高速書き出し、のブリッジ。著作権で配置済み動画の修正にも使う）。`--swap '曲名=新.mp3'` / `--remove '曲名'` で曲を差し替え/削除して再レンダ（Premiere 不要・SRT/チャプター自動再生成）。
 >
 > **曲名焼き込み（`--burn-titles always`）** — 各曲の区間に曲名を**常時焼き込み**（drawtext、画像境界∪曲境界で分割→GOP→TS 連結）。書式は per-channel `.app_channel_config.json` の `burn_titles` ブロック（`font`/`fontsize`/`color`/`prefix`/`x`/`y`/`border`）で定義。mov_text ソフト字幕も併存。（補足: キャプショントラックのフォント/位置は ExtendScript 非公開のため Premiere Link では読めない。焼き込み書式は channel 設定で持つ。）
 | 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py |
 | 9 | `localization` | （自動） | 多言語メタ（非 fatal） | app_pipeline.py `step_localization` |
-| 10 | `thumbnail` | 画像タブ | `thumbnail.png` / `vol*.jpg` / `サムネイル.jpg` | app_channel_thumbnail.py（PSD 失敗時フォールバック） |
+| 10 | `thumbnail` | 画像タブ | `thumbnail.png` / `vol*.jpg` / `サムネイル.jpg` | app_channel_thumbnail.py（画像合成が使えない時のフォールバック） |
 | 11 | `upload` | アップロードタブ | `youtube_upload.json` | app_youtube.py |
 
 判定ロジックは [index.html](web/static/index.html) の `WORKFLOW_STEPS` 定数、自動実行順は `app_pipeline.py` の `STEPS` / `STEP_LABELS` / `STEP_FUNCS` / `RETRY_POLICY`（4箇所一貫更新）で定義。
@@ -210,7 +193,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 | メソッド | パス | 用途 |
 |---------|------|------|
 | GET | `/api/videos` | 一覧（title, has_*, publish_date 等を vol 降順で返却） |
-| POST | `/api/videos/create` | `{publish_date}` → フォルダ + .prproj + .psd 自動生成 |
+| POST | `/api/videos/create` | `{publish_date}` → フォルダ自動生成 |
 | GET | `/api/videos/{name}/detail` | 詳細（readiness, upload_info 等） |
 | GET/PUT | `/api/videos/{name}/title` | `youtube_title.txt` |
 | GET/PUT | `/api/videos/{name}/tags` | `youtube_tags.txt` |
@@ -221,7 +204,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 |---------|------|------|
 | POST | `/api/videos/{name}/suggest` | body: `{mode: "titles"\|"description"\|"tags", count?, reference?}` |
 
-### 画像選択（JSX 連動）
+### 画像選択（書き出し連動）
 
 | メソッド | パス | 用途 |
 |---------|------|------|
@@ -249,15 +232,12 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 | POST | `/api/videos/{name}/process-tracks[?rename_only=true]` | リネーム（サムネ or ペルソナ）+ ffmpeg 後処理 |
 | GET | `/api/process/status` | 後処理ジョブのログ |
 
-### Premiere
+### 書き出し（FFmpeg）
 
 | メソッド | パス | 用途 |
 |---------|------|------|
-| GET | `/api/premiere/check` | 接続確認（Pymiere 経由） |
-| POST | `/api/premiere/run` | `{duration_h/m/s, auto_export, video_name?}` → .prproj 自動オープン + JSX |
-| POST | `/api/premiere/export` | 書き出しのみ |
-| POST | `/api/premiere/regenerate-srt` | 字幕 + TC だけ再生成 |
-| POST | `/api/premiere/place-images` | `{video_name}` → 既存 TL に画像のみ配置 |
+| POST | `/api/videos/{name}/run-pipeline` | `{steps:["export"]}` で `app_ffrender.py` 書き出し（Premiere / AME の API は 2026-10-25 段階 1a で廃止） |
+| GET/PUT | `/api/export/rules` | 書き出し先ルール（互換） |
 
 ### YouTube
 
@@ -300,21 +280,20 @@ YouTube Analytics API v2 (`reports.query`) をチャンネル別 OAuth トーク
 
 > 詳細: [skills/app-live-streaming.md](skills/app-live-streaming.md)。実体は [Python/app_live.py](Python/app_live.py)（SSH 制御）+ [Python/routers/live.py](Python/routers/live.py)。VPS 側 `stream.sh` は PLAYLIST 巡回（`ROTATE_SECONDS` 毎に timeout → 次の動画）・`MAX_SECONDS` 自動打切り・クラッシュ自動再起動を担う。
 
-### サムネ / 背景画像 / 文字入れ（PSD 合成）
+### サムネ / 背景画像 / 文字入れ（画像合成）
 
 | メソッド | パス | 用途 |
 |---------|------|------|
 | POST | `/api/videos/{name}/run-pipeline` | `{steps:[...]}` で工程選択実行。**サムネ制作 = `["bgimage","psd_composite"]`** |
 | POST | `/api/bgimage/run` | `{video_name, ref_count, force}` → ベンチ参照で背景 `vol{N}.png` 生成 |
 | GET | `/api/bgimage/reference-dir/list` / POST `/dry-run` | 参照画像フォルダのプレビュー / 選択ソース確認 |
-| POST | `/api/photoshop/render-dual-thumbnail` | AI 背景 + シーンテキストで `vol{N}.jpg` + `サムネイル.jpg` を2枚出し |
-| POST | `/api/photoshop/render-for-video` | 動画フォルダ指定で PSD 合成（単一トグル方式） |
-| POST | `/api/photoshop/generate-scene-text` | `{video_name}` → AI 画像を Vision 分析しシーンテキスト1件生成（チャンネル設定 `scene_text_*` 準拠） |
+| POST | `/api/image-compositor/render-dual-thumbnail` | AI 背景 + シーンテキストで `vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し（Pillow） |
+| POST | `/api/image-compositor/save-canvas` / GET,POST `/template` | 画像エディタの保存・テンプレート |
+| POST | `/api/scene-text/generate` | `{video_name}` → AI 画像を Vision 分析しシーンテキスト 1 件生成（チャンネル設定 `scene_text_*` 準拠） |
 | POST | `/api/scene-text/suggest-from-benchmark` | `{mode:"titles"\|"vision", count}` → ベンチ（ライバル）からトーン/例/禁止語を提案 |
-| GET | `/api/photoshop/check` / `layers` | Photoshop 接続確認 / アクティブ PSD のレイヤー名一覧 |
 | POST | `/api/channel-thumbnail/start` | （フォールバック）Vision 駆動の AI サムネを `{vol}/Image/` に一括生成 + スコアリング |
 
-> サムネの**正規フロー** = `bgimage`(背景・ベンチ参照) → `psd_composite`(Photoshop 文字入れ)。`channel-thumbnail`（AI 直接生成）は PSD 合成が使えない時の**フォールバック**。文字（シーンテキスト）のトーン/例/禁止語は per-channel `scene_text_*` 設定で制御（空なら persona 中立、旧 Harbor Notes 固定は撤去済み）。
+> サムネの**正規フロー** = `bgimage`(背景・ベンチ参照) → `psd_composite`(画像合成・Pillow)。`channel-thumbnail`（AI 直接生成）は合成が使えない時のフォールバック。
 
 ### システム
 
@@ -327,7 +306,7 @@ YouTube Analytics API v2 (`reports.query`) をチャンネル別 OAuth トーク
 | POST | `/api/finder/open` / `/create-folder` / `/delete-folder` | OS 連携 |
 | POST | `/api/notify/discord` | Discord 送信 |
 | POST | `/api/notify/line` | Discord 送信（旧互換 alias） |
-| WS | `/ws/logs/{task_id}` | ライブログ（suno / premiere / youtube / setup） |
+| WS | `/ws/logs/{task_id}` | ライブログ（suno / youtube / setup） |
 
 ---
 
@@ -349,7 +328,7 @@ YouTube Analytics API v2 (`reports.query`) をチャンネル別 OAuth トーク
 パース: コードフェンス除去 → `{...}` 抽出 → `json.loads()` → 失敗時は末尾カンマ除去リトライ。
 実装は [claude_proposer._extract_json_object](Python/claude_proposer.py) / [suno_auto_create._extract_json_object](Python/suno_auto_create.py)。
 
-### 6.2 `selected_images.json` (画像選択 → JSX)
+### 6.2 `selected_images.json` (画像選択 → 書き出し)
 
 ```json
 {
@@ -405,13 +384,13 @@ YouTube Analytics API v2 (`reports.query`) をチャンネル別 OAuth トーク
 - `propose_tags()` → タグ配列
 - `gather_context(folder)` → 動画フォルダから楽曲名・公開日・現タイトル等を自動抽出
 
-### 7.3 Premiere 自動配置 ([Python/app_premiere.py](Python/app_premiere.py))
+### 7.3 FFmpeg 書き出し ([Python/app_ffrender.py](Python/app_ffrender.py))
 
-1. `open_project(.prproj)` → Pymiere で読込完了を検知
-2. `run_jsx(duration)` → [_[自動配置くん]premiere_long.jsx](Script/_[自動配置くん]premiere_long.jsx) を一時ファイル化して送信（ダイアログ置換 + SRT/TC 無効化）
-3. `get_timeline_clips()` → 実測 start/end 取得
-4. SRT + タイムコードを Python で生成（JSX 内蔵より正確）
-5. `--images-only` モード → 専用 JSX [_place_images_only.jsx](Script/_place_images_only.jsx) で画像だけ再配置
+1. `.ffrender_manifest.json`（曲順・画像・尺・焼き込み設定）を作る、または既存を読む
+2. 音声: `music/*.mp3` を concat → フェード → リミッター（音声キャッシュあり）
+3. 映像: 背景画像を 1 GOP だけエンコードし `-stream_loop` + `-c copy` で目標尺まで連結（任意で曲名焼き込み）
+4. SRT とタイムコードを [srt_timecode.py](Python/srt_timecode.py) の純関数で生成
+5. `--swap` / `--remove` で構成の差し替え（著作権対応）、`--no-render` で manifest 操作だけ
 
 ### 7.4 YouTube アップロード ([Python/app_youtube.py](Python/app_youtube.py))
 
@@ -424,7 +403,7 @@ OAuth 認証 → MP4/サムネ/説明/タグ/タイトルを**保存ファイル
 
 ```
 1. コンテンツ → 「+ 新規動画」→ 公開日入力
-   → 77_vol_260416 フォルダ + vol_vol77.prproj + vol_vol77.psd 自動生成
+   → 77_vol_260416 フォルダ 自動生成
 
 2. vol.77 をクリック → 楽曲タブ
    → Workspace: vol_vol77 バッジ表示
@@ -441,9 +420,8 @@ OAuth 認証 → MP4/サムネ/説明/タグ/タイトルを**保存ファイル
 
 5. 画像タブで背景画像をメイン/サブ選択 → 保存
 
-6. 書き出しタブ → 3:00:00 指定 → ▶ この動画で Premiere 自動配置を実行
-   → vol_vol77.prproj 自動オープン → JSX 送信 → 音声/字幕/画像配置
-   → [✓] 完了後に書き出し → Media Encoder で MP4 生成
+6. 編集タブ → 尺を確認 → `python3 app_pipeline.py 77 --only export`（または run-pipeline で export）
+   → app_ffrender.py が音声/字幕/画像を一括配置して MP4・SRT・タイムコードを生成
 
 7. 詳細タブ → ✨ AI提案 ×5 → タイトル選択 → 保存
    → ✨ AI提案 （説明文） → 採用
@@ -483,7 +461,7 @@ bash Python/start.sh                          # http://localhost:8888/
 - **DOM に依存しない**: Playwright は `get_by_role` / `get_by_placeholder` / `locator().filter(has_text=)` を優先。CSS ハッシュ（emotion `css-XXXXXX`）は最終フォールバック
 - **ファイル = 真実**: DB を持たずフォルダ内ファイルの存在だけでステートを表現 → Google ドライブで同期すれば複数端末でそのまま共有可能
 - **Claude CLI エラー時フォールスルー**: Workspace 作成失敗や DOM 不一致は警告ログのみでクラッシュさせない。楽曲生成自体は続行
-- **進捗はログパース**: SUNO/Premiere/YouTube のサブプロセス stdout を `task_logs` に蓄積し、正規表現で `current/total/phase` を抽出
+- **進捗はログパース**: SUNO/YouTube のサブプロセス stdout を `task_logs` に蓄積し、正規表現で `current/total/phase` を抽出
 - **タスク履歴永続化**: 完了ログを `~/.config/{app_id}/task_history.json` に保存 → サーバー再起動後も復元
 - **SPA ナビゲーション**: History API (`pushState`/`popstate`) で URL hash を管理 → ブラウザの戻る/進む/リロード/直アクセスに対応
 - **コンテンツフィルター**: 全て / 進行中 / 完了済み の 3 モード + テキスト検索 → 大量動画（74+件）の管理に対応
@@ -497,8 +475,8 @@ bash Python/start.sh                          # http://localhost:8888/
 | SUNO (suno.com) | Playwright で DOM 操作 | DOM 変更時は警告ログ。手動フォールバック可 |
 | Claude CLI | subprocess + JSON | JSON 抽出失敗時はリトライ（30秒後） |
 | Gemini / ChatGPT | urllib HTTP JSON | API キー必須 |
-| Adobe Premiere Pro | Pymiere (CDP) + JSX | 未起動時は検知 → エラーメッセージ |
-| Adobe Media Encoder | Premiere 側 JSX から encodeSequence | プリセット不在時はスキップ |
+| ffmpeg / ffprobe | 子プロセス | 不在は preflight（exit 78）で停止 |
+| Pillow | Python ライブラリ | 不在は preflight（exit 78）で停止 |
 | YouTube Data API v3 | google-api-python-client + OAuth | token 失効時は自動 refresh |
 | Discord Webhook | HTTP POST | 未設定時はボタン無効 |
 
@@ -515,9 +493,8 @@ bash Python/start.sh                          # http://localhost:8888/
 | [app-suno-download.md](skills/app-suno-download.md) | SUNO Workspace 一括 DL（fetch インターセプタ方式） |
 | [app-track-player.md](skills/app-track-player.md) | 楽曲メディアプレイヤー + いいね + 削除 |
 | [app-ai-propose.md](skills/app-ai-propose.md) | Claude CLI JSON 提案パターン |
-| [app-image-select.md](skills/app-image-select.md) | 画像選択 + JSX 連動 |
-| [app-premiere.md](skills/app-premiere.md) | Pymiere + JSX |
-| [app-export.md](skills/app-export.md) | Media Encoder 書き出し |
+| [app-image-select.md](skills/app-image-select.md) | 画像選択 |
+| [app-export.md](skills/app-export.md) | FFmpeg 書き出し（app_ffrender） |
 | [app-youtube-desc.md](skills/app-youtube-desc.md) | 説明文生成 |
 | [app-youtube-upload.md](skills/app-youtube-upload.md) | YouTube 投稿 |
 | [app-competitor-spreadsheet.md](skills/app-competitor-spreadsheet.md) | スプシ競合分析（195ch + 成長 → Claude → 提案）|
@@ -530,6 +507,8 @@ bash Python/start.sh                          # http://localhost:8888/
 ---
 
 ## 13. 変更履歴
+
+- **2026-10-25（段階 1a）**: Adobe（Premiere / Media Encoder / Photoshop）経路を削除し、`production_mode` を `ffmpeg_only` のみに統一。`/api/premiere/*`、`/api/photoshop/*`、`/api/render-queue*`、`/api/export/queue*`、`/api/templates/list` を廃止。scene-text API は `/api/scene-text/generate` へ移動。`studio.py preflight` を追加。
 
 - **2026-04-15**: 仕様書初版作成
 - **2026-04**: Phase A/B/C + D 完了（YouTube Studio 風 UI、AI 提案、画像選択、アップロード統合）

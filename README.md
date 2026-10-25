@@ -1,8 +1,8 @@
 # Automation Studio
 
-クリエイター向け制作パイプライン自動化ダッシュボード。SUNO・Adobe Premiere Pro / Media Encoder / Photoshop・YouTube・OpenAI 画像生成 を 1 つの Web UI から連動実行できます。
+クリエイター向け制作パイプライン自動化ダッシュボード。SUNO・FFmpeg・YouTube・OpenAI 画像生成 を 1 つの Web UI と CLI から連動実行できます。
 
-> **重要：動画の配置・書き出し・サムネ合成には Adobe Creative Cloud（Premiere Pro / Media Encoder / Photoshop）が必須**で、いずれも**有料サブスク（月額契約）が別途必要**です。楽曲生成・メタ生成・YouTube 投稿は Adobe なしでも動きます。詳細は[必要なもの（動作要件）](#動作要件)を参照。
+> **2026-10-25 以降、Adobe 製品（Premiere Pro / Media Encoder / Photoshop）は使いません。** 動画の書き出しは FFmpeg、サムネ合成は Pillow（画像エディタ）で行います。
 
 > **はじめての方・全体像を知りたい方は [OVERVIEW.md](OVERVIEW.md) をご覧ください。**
 > 導入方法から仕様（しくみ・AI の役割・11 工程・各プログラム解説）まで、やさしい解説つきでまとめています。
@@ -10,11 +10,10 @@
 | 自動化対象 | 主な機能 |
 |---|---|
 | SUNO | プロンプト生成（Claude/Gemini/ChatGPT）→ ループ生成 → ワンクリック DL → フェード/ゲイン正規化 |
-| サムネ制作 | ベンチマーク参照 → AI 背景画像生成 → Photoshop で文字入れ（`vol{N}.jpg`＋`サムネイル.jpg` を 2 枚出し）。一気通貫の正規フロー |
+| サムネ制作 | ベンチマーク参照 → AI 背景画像生成 → 画像エディタ（Pillow）で文字入れ（`vol{N}.jpg`＋`サムネイル.jpg` を 2 枚出し）。一気通貫の正規フロー |
 | 文字入れ設定 | サムネの英大文字フレーズ（シーンテキスト）をチャンネル別にトーン/例/禁止語で設定、ベンチマークから提案も可 |
 | AI 画像生成 | OpenAI gpt-image-2（API・並列生成・2K）を背景・AI サムネ生成に利用（codex 一本化） |
-| Premiere Pro | JSX 経由での音源・画像自動配置 + シーケンス組み立て |
-| Media Encoder | キュー監視、書き出し進捗のリアルタイム表示、外部 SSD への自動移動 |
+| 書き出し | FFmpeg（`app_ffrender.py`）で音声・静止画ループ・字幕・タイムコードを一括生成。外部 SSD への直接出力 |
 | メタ生成 | タイトル候補・説明文・タグの AI 生成・多言語化 |
 | YouTube | 限定/公開/予約アップロード、説明文の差分編集 |
 | 競合分析 | スプシ取り込み + Claude による戦略提案、自動プロンプト反映 |
@@ -37,26 +36,15 @@
 - Python 3.10 以降
 - Claude CLI（AI の第一候補・ローカル認証・API キー不要）
 
-### Adobe Creative Cloud（動画工程に必須・有料サブスク）
-
-> 本ツールが自動操作する Premiere Pro / Media Encoder / Photoshop はいずれも **Adobe Creative Cloud の有料サブスク（月額契約）が別途必要**です。本ツールに Adobe ライセンスは含まれません（Adobe との契約・支払いは各自で）。**コンプリートプラン（全アプリ込み）**を契約していれば、これら3アプリも、制作で併用する After Effects 等もまとめてカバーされます。
-
-**本ツールが自動操作するソフト（必須）:**
-- **Adobe Premiere Pro 2024 以降** … 音源・字幕・画像の自動配置／シーケンス組み立て
-- **Adobe Media Encoder** … MP4 書き出し（Premiere とセットで導入）
-- **Adobe Photoshop** … サムネ合成・2 枚出し（新版は UXP 連携／旧版は AppleScript）
-
-**制作で併用（任意・本ツールの自動操作対象外）:**
-- **Adobe After Effects** … モーション・エフェクトを手作業で加える場合（コンプリートプランに含まれる）
+### 動画・画像工程に必要なもの
+- **ffmpeg / ffprobe**（`brew install ffmpeg`） … MP4 書き出し・QA
+- **Pillow**（Python） … サムネ合成（画像エディタ）
+- `python3 Python/studio.py preflight --json` で不足を確認できます
 
 ### API キー・認証（UI から登録）
 - OpenAI（背景・AI サムネ画像生成）
 - YouTube Data API v3 + OAuth（投稿）
 - 任意：Gemini（プロンプト生成の選択肢）、Codex CLI（AI の控え・要 `codex login`）
-
-### Adobe が無くても使える範囲
-- 楽曲生成・後処理（SUNO + ffmpeg）／メタ生成・多言語化／競合・ベンチマーク分析
-- **Adobe が必須なのは「配置・書き出し・サムネ合成」の 3 工程のみ**
 
 ## クイックスタート
 
@@ -65,7 +53,7 @@
 ```bash
 git clone https://github.com/caruxx/automation-studio.git
 cd automation-studio
-pipx install ".[all]"   # SUNO/Premiere 全部入り
+pipx install ".[all]"   # SUNO（Playwright）込み
 # または最小:
 pipx install .          # Web ダッシュボードのみ
 ```
@@ -103,30 +91,22 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 | ダッシュボード | 全体の実行状況・最近の vol・1 クリック新規動画作成 |
 | コンテンツ | 動画フォルダ一覧 + 各 vol の自動実行バー（楽曲→加工→配置→書出→メタ→アップロード） |
 | ベンチマーク分析 | 競合チャンネルのプロファイル取得・統合プロンプト生成 |
-| 自動化 | パイプライン全自動実行、AME 書き出しキュー監視、スケジューラ |
+| 自動化 | パイプライン全自動実行、スケジューラ |
 | 基本設定 | API キー・チャンネル・SUNO 設定・ベンチマーク条件 |
 | 詳細設定 | プロンプト本文・SUNO 詳細パラメータ・スケジュール・リモートアクセス |
 
 ## サムネ制作（背景 → 文字入れ）
 
-サムネは正規パイプライン `背景画像生成(bgimage) → PSD 合成(psd_composite)` の一気通貫で作ります。
+サムネは正規パイプライン `背景画像生成(bgimage) → 画像合成(psd_composite)` の一気通貫で作ります（工程名 psd_composite は互換のため据え置き。実体は Pillow 合成）。
 
 1. 対象動画を開く（コンテンツ → 動画クリック → 「画像」タブ）
-2. 「サムネを制作（背景→文字入れ）」を押す（Photoshop を起動しておく）
-   - ベンチマーク参照で背景 `vol{N}.png` を生成 → PSD テンプレに差し込み、文字を入れて
-     `vol{N}.jpg`（Premiere 背景用・PLAY LIST 表示）と `サムネイル.jpg`（YouTube 用・文字表示）を出力
-   - 「背景だけ再生成」「文字だけ再合成」は同じタブの個別ボタンから
+2. 「Image2 Layout Studio」で背景生成 → 文字入れ → `サムネイル.jpg へ保存`
+   - ベンチマーク参照で背景 `vol{N}.png` を生成 → チャンネル設定 `thumbnail_composition` に従って
+     `vol{N}.jpg`（動画背景用）と `サムネイル.jpg`（YouTube 用・文字表示）を出力
+   - 「シーンテキスト自動生成」ボタンで AI が英語フレーズを提案（`POST /api/scene-text/generate`）
 3. まとめて作る場合は一覧で複数選択 → ツールバーの「サムネ一括制作」
 
-> AI が直接サムネを描く「AI サムネ一括生成」は、PSD テンプレが使えない時のフォールバックです。
-
-### PSD テンプレの要件（チャンネル別）
-
-`{チャンネルフォルダ}/プロジェクト/{template_psd}` に配置し、基本設定の PSD レイヤー名と一致させます（vol 作成時に各 vol フォルダへ `{prefix}_vol{N}.psd` として自動コピー）。
-
-- 背景レイヤー（スマートオブジェクト必須）= `psd_base_layer`（既定 `base`） … AI 背景がここに差し込まれる
-- トグルレイヤー = `psd_toggle_layer`（既定 `PLAY LIST `、末尾スペースに注意） … 表示/非表示で 2 枚出し
-- 文字レイヤー = `psd_text_layer`（既定 `都市名_テキスト`） … シーンテキストを中央配置（任意）
+> AI が直接サムネを描く「AI サムネ一括生成」は、画像合成が使えない時のフォールバックです。
 
 ## 文字入れ（シーンテキスト）設定
 

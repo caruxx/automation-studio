@@ -1,32 +1,31 @@
-# image: 背景画像・PSD 合成・AI サムネドメイン
+# image: 背景画像・画像合成・AI サムネドメイン
 
 ## 目的
-ベンチマーク分析と参照画像から背景画像を作り、Photoshop PSD 合成で `vol{N}.jpg` と `サムネイル.jpg` を出す。PSD が使えない場合は AI サムネをフォールバック生成する。
+ベンチマーク分析と参照画像から背景画像を作り、画像エディタ（Pillow 合成）で `vol{N}.jpg` と `サムネイル.jpg` を出す。合成が使えない場合は AI サムネ（`thumbnail`）が予備経路。
 
-`production_mode=ffmpeg_only` の新チャンネルではPhotoshopを使用しない。`psd_composite` は `app_image_composite.py` → 既存のPillow合成へ分岐する。手直しはImage2 Layout Studio。詳しくは `docs/music/beat-soul-ffmpeg-workflow.md`。以下のPhotoshop前提は従来の `standard` 構成に適用する。
+Photoshop は使わない（2026-10-25 段階 1a で廃止）。`psd_composite`（工程名は互換のため据え置き）は常に `app_image_composite.py` → Pillow 合成を実行する。
 
 ## 入口コマンド
 - 背景: `python3 Python/studio.py bgimage --vol <N> --dry-run`
-- PSD: `python3 Python/studio.py psd --vol <N> --dry-run`
+- 画像合成: `python3 Python/studio.py psd --vol <N> --dry-run`（工程 psd_composite = Pillow 合成）
 - AI サムネ: `python3 Python/studio.py thumbnail --vol <N> --dry-run`
 
 ## 前提リソース
 - `codex_imagegen.py` が使う OpenAI Image API または Codex CLI
-- Photoshop + UXP/CEP パネル
+- Pillow（画像合成）
 - `concept.txt` / benchmark concept / thumbnail aggregate / competitor `visual_direction`
 
 ## 並列可否
 - bgimage / thumbnail は画像生成 quota に注意しつつ小並列可。
-- Photoshop は単一リソース。`psd` は必ず順次。
-- opt-in ロック: `python3 Python/parallel_guard.py psd -- python3 Python/app_pipeline.py <N> --only psd_composite`
+- 画像合成は CPU 処理で単一リソース制約は無い（`routes.json` の `psd` は per-machine 1）。
 
 ## 典型手順
 1. `bgimage` で `vol{N}.png` と `vol{N}_source.jpg` を生成。
-2. `psd_composite` で vol 固有 PSD を開き、背景と scene text を差し替えて 2 枚出し。
+2. `psd_composite` で背景と scene text（チャンネル設定 `thumbnail_composition`）を合成して 2 枚出し。
 3. `thumbnail` は `thumbnail.png` / `vol*.jpg` / `サムネイル.jpg` があるとスキップされる。
 
 ## 失敗時の対処
 - persona 未設定: channel config に persona を入れる。
 - 既存画像が邪魔: `APP_BGIMAGE_FORCE=1`。
-- Photoshop 接続不可: パネル導入と Photoshop 起動を確認。
+- 合成失敗: Pillow の導入と `vol{N}.png` の有無を確認。
 - Flow 指定: 現コードでは codex にフォールバックする。Flow 前提で作業しない。

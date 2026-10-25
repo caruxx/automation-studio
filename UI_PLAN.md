@@ -1,5 +1,7 @@
 # UI 一括改修 計画書（UI_PLAN）
 
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+
 > **状態**: ✅ U1-U6 全実装完了（2026-06-01）。残るは app.py orchestrator 統合（tick→APScheduler＝無人稼働開始）のみ＝要GO。
 > **実装コミット**: U1=29e3de4(台帳) / U2=e21a66d(接続ヘルス) / U3=2e01901+e0a06bc(自走運用パネル) / U4=8b28a4e(コンテンツ導線=details化) / U5+U6=d42acac(nav追加[撤去せず]+apiPost/apiPut/toastRetry)。
 > ⚠ U5の破壊的撤去(p-notify削除・オーファンAPI30件削除)は安全のため**未実施**（追加・掲載のみ）。⚠ 予約取消専用APIは無く即時公開(publishNow)で代替。

@@ -1,118 +1,30 @@
-# app-export: Premiere Pro 自動書き出し
+# app-export: FFmpeg 書き出し（app_ffrender）
 
-Premiere Pro のアクティブシーケンスを Adobe Media Encoder 経由で H.264 書き出しするスキル。
+`export` 工程は `Python/app_ffrender.py` が担う。Premiere / Media Encoder は使わない（2026-10-25 段階 1a で廃止）。
 
 ## 概要
-AppleScript + JSX でPremiere Proの書き出しを自動化する。
-`_[自動配置くん]premiere_long.jsx` の後に実行する想定。
+- 入力: `music/*.mp3`（処理済み楽曲）、背景画像 `vol{N}.jpg`（画像合成の出力。無ければ `vol{N}.png` / `vol{N}_source.jpg`）、チャンネル設定（`ffrender`、`default_duration_sec`、`export_path`）
+- 出力: `{prefix}_vol{N}.mp4`（`export_path` 指定時は外部ストレージ直下に flat 配置）、`subtitles_{N}.srt`、`music_time_code_info_{N}.txt`、構成の正本 `.ffrender_manifest.json`
+- 方式: 静止画を 1 GOP だけエンコードし `-stream_loop` と `-c copy` で目標尺まで連結。音声は concat → フェード → リミッター。字幕とタイムコードは `srt_timecode.py` の純関数で生成する。
 
-## 実行スクリプト
-
-### JSX ファイル: `app_export_ame.jsx`
-
-```jsx
-// 配置先: _claude/Script/app_export_ame.jsx
-```
-
-このスキルの実行時にClaude Codeが以下のJSXを生成・実行する:
-
-### 処理内容
-1. アクティブシーケンスを取得
-2. プロジェクトフォルダパスを取得
-3. 出力ファイル名: `vol_vol{num}.mp4`
-4. H.264プリセットで Adobe Media Encoder にキューを追加
-5. Media Encoder でレンダリング開始
-
-### AppleScript 経由での実行
+## 入口
 ```bash
-#!/bin/bash
-# app_export.sh - Premiere Pro 書き出し自動化
-JSX_PATH="${AUTOMATION_SCRIPT_DIR:-$(dirname "$0")/../Script}/app_export_ame.jsx"
-
-osascript <<EOF
-tell application "Adobe Premiere Pro 2025"
-    activate
-    delay 1
-    do javascript file "$JSX_PATH"
-end tell
-EOF
+python3 Python/studio.py export --vol <N> --dry-run      # 解決結果の確認
+python3 Python/app_pipeline.py <N> --only export         # 実行（premiere 工程は自動で通過する）
+python3 Python/app_ffrender.py --vol-folder <folder> --duration <sec> --output-path <mp4>   # 直接実行
 ```
 
-## JSX スクリプト本体
+## 主なオプション（app_ffrender.py）
+- `--duration` 目標尺（秒）。未指定ならチャンネル設定 `default_duration_sec`、最後は 10800
+- `--burn-titles always|none` 曲名の焼き込み
+- `--swap '旧タイトル=新.mp3'` / `--remove 'タイトル'` 構成の差し替え（著作権対応）。`--no-render` で manifest 操作だけ
+- `--show-manifest` 現在の構成を表示
 
-以下をClaude Codeが `app_export_ame.jsx` として生成する:
+## 前提
+- `ffmpeg` / `ffprobe`（`brew install ffmpeg`）と Pillow。`python3 Python/studio.py preflight --json` で確認できる
+- 並列: CPU 律速。`routes.json` の `export` は per-machine 1 だが、Adobe のような物理的な単一制約は無い
 
-```jsx
-#target premierepro
-
-(function () {
-    try { app.enableQE(); } catch (e) { }
-
-    function getProjectFolderPath() {
-        try {
-            var p = app.project.path ? String(app.project.path) : "";
-            if (!p) return "";
-            var projFile = new File(p);
-            return projFile.parent.fsName.replace(/\\/g, "/");
-        } catch (_) { return ""; }
-    }
-
-    function extractDirNumber(dirPath) {
-        try {
-            var name = (new Folder(dirPath)).name;
-            var m = String(name).match(/^(\d+)_/);
-            return m ? m[1] : "00";
-        } catch (_) { return "00"; }
-    }
-
-    var seq = app.project.activeSequence;
-    if (!seq) { alert("アクティブなシーケンスがありません"); return; }
-
-    var workDir = getProjectFolderPath();
-    if (!workDir) { alert("プロジェクトフォルダが見つかりません"); return; }
-
-    var dirNum = extractDirNumber(workDir);
-    var outputName = "vol_vol" + dirNum + ".mp4";
-    var outputPath = workDir + "/" + outputName;
-
-    // Media Encoder にキュー追加
-    try {
-        var projPath = new File(app.project.path);
-
-        // QE API 経由で AME にエンキュー
-        var qeSeq = qe.project.getActiveSequence();
-        if (qeSeq) {
-            // H.264 Match Source - High Bitrate プリセットパス
-            var presetPath = "/Applications/Adobe Media Encoder 2025/Adobe Media Encoder 2025.app/Contents/MediaIO/systempresets/4028_4400/Match Source - High bitrate.epr";
-
-            // プリセットファイル存在確認
-            var presetFile = new File(presetPath);
-            if (!presetFile.exists) {
-                // フォールバック: ユーザーのプリセットフォルダを探索
-                var userPresetDir = Folder("~/Documents/Adobe/Adobe Media Encoder/Presets");
-                presetPath = ""; // 空なら AME がデフォルトを使用
-            }
-
-            app.encoder.launchEncoder();
-            app.encoder.encodeSequence(
-                seq,
-                outputPath,
-                presetPath,
-                app.encoder.ENCODE_IN_TO_OUT,
-                1  // removeOnCompletion
-            );
-
-            app.encoder.startBatch();
-            alert("書き出しを開始しました:\n" + outputPath);
-        }
-    } catch (e) {
-        alert("書き出しエラー: " + e);
-    }
-})();
-```
-
-## 注意事項
-- Adobe Media Encoder がインストール済みであること
-- Premiere Pro 2025 以降の `app.encoder` API を使用
-- プリセットパスは環境依存 — 見つからない場合はAMEのデフォルト設定を使用
-- 書き出し完了の検知は AME 側のジョブ監視が必要（現状は開始のみ自動化）
+## 失敗時
+- preflight exit 78: ffmpeg / ffprobe / Pillow が無い
+- 背景画像が無い: `bgimage` と `psd_composite`（画像合成）を先に実行する
+- MP4 が見つからない: `export_path` のマウント（`/Volumes/...`）と `_find_exported_mp4` の探索先を確認する

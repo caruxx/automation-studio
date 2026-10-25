@@ -1,32 +1,28 @@
-# video: Premiere / AME / ffmpeg 書き出しドメイン
+# video: FFmpeg 書き出しドメイン
 
-`production_mode=ffmpeg_only` の新チャンネルは画像加工も含めAdobeを使わない。FFmpegで動画・字幕・タイムスタンプを生成し、Premiere preflightとAMEキューを経由しない。詳細は `docs/music/beat-soul-ffmpeg-workflow.md`。以下のAdobe前提は従来の構成用。
+Adobe（Premiere / Media Encoder）は使わない（2026-10-25 段階 1a で廃止、`production_mode` は `ffmpeg_only` のみ）。動画・字幕・タイムコードは `app_ffrender.py` が一括生成する。
 
 ## 目的
-Premiere プロジェクトを自動オープンし、音声・背景・字幕を配置し、AME または ffmpeg engine で MP4 を書き出す。
+処理済み楽曲と背景画像から MP4 を書き出し、SRT 字幕とタイムコードを揃える。
 
 ## 入口コマンド
-- 配置: `python3 Python/studio.py premiere --vol <N> --dry-run`
 - 書き出し: `python3 Python/studio.py export --vol <N> --dry-run`
-- 再開: `python3 Python/app_pipeline.py <N> --from premiere`
+- 再開: `python3 Python/app_pipeline.py <N> --from export`
+- 実行環境の検査: `python3 Python/studio.py preflight --json`
 
 ## 前提リソース
-- Premiere Pro + Premiere Link / JSX Launcher
-- Adobe Media Encoder（`export_engine=ame`）
-- ffmpeg / ffprobe（`export_engine=ffmpeg` または QA）
+- ffmpeg / ffprobe（書き出しと QA）、Pillow（画像合成）
 
 ## 並列可否
-- Premiere/AME は単一リソース。
-- `export_engine=ffmpeg` のチャンネルでは `premiere` step はスキップされ、`export` が `app_ffrender.py` を使う。
-- opt-in ロック: `python3 Python/parallel_guard.py premiere -- python3 Python/app_pipeline.py <N> --only premiere`
-- 書き出しも同じ物理資源なので `export` lock を使う。
+- CPU 律速。`premiere` 工程は何もせず成功し、`export` が `app_ffrender.py` を使う。
+- 単一リソースのロックは不要（SUNO ブラウザだけが単一）。
 
 ## 典型手順
-1. `premiere` 前に `music/*.mp3` と背景画像があるか確認。
-2. `app_pipeline.py` は preflight を行い、`export_engine=ffmpeg` なら Premiere preflight を不要化する。
+1. `export` 前に `music/*.mp3` と `vol{N}.jpg`（画像合成の出力）があるか確認。
+2. `app_pipeline.py` の preflight は ffmpeg / ffprobe / Pillow の存在だけを見る（不足は exit 78）。
 3. QA は ffprobe で解像度・尺・コーデックを確認し `qa_report.json` を書く。
 
 ## 失敗時の対処
-- preflight exit 78: Premiere/CEP パネルを起動・再導入。
+- preflight exit 78: `brew install ffmpeg`、`pip install pillow`。
 - MP4 が見つからない: 外部 export path と `_find_exported_mp4` 対象を確認。
-- ffprobe 不在: `brew install ffmpeg`。
+- 詳細は [app-export.md](./app-export.md)。

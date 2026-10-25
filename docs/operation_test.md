@@ -9,7 +9,7 @@
 | **スモークテスト** | API / モジュールが配線されているか | 毎日 / リリース後 | ~10 秒 |
 | **チャンネル別 dry-run** | 個別チャンネルの設定が正しいか | チャンネル追加時 | ~30 秒 |
 | **段階別動作テスト** | 1 stage だけを抜き出して検証 | 機能改修時 | 2〜30 分 |
-| **E2E 通し** | 実際に SUNO/Premiere/YouTube まで通す | 月次 / 重要変更後 | 1〜3 時間 |
+| **E2E 通し** | 実際に SUNO/FFmpeg/YouTube まで通す | 月次 / 重要変更後 | 1〜3 時間 |
 
 スモークテスト以外は、副作用がある（vol が実際に生成される / YouTube に upload される）ため、必要に応じて実行。
 
@@ -44,10 +44,10 @@ python3 Python/scripts/p1p2p3_smoke.py
 | **P1-2** | `EXIT_RETRYABLE=76` + `RETRY_POLICY` 定義 |
 | **P1-3** | `--channel-id` / `--channel-folder` CLI args |
 | **P1-4** | `EXIT_QUOTA_EXHAUSTED=77` + cap 設定 |
-| **P1-5** | `_preflight_premiere()` returns (bool, str) |
+| **P1-5** | `preflight_ffmpeg()` returns list（2026-10-25 段階 1a で差し替え） |
 | **P1-6** | `docs/runbook.md` 配置 |
 | **P1-7** | `GET /api/runs/active` |
-| **P2-1** | `GET /api/render-queue` + throughput |
+| **P2-1** | （廃止）render queue は 2026-10-25 段階 1a で削除 |
 | **P2-2** | channels.json registry が >= 1 件 |
 | **P2-3** | `?channel_id=__none__` フィルタ |
 | **P2-4** | 同 slot を 30 分自動ずらし（実投入 → 確認 → 削除） |
@@ -83,23 +83,7 @@ grep "registry" /tmp/claude-502/*/tasks/*.output | tail -5
 
 ### 3.2 render queue（P2-1）
 
-並列ジョブが直列消化されるか:
-
-```bash
-# 6 チャンネル分の疑似ジョブを enqueue
-for i in 1 2 3 4 5 6; do
-  curl -s -X POST http://localhost:8888/api/render-queue/enqueue \
-    -H 'Content-Type: application/json' \
-    -d "{\"channel_folder\":\"/tmp/test_ch$i\",\"channel_name\":\"ch$i\",\"vol\":$((100+i)),\"video_name\":\"$((100+i))_test\",\"stage\":\"premiere\"}" &
-done; wait
-
-# 状態確認: pending=6, running=1
-curl -s http://localhost:8888/api/render-queue | python3 -m json.tool | head -10
-
-# クリーンアップ（worker が folder 不在で error にする → 自然消化を待つ）
-sleep 30
-curl -s http://localhost:8888/api/render-queue/throughput | python3 -m json.tool
-```
+廃止（2026-10-25 段階 1a）。render queue と `/api/render-queue*` は削除済みで、書き出しは FFmpeg（CPU 律速）で直接実行する。
 
 ### 3.3 公開ゲート（P2-7）
 
@@ -152,7 +136,7 @@ import json,sys; d=json.load(sys.stdin); print(f'reconstructed: {d[\"count\"]} r
 
 ## 4. E2E 通しテスト（半自動）
 
-実 SUNO/Premiere/YouTube を経由する。**コスト発生 + 30 分以上**かかるので慎重に。
+実 SUNO/FFmpeg/YouTube を経由する。**コスト発生 + 30 分以上**かかるので慎重に。
 
 ### 4.1 1 チャンネル × 1 vol（テストチャンネル推奨）
 
@@ -160,20 +144,18 @@ import json,sys; d=json.load(sys.stdin); print(f'reconstructed: {d[\"count\"]} r
 # 1. テスト用チャンネルでの dashboard 設定
 curl -s -X POST http://localhost:8888/api/active-channel/<test_channel_id>
 
-# 2. preflight: Premiere Pro が起動 + Premiere Link パネル開いている
-osascript -e 'tell application "Adobe Premiere Pro 2026" to activate'
-# UI で「ウィンドウ > 拡張機能 > Premiere Link」を選択
+# 2. preflight: ffmpeg / ffprobe / Pillow
+python3 Python/studio.py preflight --json
 
 # 3. dry-run
-APP_USE_RENDER_QUEUE=0 python3 Python/app_pipeline.py 99 --dry-run --channel-id <test_channel_id>
+python3 Python/app_pipeline.py 99 --dry-run --channel-id <test_channel_id>
 
 # 4. 実行
-APP_NO_INTERACTIVE=1 APP_USE_RENDER_QUEUE=1 \
-  python3 Python/app_pipeline.py 99 --auto --channel-id <test_channel_id>
+APP_NO_INTERACTIVE=1 python3 Python/app_pipeline.py 99 --auto --channel-id <test_channel_id>
 
 # 5. 各 stage の artifact 確認
 ls <test_channel_folder>/99_*/
-# 期待: plan.json, music/, audio/, *.prproj, timecode.txt, subtitles_*.srt,
+# 期待: plan.json, music/, .ffrender_manifest.json, music_time_code_info_*.txt, subtitles_*.srt,
 #       *.mp4, qa_report.json, youtube_title.txt, ..., thumbnail.png,
 #       youtube_upload.json
 ```
@@ -261,11 +243,11 @@ slot balancing を有効にしておけば、6 チャンネル分の vol_create 
 | チェック | コマンド / 操作 |
 |---|---|
 | ✅ スモーク 22/22 PASS | `python3 Python/scripts/p1p2p3_smoke.py` |
-| ✅ 起動 hooks ログ | `[scheduler] / [registry] / [ledger] / [render-queue]` 全部出る |
+| ✅ 起動 hooks ログ | `[scheduler] / [registry] / [ledger]` 全部出る |
 | ✅ token health の警告ゼロ（or 想定内） | `curl /api/token-health` |
 | ✅ ledger migration が idempotent | 2 回連続実行で `total_inserted=0` |
 | ✅ schedule_jobs.json バックアップ | `cp ~/.config/orzz/schedule_jobs.json{,.bak}` |
-| ✅ Premiere Pro 起動 + CEP パネル開いている | `pgrep -fi "Adobe Premiere Pro"` + 目視 |
+| ✅ ffmpeg / ffprobe / Pillow | `python3 Python/studio.py preflight --json` |
 | ✅ Google Drive 同期完了 | Finder の同期インジケータが空 |
 | ✅ ディスク空き容量 | `df -h` で 50 GB 以上 |
 
@@ -285,4 +267,4 @@ slot balancing を有効にしておけば、6 チャンネル分の vol_create 
     kill $SERVER_PID
 ```
 
-ただし Premiere / Playwright が必要な test は self-hosted runner（Mac）が必要。
+ただし Playwright（SUNO）が必要な test は self-hosted runner（Mac）が必要。

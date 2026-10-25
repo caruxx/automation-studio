@@ -61,9 +61,8 @@ SPA 内のページ遷移は `history.pushState` で URL ハッシュを更新:
 | 📊 ダッシュボード | KPI カード4枚 + 「次にやること」 + 最近の動画 + ベンチマーク駆動 |
 | 🎬 コンテンツ | 動画一覧（テーブル、進捗ステッパー、タイトル表示） |
 | 🎯 ベンチマーク | 取り込み（StatCard + ホットチャンネル）/ プロファイル / 制作ドライブ |
-| ⚙ 自動化 | チャンネル別の自動化設定 + 📤 AME 書き出しキュー（v2） |
+| ⚙ 自動化 | チャンネル別の自動化設定 |
 | 🎵 SUNO 生成 | 楽曲自動生成（v2 で設定は「基本設定」に集約、このタブは実行のみ） |
-| 🎨 Premiere | JSX 自動配置 + Media Encoder 書き出し |
 | 📤 YouTube | 説明文エディタ + アップロード |
 | 🔔 通知 | Discord メッセージ送信 |
 | ⚙ マスター設定（v2） | プロンプト管理 / SUNO 詳細 / スケジュール / リモート / 入出力（Flow・メタ詳細カードは D8/D12 で撤去） |
@@ -80,7 +79,7 @@ v2 で **「⚙ マスター設定」を新設**（旧「設定」は「基本�
 | **詳細** | タイトル / 説明 / タグ + AI 提案（ベンチマーク連動・v3 で 1 パネル統合） | `youtube_title.txt` / `youtube_description.txt` / `youtube_tags.txt` |
 | **画像** | グリッド選択、メイン/サブ指定 + 🖼後から配置 | `selected_images.json` |
 | **楽曲** | メディアプレイヤー + ♥ + 🗑 + SUNO生成 + DL + リネーム + 後処理 | 楽曲ファイル自体（z プレフィックスでステート表現） |
-| **書き出し** | 時間指定 + prproj 自動オープン + JSX 実行 | — |
+| **編集** | タイムライン編集と FFmpeg 書き出し（app_ffrender） | `.ffrender_manifest.json` |
 | **アップロード** | サムネ/タイトル/説明/タグ/予約 → YouTube | `youtube_upload.json`（完了マーカー） |
 
 右サイドには **ワークフロー進捗ステッパー**（8工程）が常時表示。
@@ -88,7 +87,7 @@ v2 で **「⚙ マスター設定」を新設**（旧「設定」は「基本�
 ## ワークフロー 8 工程（UI ステッパー）
 
 ```
-SUNO生成 → 背景画像 → PSD合成 → 画像選択 → JSX配置 → 書き出し → 動画メタ → アップロード
+SUNO生成 → 背景画像 → 画像合成 → 画像選択 → 配置(自動) → 書き出し → 動画メタ → アップロード
 ```
 
 UI ステッパーは詳細タブと過密にしないため pipeline の 11 工程を 8 工程に集約（`rename` / `qa` / `localization` は UI 非表示）。判定条件（[web/static/index.html](../web/static/index.html) の `WORKFLOW_STEPS`）:
@@ -97,9 +96,9 @@ UI ステッパーは詳細タブと過密にしないため pipeline の 11 工
 |------|------|
 | SUNO生成 | `has_music`（`music/*.mp3` 存在） |
 | 背景画像 | `has_bg_image`（`vol{N}.png/.jpg`）or 画像選択 / サムネ |
-| PSD合成 | `has_thumb`（`vol*.jpg` / `サムネイル.jpg`） |
+| 画像合成 | `has_thumb`（`vol*.jpg` / `サムネイル.jpg`） |
 | 画像選択 | `has_images_selected`（`selected_images.json`）or サムネ |
-| JSX配置 | `has_srt`（`subtitles_*.srt` 存在） |
+| 配置 | `has_srt`（`subtitles_*.srt` 存在。FFmpeg 書き出しで生成） |
 | 書き出し | `has_mp4`（`vol_vol*.mp4`、外部SSDパス対応） |
 | 動画メタ | `has_desc && has_tags`（`youtube_description.txt` + `youtube_tags.txt`） |
 | アップロード | `has_upload`（`youtube_upload.json` 存在） |
@@ -114,7 +113,6 @@ UI ステッパーは詳細タブと過密にしないため pipeline の 11 工
 | マスター設定タブ | 左下サイドバー | 9 セクション（[app-master-config.md](./app-master-config.md)） |
 | 徹底パクリ進化分析 | 動画詳細 → メタ → 🧬 ボタン | ベンチマーク先 + ペルソナ → ✓/✗/+ 3 軸（[app-imitate-evolve.md](./app-imitate-evolve.md)） |
 | ベンチマーク参照サイドパネル | 動画詳細 → メタ → 📊 アコーディオン | 適用中ベンチマーク / 投稿時刻ヒートマップ / タグ頻出 |
-| AME 書き出しキュー | 自動化タブ | 完成条件マッチを自動 enqueue → AME 投入 → ファイルサイズ安定化で完了検知 |
 | スケジュール自動実行 | マスター設定 → ⏱ | APScheduler（[app-schedule.md](./app-schedule.md)） |
 | 外出先リモートアクセス | マスター設定 → 🌐 | Cloudflare Tunnel + 認証（[app-remote-access.md](./app-remote-access.md)） |
 | 分析プロンプトの言語ハイブリッド（v3） | ベンチマーク分析パネル | `analyze_with_claude` 出力を「descriptive=日本語 / シード=英語 / 数値=numeric」に再設計（cache `language: ja-en-mix` / `prompt_version: 4`） |
@@ -129,7 +127,7 @@ UI ステッパーは詳細タブと過密にしないため pipeline の 11 工
 
 ### コンテンツ・動画
 - `GET /api/videos` — 動画フォルダ一覧（vol番号で降順ソート）、全工程のbool + title
-- `POST /api/videos/create` — `{num}_{prefix}_{YYMMDD}` フォルダと .prproj / .psd を自動生成（`app-create-folder` 参照）
+- `POST /api/videos/create` — `{num}_{prefix}_{YYMMDD}` フォルダを自動生成（`app-create-folder` 参照）
 - `GET /api/videos/{name}/detail` — 詳細情報、`readiness`、`upload_info`
 
 ### メタデータ
@@ -158,10 +156,9 @@ UI ステッパーは詳細タブと過密にしないため pipeline の 11 工
 - `POST /api/videos/{name}/process-tracks[?rename_only=true]` — 後処理（リネーム + ffmpeg）
 - 詳細は [app-track-player.md](./app-track-player.md) / [app-rename-audio.md](./app-rename-audio.md)
 
-### Premiere（フォルダ指定対応）
-- `POST /api/premiere/run` — body: `{duration_h, duration_m, duration_s, auto_export, video_name?}`
-- `video_name` 指定時は `vol_vol*.prproj` を自動オープンしてから JSX 送信
-- 詳細は [app-premiere.md](./app-premiere.md)
+### 書き出し（FFmpeg）
+- `POST /api/videos/{name}/run-pipeline` — body: `{steps:["export"]}`（`app_ffrender.py` で書き出し。Premiere API は 2026-10-25 段階 1a で廃止）
+- 詳細は [app-export.md](./app-export.md)
 
 ### YouTube（保存ファイル統合）
 - `POST /api/youtube/upload` — body: `{video_name, title?, privacy, schedule?, tags?}`
@@ -211,7 +208,7 @@ CLI: `python3 suno_auto_create.py --workspace vol_vol74 --prompt "..." --count 5
 
 ## Playwright ブラウザ内ステータスオーバーレイ
 
-自動操作中の SUNO / Premiere 等のブラウザに、現在の処理を可視化する黒い固定パネルを表示:
+自動操作中の SUNO 等のブラウザに、現在の処理を可視化する黒い固定パネルを表示:
 
 - `context.add_init_script(_STATUS_OVERLAY_SCRIPT)` で全ページの document-start に注入
 - `window.__appStatus(msg, variant)` を Python 側から `page.evaluate` で呼ぶ
@@ -238,7 +235,7 @@ UI: 動画詳細「楽曲」タブの「⬇ Workspace DL」ボタン。
 
 `~/.config/{app_id}/task_history.json` にタスクログとメタデータを保存:
 
-- **保存タイミング**: suno / premiere / youtube / process / setup の `[完了]` 到達時に自動書き出し
+- **保存タイミング**: suno / youtube / process / setup の `[完了]` 到達時に自動書き出し
 - **読み込みタイミング**: サーバー起動時に `_load_task_history()` で復元
 - **保持量**: タスクごと最大 500 行
 - **効果**: サーバー再起動しても前回のログが残る。SUNO ページを開いたら前回の生成ログがそのまま見られる
@@ -262,8 +259,7 @@ UI: 動画詳細「楽曲」タブの「⬇ Workspace DL」ボタン。
 - [app-rename-audio.md](./app-rename-audio.md) — 楽曲リネーム+音声処理（ペルソナフォールバック / rename-only）
 - [app-suno-download.md](./app-suno-download.md) — SUNO 一括 DL（fetch インターセプタ）
 - [app-track-player.md](./app-track-player.md) — メディアプレイヤー + いいね + 削除
-- [app-premiere.md](./app-premiere.md) — Premiere JSX
-- [app-export.md](./app-export.md) — Media Encoder 書き出し
+- [app-export.md](./app-export.md) — FFmpeg 書き出し
 - [app-youtube-desc.md](./app-youtube-desc.md) — 説明文生成
 - [app-youtube-upload.md](./app-youtube-upload.md) — アップロード
 - [app-notify.md](./app-notify.md) — Discord 通知

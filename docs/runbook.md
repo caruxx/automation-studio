@@ -12,7 +12,7 @@ Discord 通知の **絵文字** で症状を識別し、該当セクションへ
 |---|---|---|
 | 🔐 | ブラウザ手動ログイン要 | [#unattended-login](#unattended-login) |
 | 📊 | YouTube クオータ枯渇 | [#youtube-quota](#youtube-quota) |
-| ⚠️ preflight | Premiere/CEP 未起動 | [#preflight](#preflight) |
+| ⚠️ preflight | ffmpeg / ffprobe / Pillow 不足 | [#preflight](#preflight) |
 | ❌ | 一般失敗 / retry 上限到達 | [#general-failure](#general-failure) |
 
 通知本文末尾には常に `再開: python3 app_pipeline.py <vol> --from <stage>` の形で**コピペ可能な復旧コマンド**が含まれている。手順書で背景を理解 → そのコマンドを実行、で完了する設計。
@@ -81,28 +81,22 @@ SUNO / Flow / YouTube OAuth のいずれかで Playwright プロファイル (`~
 ---
 
 <a id="preflight"></a>
-## ⚠️ preflight 失敗（Premiere Pro 未起動）
+## ⚠️ preflight 失敗（ffmpeg / ffprobe / Pillow 不足）
 
 ### 何が起きているか
-pipeline 開始前のチェックで **Premiere Pro プロセスが見つからない** か、**Premiere Link CEP パネルが応答していない**。 Premiere は Mac 1 台に 1 セッションしか動かないため、SUNO 等の長時間処理を始めてから「実は Premiere が落ちていた」と気付く事故を防ぐための早期検知。
+pipeline 開始前のチェックで **ffmpeg / ffprobe の実行ファイル、または Pillow** が見つからない（2026-10-25 段階 1a 以降、Premiere の起動確認は行わない）。
 
 ### 復旧手順
 
-1. **Premiere Pro 2026 を起動**
-2. メニューから **「ウィンドウ > 拡張機能 > Premiere Link」** を選択（パネルが開く）
-3. パネルが緑色の "Connected" 表示になったら復旧コマンドを実行:
+1. `python3 Python/studio.py preflight --json` で不足項目を確認
+2. `brew install ffmpeg`、`pip install pillow`（.venv 利用時は `.venv/bin/pip install pillow`）
+3. 復旧コマンド:
    ```bash
    python3 app_pipeline.py <vol>
    ```
 
-### CEP パネルが見つからない場合
-```bash
-bash cep_extension/install.sh
-```
-を実行してから Premiere を再起動。
-
 ### preflight チェックを意図的にスキップしたいケース
-テスト用や Premiere 不要な工程だけ流すとき:
+テスト用や書き出し不要な工程だけ流すとき:
 ```bash
 APP_PREFLIGHT_DISABLE=1 python3 app_pipeline.py <vol> --only meta
 ```
@@ -122,8 +116,8 @@ stage 単位の retry 層 (`RETRY_POLICY`) が試行回数を使い切った状�
 | `plan` | Claude CLI タイムアウト | `claude --version` で疎通確認 → 再投入 |
 | `suno` | Workspace 命名重複 / DL タイムアウト | `~/.flow-playwright-profile` を保ったまま `--from suno` で再開 |
 | `rename` | ffmpeg なし | `brew install ffmpeg` |
-| `premiere` | Project ファイル不在 | `<channel_folder>/template.prproj` の有無を確認 |
-| `export` | Media Encoder 未起動 / ディスク満杯 | AME 起動 + `df -h` で空き確認 |
+| `premiere` | （自動通過。失敗しない） | — |
+| `export` | ffmpeg エラー / ディスク満杯 / export_path 未マウント | ログ確認 + `df -h` + `/Volumes` のマウント確認 |
 | `meta` | Claude CLI レートリミット | 数分待ってから `--from meta` で再投入 |
 | `upload` | quotaExceeded（→ 📊 セクションへ） / 動画違反 | YouTube Studio で動画詳細を確認 |
 
@@ -164,4 +158,4 @@ P1-3 以降、複数チャンネルのジョブが同時に走っても `dashboa
 | `75` | unattended login required | retry なし、Discord 通知 |
 | `76` | retryable failure (transient) | 指数バックオフで retry |
 | `77` | YouTube quota exhausted | retry なし、Discord 通知（24h 待ち） |
-| `78` | preflight failure | retry なし、Discord 通知（手動 Premiere 起動要） |
+| `78` | preflight failure | retry なし、Discord 通知（ffmpeg / ffprobe / Pillow の導入要） |

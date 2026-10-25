@@ -1,5 +1,7 @@
 # Automation Studio 全ページ UX レビュー（2026-06-11）
 
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+
 プロダクトデザイナー観点で全12ページを実画面で巡回し、「使いやすい・迷わない」の2軸で評価した。
 評価環境: Chrome 1440x900、SUKIMA チャンネル選択状態、ライブ配信は orzz 1/3 配信中・アップロード5本走行中。
 

@@ -1,5 +1,7 @@
 # VPS分割計画（マルチユーザー化）
 
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+
 > **リポジトリ分割 (2026-08-09)**: VPS 側の実装は
 > [caruxx/automation-studio-vps](https://github.com/caruxx/automation-studio-vps)
 > へ分離した(履歴ごと subtree split)。このリポジトリは Mac 側

@@ -1,7 +1,7 @@
 # Automation Studio — 導入方法と仕様
 
 YouTube の BGM チャンネル向けに、動画づくりのほぼ全工程を自動化するツールです。
-「音楽をつくる → 表紙画像をつくる → 動画編集ソフトに並べる → 書き出す → 説明文を書く → YouTube に投稿する」までを、1 つの管理画面からまとめて動かせます。
+「音楽をつくる → 表紙画像をつくる → FFmpeg で動画にする → 説明文を書く → YouTube に投稿する」までを、1 つの管理画面からまとめて動かせます。
 
 このドキュメントは前半が**どなたでも読めるやさしい解説**、後半が**開発者向けの技術仕様**です。むずかしい言葉は末尾の[用語集](#用語集)を参照してください。
 
@@ -39,7 +39,7 @@ YouTube の BGM チャンネル向けに、動画づくりのほぼ全工程を�
 
 - **たとえると「自動の動画工場」** — 材料（音楽・画像・文章）を流し込むと、ベルトコンベアのように各工程を通って、最後に YouTube 投稿まで完成品が出てきます。
 - **「考える仕事」は AI 担当** — 曲名、説明文、サムネの言葉など頭を使う部分は AI（Claude／Codex）が考えます。
-- **「手を動かす仕事」は機械担当** — 音楽生成サイトの操作、動画編集ソフトへの配置、YouTube 投稿はプログラムが自動で行います。
+- **「手を動かす仕事」は機械担当** — 音楽生成サイトの操作、FFmpeg での動画作成、YouTube 投稿はプログラムが自動で行います。
 
 ---
 
@@ -52,8 +52,7 @@ YouTube の BGM チャンネル向けに、動画づくりのほぼ全工程を�
 | 音楽を自動で作る | 音楽生成 AI「SUNO」に 1 本ぶん（例：20 曲）をまとめて作らせる。曲名・雰囲気の指定も AI が考える |
 | 音楽をきれいに整える | 英語タイトルを付け直し、フェードアウト、音量そろえ（LUFS 正規化）まで自動 |
 | サムネイル（表紙画像）を作る | ライバルの人気動画を参考に背景画像を生成し、文字をのせて表紙を 2 種類出力 |
-| 動画編集ソフトに自動配置 | Adobe Premiere Pro を自動操作し、音楽・字幕・画像を時間どおりに並べて長尺動画を組み立て |
-| 動画ファイル（MP4）を書き出す | 投稿用ファイルを自動書き出し、出来上がりも自動チェック（QA） |
+| 動画ファイル（MP4）を書き出す | FFmpeg で音楽・背景画像・字幕・タイムコードから長尺動画を一括生成し、出来上がりも自動チェック（QA） |
 | タイトル・説明文・タグを AI 提案 | タイトル候補 5 つ・説明文・タグを生成。さらに他言語へ自動翻訳も可能 |
 | YouTube へ自動投稿 | 限定公開・一般公開・予約投稿に対応。投稿後は「投稿済み」の印が自動で付く |
 | ライバル分析で作戦立て | 伸びている競合を調べ、「採用する点・避ける点・自分流に進化させる点」の 3 つに分けて提案 |
@@ -71,33 +70,22 @@ YouTube の BGM チャンネル向けに、動画づくりのほぼ全工程を�
 - Python 3.10 以降
 - Claude CLI（AI の第一候補・ローカル認証・API キー不要）
 
-**Adobe Creative Cloud（動画工程に必須・有料サブスク）**
-
-動画の配置・書き出し・サムネ合成には Adobe 製ソフトが必要で、Premiere Pro / Media Encoder / Photoshop はいずれも **Adobe Creative Cloud の有料サブスク（月額契約）が別途必要**です（本ツールに Adobe ライセンスは含まれません。Adobe との契約・支払いは各自で行ってください）。**コンプリートプラン（全アプリ込み）**なら、これら3アプリと、制作で併用する After Effects 等までまとめてカバーされます。
-
-本ツールが自動操作するソフト（必須）:
-- **Adobe Premiere Pro 2024 以降** … 音源・字幕・画像の自動配置／シーケンス組み立て
-- **Adobe Media Encoder** … MP4 書き出し（Premiere とセットで導入）
-- **Adobe Photoshop** … サムネ合成・2 枚出し（新版は UXP 連携／旧版は AppleScript）
-
-制作で併用（任意・本ツールの自動操作対象外）:
-- **Adobe After Effects** … モーション・エフェクトを手作業で加える場合（コンプリートプランに含まれる）
+**動画・画像工程に必要なもの**
+- **ffmpeg / ffprobe**（`brew install ffmpeg`） … MP4 書き出し・QA
+- **Pillow**（Python） … サムネ合成（画像エディタ）
+- Adobe 製品は使いません（2026-10-25 段階 1a で廃止）
 
 **API キー・認証（UI から登録）**
 - OpenAI（背景・AI サムネ画像生成）
 - YouTube Data API v3 + OAuth（投稿）
 - 任意：Gemini（プロンプト生成の選択肢）、Codex CLI（AI の控え・要 `codex login`）
 
-**Adobe が無くても使える範囲**
-- 楽曲生成・後処理（SUNO + ffmpeg）／メタ生成・多言語化／競合・ベンチマーク分析
-- **Adobe が必須なのは「配置・書き出し・サムネ合成」の 3 工程のみ**です
-
 ### インストール
 
 ```bash
 git clone https://github.com/caruxx/automation-studio.git
 cd automation-studio
-pipx install ".[all]"   # SUNO / Premiere 全部入り
+pipx install ".[all]"   # SUNO（Playwright）込み
 # または最小（Web ダッシュボードのみ）:
 pipx install .
 ```
@@ -149,12 +137,12 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 | 「vol.78 を作って」 | `curl POST /api/videos/create {"publish_date":"…"}` |
 | 「楽曲を作って」 | `python3 suno_auto_create.py --workspace vol_vol78 …` |
 | 「背景画像を作って」 | `app_pipeline.py <vol> --only bgimage` |
-| 「サムネを作って」 | `app_pipeline.py <vol> --only psd_composite`（正規）/ `--only thumbnail`（AI 直接） |
-| 「Premiere で配置して」「書き出して」 | `curl POST /api/premiere/run` ・ `/export` |
+| 「サムネを作って」 | `app_pipeline.py <vol> --only psd_composite`（画像合成・正規）/ `--only thumbnail`（AI 直接） |
+| 「書き出して」 | `app_pipeline.py <vol> --only export`（FFmpeg） |
 | 「タイトルを提案して」 | `curl POST /api/videos/…/suggest {"mode":"titles"}` |
 | 「アップロードして」 | `curl POST /api/youtube/upload {"video_name":"…"}` |
 | 「全部やって」 | `python3 app_pipeline.py <vol>` |
-| 「Premiere からやり直して」 | `python3 app_pipeline.py <vol> --from premiere` |
+| 「書き出しからやり直して」 | `python3 app_pipeline.py <vol> --from export` |
 | 「競合を分析して」 | `python3 app_competitor.py --analyze` |
 
 詳細な運用コマンドは [AGENTS.md](AGENTS.md) を参照してください。
@@ -177,9 +165,9 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 1 本の動画は次の順番で組み立てられます。各工程の「完了」は、フォルダ内に決まったファイルが出来ているかで判断します。
 
 ```
-音楽生成 → 仕上げ → 背景画像 → サムネ合成 → 編集ソフト配置 → 書き出し
+音楽生成 → 仕上げ → 背景画像 → サムネ合成 → 配置(自動) → 書き出し
    → 自動チェック → 説明文作成 → 多言語化 → サムネ最終(予備) → 投稿
- (SUNO)  (名前/音量) (AI生成)  (文字のせ)  (Premiere)    (MP4)
+ (SUNO)  (名前/音量) (AI生成)  (Pillow)   (FFmpeg に統合) (MP4)
    (QA)     (AI)     (翻訳)              (YouTube)
 ```
 
@@ -188,9 +176,9 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 | 1 | suno | SUNO で楽曲生成（既定 20 曲・一括） | `music/*.mp3` ≥1 | suno_auto_create.py | 歌詞/スタイル |
 | 2 | rename | 英語タイトル化＋ffmpeg 後処理 | `music/*.mp3`（処理済） | app_process_tracks.py | 命名 |
 | 3 | bgimage | ベンチ参照＋コンセプトで背景生成 | `vol{N}.png/.jpg` | app_image_prompt / codex_imagegen | プロンプト+画像 |
-| 4 | psd_composite | Photoshop で背景＋文字合成（2 枚） | `vol{N}.jpg` + `サムネイル.jpg` | app_photoshop.py | 文字案 |
-| 5 | premiere | .prproj 自動配置→実測 SRT 生成 | `subtitles_*.srt` | app_premiere.py | — |
-| 6 | export | Media Encoder で MP4 書き出し | `vol_vol*.mp4` | app_premiere.py --export | — |
+| 4 | psd_composite | 画像エディタ（Pillow）で背景＋文字合成（2 枚） | `vol{N}.jpg` + `サムネイル.jpg` | app_image_composite.py | 文字案 |
+| 5 | premiere | 配置は書き出しに統合（この工程は自動で通過） | — | app_pipeline step_premiere | — |
+| 6 | export | FFmpeg で MP4・SRT・タイムコードを一括生成 | `{prefix}_vol*.mp4` | app_ffrender.py | — |
 | 7 | qa | 書き出し直後に自動品質チェック | QA 4 軸 pass | app_pipeline step_qa | — |
 | 8 | meta | タイトル/説明文/タグを AI 生成 | `youtube_description.txt` + `tags.txt` | claude_proposer.py | メタ生成 |
 | 9 | localization | メイン言語→他言語へ翻訳 | 多言語メタ | app_pipeline step_localization | 翻訳 |
@@ -201,15 +189,13 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 - サムネは通常「背景画像 → 文字のせ」の順（正規フロー）で作り、うまくいかない時だけ工程 10 で AI が直接つくり直します。
 - 工程の真実源は `app_pipeline.py` の `STEPS`。工程を増減する時は `STEPS / STEP_LABELS / STEP_FUNCS / RETRY_POLICY` の 4 箇所を一貫更新する規約です。
 
-### 書き出しエンジン：AME と ffmpeg 方式（ffrender）
+### 書き出しエンジン：ffmpeg 方式（ffrender）
 
-BGM 動画の映像は実質「静止画」なので、チャンネルごとに `export_engine` で書き出し方式を選べます。
+BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静止画を 1 GOP だけエンコードし `-stream_loop -c copy` で目標尺まで連結します。音声は concat → フェード → リミッター。2026-10-25 以降はこの方式のみで、Premiere / Media Encoder は使いません（`production_mode` は `ffmpeg_only` だけ）。
 
-- **ame**（既定）: Premiere で自動配置 → Media Encoder で書き出し（工程 5-6）。動的な編集が要るチャンネル向け。物理的に直列（Premiere/AME は単一インスタンス）。
-- **ffmpeg**（`app_ffrender.py`）: Premiere/AME を使わず、静止画を 1 GOP だけエンコードし `-stream_loop -c copy` で目標尺まで連結。音声は concat→フェード→リミッタ→AAC、字幕(SRT)/チャプター(TC) は曲尺から決定的に生成。premiere 工程をスキップし、export 工程が音声+映像+字幕を一括生成します。
-  - 実測: 1 本あたり 70-190 秒（AME 比 20-30 倍速）・A/V ズレ約 0.01s。画像差し替えの再書き出しは音声キャッシュ再利用で約 10 秒。CPU 律速なので render queue を介さず並列化できます。
-  - ⚠ 背景は `psd_composite` が出力する `vol{N}.jpg`（1920x1080 の引き構図）を使うのが正。生成直後の生 `vol{N}.png`（gpt-image 系は 3:2）を先に書き出すと中央クロップでズームインしサムネと構図がズレます。
-  - 複数チャンネルの並列処理は `APP_CHANNEL_FOLDER` 環境変数で per-channel 設定を切り替え（アクティブ ch を変えずに別 ch を処理）。
+- 実測: 1 本あたり 70-190 秒・A/V ズレ約 0.01s。画像差し替えの再書き出しは音声キャッシュ再利用で約 10 秒。CPU 律速。
+- 背景は `psd_composite`（画像合成）が出力する `vol{N}.jpg`（1920x1080）を使うのが正。生成直後の生 `vol{N}.png`（gpt-image 系は 3:2）を先に書き出すと中央が切れる。
+- 複数チャンネルの並列処理は `APP_CHANNEL_FOLDER` 環境変数で per-channel 設定を切り替える。
 
 ---
 
@@ -231,12 +217,12 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
              │ 子プロセスで各工程の独立プログラムを起動       │ ファイル読み書き
              ▼                                              ▼
   ┌──────────────────────────────────────────┐   ~/.config/orzz/ (設定)
-  │ 音楽生成 / 仕上げ / 背景・サムネ / Premiere /│   動画フォルダ (状態＝真実)
+  │ 音楽生成 / 仕上げ / 背景・サムネ / FFmpeg   │   動画フォルダ (状態＝真実)
   │ 書き出し / 投稿 / 流れ統括 / 自動運転        │   SQLite (順番待ち・履歴台帳)
   └────┬───────────┬──────────────┬────────────┘
        ▼           ▼              ▼
-   Playwright   Adobe Premiere   YouTube Data API v3
-   →suno.com    + Media Encoder  （google のライブラリ経由）
+   Playwright   ffmpeg/ffprobe   YouTube Data API v3
+   →suno.com    + Pillow         （google のライブラリ経由）
        │
    ┌───▼───────────────────────────┐
    │ app_llm_runner：まず Claude →   │ ← AI への依頼は必ずここを通る
@@ -250,10 +236,9 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 |---|---|
 | サーバー本体 | FastAPI（Python 3）+ Uvicorn（自動リロード無し） |
 | 画面（フロント） | 静的 HTML + 素の JavaScript（ビルド不要・`web/static/index.html` に同梱） |
-| サイト自動操作 | Playwright（SUNO・Flow をブラウザごと自動操作） |
-| 動画編集 | Adobe Premiere Pro + Pymiere + ExtendScript(JSX) |
-| 動画書き出し | Adobe Media Encoder（JSX 経由でキュー投入） |
-| サムネ合成 | Photoshop（新版は UXP のファイル連携、旧版は AppleScript） |
+| サイト自動操作 | Playwright（SUNO をブラウザごと自動操作） |
+| 動画書き出し | FFmpeg（`app_ffrender.py`。静止画ループ + 音声 + 字幕 + タイムコード） |
+| サムネ合成 | Pillow（画像エディタ Image2 Layout Studio） |
 | 投稿 | YouTube Data API v3 + OAuth |
 | AI（文章・画像・画像理解） | Claude CLI（第一候補・API キー不要）→ Codex CLI（控え）。任意で Gemini・ChatGPT・OpenAI Image・Google Flow |
 | 状態の保存 | フォルダ内ファイル + SQLite（順番待ち・履歴）+ JSON（設定） |
@@ -324,7 +309,7 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 |---|---|---|
 | `app.py` | 7,921 | FastAPI 組み立て + 実行基盤。3 つの入口がすべて集約する単一頭脳。ミドルウェア/起動フック/ワーカー基盤（書き出し監視・順番待ち・スケジューラ・公開ゲート） |
 | `app_core.py` | 1,432 | 共通部品。パス・設定の定数、設定ローダ、チャンネル別設定、認証ヘルパ、各種ヘルパ |
-| `routers/` | — | 機能別の窓口。benchmark / images / premiere_photoshop / youtube |
+| `routers/` | — | 機能別の窓口。benchmark / images / scene_text / youtube / analytics / live / video_edit / timeline |
 | `web/static/index.html` | — | 管理画面 UI（JS 同梱・ビルド不要） |
 
 ### 流れの統括・自動運転
@@ -333,7 +318,6 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 |---|---|---|
 | `app_pipeline.py` | 2,940 | 一括パイプライン統括。`STEPS` が工程の真実源。`--only/--from/--dry-run/--from-benchmark/--via-api` |
 | `app_orchestrator.py` | 650 | 自動運転の司令塔。StageWorker/QAWorker/PlanWorker。書き出し〜サムネを自動投入、投稿は手動ゲート、連続 3 失敗でブレーカー |
-| `app_render_queue.py` | 395 | Premiere/Media Encoder の「同時 1 つ」制約を吸収する SQLite 順番待ち |
 | `app_run_ledger.py` | 492 | 中央の実行台帳（SQLite）。全 run 履歴を一元・永続記録 |
 | `app_token_health.py` | 294 | 認証期限チェッカ。期限が近いものを Discord で事前通知 |
 | `app_image_eval_loop.py` | 315 | 自己評価つき画像生成ループの核（生成→採点→弱点還流） |
@@ -344,12 +328,11 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 |---|---|---|
 | `suno_auto_create.py` | — | Playwright で suno.com を操作し楽曲生成。Workspace 管理・一括生成（`--batch`）・一括 DL |
 | `app_process_tracks.py` | 850 | 楽曲後処理。英語リネーム + ffmpeg（無音トリム/フェード/LUFS 正規化）+ 透かし除去 + ID3 |
-| `app_premiere.py` | 906 | Pymiere で .prproj を開き JSX 自動配置、実測 SRT 生成。`--export`/`--images-only` |
-| `app_ffrender.py` | 800 | ffmpeg 書き出しエンジン（AME 代替）。静止画 1 GOP→ループ連結で音声+映像+字幕(SRT)+チャプター(TC) を一括生成。`export_engine=ffmpeg` 時に premiere/export を置換し 70-190 秒で書き出し |
-| `app_photoshop.py` | 1,017 | Photoshop 連携。背景＋文字で `vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し |
+| `app_ffrender.py` | — | FFmpeg 書き出しエンジン（唯一の書き出し経路）。静止画 1 GOP→ループ連結で音声+映像+字幕(SRT)+チャプター(TC) を一括生成。`export_engine=ffmpeg` 時に premiere/export を置換し 70-190 秒で書き出し |
+| `app_image_composite.py` / `app_image_compositor.py` | — | 画像合成（Pillow）。背景＋文字で `vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し |
 | `app_youtube.py` | 919 | YouTube 投稿。保存ファイルから自動読込→`videos().insert()`。`--auth-only` で再認証 |
 | `app_image_prompt.py` / `codex_imagegen.py` | — | 背景画像のプロンプト構築 / OpenAI Image・Codex CLI で生成（並列・参照画像対応） |
-| `app_channel_thumbnail.py` | 278 | AI サムネ一括生成（PSD 合成の予備経路）+ 採点 |
+| `app_channel_thumbnail.py` | 278 | AI サムネ一括生成（画像合成の予備経路）+ 採点 |
 | `claude_proposer.py` / `scene_text_generator.py` | — | 動画メタ提案 / サムネ焼き込み文字の生成 |
 
 ### 分析・調査
@@ -368,8 +351,7 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 | プログラム | 役割 |
 |---|---|
 | `app_llm_runner.py` | Claude→Codex フォールバック共通ランナー（全 AI 呼び出しの集約点） |
-| `save_auth.py` | Flow ログインの storage_state 保存 |
-| `jsx_bundle.py` | JSX バンドル補助 |
+| `srt_timecode.py` | SRT 字幕とタイムコードの生成（純関数） |
 | `app_notify.sh` | Discord 通知（シェル） |
 | `start.sh` / `setup.sh` | 起動（リロード無し）/ 依存導入 |
 
@@ -398,9 +380,10 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 | `original_music/*.mp3` | SUNO ダウンロード直後のオリジナル |
 | `vol{N}.png` / `.jpg` | 背景画像（背景生成 完了） |
 | `vol{N}.jpg` + `サムネイル.jpg` | 合成済サムネ 2 枚（サムネ合成 完了） |
-| `selected_images.json` | 画像選択結果（main=0-5秒 / sub[]=以降を等分配置、JSX 連動） |
-| `subtitles_{N}.srt` | 実測 SRT 字幕（Premiere 配置 完了） |
-| `vol_vol{N}.mp4` | 書き出し済 MP4（書き出し 完了） |
+| `selected_images.json` | 画像選択結果（main=0-5秒 / sub[]=以降を等分配置） |
+| `.ffrender_manifest.json` | 書き出し構成の正本（曲順・画像・尺・焼き込み設定） |
+| `subtitles_{N}.srt` | SRT 字幕（書き出しで生成） |
+| `{prefix}_vol{N}.mp4` | 書き出し済 MP4（書き出し 完了） |
 | `youtube_title/description/tags.txt` | メタ（手動 or AI 提案）。tags 未保存時は既定タグにフォールバック |
 | `youtube_upload.json` | 投稿完了マーカー（video_id / url / privacy / schedule / uploaded_at） |
 
@@ -411,7 +394,7 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 ### 設定ファイル（`~/.config/{app_id}/`・リポジトリ外に保存）
 
 - **チャンネル/制作**: `dashboard_config.json`（チャンネル名/フォルダ/ペルソナ/ライバル URL）, `suno_config.json`（AI プロバイダ・モデル・プロンプト・`claude_cli`/`codex_cli` パス）, `channels.json`（複数チャンネル切替）, `benchmark_config.json`, `prompts.json`, `master_prompts.json`
-- **自動運転/認証/履歴**: `schedule_jobs.json`, `export_rules.json`, `export_queue.json`, `youtube_client_secret.json`, `youtube_token.json`（自動更新）, `auth_token.txt`, `discord_config.json`, `task_history.json`
+- **自動運転/認証/履歴**: `schedule_jobs.json`, `export_rules.json`, `youtube_client_secret.json`, `youtube_token.json`（自動更新）, `auth_token.txt`, `discord_config.json`, `task_history.json`
 
 > 認証情報や秘密ファイルはリポジトリに含めません（実体は repo 外）。作業ツリー内に生成される `config/`・`competitor_analysis/`・`*.bak.*` は `.gitignore` で丸ごと除外済みです。API キーは UI から個別保存し、環境変数依存はありません。
 
@@ -422,7 +405,7 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 | SUNO（suno.com） | Playwright で DOM 操作（role/placeholder 優先） | DOM 変更は警告ログ・手動フォールバック可 |
 | Claude CLI | 子プロセス + JSON | 失敗 → Codex CLI へ自動切替 |
 | Codex CLI | `codex exec` | 未認証(401)時は `codex login` 案内付きでエラー |
-| Premiere / Media Encoder | Pymiere + JSX | 未起動を検知・プリセット不在はスキップ |
+| ffmpeg / ffprobe | 子プロセス | 不在は preflight（exit 78）で停止 |
 | YouTube Data API v3 | google-api-python-client + OAuth | token 失効は自動更新 |
 | Discord Webhook | HTTP POST | 未設定時はボタン無効 |
 
@@ -433,8 +416,7 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 ### サーバー / 実行
 - uvicorn は自動リロード無し → 変更後は `bash start.sh` で再起動
 - AI 工程（meta / localization）を `--via-api` 実行すると 10 秒タイムアウトで必ず失敗 → CLI 直で実行
-- premiere / export の「完了」ログは早期誤判定あり → MP4 サイズ安定 + ffprobe で裏取り
-- JSX は JSX Launcher 拡張経由のみ（AppleScript 不可）
+- export の「完了」ログは早期誤判定あり → MP4 サイズ安定 + ffprobe で裏取り
 
 ### SUNO（音楽生成）
 - Bot 判定対策で `APP_KEEP_BROWSER=1` + interval 90 を既定に
@@ -442,11 +424,9 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 - 複数 vol は workspace を vol 別にして混在ダウンロードを防ぐ
 - 生成リクエスト送信 ≠ レンダリング完了（DL 前に待機 / cache miss は再試行）
 
-### Premiere / Media Encoder
-- batch.xml の古いジョブで別 vol を誤書き出し（最重要）
-- AME 強制終了で Premiere のモデルが壊れるリスク
-- Premiere 再起動後は AME も再起動しないと描画が始まらない
-- PS 2026 は字幕トラックを削除できず積み上がる
+### FFmpeg 書き出し
+- 背景は画像合成の出力 `vol{N}.jpg`（1920x1080）を使う。生の `vol{N}.png` を直接使うと中央が切れる
+- 外部 SSD（`export_path`）が未マウントだと書き出し前に停止する
 
 ### AI / Codex / 共有ドライブ
 - Codex は `codex login` 必須・認証が失効しやすい。切替は Claude → Codex の一方向
@@ -471,7 +451,7 @@ BGM 動画の映像は実質「静止画」なので、チャンネルごとに 
 | OAuth | パスワードを直接渡さずにサービス連携する認証方式（YouTube 投稿で利用） |
 | SQLite | 1 ファイルで動く軽量データベース（順番待ちと履歴台帳に使用） |
 | スケジューラ | 決めた時刻・曜日に自動で処理を起動するしくみ（APScheduler） |
-| JSX | Adobe 製品を自動操作するスクリプト（Premiere の自動配置で使用） |
+| ffrender | `app_ffrender.py` による FFmpeg 書き出し方式（静止画ループ + 音声 + 字幕） |
 
 ---
 

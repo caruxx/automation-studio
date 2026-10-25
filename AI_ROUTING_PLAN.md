@@ -1,5 +1,7 @@
 # AI ルーティング & マルチチャンネル並行運用 計画書
 
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+
 作成: 2026-07-03 / 計画: Claude Fable 5 / 実装: Codex 5.5
 
 ## 目的

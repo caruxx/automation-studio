@@ -19,9 +19,9 @@ cron 風のスケジュール管理で、PC を起動しておくだけで定期
 
 | type | 用途 | 追加パラメータ |
 |------|------|--------------|
-| `vol_create` | 次の vol を **フル自動**で作る（plan → suno → rename → premiere → export → meta → upload） | `channel_id`（複数チャンネル運営時、省略可 = アクティブを使う） |
+| `vol_create` | 次の vol を **フル自動**で作る（plan → suno → rename → bgimage → psd_composite → export → qa → meta → upload） | `channel_id`（複数チャンネル運営時、省略可 = アクティブを使う） |
 | `benchmark_refresh` | ベンチマーク分析を実行 → キャッシュ更新 | なし |
-| `export_window` | AME ウォッチャーの ON/OFF 切替（深夜のみ書き出し等） | `action`: `"on"` or `"off"` |
+| `export_window` | （廃止・互換のため残置）旧 AME ウォッチャーの切替。2026-10-25 段階 1a 以降は効果なし | `action`: `"on"` or `"off"` |
 | `spot_create` | 指定 vol を **1 回限り**で作る | `vol`（必須）, `channel_id`（省略可） |
 
 ## トリガー形式
@@ -68,7 +68,7 @@ curl -X POST http://localhost:8888/api/schedule/jobs \
 実行時の流れ:
 1. `channel_folder` を scan → 最大 vol 番号 +1
 2. `python3 app_pipeline.py {next_vol} --from-benchmark --auto` を起動
-3. plan.json 生成 → SUNO → リネーム → Premiere → 書き出し → メタ → アップロード
+3. plan.json 生成 → SUNO → リネーム → 画像 → FFmpeg 書き出し → メタ → アップロード
 4. 成功/失敗を Discord 通知 + `/api/schedule/history` に記録
 
 ### 毎朝 7:00 にベンチマーク分析リフレッシュ
@@ -85,7 +85,9 @@ curl -X POST http://localhost:8888/api/schedule/jobs \
 
 v3: ライバル優先 → スプシフォールバックで `run_full_analysis()` を実行 → `analyze_with_claude` で日本語/英語ハイブリッド JSON を生成 → `~/.config/{app_id}/competitor_analysis_cache.json` 更新（`language: ja-en-mix`、`prompt_version: 4`）。
 
-### 深夜のみ AME 書き出しを ON にする
+### （廃止）深夜のみ AME 書き出しを ON にする
+
+> 2026-10-25 段階 1a で AME ウォッチャーは削除済み。以下は履歴として残す。
 
 ```bash
 # 23:00 に ON
@@ -134,7 +136,7 @@ curl -X POST http://localhost:8888/api/schedule/jobs \
 }
 ```
 
-**Premiere / AME はシングルインスタンス**なので、複数チャンネルを**同時刻**にしない運用が必須。
+SUNO ブラウザはシングルインスタンスなので、複数チャンネルの楽曲生成を**同時刻**にしない運用が必須（書き出しは FFmpeg で CPU 律速）。
 
 ## API リファレンス
 

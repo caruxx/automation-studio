@@ -1,5 +1,7 @@
 # 新チャンネルの制作構成：Adobeなし
 
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+
 2026-09-29のユーザー指定。新しいBeat Soul系チャンネルではPhotoshop、Premiere Pro、Adobe Media Encoderを使わない。画像は既存のImage2 Layout Studio（Canvas／Pillow）、音声・動画・字幕・タイムスタンプはFFmpegで処理する。正式なチャンネル名と保存先は未確定のため、既存チャンネルを切り替えず、再利用用の構成を用意している。
 
 ## 制作の流れ

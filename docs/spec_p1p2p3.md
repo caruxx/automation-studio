@@ -1,5 +1,7 @@
 # 仕様書 — P1〜P3 改善計画（ノータッチ・複数チャンネル並列・自走運用）
 
+> **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` と `skills/app-export.md` を参照。本文書は履歴として保持する。
+
 最終更新: 2026-05-03
 対応コミット: roaming-crane（[`compiled-roaming-crane.md`](../../.claude/plans/compiled-roaming-crane.md)）
 

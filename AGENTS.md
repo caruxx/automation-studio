@@ -11,12 +11,12 @@
 
 vol 制作を一気通貫で進める場合は、まず該当 domain の `skills/<domain>.md` を読み、全体構造や step の分岐に迷ったら `docs/ARCHITECTURE_MAP.md`、実作業のチェックリストは `docs/RUNBOOK_VOL.md` を正とする。チャンネル固有ルールがある場合は `docs/CHANNELS/<channel>.md` も確認する。
 
-単一リソース操作は必ず opt-in ロックを通す。SUNO / Premiere / Photoshop を直接叩かず、次の形で包む。
+単一リソース（SUNO ブラウザ）の操作は必ず opt-in ロックを通す。直接叩かず、次の形で包む（Premiere / Photoshop は 2026-10-25 段階 1a で廃止）。
 
 ```bash
 python3 Python/parallel_guard.py suno-auto -- python3 Python/studio.py suno-auto --vol <N> --count 10
 python3 Python/parallel_guard.py psd -- python3 Python/app_pipeline.py <N> --only psd_composite
-python3 Python/parallel_guard.py premiere -- python3 Python/app_pipeline.py <N> --from premiere
+python3 Python/parallel_guard.py suno -- python3 Python/app_pipeline.py <N> --only suno
 ```
 
 実行前チェック:
@@ -34,7 +34,7 @@ curl -fsS http://localhost:8888/api/config/migration-status >/dev/null
 
 SUNO新規セットの採用は[ハートで選ぶセミオート方式](docs/music/semi-auto-selection.md)。生成・全テイク取得は自動、採用は人が各タイトルから１テイクを決める。未選択の終了コード79を失敗として再生成・自動再投入しない。タイトルは`Python/app_music_catalog.py`の永久台帳を使い、`--songs-file`でもCreate前の予約を通す。原本を削除して短いテイクを採用する旧処理へ戻さない。
 
-AI / 人間の正規の入口は `_claude` ルートから `python3 Python/studio.py`。
+AI / 人間の正規の入口はリポジトリのルート（`~/dev/automation-studio`）から `python3 Python/studio.py`。
 個別コマンドを直接実行する前に、まず `python3 Python/studio.py <intent> --vol <N> --dry-run` で解決結果と実行コマンドを確認する。
 機械可読な真実は `Python/routes.json`。下の自然言語対応表は概要として残す。
 
@@ -42,20 +42,20 @@ AI / 人間の正規の入口は `_claude` ルートから `python3 Python/studi
 
 スクリプトフォルダ:
 ```
-cd <_claudeのルートパス>/Python
+cd ~/dev/automation-studio/Python
 ```
 
 ## 一括パイプライン（推奨）
 
 ```bash
-# vol.78 を全工程実行（SUNO → リネーム → Premiere → 書き出し → メタ → アップロード）
+# vol.78 を全工程実行（SUNO → リネーム → 画像 → FFmpeg 書き出し → メタ → アップロード）
 python3 app_pipeline.py 78
 
 # Web API 経由で実行（localhost:8888 起動中）
 python3 app_pipeline.py 78 --via-api
 
-# Premiere 以降だけ再実行
-python3 app_pipeline.py 78 --from premiere
+# 書き出し以降だけ再実行
+python3 app_pipeline.py 78 --from export
 
 # メタデータだけ生成
 python3 app_pipeline.py 78 --only meta
@@ -153,18 +153,11 @@ APP_BGIMAGE_FORCE=1 python3 app_pipeline.py 78 --only bgimage
 
 詳細: [skills/app-bgimage.md](skills/app-bgimage.md)
 
-### Premiere 自動配置（3 時間、プロジェクト自動オープン）
+### FFmpeg 書き出し（配置は自動で通過）
 ```bash
-curl -s -X POST http://localhost:8888/api/premiere/run \
-  -H 'Content-Type: application/json' \
-  -d '{"video_name":"78_vol_260420","duration_h":3,"duration_m":0,"duration_s":0}'
-```
-
-### 画像のみ後から配置
-```bash
-curl -s -X POST http://localhost:8888/api/premiere/place-images \
-  -H 'Content-Type: application/json' \
-  -d '{"video_name":"78_vol_260420"}'
+python3 app_pipeline.py 78 --only export
+# 直接実行（尺とパスを明示）
+python3 app_ffrender.py --vol-folder <vol_folder> --duration 10800 --output-path <out.mp4>
 ```
 
 ### YouTube アップロード（限定公開）
@@ -188,13 +181,7 @@ curl -s http://localhost:8888/api/analysis/hot-channels?top_n=10
 
 ### Web サーバー起動 / 停止
 ```bash
-# launchd 常駐時: コードミラー再同期 + 再起動
-bash setup_launchd.sh --sync
-
-# launchd 状態確認
-launchctl list | grep automation
-
-# 非常駐時: 直接起動
+# 起動（launchd 常駐は 2026-07-04 に廃止。常に手動起動）
 bash Python/start.sh
 
 # 停止
@@ -213,22 +200,21 @@ lsof -ti:8888 | xargs kill -9
 | 「リネームして」 | `python3 app_process_tracks.py <folder> --rename-only` |
 | 「後処理して」 | `python3 app_process_tracks.py <folder>` |
 | 「背景画像を作って」 | `curl POST /api/bgimage/run {"video_name":"..."}` または `python3 app_pipeline.py <vol> --only bgimage` |
-| 「サムネを Photoshop で作って」「PSD を合成して」 | `python3 app_pipeline.py <vol> --only psd_composite`（bgimage 後・premiere 前。`<vol_folder>/vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し） |
+| 「サムネを合成して」「画像合成して」 | `python3 app_pipeline.py <vol> --only psd_composite`（bgimage 後。Pillow 合成。`<vol_folder>/vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し） |
 | 「サムネを AI で作って」「サムネを自動生成して」 | `python3 app_pipeline.py <vol> --only thumbnail`（ベンチマーク分析 concept/visual_direction から**プロンプトを動的構築** → codex で生成 → `thumbnail.png` に昇格。`APP_THUMBNAIL_PROVIDERS=flow` 指定時も警告のうえ codex にフォールバック。詳細 [skills/app-thumbnail.md](skills/app-thumbnail.md)。⚠ 既に `サムネイル.jpg`(PSD合成)があるとスキップ） |
-| 「参照画像フォルダを変更して」 | Web UI → 設定タブ → **参照画像フォルダ（背景画像生成）** → フォルダパス欄を編集 → 保存（`.app_channel_config.json` の `reference_image_dir` に per-channel 保存。空欄なら Picked → rival thumbs にフォールバック） |
+| 「参照画像フォルダを変更して」 | `python3 Python/studio.py config set channel.reference_image_dir <path> --channel <id>`（`.app_channel_config.json` の `reference_image_dir`）。Web UI の設定タブからも変更可 |
 | 「タイトルを提案して」 | `curl POST /api/videos/.../suggest {"mode":"titles"}` |
-| 「Premiere で配置して」 | `curl POST /api/premiere/run {"video_name":"..."}` |
-| 「書き出して」 | `curl POST /api/premiere/export` |
+| 「書き出して」 | `python3 app_pipeline.py <vol> --only export`（FFmpeg。配置は自動） |
 | 「アップロードして」 | `curl POST /api/youtube/upload {"video_name":"..."}` |
 | 「全部やって」 | `python3 app_pipeline.py <vol>` |
 | 「N本まとめて作って」「最新動画を5本作って（尺指定あり）」 | 既存最新 vol の翌日から日次の公開日で必要本数ぶん `POST /api/videos/create` を実行し、作成された連番を `python3 Python/batch_orchestrator.py --vols <開始>-<終了> --duration-sec <秒>` へ渡す。vol は既存最大値の次から連番、公開日は既存最新 vol の公開日の翌日から1日ずつ進める。 |
-| 「Premiere からやり直して」 | `python3 app_pipeline.py <vol> --from premiere` |
+| 「書き出しからやり直して」 | `python3 app_pipeline.py <vol> --from export` |
 | 「競合を分析して」 | `python3 app_competitor.py --analyze` |
 | 「seed動画を分析して」 | `python3 Python/studio.py seed-analyze --url <動画URL>` または `curl POST /api/benchmark/seed/run` |
 | 「競合分析から提案して」 | Web UI「AI 提案（ベンチマーク連動）」パネル、または `curl POST /api/videos/.../suggest-all`（競合分析を内部で反映。旧 suggest-with-analysis は廃止） |
 | 「今伸びてるチャンネルは？」 | `curl GET /api/analysis/hot-channels?top_n=10` |
-| 「WEB を起動して」 | launchd 常駐時は `bash setup_launchd.sh --sync`、非常駐時は `bash Python/start.sh` |
-| 「WEB を再起動して」 | launchd 常駐時は `bash setup_launchd.sh --sync`、非常駐時は `lsof -ti:8888 | xargs kill -9; bash Python/start.sh` |
+| 「WEB を起動して」 | `bash Python/start.sh` |
+| 「WEB を再起動して」 | `lsof -ti:8888 | xargs kill; bash Python/start.sh` |
 | 「ライブ配信を開始して/止めて」 | `curl POST /api/live/streams/<id>/start`（stop/restart も同形）。状態は `curl GET /api/live/status` |
 | 「ライブの動画を差し替えて」 | 設定変更後 `curl POST /api/live/streams/<id>/swap`（プレイリスト次へは `?next=1`）。**配信は止まらない** |
 | 「ライブ配信の調子は？」「VPS の負荷は？」 | `curl GET /api/live/status`（load/mem/送信Mbps/グループ別容量 + 配信別稼働）。ログは `GET /api/live/streams/<id>/log` |
@@ -280,13 +266,13 @@ for v in vs:
 | タイトル取得数が少ない | チャンク分割 (10件ずつ) で再試行される。ログで `⚠️ チャンク N 取得失敗` 確認 |
 | ffmpeg エラー | `brew install ffmpeg` でインストール確認 |
 
-### Premiere 関連
+### 書き出し関連（FFmpeg）
 
 | エラー | 対処 |
 |--------|------|
-| 「Premiere Pro 上で実行してね」 | `video_name` 付きで API を叩く（.prproj 自動オープン）。Premiere が起動していることを確認 |
-| Pymiere 接続失敗 | Premiere Link パネルがインストールされているか確認: `bash cep_extension/install.sh` |
-| 画像が見つからない | 新仕様は alert せず音声のみ配置。後から `place-images` で追加可 |
+| preflight 失敗（exit 78） | `python3 Python/studio.py preflight --json` で不足を確認し、`brew install ffmpeg` / Pillow 導入 |
+| 背景画像が無い | `python3 app_pipeline.py <vol> --only bgimage` → `--only psd_composite` |
+| MP4 が無い | `python3 app_pipeline.py <vol> --from export`。`export_path` のマウントを確認 |
 
 ### YouTube 関連
 
@@ -294,13 +280,13 @@ for v in vs:
 |--------|------|
 | OAuth 認証エラー | `python3 app_youtube.py --auth-only` で再認証 |
 | タグがハードコード | `youtube_tags.txt` が存在すればそちらを使用。なければ既定タグにフォールバック |
-| MP4 が見つからない | Premiere → 書き出しを先に完了させる |
+| MP4 が見つからない | `--only export`（FFmpeg 書き出し）を先に完了させる |
 
 ### 一般
 
 | エラー | 対処 |
 |--------|------|
-| Web サーバーが応答しない | launchd 常駐時は `launchctl list | grep automation` で状態確認後 `bash setup_launchd.sh --sync`。非常駐時は `lsof -ti:8888 | xargs kill -9; bash Python/start.sh` |
+| Web サーバーが応答しない | `lsof -ti:8888 | xargs kill; bash Python/start.sh` で再起動 |
 | パイプライン途中で止まった | `python3 app_pipeline.py <vol> --from <止まった工程>` で再開 |
 | Claude CLI がない | `which claude` で確認。無ければ Claude Code CLI をインストール |
 
@@ -352,7 +338,7 @@ vol128/131（2026-07-12）の実事故から定めた約束事。**どのエー�
 ## 仕様書・スキル参照
 
 - [SPEC.md](SPEC.md) — 全体仕様（API 一覧・データ契約・アーキテクチャ）
-- [skills/app-workflow.md](skills/app-workflow.md) — 11 工程の全体フロー（plan→suno→rename→bgimage→psd_composite→premiere→export→qa→meta→localization→thumbnail→upload）
+- [skills/app-workflow.md](skills/app-workflow.md) — 11 工程の全体フロー（plan→suno→rename→bgimage→psd_composite(画像合成)→premiere(自動通過)→export(FFmpeg)→qa→meta→localization→thumbnail→upload）
 - [skills/app-bgimage.md](skills/app-bgimage.md) — 背景画像生成（参照画像で寄せる固定テンプレ寄り）
 - [skills/app-thumbnail.md](skills/app-thumbnail.md) — AI サムネ生成（ベンチ分析から動的プロンプト構築 → codex で生成。Flow 経路は廃止）
 - [skills/app-web-dashboard.md](skills/app-web-dashboard.md) — Web UI / API / History API
@@ -364,7 +350,7 @@ Codex に作業を渡すときは、会話履歴に依存しすぎず、次の�
 
 ```md
 # 作業対象
-repo: /Users/caruvi/Library/CloudStorage/GoogleDrive-abe_kota@caruvistar.jp/共有ドライブ/DEV/_claude
+repo: ~/dev/automation-studio（GitHub caruxx/automation-studio のクローン。Drive 上の旧 checkout は参照のみ）
 domain: <music|image|video|publish|analysis|pipeline|web>
 参照 skill: skills/<domain>.md
 
@@ -379,14 +365,12 @@ domain: <music|image|video|publish|analysis|pipeline|web>
 - 推測で仕様を書かない。コードを読んで根拠を確認する。
 - 既存ファイルの削除・大規模書き換えをしない。
 - credentials / token / secret をログやドキュメントに保存しない。
-- SUNO / Premiere / Photoshop の同一リソースを同時実行しない。
+- SUNO ブラウザを同時実行しない。
 - 既存のユーザー変更を revert しない。
 
 # 並列・ロック
 単一リソースを触る場合は必要に応じて opt-in ラッパを使う:
 - SUNO: `python3 Python/parallel_guard.py suno -- <cmd...>`
-- Premiere/AME: `python3 Python/parallel_guard.py premiere -- <cmd...>`
-- Photoshop: `python3 Python/parallel_guard.py psd -- <cmd...>`
 
 # 検証
 <実行するコマンド/API/ファイル確認を列挙>
