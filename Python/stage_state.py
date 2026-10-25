@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ import exit_codes as ec
 
 STATE_FILE = ".stage_state.json"
 SCHEMA_VERSION = 1
+# 入力が変わっても完了を失効させない工程。upload は再投稿ではなく「既存 video_id の更新」で扱う（段階 3）。
+NO_INVALIDATE = frozenset({"upload"})
 _AUDIO = (".mp3", ".wav", ".m4a")
 _CONTENT_HASH_SUFFIXES = (".json", ".txt")
 _CONTENT_HASH_MAX_BYTES = 1 << 20
@@ -66,7 +69,8 @@ def stage_outputs(stage: str, folder: Path, vol: int) -> list[Path]:
     if st in ("composite", "thumbnail"):
         return _img_candidates(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
     if st == "render":
-        mine = [p for p in _mp4s(folder) if f"vol{vol}" in p.name]
+        pat = re.compile(rf"vol{vol}(?!\d)")
+        mine = [p for p in _mp4s(folder) if pat.search(p.name)]
         return mine or _mp4s(folder)
     if st == "qa":
         p = folder / "qa_report.json"
@@ -294,7 +298,7 @@ def evaluate(stage: str, folder: Path, vol: int) -> str:
     if st is None:
         return "unknown"
     rec = load(folder).get(st)
-    if isinstance(rec, dict) and rec.get("input_hash") != compute_input_hash(st, folder, vol):
+    if st not in NO_INVALIDATE and isinstance(rec, dict) and rec.get("input_hash") != compute_input_hash(st, folder, vol):
         return "stale"
     fn = validator_for(st)
     if fn is None or not fn(folder, vol):

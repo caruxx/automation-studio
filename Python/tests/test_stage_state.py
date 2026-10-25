@@ -103,6 +103,8 @@ class StageStateTest(unittest.TestCase):
         # render: composite + rename に依存。mp4 自身の変更では失効しない。mtime は秒単位
         _touch(self.folder / "music" / "a.mp3", b"a" * 5)
         mp4 = _touch(self.folder / "x_vol7.mp4", b"m")
+        _touch(self.folder / "x_vol71.mp4", b"other")
+        self.assertEqual([p.name for p in ss.stage_outputs("render", self.folder, self.vol)], ["x_vol7.mp4"])
         ss.mark_done("render", self.folder, self.vol)
         mp4.write_bytes(b"mm")
         self.assertEqual(ss.evaluate("render", self.folder, self.vol), "done")
@@ -169,21 +171,58 @@ class StageStateTest(unittest.TestCase):
         finally:
             o._ledger = saved
 
-    def test_upload_worker_can_run_uses_stage_state(self):
+    def test_upload_worker_requires_qa_validator_and_ignores_upload_invalidation(self):
         import app_orchestrator as o
         saved = o._ledger
-        o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [])})()
+        # 台帳に full-pipeline の done run があっても、qa は validator（passed:true）必須
+        o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [{"status": "done", "meta_json": ""}])})()
         try:
             w = o.UploadWorker()
             w._slot_available = lambda **kw: True
             self.assertFalse(w.can_run(self.vol, self.folder))
+            _touch(self.folder / "qa_report.json", json.dumps({"passed": False}).encode())
+            self.assertFalse(w.can_run(self.vol, self.folder))
             _touch(self.folder / "qa_report.json", json.dumps({"passed": True}).encode())
             self.assertTrue(w.can_run(self.vol, self.folder))
+            # 投稿済み marker があれば候補外。メタを手で直して入力が変わっても upload は失効しない
+            _touch(self.folder / "youtube_title.txt", b"t")
             _touch(self.folder / "youtube_upload.json", b"{}")
+            ss.mark_done("upload", self.folder, self.vol)
+            (self.folder / "youtube_title.txt").write_text("edited", encoding="utf-8")
+            self.assertEqual(ss.evaluate("upload", self.folder, self.vol), "done")
             self.assertFalse(w.can_run(self.vol, self.folder))
-            self.assertTrue(o.WORKERS["qa"].can_run(self.vol, self.folder) in (True, False))
+            self.assertTrue(o._stage_artifact_done("upload", self.folder, self.vol, channel_id="ch"))
         finally:
             o._ledger = saved
+
+    def test_stage_worker_run_records_done_and_forces_stale_regeneration(self):
+        import app_orchestrator as o
+        seen = {}
+
+        def fake_composite(vol, folder, via_api, **kw):
+            seen["force"] = os.environ.get("APP_IMAGE_COMPOSITE_FORCE")
+            _touch(folder / "vol7.jpg", b"j")
+            return True
+        saved = o._pipe.STEP_FUNCS.get("psd_composite")
+        o._pipe.STEP_FUNCS["psd_composite"] = fake_composite
+        try:
+            w = o.StepWorker(domain="psd_composite", stages=["psd_composite"], domain_label="image")
+            png = _touch(self.folder / "vol7.png", b"p")
+            self.assertEqual(w.run(self.vol, self.folder), o.Exit.OK)
+            self.assertIsNone(seen["force"])
+            self.assertIsNotNone(ss.record("composite", self.folder))  # autopilot 経路でも完了を記録
+            self.assertEqual(ss.evaluate("composite", self.folder, self.vol), "done")
+            png.write_bytes(b"pp"); os.utime(png, (77_777, 77_777))
+            self.assertEqual(ss.evaluate("composite", self.folder, self.vol), "stale")
+            self.assertEqual(w.run(self.vol, self.folder), o.Exit.OK)
+            self.assertEqual(seen["force"], "1")  # 失効 → 強制再生成
+            self.assertNotIn("APP_IMAGE_COMPOSITE_FORCE", os.environ)
+            self.assertEqual(ss.evaluate("composite", self.folder, self.vol), "done")  # 記録が更新され再投入が止まる
+        finally:
+            if saved is None:
+                o._pipe.STEP_FUNCS.pop("psd_composite", None)
+            else:
+                o._pipe.STEP_FUNCS["psd_composite"] = saved
 
 
 if __name__ == "__main__":

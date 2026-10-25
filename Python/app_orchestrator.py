@@ -197,10 +197,25 @@ class StageWorker:
             func = _pipe.STEP_FUNCS.get(stage)
             if func is None:
                 return Exit.FAIL
-            r = func(vol, folder, via_api, **kw)
+            # 失効（前段の出力が変わった）工程は強制再生成 env を立てて実行し、成功したら完了を記録する
+            # （app_pipeline.main と同じ扱い。autopilot 経路でも記録が更新されるようにする）。
+            force_env = _pipe._stale_force_env(stage, folder, vol) if hasattr(_pipe, "_stale_force_env") else None
+            prev_force = os.environ.get(force_env) if force_env else None
+            if force_env:
+                os.environ[force_env] = "1"
+            try:
+                r = func(vol, folder, via_api, **kw)
+            finally:
+                if force_env:
+                    if prev_force is None:
+                        os.environ.pop(force_env, None)
+                    else:
+                        os.environ[force_env] = prev_force
             code = _normalize_result(r)
             if code != Exit.OK:
                 return code
+            if hasattr(_pipe, "_record_stage_done"):
+                _pipe._record_stage_done(stage, folder, vol)
         return Exit.OK
 
     # ── 失敗判断 ──
@@ -379,9 +394,11 @@ class UploadWorker(StageWorker):
         super().__init__(domain="upload", stages=["upload"])
 
     def can_run(self, vol: int, folder: Path, *, channel_id: str = "") -> bool:
-        if not _stage_artifact_done("qa", folder, vol, channel_id=channel_id):
+        # qa は validator 必須（passed:true のみ。台帳の done run では代用しない）。
+        # upload は marker（youtube_upload.json）の有無だけで判定し、失効を見ない（再投稿は段階 3 の更新のみ経路で扱う）。
+        if _ss.evaluate("qa", folder, vol) != "done":
             return False
-        if _stage_artifact_done("upload", folder, vol, channel_id=channel_id):
+        if _ss.upload_done(folder, vol):
             return False
         return self._slot_available(channel_id=channel_id)
 
