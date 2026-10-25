@@ -1,13 +1,13 @@
 """Background API for the non-destructive ffmpeg editor."""
 from __future__ import annotations
-import json, threading, time, uuid, shutil
+import json, re, threading, time, uuid, shutil
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from app_core import get_channels, resolve_video_folder, resolve_asset_in_folder, path_is_within, _find_exported_mp4
+from app_core import get_channels, resolve_video_folder, resolve_asset_in_folder, path_is_within, _find_exported_mp4, _resolve_to_current_host
 from app_video_edit import run_edit, run_queue, generate_editor_assets
 from resource_lock import acquire_resource
 
@@ -43,7 +43,7 @@ def _vol_folder(name: str) -> Optional[Path]:
         root=ch.get("folder") or ""
         if root:
             try:
-                found=resolve_video_folder(name, channel_root=root)
+                found=resolve_video_folder(name, channel_root=_resolve_to_current_host(root))
             except HTTPException:
                 continue
             if found: return Path(found).resolve()
@@ -58,21 +58,96 @@ def _require_folder(video_name: Optional[str]) -> Path:
     if not folder: raise HTTPException(404, "video_name が見つかりません")
     return folder
 
-def _resolve_media(folder: Path, video_name: str, raw: str, *, must_exist: bool=True) -> Path:
-    """vol フォルダ配下（または書き出し済み mp4）の素材だけを許可する。相対・絶対どちらも可。"""
+def _exported_mp4_for(folder: Path, video_name: str) -> Optional[Path]:
+    """この vol の書き出し済み mp4（vol フォルダ外。export_path 直下など）。名前に vol 番号を含む .mp4 だけ。"""
     try:
-        return resolve_asset_in_folder(folder, raw, allowed_ext=MEDIA_EXT, must_exist=must_exist)
+        exported=_find_exported_mp4(folder, video_name)
+    except Exception:
+        return None
+    if exported is None: return None
+    m=re.match(r"^(\d+)_", video_name or "")
+    if not m: return None
+    p=Path(exported).resolve(strict=False)
+    if p.suffix.lower()!=".mp4" or not p.is_file(): return None
+    if not re.search(rf"vol0*{int(m.group(1))}(?!\d)", p.stem): return None
+    return p
+
+def _resolve_media(folder: Path, video_name: str, raw: str, *, allow_exported: bool=False) -> Path:
+    """vol フォルダ配下の素材だけを許可する。相対・絶対どちらも可。
+    allow_exported=True（読み取り用途: preview / assets / 編集入力）のときだけ、この vol の書き出し済み mp4 も許可する。"""
+    try:
+        return resolve_asset_in_folder(folder, raw, allowed_ext=MEDIA_EXT)
     except HTTPException as exc:
-        if exc.status_code==403:
-            exported=_find_exported_mp4(folder, video_name)
-            if exported is not None and Path(raw).expanduser().resolve(strict=False)==Path(exported).resolve(strict=False) and (not must_exist or Path(exported).is_file()):
-                return Path(exported).resolve(strict=False)
+        if exc.status_code==403 and allow_exported:
+            exported=_exported_mp4_for(folder, video_name)
+            try:
+                wanted=Path(str(raw)).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                raise exc
+            if exported is not None and wanted==exported:
+                return exported
         raise
+
+# 操作ごとに受け付ける params のキー（S02: 利用者が送った任意キー（_cleanup 等）を ffmpeg 層へ通さない）
+_ALLOWED_PARAMS={
+    "trim":{"start","end","reencode"},
+    "concat":{"input_paths"},
+    "loop_to_duration":{"duration","fade_out"},
+    "fade":{"video_in","video_out","audio_in","audio_out"},
+    "replace_audio":{"audio_path","volume_db"},
+    "burn_overlay":{"overlay_type","text","overlay_path","x","y","w","h","position","size","opacity"},
+    "extract_frame":{"time"},
+    "convert":{"resolution","fps","format"},
+}
+_NUMERIC_PARAMS={"start","end","duration","fade_out","video_in","video_out","audio_in","audio_out","volume_db","x","y","w","h","size","opacity","time","fps"}
+_RE_RESOLUTION=re.compile(r"^\d{2,5}x\d{2,5}$")
+_RE_POSITION=re.compile(r"^[0-9A-Za-z()*+\-/.: ]{1,80}$")
+_FORMATS={"mp4","mov","mkv","webm"}
+
+def _sanitize_params(operation: str, raw: dict[str,Any]) -> dict[str,Any]:
+    allowed=_ALLOWED_PARAMS.get(operation)
+    if allowed is None: raise HTTPException(400, f"未知の操作です: {operation}")
+    out: dict[str,Any]={}
+    for key, val in (raw or {}).items():
+        k=str(key)
+        if k.startswith("_"): raise HTTPException(400, f"params に内部キーは指定できません: {k}")
+        if k not in allowed: continue
+        if k in _NUMERIC_PARAMS:
+            if val in (None, ""): continue
+            try: out[k]=float(val)
+            except (TypeError, ValueError): raise HTTPException(400, f"{k} は数値で指定してください")
+            continue
+        if k=="reencode": out[k]=bool(val); continue
+        if k=="resolution":
+            v=str(val).strip()
+            if v and not _RE_RESOLUTION.match(v): raise HTTPException(400, "resolution は 幅x高さ（例 1920x1080）で指定してください")
+            if v: out[k]=v
+            continue
+        if k=="format":
+            v=str(val).strip().lstrip(".").lower()
+            if v and v not in _FORMATS: raise HTTPException(400, f"format は {sorted(_FORMATS)} のいずれかです")
+            if v: out[k]=v
+            continue
+        if k=="overlay_type":
+            v=str(val).strip().lower()
+            if v not in ("text","image"): raise HTTPException(400, "overlay_type は text か image です")
+            out[k]=v; continue
+        if k=="position":
+            v=str(val).strip()
+            if v and not _RE_POSITION.match(v): raise HTTPException(400, "position に使えない文字が含まれています")
+            if v: out[k]=v
+            continue
+        if k=="text":
+            v=str(val)[:300]
+            if "\x00" in v: raise HTTPException(400, "text が不正です")
+            out[k]=v; continue
+        out[k]=val  # input_paths / audio_path / overlay_path はこの後パス検証する
+    return out
 
 def _validated(req: EditRequest) -> dict[str,Any]:
     folder=_require_folder(req.video_name)
-    p=_resolve_media(folder, req.video_name, req.input_path)
-    params=dict(req.params); params["input_path"]=str(p)
+    p=_resolve_media(folder, req.video_name, req.input_path, allow_exported=True)
+    params=_sanitize_params(req.operation, dict(req.params or {})); params["input_path"]=str(p)
     for key in ("input_paths","audio_path","overlay_path"):
         if key in params:
             vals=params[key] if isinstance(params[key],list) else [params[key]]
@@ -154,13 +229,13 @@ def history(limit: int=20):
 def preview(video_name: str="", asset: str="", path: str=""):
     """vol フォルダ配下の素材だけを配信する。asset（相対）または path（絶対。実体が vol 配下のもの）。"""
     folder=_require_folder(video_name)
-    p=_resolve_media(folder, video_name, asset or path)
+    p=_resolve_media(folder, video_name, asset or path, allow_exported=True)
     return FileResponse(str(p))
 
 @router.get("/assets")
 def assets(video_name: str="", asset: str="", path: str="", count: int=8):
     folder=_require_folder(video_name)
-    p=_resolve_media(folder, video_name, asset or path)
+    p=_resolve_media(folder, video_name, asset or path, allow_exported=True)
     try:
         data=generate_editor_assets(str(p), ASSET_CACHE, count)
         key=data["cache_key"]
@@ -197,7 +272,9 @@ def adopt(req: AdoptRequest):
 @router.post("/use-thumbnail")
 def use_thumbnail(req: ThumbnailUseRequest):
     folder=_require_folder(req.video_name)
-    src=Path(req.frame_path).expanduser().resolve(strict=False)
+    if "\x00" in str(req.frame_path or ""): raise HTTPException(400,"frame_path が不正です")
+    try: src=Path(req.frame_path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError): raise HTTPException(400,"frame_path が不正です")
     if not (path_is_within(src, ASSET_CACHE) or path_is_within(src, folder)): raise HTTPException(403,"フレームは編集素材キャッシュか vol 配下に限ります")
     if src.suffix.lower() not in (".png",".jpg",".jpeg",".webp") or not src.is_file(): raise HTTPException(404,"フレームがありません")
     out_dir=folder/"thumbnail_materials"; out_dir.mkdir(exist_ok=True)

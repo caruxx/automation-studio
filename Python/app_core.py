@@ -1317,11 +1317,11 @@ def path_is_within(path, root) -> bool:
     try:
         Path(path).resolve(strict=False).relative_to(Path(root).resolve(strict=False))
         return True
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):  # RuntimeError: symlink ループ
         return False
 
 
-def resolve_asset_in_folder(folder, asset: str, *, allowed_ext=None, must_exist: bool = True) -> Path:
+def resolve_asset_in_folder(folder, asset: str, *, allowed_ext=None) -> Path:
     """vol フォルダ配下の素材を、相対パスまたは絶対パスから安全に解決する。
 
     - 相対パスは folder 基準。絶対パスは実体が folder 配下にあるときだけ許可。
@@ -1334,14 +1334,17 @@ def resolve_asset_in_folder(folder, asset: str, *, allowed_ext=None, must_exist:
     parts = Path(raw).parts
     if ".." in parts:
         raise HTTPException(400, "asset に .. は使えません")
-    root = Path(folder).resolve(strict=False)
-    candidate = Path(raw).expanduser()
-    target = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=False)
+    try:
+        root = Path(folder).resolve(strict=False)
+        candidate = Path(raw).expanduser()
+        target = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(400, "asset を解決できません")
     if not path_is_within(target, root):
         raise HTTPException(403, "asset が動画フォルダの外を指しています")
     if allowed_ext is not None and target.suffix.lower() not in allowed_ext:
         raise HTTPException(400, f"許可されていないファイル形式です: {target.suffix}")
-    if must_exist and not target.is_file():
+    if not target.is_file():
         raise HTTPException(404, "ファイルが見つかりません")
     return target
 
@@ -1350,7 +1353,7 @@ def resolve_folder_in_registered_channels(folder) -> Optional[Path]:
     """絶対パスで渡された動画フォルダが、登録チャンネルのいずれかの直下にある vol フォルダなら実体パスを返す。"""
     try:
         target = Path(folder).expanduser().resolve(strict=False)
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return None
     if not parse_video_folder_name(target.name):
         return None

@@ -154,7 +154,10 @@ def api_image_compositor_render_dual_thumbnail(req: ImageCompositorRenderRequest
     """Photoshop なしで vol{N}.jpg + サムネイル.jpg を生成するテスト版。"""
     cfg = get_dashboard_config()
     folder = _resolve_video_folder(req.video_name, req.video_folder)
-    image_subdir = req.image_subdir or cfg.get("psd_image_subdir") or "image"
+    image_subdir = str(req.image_subdir or cfg.get("psd_image_subdir") or "image").strip()
+    if (not image_subdir or Path(image_subdir).is_absolute() or ".." in Path(image_subdir).parts
+            or not path_is_within(folder / image_subdir, folder)):
+        raise HTTPException(400, "image_subdir は動画フォルダ配下のサブフォルダ名で指定してください")
     base_image = _find_compositor_base_image(folder, image_subdir=image_subdir)
     if not base_image:
         raise HTTPException(404, f"背景画像が見つかりません: {folder}")
@@ -273,6 +276,8 @@ def api_image_compositor_save_canvas(req: ImageCompositorCanvasSaveRequest):
         img = Image.open(io.BytesIO(data))
         img.load()
         out = folder / filename
+        if out.is_symlink() or not path_is_within(out, folder):
+            raise HTTPException(400, "保存先が動画フォルダの外を指しています")
         out.parent.mkdir(parents=True, exist_ok=True)
         ext = out.suffix.lower()
         if ext in (".jpg", ".jpeg"):

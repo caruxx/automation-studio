@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 # 本物の設定・Drive に触れないよう、app を未 import の場合は一時ディレクトリへ固定する。
@@ -83,10 +84,10 @@ class ApiBoundaryTest(unittest.TestCase):
         cls.adjacent = Path(cls.tmp.name) / "ch_evil" / "2_QA_260930"
         cls.adjacent.mkdir(parents=True)
         (cls.adjacent / "x.mp4").write_bytes(b"\x00" * 32)
-        home_cfg = (Path.home() / ".config").resolve()
+        tmp_root = Path(tempfile.gettempdir()).resolve()
         for target in (Path(app_core.CHANNELS_CONFIG), Path(app_core.DASHBOARD_CONFIG)):
-            if app_core.path_is_within(target, home_cfg):
-                raise unittest.SkipTest("設定パスが本物の ~/.config を指しているため API テストを skip")
+            if not app_core.path_is_within(target, tmp_root):
+                raise unittest.SkipTest("設定パスが一時ディレクトリ配下でないため API テストを skip（本物の設定を守る）")
         channels = [{"id": "qa", "name": "QA", "folder": str(cls.root), "prefix": "QA"}]
         Path(app_core.CHANNELS_CONFIG).parent.mkdir(parents=True, exist_ok=True)
         Path(app_core.CHANNELS_CONFIG).write_text(json.dumps(channels), encoding="utf-8")
@@ -120,6 +121,52 @@ class ApiBoundaryTest(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         r = self.client.post("/api/video-edit/run", json={"operation": "extract_frame", "video_name": self.vol.name, "input_path": str(self.outside), "params": {}})
         self.assertEqual(r.status_code, 403)
+
+    def test_run_rejects_internal_keys_and_filter_injection(self):
+        import routers.video_edit as ve
+        base = {"video_name": self.vol.name, "input_path": str(self.vol / "clip.mp4")}
+        for op, params, code in (
+            ("extract_frame", {"time": 1, "_cleanup": [str(self.outside)]}, 400),
+            ("convert", {"resolution": "1920:1080[a];movie=/etc/passwd[b];[a][b]overlay"}, 400),
+            ("convert", {"format": "mp4;rm -rf /"}, 400),
+            ("burn_overlay", {"overlay_type": "text", "text": "HI", "position": "0:0;movie=x"}, 400),
+            ("bogus", {}, 400),
+        ):
+            r = self.client.post("/api/video-edit/run", json={**base, "operation": op, "params": params})
+            self.assertEqual(r.status_code, code, (op, params, r.text))
+        cleaned = ve._sanitize_params("convert", {"resolution": "1280x720", "fps": "30", "format": "MP4", "unknown": 1})
+        self.assertEqual(cleaned, {"resolution": "1280x720", "fps": 30.0, "format": "mp4"})
+
+    def test_exported_mp4_allowed_only_for_reading(self):
+        import routers.video_edit as ve
+        ext_dir = Path(self.tmp.name) / "ssd"
+        ext_dir.mkdir()
+        exported = ext_dir / "QA_vol2.mp4"
+        exported.write_bytes(b"\x00" * 8)
+        with unittest.mock.patch.object(ve, "_find_exported_mp4", return_value=exported):
+            self.assertEqual(ve._resolve_media(self.vol, self.vol.name, str(exported), allow_exported=True), exported.resolve())
+            with self.assertRaises(HTTPException):
+                ve._resolve_media(self.vol, self.vol.name, str(exported))
+            other = ext_dir / "QA_vol3.mp4"
+            other.write_bytes(b"\x00" * 8)
+            with unittest.mock.patch.object(ve, "_find_exported_mp4", return_value=other):
+                with self.assertRaises(HTTPException):
+                    ve._resolve_media(self.vol, self.vol.name, str(other), allow_exported=True)
+
+    def test_image_compositor_rejects_escaping_subdir_and_symlinked_output(self):
+        r = self.client.post("/api/image-compositor/render-dual-thumbnail", json={"video_name": self.vol.name, "image_subdir": "../../"})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/image-compositor/render-dual-thumbnail", json={"video_name": self.vol.name, "image_subdir": str(Path(self.tmp.name))})
+        self.assertEqual(r.status_code, 400)
+        target = Path(self.tmp.name) / "victim.jpg"
+        target.write_bytes(b"orig")
+        os.symlink(target, self.vol / "linked.jpg")
+        png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        r = self.client.post("/api/image-compositor/save-canvas", json={"video_name": self.vol.name, "filename": "linked.jpg", "data_url": png})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(target.read_bytes(), b"orig")
+        r = self.client.post("/api/image-compositor/save-canvas", json={"video_name": self.vol.name, "filename": "fresh.png", "data_url": png})
+        self.assertEqual(r.status_code, 200, r.text)
 
     def test_image_compositor_rejects_unregistered_folder(self):
         body = {"video_folder": str(self.adjacent), "template": {"layers": []}}
