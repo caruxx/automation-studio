@@ -4,6 +4,7 @@ try:
 except ImportError:
     import _isolation  # noqa: F401  テスト隔離（`discover tests` で top-level として読まれた場合）
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -118,6 +119,30 @@ class EntryPointsTest(unittest.TestCase):
             self.assertEqual(o.evaluate(channels, dry_run=True), [])
         finally:
             o._ledger, o._selection_still_pending = saved_ledger, saved_pending
+
+    def test_selection_still_pending_uses_processed_gate(self):
+        """export / upload のゲートと同じ processed=True で判定する（選定済み・後処理前も待機）。"""
+        import shutil
+        from unittest.mock import patch
+        import app_orchestrator as o
+        import app_music_catalog as catalog
+        root = Path(tempfile.mkdtemp(prefix="orch_cat_"))
+        folder = root / "1_review_260929"
+        folder.mkdir()
+        with patch.dict(os.environ, {"APP_MUSIC_CATALOG_DB": str(root / "music.sqlite3")}), \
+                patch.object(catalog, "_seeded", True):
+            self.assertFalse(o._selection_still_pending(folder))  # バッチ未登録は判定不能 → 候補に戻す
+            saved = []
+            for n, name in enumerate(["Silver Avenue.mp3", "Silver Avenue_2.mp3"]):
+                (folder / name).write_bytes(f"original-{n}".encode())
+                saved.append({"song_id": f"clip-{n}", "title": "Silver Avenue", "file": name})
+            batch = catalog.register_download(folder, saved, "review", 2)
+            self.assertTrue(o._selection_still_pending(folder))   # 未選定
+            catalog.choose_take(batch, "clip-1", True)
+            self.assertTrue(o._selection_still_pending(folder))   # 選定済みだが後処理前 → まだ待機
+            catalog.process_selected(folder, shutil.copyfile)
+            self.assertFalse(o._selection_still_pending(folder))  # 後処理済み → 候補に戻る
+        shutil.rmtree(root, ignore_errors=True)
 
     def test_batch_preflight_code(self):
         import batch_orchestrator as b

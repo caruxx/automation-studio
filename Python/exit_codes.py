@@ -134,7 +134,7 @@ def builtin_matches_workflow() -> list[str]:
             continue
         for k in ("reason", "status", "retryable", "needs_human", "retry_after_sec"):
             if j.get(k) != row.get(k):
-                problems.append(f"exit_code {row['exit_code']} の {k}: json={j.get(k)!r} builtin={row[k]!r}")
+                problems.append(f"exit_code {row['exit_code']} の {k}: json={j.get(k)!r} builtin={row.get(k)!r}")
     for extra in set(json_codes) - {r["exit_code"] for r in _DEFAULT_EXIT_REASONS}:
         problems.append(f"workflow.json にだけある exit_code {extra}")
     enum_codes = {int(m) for m in ExitCode}

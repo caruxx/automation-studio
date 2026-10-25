@@ -593,13 +593,16 @@ def evaluate(channels: list[dict], *, dry_run: bool = True,
 
 
 def _selection_still_pending(folder: Path) -> bool:
-    """楽曲カタログ上でまだ選定待ちか。判定できないときは False（従来どおり候補に戻す）。"""
+    """楽曲カタログ上でまだ選定待ちか。判定できないときは False（従来どおり候補に戻す）。
+
+    79 を出すゲート（export / upload）は processed=True（選定済みかつ後処理済み）を要求するので、
+    ここも同じ条件で見る。選定だけ済んで後処理前の vol を候補に戻すと、同じ 79 を繰り返す。"""
     try:
         from app_music_catalog import require_selection, SelectionPending
     except Exception:
         return False
     try:
-        require_selection(folder)
+        require_selection(folder, processed=True)
     except SelectionPending:
         return True
     except Exception:
