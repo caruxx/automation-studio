@@ -1,6 +1,6 @@
 """Background API for the non-destructive ffmpeg editor."""
 from __future__ import annotations
-import json, re, threading, time, uuid, shutil
+import json, math, re, threading, time, uuid, shutil
 from collections import deque
 from pathlib import Path
 from typing import Any, Optional
@@ -114,10 +114,12 @@ def _sanitize_params(operation: str, raw: dict[str,Any]) -> dict[str,Any]:
         if k not in allowed: continue
         if k in _NUMERIC_PARAMS:
             if val in (None, ""): continue
-            try: out[k]=float(val)
+            try: num=float(val)
             except (TypeError, ValueError): raise HTTPException(400, f"{k} は数値で指定してください")
-            continue
-        if k=="reencode": out[k]=bool(val); continue
+            if not math.isfinite(num) or abs(num) > 1e7: raise HTTPException(400, f"{k} の値が範囲外です")
+            out[k]=num; continue
+        if k=="reencode":
+            out[k]=val if isinstance(val,bool) else str(val).strip().lower() in ("1","true","yes","on"); continue
         if k=="resolution":
             v=str(val).strip()
             if v and not _RE_RESOLUTION.match(v): raise HTTPException(400, "resolution は 幅x高さ（例 1920x1080）で指定してください")

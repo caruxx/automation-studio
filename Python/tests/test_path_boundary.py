@@ -137,6 +137,27 @@ class ApiBoundaryTest(unittest.TestCase):
         cleaned = ve._sanitize_params("convert", {"resolution": "1280x720", "fps": "30", "format": "MP4", "unknown": 1})
         self.assertEqual(cleaned, {"resolution": "1280x720", "fps": 30.0, "format": "mp4"})
 
+    def test_burn_overlay_text_cannot_inject_filters(self):
+        import routers.video_edit as ve
+        import app_video_edit as ave
+        evil = "x'[t];movie=" + str(self.outside) + "[m];[t][m]overlay,drawtext=text='y"
+        params = ve._sanitize_params("burn_overlay", {"overlay_type": "text", "text": evil, "position": "center", "size": 40, "opacity": 1})
+        params["input_path"] = str(self.vol / "clip.mp4")
+        out = self.vol / "out.mp4"
+        cmd = ave.build_command("burn_overlay", params, out)
+        vf = cmd[cmd.index("-vf") + 1]
+        self.assertIn("textfile=", vf)
+        self.assertNotIn("movie=", vf)
+        self.assertNotIn(str(self.outside), " ".join(cmd))
+        text_file = Path(params["_cleanup"][0])
+        self.assertEqual(text_file.read_text(encoding="utf-8"), evil)
+        text_file.unlink()
+        with self.assertRaises(HTTPException):
+            ve._sanitize_params("trim", {"start": "nan"})
+        with self.assertRaises(HTTPException):
+            ve._sanitize_params("loop_to_duration", {"duration": "inf"})
+        self.assertFalse(ve._sanitize_params("trim", {"reencode": "false"})["reencode"])
+
     def test_exported_mp4_allowed_only_for_reading(self):
         import routers.video_edit as ve
         ext_dir = Path(self.tmp.name) / "ssd"
