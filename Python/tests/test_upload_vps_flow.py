@@ -234,6 +234,7 @@ class UploadVpsFlowTest(unittest.TestCase):
 
         class Resp(dict):
             status = 400
+            reason = "Bad Request"
         def bad_meta(youtube, req, **kw):
             raise HttpError(Resp(), b'{"error":{"errors":[{"reason":"invalidVideoMetadata"}]}}')
         with self.assertRaises(HttpError):
