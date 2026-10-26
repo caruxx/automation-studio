@@ -1053,7 +1053,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                         _ledger.upload_unknown(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", str(e)))
                         sys.exit(1)
                     except RuntimeError as e:  # 想定外の 4xx（401 / 400 等）: セッションは保持したまま再試行に回す
-                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会が想定外の応答: {re.sub(r'https?://\\S+', '<url>', str(e))}", flush=True)
+                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会が想定外の応答: {_pub.redact_urls(str(e))}", flush=True)
                         sys.exit(EXIT_RETRYABLE)
                     if kind == "complete":
                         video_id = payload_obj["id"]
@@ -1065,7 +1065,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                         try:
                             current = _pub.verify_video(youtube, video_id)
                         except Exception as e:
-                            print(f"\n [RETRYABLE_UPLOAD_ERROR] 送信済み動画 {video_id} の状態を読み戻せません。予約更新を保留します: {re.sub(r'https?://\\S+', '<url>', str(e))}", flush=True)
+                            print(f"\n [RETRYABLE_UPLOAD_ERROR] 送信済み動画 {video_id} の状態を読み戻せません。予約更新を保留します: {_pub.redact_urls(str(e))}", flush=True)
                             sys.exit(EXIT_RETRYABLE)
                         if current is None:
                             print(f"\n[UPLOAD_RESULT_UNKNOWN] 送信済みのはずの動画 {video_id} が見つかりません", flush=True)
