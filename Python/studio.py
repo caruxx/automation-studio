@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -510,7 +511,7 @@ def run_thumbnail_select(args: argparse.Namespace) -> int:
     if getattr(args, "dry_run", False):
         emit({"ok": True, "intent": "thumbnail-select", "dry_run": True, "cmd": cmd, "selection": _ts.load(folder).get("status")})
         return 0
-    proc = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    proc = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, env={**os.environ, "APP_THUMBNAIL_EXPLICIT": "1"})
     rec = _ts.load(folder)
     ok, why = _ts.verify(folder)
     emit({"ok": ok, "intent": "thumbnail-select", "status": rec.get("status"), "run_id": rec.get("run_id"),

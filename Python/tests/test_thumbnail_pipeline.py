@@ -130,6 +130,38 @@ class ThumbnailPipelineTest(unittest.TestCase):
         import app_orchestrator as o
         self.assertTrue(o._stage_artifact_done("thumbnail", self.folder, 7))
 
+    def test_upload_sends_verified_snapshot_not_later_replacement(self):
+        self._with(self._fake_run({"a1_1.jpg": 90}), lambda: ap.step_thumbnail(7, self.folder, False))
+        import app_youtube
+        rec = ts.load(self.folder)
+        snap = app_youtube._snapshot_selected_thumbnail(self.folder, ts)
+        self.assertNotEqual(snap.parent, self.folder)
+        _img(self.folder / ts.SELECTED_FILE, (200, 200, 200))  # 照合後に差し替え
+        self.assertEqual(ts.sha256_file(snap), rec["selected_hash"])  # 送るのは照合時の実体
+        with self.assertRaises(SystemExit):
+            app_youtube._snapshot_selected_thumbnail(self.folder, ts)  # 差し替え後はスナップショットを作らない
+
+    def test_pipeline_does_not_auto_select_for_posted_vol(self):
+        (self.folder / "youtube_upload.json").write_text(json.dumps({"video_id": "vidOLD"}), encoding="utf-8")
+        r = self._with([patch("codex_imagegen.run", side_effect=AssertionError("must not generate"))], lambda: ap.step_thumbnail(7, self.folder, False))
+        self.assertIs(r, True)
+        self.assertEqual(ts.load(self.folder), {})
+        with patch.dict(os.environ, {"APP_THUMBNAIL_EXPLICIT": "1"}):  # studio.py thumbnail-select からの明示実行は選ぶ
+            r2 = self._with(self._fake_run({"a1_1.jpg": 90}), lambda: ap.step_thumbnail(7, self.folder, False))
+        self.assertIs(r2, True)
+        self.assertEqual(ts.load(self.folder)["status"], "selected")
+
+    def test_each_run_keeps_complete_record(self):
+        self._with(self._fake_run({"a1_1.jpg": 90}), lambda: ap.step_thumbnail(7, self.folder, False))
+        first = ts.load(self.folder)
+        with patch.dict(os.environ, {"APP_THUMBNAIL_RESELECT": "1"}):
+            self._with(self._fake_run({"a1_2.jpg": 95}), lambda: ap.step_thumbnail(7, self.folder, False))
+        second = ts.load(self.folder)
+        self.assertNotEqual(first["run_id"], second["run_id"])
+        kept = json.loads((self.folder / ts.CANDIDATE_ROOT / first["run_id"] / ts.RUN_RECORD_FILE).read_text(encoding="utf-8"))
+        for k in ("candidate_ids", "candidate_hashes", "selected_id", "selected_hash", "rejected_reasons", "model", "backend", "selection_revision"):
+            self.assertEqual(kept[k], first[k])
+
     def test_posted_vol_is_not_queued_for_selection(self):
         import app_orchestrator as o
         w = o.WORKERS["thumbnail"]

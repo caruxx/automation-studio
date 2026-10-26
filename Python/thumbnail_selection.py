@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 SELECTION_FILE = ".thumbnail_selection.json"
 SELECTED_FILE = "thumbnail_selected.jpg"
+RUN_RECORD_FILE = "selection_record.json"
 CANDIDATE_ROOT = "thumbnail_candidates"
 SCHEMA_VERSION = 1
 _RUN_ID_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # 先頭は英数字（"." / ".." を通さない）
@@ -111,6 +112,12 @@ def load(folder: Path) -> dict:
 def _save(folder: Path, data: dict) -> None:
     data["schema_version"] = SCHEMA_VERSION
     _atomic_write_json(Path(folder) / SELECTION_FILE, data)
+    run_id = str(data.get("run_id") or "")
+    if run_id and _RUN_ID_RE.match(run_id) and run_id not in (".", ".."):
+        # run ごとの完全な記録（次の run で現在の記録が置き換わっても失われない）
+        run_dir = Path(folder) / CANDIDATE_ROOT / run_id
+        if run_dir.is_dir():
+            _atomic_write_json(run_dir / RUN_RECORD_FILE, {k: v for k, v in data.items() if k != "history"})
 
 
 def verify(folder: Path) -> tuple[bool, str]:

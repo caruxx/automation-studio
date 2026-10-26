@@ -878,6 +878,22 @@ def _write_marker(folder, video_id, title, privacy, schedule, settings, localiza
         sys.stdout.flush()
 
 
+def _snapshot_selected_thumbnail(folder, _ts):
+    """thumbnail_selected.jpg を一時ディレクトリへ写し、選定記録のハッシュと一致することを確かめて返す。"""
+    import atexit
+    import shutil
+    import tempfile
+    rec = _ts.load(folder)
+    snap_dir = Path(tempfile.mkdtemp(prefix="studio-thumb-upload-"))
+    atexit.register(shutil.rmtree, str(snap_dir), True)
+    snap = snap_dir / _ts.SELECTED_FILE
+    shutil.copyfile(Path(folder) / _ts.SELECTED_FILE, snap)
+    if _ts.sha256_file(snap) != rec.get("selected_hash"):
+        print("エラー: 投稿用サムネが照合後に変わりました。studio.py thumbnail-select で確定し直してください")
+        sys.exit(1)
+    return snap
+
+
 def upload_video(folder, title=None, schedule=None, privacy="private", tags=None,
                  video_path=None,
                  # 新規: 詳細設定（None ならデフォルト→override→組み込み既定の順で解決）
@@ -916,11 +932,14 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             already_posted = bool(isinstance(_mk, dict) and str(_mk.get("video_id") or "").strip())
         except Exception:
             already_posted = False
-        # 投稿済み（marker に video_id あり）の旧 vol は snippet 更新だけなので、選定記録が無くても止めない
-        if (sel_exists or (_vls_check.enabled() and not already_posted)) and not ok_sel:
+        # 新規投稿は VPS の有無によらず確定サムネ必須。投稿済み（marker に video_id あり）の旧 vol は snippet 更新だけなので止めない
+        if (sel_exists or not already_posted) and not ok_sel:
             # 段階 5: 投稿するサムネは AI 選定で採用した画像だけ（ハッシュ一致）。未選定・不一致なら投稿しない
             print(f"エラー: 投稿用サムネが確定していません（{why_sel}）。studio.py thumbnail-select --vol {extract_vol_number(folder)} を実行してください")
             sys.exit(1)
+        if ok_sel:
+            # 照合した画像を投稿単位のスナップショットに固定し、入力ハッシュと送信に同じ実体を使う（照合後の差し替えを送らない）
+            thumbnail = _snapshot_selected_thumbnail(folder, _ts)
     except SystemExit:
         raise
     except Exception as e:

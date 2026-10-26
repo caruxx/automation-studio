@@ -32,7 +32,8 @@
 |------|------|
 | `thumbnail_candidates/<run_id>/a<N>/a<N>_<i>.jpg` | 候補画像。試行ごとにコンタクトシートも出す |
 | `thumbnail_selected.jpg` | 採用画像。投稿はこれだけを使う |
-| `.thumbnail_selection.json` | 選定記録 |
+| `.thumbnail_selection.json` | 選定記録（現在の run） |
+| `thumbnail_candidates/<run_id>/selection_record.json` | run ごとの完全な選定記録。次の run で現在の記録が置き換わっても残る |
 
 選定記録の主なキーは `candidate_ids, candidate_hashes, selected_id, selected_hash, rejected_reasons, model, model_enforced, backend, judge_backend, thresholds, predicted_ctr, selection_revision, history`。
 
@@ -78,12 +79,13 @@ python3 Python/studio.py thumbnail-select --vol <N> --adopt <run_id>/a<N>/a<N>_<
 ## 投稿側の扱い
 
 - `app_youtube.find_thumbnail` は選定記録があれば検証済みの `thumbnail_selected.jpg` だけを返す。記録がなければ旧来の `サムネイル.*` / `thumbnail.*` を使う。
-- 選定記録があるか VPS 連携が有効なとき、検証に通らなければ投稿を始めずに終了コード 1 で止める。
+- 新規投稿は VPS 連携の有無によらず、検証に通らなければ投稿を始めずに終了コード 1 で止める。
+- 照合した採用画像は投稿ごとに一時スナップショットへ固定し、入力ハッシュと YouTube への送信に同じ実体を使う。
 
 ## 段階 5 以前の vol（移行）
 
 - 旧 `step_thumbnail` は常に成功を記録していたため、thumbnail だけは台帳の done で完了を補わない。未投稿の旧 vol は投稿前に選定が走る。
-- 投稿済み（`youtube_upload.json` に video_id あり）の旧 vol は、選定記録がなくても snippet 更新ができる。
+- 投稿済み（`youtube_upload.json` に video_id あり）の旧 vol は、選定記録がなくても snippet 更新ができる。パイプラインとオーケストレータはこの vol で自動選定しない。選ぶ場合は `studio.py thumbnail-select` を明示的に実行する。
 - 投稿途中で再開待ちの旧 vol は、VPS 連携時に確定サムネが必要になる。反映は再開待ちの投稿が無いときに行う。
 - UI で手作りした `サムネイル.jpg` をそのまま投稿に使う経路は無い。使いたい場合は選定の候補から `--adopt` で確定する。
 

@@ -91,6 +91,11 @@ def compose_candidate(source: Path, out_path: Path, vol: int, config: dict) -> P
         produced = scratch / "サムネイル.jpg"
         if not produced.is_file():
             raise ValueError("サムネ候補の合成に失敗しました")
+        from PIL import Image
+        with Image.open(produced) as im:
+            im.load()
+            if im.size != (1920, 1080):
+                raise ValueError(f"サムネ候補の寸法が不正です: {im.size}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(produced, out_path)
     return out_path

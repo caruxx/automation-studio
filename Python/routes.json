@@ -1646,7 +1646,7 @@
       "requires_vol": true,
       "parallelism": {
         "scope": "global",
-        "max_parallel": 2
+        "max_parallel": 1
       }
     }
   }

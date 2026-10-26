@@ -2824,6 +2824,15 @@ def _thumbnail_image_backend(cfg: dict) -> tuple[str, str, bool]:
     return "codex", model, False
 
 
+def _thumbnail_posted(folder) -> bool:
+    """youtube_upload.json に video_id がある（投稿済み）。"""
+    try:
+        d = json.loads((Path(folder) / "youtube_upload.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(isinstance(d, dict) and str(d.get("video_id") or "").strip())
+
+
 def _thumbnail_waiting(folder: Path, vol: int) -> bool:
     """同じ入力で既に全不合格（品質待機）になっている（再生成で費用を使わない）。"""
     try:
@@ -2854,6 +2863,10 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
     if ok and not reselect and not _ss.is_stale("thumbnail", folder, vol):
         rec = _ts.load(folder)
         print(f"  採用済み: {rec.get('selected_id')}（{rec.get('decided_by')}）")
+        return True
+    explicit = os.environ.get("APP_THUMBNAIL_EXPLICIT", "").strip() == "1"
+    if not reselect and not explicit and not ok and _thumbnail_posted(folder):
+        print("  投稿済みの vol のため、自動のサムネ選定は行いません（選ぶ場合は studio.py thumbnail-select）")
         return True
     if not reselect and _thumbnail_waiting(folder, vol):
         print("  同じ入力で全候補が不合格のため品質待機中です。studio.py thumbnail-select --adopt <候補> で採用するか、"
@@ -2895,7 +2908,8 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
         err = ""
         if not paths:
             low = " ".join(str(r.get("error") or "") for r in results).lower()
-            err = "quota" if ("quota" in low or "rate limit" in low) else ("auth" if ("401" in low or "unauthor" in low) else "no_images")
+            kinds = {str(r.get("error_kind") or "") for r in results}
+            err = "quota" if ("codex_usage_limit" in kinds or "quota" in low or "rate limit" in low) else ("auth" if ("401" in low or "unauthor" in low) else "no_images")
         return _ts.GenerateResult(paths, model=model, backend=backend, model_enforced=enforced, infra_error=err)
 
     def compose(bg: Path, out: Path):

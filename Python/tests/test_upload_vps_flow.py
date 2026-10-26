@@ -61,6 +61,7 @@ class UploadVpsFlowTest(unittest.TestCase):
         ]
         import thumbnail_selection
         self.patches.append(patch.object(thumbnail_selection, "verify", return_value=(True, "ok")))  # サムネ選定は確定済みとみなす
+        self.patches.append(patch.object(ay, "_snapshot_selected_thumbnail", lambda folder, _ts: ay.find_thumbnail(folder)))
         for p in self.patches:
             p.start()
         import app_reconcile
@@ -308,6 +309,14 @@ class UploadVpsFlowTest(unittest.TestCase):
                 self._run(ledger, lambda *a, **k: self.fail("must not upload"))
         self.assertEqual(cm.exception.code, 1)
         self.assertEqual(ledger.calls, [])  # begin より前に止まる
+
+    def test_new_upload_refuses_without_confirmed_thumbnail_without_vps(self):
+        import thumbnail_selection
+        ledger = FakeLedger(None)  # VPS 未設定でも新規投稿は確定サムネ必須
+        with patch.object(thumbnail_selection, "verify", return_value=(False, "not_selected (none)")):
+            with self.assertRaises(SystemExit) as cm:
+                self._run(ledger, lambda *a, **k: self.fail("must not upload"))
+        self.assertEqual(cm.exception.code, 1)
 
     def test_posted_legacy_vol_updates_without_selection_in_vps_mode(self):
         import thumbnail_selection
