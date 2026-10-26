@@ -384,6 +384,14 @@ def upload_unknown(vol: int, input_hash: str, error: str) -> bool:
         return False
 
 
+def post_notify(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """通知 event を VPS の outbox に積む（段階 3a）。未設定なら LedgerUnavailable。到達不能 / 4xx は例外。"""
+    if not enabled():
+        raise LedgerUnavailable("vps_not_configured")
+    payload = [{k: v for k, v in e.items() if v is not None} for e in events]
+    return _request_strict("POST", "/api/worker/notify", payload={"events": payload}, timeout=10)
+
+
 def fetch_vol(vol: int) -> Optional[dict]:
     vol_id = ensure_vol(vol)
     if vol_id is None:

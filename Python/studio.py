@@ -808,6 +808,12 @@ def main() -> int:
     if args.intent in ("schedule-status", "schedule-put"):
         return run_schedule(args)
 
+    if args.intent == "notify-flush":
+        import notify as _notify
+        out = _notify.flush_local() if not getattr(args, "dry_run", False) else {"ok": True, "dry_run": True, **_notify.local_status()}
+        emit({"intent": "notify-flush", **out})
+        return 0 if out.get("ok") else 1
+
     if args.intent == "autopilot":
         return run_autopilot(args)
 

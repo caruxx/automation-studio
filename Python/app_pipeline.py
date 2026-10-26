@@ -426,20 +426,15 @@ RUNBOOK_HINT = " docs/runbook.md（共有ドライブ）に対応手順あり"
 
 
 def _notify_discord(message: str) -> None:
-    """app_notify.sh 経由で Discord に投げる。失敗しても何もしない（通知失敗で本体を止めない）。
-
-    全メッセージの末尾に runbook の参照を自動付与する。"""
-    notify = BASE / "app_notify.sh"
-    if not notify.exists():
-        return
+    """通知（段階 3a）: Discord は廃止。notify.py が VPS の outbox（Chatwork 配送）へ送り、届かなければローカルに退避する。
+    失敗しても何もしない（通知失敗で本体を止めない）。全メッセージの末尾に runbook の参照を自動付与する。"""
     full_message = f"{message}\n\n{RUNBOOK_HINT}"
     try:
-        subprocess.run(
-            ["bash", str(notify), full_message],
-            timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        import notify as _notify
+        _notify.notify(full_message)
     except Exception:
         pass
+
 
 def _notify_line(message: str) -> None:
     """Backward-compatible alias for older code paths."""
