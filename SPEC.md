@@ -304,8 +304,8 @@ YouTube Analytics API v2 (`reports.query`) をチャンネル別 OAuth トーク
 | GET | `/api/schedule` | カレンダー用イベント |
 | GET | `/api/channels` / PUT `/api/channels/active/{id}` | チャンネル切替 |
 | POST | `/api/finder/open` / `/create-folder` / `/delete-folder` | OS 連携 |
-| POST | `/api/notify/discord` | Discord 送信 |
-| POST | `/api/notify/line` | Discord 送信（旧互換 alias） |
+| POST | `/api/notify/discord` | 通知送信（名前は互換。送信先は VPS outbox → Chatwork） |
+| POST | `/api/notify/line` | 同上（旧互換 alias） |
 | WS | `/ws/logs/{task_id}` | ライブログ（suno / youtube / setup） |
 
 ---

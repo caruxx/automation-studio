@@ -198,6 +198,10 @@ def notify(body: str, *, kind: Optional[str] = None, run_id: Optional[int] = Non
         return {**event, "delivered_to": "vps", "accepted": res.get("accepted"), "duplicate": res.get("duplicate")}
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"[:500]
+        if stored and getattr(exc, "status", None) == 422:
+            _mark([event["event_id"]], rejected=err)  # VPS が内容を拒否: 再送しても直らないので対象から外す
+            print(f"[notify] VPS が通知を拒否しました: {err}", file=sys.stderr)
+            return {**event, "delivered_to": "none", "error": err}
         if stored:
             _note_error([event["event_id"]], err)
             print(f"[notify] VPS に送れないためローカルに退避: {err}", file=sys.stderr)

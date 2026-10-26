@@ -310,7 +310,8 @@ def send_digest(*, test: bool = False) -> dict[str, Any]:
     data = build_digest(test=test)
     import notify as _notify
     res = _notify.notify(embed_to_text(data["embed"]), kind="info", event_id=None if test else f"digest-{datetime.now().strftime('%Y%m%d')}")
-    data["notify"] = {"sent": res.get("delivered_to") in ("vps", "local"), "delivered_to": res.get("delivered_to"),
+    dup = bool(res.get("duplicate"))  # 同じ日に再送すると VPS は duplicate として受ける（配送は 1 回）
+    data["notify"] = {"sent": res.get("delivered_to") in ("vps", "local") and not dup, "duplicate": dup, "delivered_to": res.get("delivered_to"),
                       "event_id": res.get("event_id"), "error": res.get("error")}
     data["discord"] = {"sent": data["notify"]["sent"], "status_code": None, "stderr": ""}  # 旧 API 応答との互換キー
     if res.get("delivered_to") == "none":

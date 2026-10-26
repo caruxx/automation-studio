@@ -98,6 +98,13 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(list(q.parent.glob("q.sqlite.corrupt-*")), [])  # ロック待ちで退避 DB を動かさない
         self.assertTrue(q.exists())
 
+    def test_single_422_marks_rejected(self):
+        with self._vps(fail=vls.LedgerHttpError(422, "validation")):
+            r = notify.notify("rejected by vps")
+        self.assertEqual(r["delivered_to"], "none")
+        st = notify.local_status()
+        self.assertEqual((st["pending"], st["rejected"]), (0, 1))
+
     def test_corrupted_queue_is_moved_aside(self):
         q = notify.queue_path()
         q.parent.mkdir(parents=True, exist_ok=True)
