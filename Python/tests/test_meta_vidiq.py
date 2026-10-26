@@ -37,6 +37,9 @@ class FakeLedger:
 
     def push_meta(self, vol, title, description, tags, insights=None):
         self.pushed.append({"title": title, "insights": insights})
+        return self.push_ok and self._enabled  # 実物も VPS 無効時は False
+
+    push_ok = True
 
 
 class MetaVidiqTest(unittest.TestCase):
@@ -198,12 +201,43 @@ class MetaVidiqEdgeTest(MetaVidiqTest):
         rec = json.loads((self.folder / ap.META_RECORD_FILE).read_text(encoding="utf-8"))
         self.assertEqual((rec["insights_degraded"], rec["degraded_reason"]), (True, "not_fetched"))
 
+    def test_vps_unreachable_falls_back_to_mac_notification(self):
+        ledger = FakeLedger(enabled=True, vol=None)  # vol を取れない・メタも届かない
+        ledger.push_ok = False
+        rec, notes = self._run(ledger)
+        self.assertEqual(rec["degraded_reason"], "unavailable")
+        self.assertEqual(len(notes), 1)  # VPS が受け取れないので Mac が通知（ローカル退避）
+
+    def test_failed_generation_does_not_attach_new_evidence_to_old_meta(self):
+        self._write_cache(datetime.now(timezone.utc) - timedelta(hours=1))
+        for name, text in (("youtube_title.txt", "Old"), ("youtube_description.txt", "Old D"), ("youtube_tags.txt", "old")):
+            (self.folder / name).write_text(text, encoding="utf-8")
+
+        def failing(_cli, prompt, **_kw):
+            if '"titles"' in prompt:
+                raise RuntimeError("llm down")
+            return self._fake_run(_cli, prompt)
+        with patch.object(ap, "_load_ledger_sync", return_value=FakeLedger(enabled=False)), \
+                patch.object(ap, "_load_dashboard_config", return_value=self.cfg), \
+                patch.object(ap, "_load_suno_config", return_value={}), \
+                patch.object(ap, "_vps_result_is_newer", return_value=False), \
+                patch.object(cp, "gather_context", return_value={"songs": ["A"], "song_count": 1}), \
+                patch.object(cp, "_run_claude", side_effect=failing), \
+                patch.object(cp, "_load_benchmark_analysis", return_value=None), \
+                patch("notify.notify") as n:
+            ap.step_meta(5, self.folder, False)
+        rec = json.loads((self.folder / ap.META_RECORD_FILE).read_text(encoding="utf-8"))
+        self.assertEqual((rec["title"], rec["evidence_ids"], rec["generation_complete"]), ("Old", [], False))
+        n.assert_not_called()
+
     def test_push_meta_payload_shape(self):
         import vps_ledger_sync as vls
         sent = []
-        with patch.object(vls, "ensure_vol", return_value=9), patch.object(vls, "_request", lambda m, path, **kw: sent.append(kw["payload"])):
-            vls.push_meta(5, "T", "D", ["a"])
+        with patch.object(vls, "ensure_vol", return_value=9), patch.object(vls, "_request", lambda m, path, **kw: sent.append(kw["payload"]) or {}):
+            self.assertTrue(vls.push_meta(5, "T", "D", ["a"]))
             vls.push_meta(5, "T", "D", ["a"], insights={"evidence_ids": [EID], "insights_degraded": False, "degraded_reason": None})
+        with patch.object(vls, "ensure_vol", return_value=9), patch.object(vls, "_request", return_value=None):
+            self.assertFalse(vls.push_meta(5, "T", "D", ["a"]))
         self.assertEqual(sent[0]["meta"], {"title": "T", "description": "D", "tags": ["a"]})
         self.assertEqual(sent[1]["meta"]["evidence_ids"], [EID])
 

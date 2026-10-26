@@ -27,7 +27,7 @@ python3 Python/studio.py insights-refresh --channel <id> --json
    - 環境変数 `VIDIQ_MCP_API_KEY`
    - `~/.config/automation-studio/vidiq.json` に `{"api_key": "..."}`（`chmod 600` が必須。他人が読める権限だと読み込まない）
 
-接続先は既定で `https://mcp.vidiq.com/mcp`。環境変数 `VIDIQ_MCP_ENDPOINT` で変えられる。
+接続先は既定で `https://mcp.vidiq.com/mcp`。環境変数 `VIDIQ_MCP_ENDPOINT` で変えられるが、https 以外は使えない。転送（3xx）は追わない。
 
 ## 何を呼ぶか
 
@@ -51,6 +51,8 @@ python3 Python/studio.py insights-refresh --channel <id> --json
 - メタの記録 `youtube_meta.json` は `{title, description, tags, evidence_ids, insights_degraded, degraded_reason}`。
 - `evidence_ids` は、プロンプトに渡したヒントに全文が入った VidIQ の学びの id。LLM が実際に使ったかは判定しない。
 - `youtube_meta.json` は工程の完了判定の材料に含めない。取得時刻の違いで後段を失効させないためである。
+- タイトル・説明・タグのどれかが今回生成できず以前のファイルを使ったときは、根拠を記録しない（`generation_complete=false`）。
+- 中身の無い結果（空の JSON など）は学びとして採用しない。
 
 ## 使えないとき（劣化）
 
@@ -62,11 +64,15 @@ python3 Python/studio.py insights-refresh --channel <id> --json
 | `expired` | 取得から 24 時間を過ぎた | info |
 | `fetch_failed` | 取得の失敗 | info |
 
-通知は VPS 連携時は VPS がメタ受領時に 1 回積み、VPS 無効時は Mac から出す。どちらでもメタはチャンネルの方針（persona・言語）とベンチマークだけで生成する。
+通知は VPS 連携時は VPS がメタ受領時に 1 回積む。VPS 無効時や、VPS にメタが届かなかったときは Mac から出す（届かなければローカルに退避し、`studio.py notify-flush` で移管）。どちらでもメタはチャンネルの方針（persona・言語）とベンチマークだけで生成する。
 
 ## 費用の注意
 
 調査系のツールはおおむね 1 回 5 クレジットを消費する（2026-10-27 時点の VidIQ の公開文書）。既定では 1 回の更新で最大 3 回呼ぶ。定期取得はしない。
+
+## 本番反映の注意
+
+- VPS の alembic 0020 を downgrade すると、取り込んだ VidIQ の行（`source='vidiq'`）は消える。CHECK 制約を戻すために必要な処理である。
 
 ## 未検証
 

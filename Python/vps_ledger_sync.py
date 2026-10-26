@@ -188,19 +188,20 @@ def push_context(vol: int, folder: Path) -> None:
     _request("POST", f"/api/worker/vols/{vol_id}/context", payload=payload)
 
 
-def push_meta(vol: int, title: str, description: str, tags: list[str], insights: Optional[dict[str, Any]] = None) -> None:
-    """insights: 段階 6 の {evidence_ids, insights_degraded, degraded_reason}（旧 VPS は追加項目を無視する）。"""
+def push_meta(vol: int, title: str, description: str, tags: list[str], insights: Optional[dict[str, Any]] = None) -> bool:
+    """insights: 段階 6 の {evidence_ids, insights_degraded, degraded_reason}（旧 VPS は追加項目を無視する）。
+    戻り値: VPS がメタを受け取れたか（未設定・接続不能・拒否は False）。"""
     vol_id = ensure_vol(vol)
     if vol_id is None:
-        return
+        return False
     meta: dict[str, Any] = {"title": title, "description": description, "tags": tags}
     if insights:
         meta.update({k: insights[k] for k in ("evidence_ids", "insights_degraded", "degraded_reason") if k in insights})
-    _request(
+    return _request(
         "POST",
         f"/api/worker/vols/{vol_id}/meta",
         payload={"meta": meta, "source": "mac"},
-    )
+    ) is not None
 
 
 def push_localizations(vol: int, localizations: dict) -> None:

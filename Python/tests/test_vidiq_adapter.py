@@ -275,7 +275,9 @@ class AdapterHardeningTest(unittest.TestCase):
                            client_factory=lambda u, t: sent.append(u) or va.McpHttpClient(u, t, transport=FakeServer()))
         self.assertEqual((r["ok"], r["error"], sent), (False, "insecure_endpoint", []))
         va.check_endpoint("https://mcp.vidiq.com/mcp")
-        va.check_endpoint("http://127.0.0.1:8000/mcp")
+        for insecure in ("http://127.0.0.1:8000/mcp", "http://localhost/mcp", "ftp://mcp.vidiq.com/mcp"):
+            with self.assertRaises(va.VidiqError):
+                va.check_endpoint(insecure)  # 本番経路では localhost でも平文にしない
 
     def test_protocol_version_is_negotiated(self):
         server = FakeServer()
@@ -324,6 +326,9 @@ class AdapterHardeningTest(unittest.TestCase):
         fake = {"content": [{"type": "text", "text": "evilyoutube.com/watch?v=AAAAAAAAAAA youtube.com/shorts/DDDDDDDDDDD"}]}
         self.assertEqual(va.normalize(call, fake)["video_ids"], ["DDDDDDDDDDD"])
         self.assertFalse(va.is_configured({"vidiq_keywords": "lofi"}))
+        for empty in ({"structuredContent": {}, "content": []}, {"structuredContent": [], "content": []},
+                      {"content": [{"type": "text", "text": "{}"}]}, {"content": [{"type": "text", "text": '{"a": [], "b": ""}'}]}):
+            self.assertIsNone(va.normalize(call, empty))  # 中身の無い結果からは学びも根拠も作らない
         self.assertEqual(va.format_hint_with_evidence([{"category": "t", "insight": "a", "evidence_ids": "vidiq:x:1"}])[1], [])
 
 

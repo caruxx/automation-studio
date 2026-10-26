@@ -86,12 +86,10 @@ def endpoint() -> str:
 
 
 def check_endpoint(url: str) -> None:
-    """API キーを平文で送らない: https:// だけを許す（テスト用の localhost / 127.0.0.1 の http は可）。"""
+    """API キーを平文で送らない: https:// だけを許す（localhost でも http は不可。テストは transport を差し替える）。"""
     from urllib.parse import urlparse
     u = urlparse(url)
     if u.scheme == "https" and u.hostname:
-        return
-    if u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1", "::1"):
         return
     raise VidiqError("insecure_endpoint", "VIDIQ_MCP_ENDPOINT は https:// にしてください")
 
@@ -324,6 +322,17 @@ def _structured(result: dict, text: str) -> Any:
         return None
 
 
+def _has_content(obj: Any) -> bool:
+    """空の dict / list / 空文字 / None だけで構成されていないか。"""
+    if isinstance(obj, dict):
+        return any(_has_content(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_has_content(v) for v in obj)
+    if isinstance(obj, str):
+        return bool(obj.strip())
+    return obj is not None
+
+
 def _walk_video_ids(obj: Any, out: list[str]) -> None:
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -351,6 +360,8 @@ def normalize(call: dict, result: dict) -> Optional[dict]:
     data = _structured(result, text)
     if not text.strip() and data is None:
         return None
+    if data is not None and not _has_content(data):
+        return None  # {} や [] など中身の無い結果は分析として採用しない（根拠も作らない）
     ids: list[str] = list(dict.fromkeys(_VIDEO_ID_RE.findall(text)))
     walked: list[str] = []
     _walk_video_ids(data, walked)
