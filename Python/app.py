@@ -7110,6 +7110,44 @@ def _schedule_resume(parent_payload: dict, from_stage: str, attempt: int) -> boo
     return False
 
 
+def _allocate_next_vol(ch_dir: Path, ch_id: Optional[str], ch_name: Optional[str]) -> tuple:
+    """次の vol 番号を決め、VPS が設定されていれば公開日付きのフォルダも作る。Returns (vol or None, error)。
+
+    - VPS あり: allocate の vol_number / publish_date を使う。同番号のフォルダが既にあればそれを使う（再実行）。
+      番号が既存フォルダより小さい（台帳と Mac のずれ）場合は作らず error（人が照合する）。
+    - VPS なし: 従来どおり最大番号 + 1（フォルダは pipeline の plan 工程が作る）。"""
+    max_n = 0
+    for d in ch_dir.iterdir():
+        m = re.match(r"^(\d+)_", d.name)
+        if m: max_n = max(max_n, int(m.group(1)))
+    try:
+        import vps_ledger_sync as _vls
+        alloc = _vls.allocate_vol() if _vls.enabled() else None
+    except Exception as e:
+        return None, f"VPS の採番に失敗: {e}"
+    if alloc is None:
+        return max_n + 1, ""
+    vol = int(alloc["vol_number"])
+    if vol <= max_n and not any(re.match(rf"^{vol}_", d.name) for d in ch_dir.iterdir()):
+        return None, f"VPS の採番 {vol} が Mac の既存フォルダ（最大 {max_n}）と食い違います。台帳とフォルダを照合してください"
+    existing = next((d for d in ch_dir.iterdir() if d.is_dir() and re.match(rf"^{vol}_", d.name)), None)
+    if existing is None:
+        pd = str(alloc.get("publish_date") or "")
+        try:
+            date_str = datetime.strptime(pd, "%Y-%m-%d").strftime("%y%m%d")
+        except ValueError:
+            return None, f"VPS の publish_date が解釈できません: {pd!r}"
+        prefix = get_file_prefix()
+        new_dir = ch_dir / f"{vol}_{prefix}_{date_str}"
+        new_dir.mkdir(exist_ok=True)
+        try:
+            import vps_ledger_sync as _vls
+            _vls.push_context(vol, new_dir)  # publish_date は VPS 側が割り当て済みなので上書きされない
+        except Exception as e:
+            print(f"[ledger-sync] vol 作成同期失敗: {e}")
+    return vol, ""
+
+
 async def _job_vol_create(job: dict):
     """次の vol を fully-auto で作る。channel_id 指定可。
 
@@ -7122,12 +7160,16 @@ async def _job_vol_create(job: dict):
         _record_history(job_id, "error", f"channel_folder が存在しない: {ch_dir}")
         _send_line_notify(f"❌ Automation Studio 自動: vol 作成失敗 ({job_id}) - チャンネル不在")
         return
-    # 次の vol 番号を解決（グローバル config 経由ではなく、解決済み folder を直接スキャン）
-    max_n = 0
-    for d in ch_dir.iterdir():
-        m = re.match(r"^(\d+)_", d.name)
-        if m: max_n = max(max_n, int(m.group(1)))
-    next_vol = max_n + 1
+    # 次の vol 番号を解決。段階 3: VPS が設定されていれば採番と公開枠は VPS（/api/worker/vols/allocate）が正本で、
+    # Mac はその番号と公開日でフォルダを確保するだけ。VPS 未設定なら従来どおりフォルダをスキャンして採番。
+    try:
+        next_vol, alloc_error = _allocate_next_vol(ch_dir, ch_id, ch_name)
+    except Exception as e:
+        next_vol, alloc_error = None, str(e)
+    if next_vol is None:
+        _record_history(job_id, "error", f"vol 採番失敗: {alloc_error}")
+        _send_line_notify(f"❌ [{ch_name}] vol 作成失敗: {alloc_error}")
+        return
     # P3-1: ledger に in_progress で記録
     run_id = ""
     try:
@@ -7894,8 +7936,8 @@ def _scheduler_register_job(job: dict):
                        replace_existing=True, misfire_grace_time=300)
     return True
 
-# 段階 3: 起票（vol_create / spot_create）の正本は VPS（publish_schedules + scheduled_tasks）。Mac では登録しない。
-_VPS_OWNED_JOB_TYPES = ("vol_create", "spot_create")
+# 段階 3: 採番と公開枠の正本は VPS（/api/worker/vols/allocate）。Mac の vol_create はフォルダ確保と実行を担う（登録は維持）。
+_VPS_OWNED_JOB_TYPES: tuple = ()
 _RELOAD_MANAGED_IDS: set = set()  # _scheduler_reload が登録した jobs.json 由来のジョブ id
 
 
@@ -7903,7 +7945,7 @@ def _scheduler_reload():
     """jobs.json を読み直して APScheduler に登録し直す。
 
     jobs.json 由来のジョブだけを入れ替える（orchestrator_tick / digest などの固定ジョブは消さない）。
-    vol_create / spot_create は段階 3 で VPS に移したため登録しない（定義は残るが警告のみ）。"""
+    vol_create / spot_create は登録する（採番と公開枠は VPS、フォルダ確保と実行は Mac）。"""
     global _RELOAD_MANAGED_IDS
     if _scheduler is None:
         return
@@ -7917,9 +7959,6 @@ def _scheduler_reload():
     registered: set[str] = set()
     for job in jobs:
         if not job.get("enabled", True):
-            continue
-        if job.get("type") in _VPS_OWNED_JOB_TYPES:
-            print(f"[scheduler] {job.get('id')} ({job.get('type')}) は VPS が起票するため Mac では登録しません（段階 3）")
             continue
         if _scheduler_register_job(job):
             registered.add(str(job.get("id")))

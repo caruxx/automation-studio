@@ -53,10 +53,10 @@ class MacSchedulerStage3Test(unittest.TestCase):
             studio._scheduler_reload()
         self.assertIn("orchestrator_tick", fake.jobs)
         self.assertIn("daily_digest", fake.jobs)
-        self.assertNotIn("job_a", fake.jobs)   # vol_create は Mac では登録しない
-        self.assertNotIn("job_c", fake.jobs)
+        self.assertIn("job_a", fake.jobs)   # vol_create は Mac が登録する（採番は VPS）
         self.assertIn("job_b", fake.jobs)
-        self.assertEqual([c.args[0]["id"] for c in reg.call_args_list], ["job_b"])
+        self.assertIn("job_c", fake.jobs)
+        self.assertEqual([c.args[0]["id"] for c in reg.call_args_list], ["job_a", "job_b", "job_c"])
         # jobs.json から job_b を消して reload すると、APScheduler からも外れる（固定ジョブは残る）
         with patch.object(studio, "_scheduler", fake), patch.object(studio, "_scheduler_get_jobs", return_value=[]), \
              patch.object(studio, "_scheduler_register_job", side_effect=lambda job: True):
@@ -64,6 +64,41 @@ class MacSchedulerStage3Test(unittest.TestCase):
         self.assertNotIn("job_b", fake.jobs)
         self.assertIn("orchestrator_tick", fake.jobs)
         self.assertIn("daily_digest", fake.jobs)
+
+    def test_allocate_next_vol_uses_vps_number_and_creates_folder(self):
+        import tempfile, shutil
+        ch = Path(tempfile.mkdtemp(prefix="vc_"))
+        try:
+            (ch / "4_test_260101").mkdir()
+            fake = type("L", (), {"enabled": staticmethod(lambda: True),
+                                  "allocate_vol": staticmethod(lambda: {"id": 9, "vol_number": 5, "publish_date": "2026-12-24"}),
+                                  "push_context": staticmethod(lambda vol, folder: None)})
+            with patch.dict(sys.modules, {"vps_ledger_sync": fake}), patch.object(studio, "get_file_prefix", return_value="test"):
+                vol, err = studio._allocate_next_vol(ch, "edm", "EDM")
+            self.assertEqual((vol, err), (5, ""))
+            self.assertTrue((ch / "5_test_261224").is_dir())  # VPS の公開日でフォルダを作る
+            # 再実行: 既存フォルダを使う
+            with patch.dict(sys.modules, {"vps_ledger_sync": fake}), patch.object(studio, "get_file_prefix", return_value="test"):
+                self.assertEqual(studio._allocate_next_vol(ch, "edm", "EDM"), (5, ""))
+            # VPS の採番が Mac の既存より小さく、該当フォルダも無ければ作らず error
+            bad = type("L", (), {"enabled": staticmethod(lambda: True),
+                                 "allocate_vol": staticmethod(lambda: {"id": 1, "vol_number": 3, "publish_date": "2026-12-25"}),
+                                 "push_context": staticmethod(lambda vol, folder: None)})
+            with patch.dict(sys.modules, {"vps_ledger_sync": bad}):
+                vol, err = studio._allocate_next_vol(ch, "edm", "EDM")
+            self.assertIsNone(vol) and self.assertIn("食い違", err)
+            self.assertFalse((ch / "3_test_261225").exists())
+            # VPS 未設定: 従来どおり最大 + 1（フォルダは作らない）
+            legacy = type("L", (), {"enabled": staticmethod(lambda: False), "allocate_vol": staticmethod(lambda: None)})
+            with patch.dict(sys.modules, {"vps_ledger_sync": legacy}):
+                self.assertEqual(studio._allocate_next_vol(ch, "edm", "EDM"), (6, ""))
+            # VPS 到達不能: 採番しない（二重起票しない）
+            down = type("L", (), {"enabled": staticmethod(lambda: True), "allocate_vol": staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("down")))})
+            with patch.dict(sys.modules, {"vps_ledger_sync": down}):
+                vol, err = studio._allocate_next_vol(ch, "edm", "EDM")
+            self.assertIsNone(vol)
+        finally:
+            shutil.rmtree(ch, ignore_errors=True)
 
     def test_orchestrator_tick_default_off(self):
         import os

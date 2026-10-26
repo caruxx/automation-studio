@@ -22,15 +22,17 @@ class FakeLedger:
         self.begin = begin
         self.calls = []
 
-    def upload_begin(self, vol, h):
-        self.calls.append(("begin", vol, h))
+    def upload_begin(self, vol, h, begin_token=None, known_video_id=None):
+        self.calls.append(("begin", vol, h, known_video_id))
         if isinstance(self.begin, Exception):
             raise self.begin
         return self.begin
 
-    def upload_session(self, vol, h, uri, off, token=None): self.calls.append(("session", uri, off, token))
+    session_ok = True
+    def upload_session(self, vol, h, uri, off, token=None): self.calls.append(("session", uri, off, token)); return self.session_ok
     def upload_result(self, vol, h, vid, privacy, publish_at): self.calls.append(("result", vid, privacy, publish_at)); return True
     def upload_unknown(self, vol, h, err): self.calls.append(("unknown", err)); return True
+    def upload_failed(self, vol, h, err): self.calls.append(("failed", err)); return True
     def enabled(self): return self.begin is not None
     LedgerUnavailable = vls.LedgerUnavailable
     LedgerHttpError = vls.LedgerHttpError
@@ -136,12 +138,52 @@ class UploadVpsFlowTest(unittest.TestCase):
             self._run(FakeLedger(vls.LedgerConfigError("channel unresolved")), lambda *a, **k: self.fail("x"))
         self.assertEqual(cm.exception.code, 1)
 
-    def test_insert_without_vps_publish_at_refuses_scheduled_upload(self):
+    def test_insert_without_vps_publish_at_refuses_upload_unless_allowed(self):
+        import os
         ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": None, "begin_token": "t"})
-        with self.assertRaises(SystemExit) as cm:
-            self._run(ledger, lambda *a, **k: self.fail("must not upload"))
-        self.assertEqual(cm.exception.code, 1)
+        for sched in ("2026-10-01T03:00:00Z", None):
+            with self.assertRaises(SystemExit) as cm:
+                self._run(ledger, lambda *a, **k: self.fail("must not upload"), schedule=sched)
+            self.assertEqual(cm.exception.code, 1)
         self.assertFalse((self.folder / "youtube_upload.json").exists())
+        seen = {}
+
+        def fake_upload(youtube, req, **kw):
+            seen["publish_at"] = req.publish_at
+            return pub.UploadResult(video_id="vidU", url="u", privacy="private", publish_at=None, thumbnail_set=False, elapsed_sec=1.0)
+        with patch.dict(os.environ, {"APP_ALLOW_UNSCHEDULED_UPLOAD": "1"}):
+            self.assertEqual(self._run(ledger, fake_upload, schedule=None), "vidU")
+        self.assertIsNone(seen["publish_at"])
+
+    def test_session_save_failure_aborts_before_completion(self):
+        ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": "2026-12-24T03:00:00", "begin_token": "t"})
+        ledger.session_ok = False
+
+        def real_like_upload(youtube, req, **kw):
+            # 本物の upload() と同じく、on_session の例外はセッションありの通信例外として再試行にする
+            try:
+                kw["on_session"]("https://upload.example/s1", 0)
+            except Exception as exc:
+                raise pub.RetryableUploadError(str(exc))
+            self.fail("must stop before sending more chunks")
+        with self.assertRaises(SystemExit) as cm:
+            self._run(ledger, real_like_upload)
+        self.assertEqual(cm.exception.code, ay.EXIT_RETRYABLE)
+        self.assertFalse(any(c[0] == "result" for c in ledger.calls))
+        self.assertFalse((self.folder / "youtube_upload.json").exists())
+
+    def test_duplicate_guard_skipped_in_vps_mode_and_result_retried(self):
+        import app_reconcile
+        ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": "2026-12-24T03:00:00", "begin_token": "t"})
+        results = iter([False, False, True])
+        ledger.upload_result = lambda *a: (ledger.calls.append(("result",)) or next(results))
+
+        def fake_upload(youtube, req, **kw):
+            return pub.UploadResult(video_id="vidG", url="u", privacy="private", publish_at=req.publish_at, thumbnail_set=False, elapsed_sec=1.0)
+        with patch.object(app_reconcile, "find_existing_upload", side_effect=AssertionError("guard must not run in VPS mode")), \
+             patch.object(ay.time, "sleep", lambda *_: None):
+            self.assertEqual(self._run(ledger, fake_upload), "vidG")
+        self.assertEqual([c[0] for c in ledger.calls].count("result"), 3)
 
     def test_vps_unavailable_and_conflicts(self):
         with self.assertRaises(SystemExit) as cm:
@@ -179,6 +221,25 @@ class UploadVpsFlowTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, ay.EXIT_RETRYABLE)
         self.assertIn(("session", "https://upload.example/s2", 1024, "t"), ledger.calls)
         self.assertFalse(any(c[0] in ("unknown", "result") for c in ledger.calls))
+
+    def test_marker_video_id_is_imported_and_unrecoverable_http_error_reports_failed(self):
+        from googleapiclient.errors import HttpError
+        (self.folder / "youtube_upload.json").write_text(json.dumps({"video_id": "mk9"}), encoding="utf-8")
+        ledger = FakeLedger({"mode": "update", "video_id": "mk9", "upload_id": 1, "state": "uploaded"})
+        with patch.object(ay, "update_video_snippet", return_value={"status": "ok"}):
+            self.assertEqual(self._run(ledger, lambda *a, **k: self.fail("x")), "mk9")
+        self.assertEqual(ledger.calls[0][3], "mk9")  # marker の video_id を known_video_id として持ち込む
+        (self.folder / "youtube_upload.json").unlink()
+        ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": "2026-12-24T03:00:00", "begin_token": "t"})
+
+        class Resp(dict):
+            status = 400
+        def bad_meta(youtube, req, **kw):
+            raise HttpError(Resp(), b'{"error":{"errors":[{"reason":"invalidVideoMetadata"}]}}')
+        with self.assertRaises(HttpError):
+            self._run(ledger, bad_meta)
+        self.assertEqual(ledger.calls[-1][0], "failed")
+        self.assertFalse((self.folder / "youtube_upload.json").exists())
 
     def test_legacy_path_without_vps(self):
         ledger = FakeLedger(None)  # VPS 未設定

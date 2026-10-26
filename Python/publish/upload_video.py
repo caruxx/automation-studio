@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,9 +21,17 @@ DEFAULT_CHUNK = 10 * 1024 * 1024
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def redact_urls(text: str) -> str:
+    """例外文に混ざる upload セッション URI などを伏せる（ログ・VPS の記録に平文を残さない）。"""
+    return _URL_RE.sub("<url>", str(text))
+
+
 class RetryableUploadError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None):
-        super().__init__(message)
+        super().__init__(redact_urls(message))
         self.status = status
 
 
@@ -139,7 +148,7 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
             except Exception:
                 pass
         if resumed and status in (404, 410):
-            raise UploadResultUnknown(f"resumable session expired (HTTP {status}); 結果を確定できません") from exc
+            raise UploadResultUnknown(redact_urls(f"resumable session expired (HTTP {status}); 結果を確定できません")) from exc
         if is_retryable_http_error(exc):
             raise RetryableUploadError(f"HTTP {status}", status=status) from exc
         raise

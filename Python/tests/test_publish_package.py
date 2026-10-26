@@ -157,9 +157,10 @@ class UploadTest(unittest.TestCase):
         self.assertTrue(getattr(req, "_in_error_state", False))
         # 送信中の通信例外: セッションがあれば再試行（resume で結果が分かる）、無ければそのまま失敗
         import socket
-        yt = FakeYouTube(FakeRequest([0.5], fail=(2, socket.timeout("timed out"))))
-        with self.assertRaises(pub.RetryableUploadError):
+        yt = FakeYouTube(FakeRequest([0.5], fail=(2, socket.timeout("timed out at https://upload.example/session/1?x=1"))))
+        with self.assertRaises(pub.RetryableUploadError) as cm:
             pub.upload(yt, self._req(), media_factory=lambda *a, **k: object())
+        self.assertNotIn("upload.example", str(cm.exception))  # セッション URI は例外文に残さない
         # 最初の PUT で落ちても、セッション URI は on_session で残す
         sessions = []
         yt = FakeYouTube(FakeRequest([], fail=(1, socket.timeout("timed out"))))
@@ -174,6 +175,46 @@ class UploadTest(unittest.TestCase):
         yt = FakeYouTube(NoSession([]))
         with self.assertRaises(ConnectionError):
             pub.upload(yt, self._req(), media_factory=lambda *a, **k: object())
+
+
+class RealHttpRequestResumeTest(unittest.TestCase):
+    """googleapiclient の本物の HttpRequest で、保存した session URI と offset からの再開（状態照会 → 続き → 完了）を確かめる。"""
+
+    def test_resume_queries_status_then_completes(self):
+        import json
+        from googleapiclient.http import HttpMockSequence, HttpRequest, MediaFileUpload
+        root = Path(tempfile.mkdtemp(prefix="resume_"))
+        try:
+            video = root / "v.mp4"; video.write_bytes(b"x" * 1000)
+            http = HttpMockSequence([
+                ({"status": "308", "range": "0-499"}, ""),            # 状態照会: 500 バイトまで受信済み
+                ({"status": "200"}, json.dumps({"id": "vidResumed"})),  # 残りを送って完了
+            ])
+            media = MediaFileUpload(str(video), mimetype="video/mp4", resumable=True, chunksize=256 * 1024)
+            calls = []
+
+            class Req(HttpRequest):
+                def next_chunk(self, http=None, num_retries=0):
+                    calls.append((self.resumable_uri, self.resumable_progress, getattr(self, "_in_error_state", None)))
+                    return super().next_chunk(http=http, num_retries=num_retries)
+
+            class YT:
+                def videos(self_inner):
+                    class V:
+                        def insert(self_v, **kw):
+                            return Req(http, lambda resp, content: json.loads(content), "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable",
+                                       method="POST", body=json.dumps(kw["body"]), headers={"content-type": "application/json"}, resumable=kw["media_body"])
+                    return V()
+            req = pub.UploadRequest(video_path=video, title="t", publish_at="2026-09-01T03:00:00Z")
+            sessions = []
+            res = pub.upload(YT(), req, resume={"session_uri": "https://upload.example/session/9", "offset": 100},
+                             on_session=lambda u, o: sessions.append((u, o)), media_factory=lambda *a, **k: media)
+            self.assertEqual(res.video_id, "vidResumed")
+            self.assertEqual(calls[0][0], "https://upload.example/session/9")
+            self.assertTrue(calls[0][2])  # 最初の呼び出しは状態照会（_in_error_state）
+            self.assertEqual(sessions[0], ("https://upload.example/session/9", 500))  # 照会で offset が 500 に補正される
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
