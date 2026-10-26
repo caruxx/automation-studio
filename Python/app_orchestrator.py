@@ -412,20 +412,24 @@ class UploadWorker(StageWorker):
         if not token.exists():
             print(f"[oauth] autopilot upload blocked: per-channel token missing ({token})")
             return Exit.PREFLIGHT_FAIL
-        schedule = _publish_at_iso(folder)
-        if not schedule:
-            print(f"[upload] publish_date をフォルダ名から解決できません: {folder.name}")
-            return Exit.PREFLIGHT_FAIL
-        pub_date = parse_publish_date_from_folder(folder)
-        today_jst = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date()
-        if pub_date and pub_date < today_jst:
-            print(f"[upload] publish_date が過去日なので autopilot upload を停止: {folder.name}")
-            return Exit.PREFLIGHT_FAIL
-        cmd = [
-            sys.executable, str(BASE / "app_youtube.py"),
-            str(folder), "--privacy", "private", "--schedule", schedule,
-            "--token-file", str(token),
-        ]
+        try:
+            import vps_ledger_sync as _vls
+            vps_schedules = _vls.enabled()
+        except Exception:
+            vps_schedules = False
+        cmd = [sys.executable, str(BASE / "app_youtube.py"), str(folder), "--privacy", "private", "--token-file", str(token)]
+        if not vps_schedules:
+            # 従来経路（VPS 未設定）: フォルダ名の日付から予約。段階 3 以降は VPS の予約を正本にする
+            schedule = _publish_at_iso(folder)
+            if not schedule:
+                print(f"[upload] publish_date をフォルダ名から解決できません: {folder.name}")
+                return Exit.PREFLIGHT_FAIL
+            pub_date = parse_publish_date_from_folder(folder)
+            today_jst = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date()
+            if pub_date and pub_date < today_jst:
+                print(f"[upload] publish_date が過去日なので autopilot upload を停止: {folder.name}")
+                return Exit.PREFLIGHT_FAIL
+            cmd += ["--schedule", schedule]
         ch_id = (kw.get("expected_channel_id") or "").strip()
         ch_name = (kw.get("expected_channel_name") or "").strip()
         if ch_id:

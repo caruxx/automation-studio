@@ -236,6 +236,99 @@ def report_upload(vol: int, folder: Path) -> None:
     )
 
 
+class LedgerHttpError(RuntimeError):
+    """VPS が 4xx を返した（detail を持つ）。接続不能は LedgerUnavailable。"""
+    def __init__(self, status: int, detail: Any):
+        super().__init__(f"HTTP {status}: {detail}")
+        self.status = status
+        self.detail = detail
+
+
+class LedgerUnavailable(RuntimeError):
+    pass
+
+
+def enabled() -> bool:
+    """VPS 台帳同期が設定されているか（投稿の正本を VPS にするかの判定に使う）。"""
+    return _load_settings() is not None
+
+
+def _request_strict(method: str, path: str, *, payload: Optional[dict[str, Any]] = None,
+                    timeout: int = 15) -> dict[str, Any]:
+    """投稿記録用: 4xx は LedgerHttpError、接続不能は LedgerUnavailable（黙って None にしない）。"""
+    settings = _load_settings()
+    if settings is None:
+        raise LedgerUnavailable("vps_not_configured")
+    url = settings["base_url"] + path
+    headers = {"Authorization": f"Bearer {settings['worker_token']}", "Accept": "application/json",
+               "User-Agent": USER_AGENT, "Content-Type": "application/json"}
+    body = json.dumps(payload or {}, ensure_ascii=False, default=str).encode("utf-8")
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("detail")
+        except Exception:
+            detail = None
+        raise LedgerHttpError(exc.code, detail) from None
+    except Exception as exc:
+        raise LedgerUnavailable(str(exc)) from None
+    try:
+        result = json.loads(raw.decode("utf-8")) if raw else {}
+    except json.JSONDecodeError:
+        raise LedgerUnavailable("invalid JSON from VPS") from None
+    return result if isinstance(result, dict) else {}
+
+
+def upload_begin(vol: int, input_hash: str) -> Optional[dict[str, Any]]:
+    """投稿の開始（冪等）。VPS 未設定なら None（従来経路）。4xx は LedgerHttpError、接続不能は LedgerUnavailable。"""
+    if not enabled():
+        return None
+    vol_id = ensure_vol(vol)
+    if vol_id is None:
+        raise LedgerUnavailable("vol を VPS で解決できません")
+    return _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/begin", payload={"input_hash": input_hash})
+
+
+def upload_session(vol: int, input_hash: str, session_ref: str, offset: int) -> None:
+    vol_id = _VOL_CACHE.get((resolve_channel_key() or "", int(vol))) or ensure_vol(vol)
+    if vol_id is None:
+        return
+    try:
+        _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/session",
+                        payload={"input_hash": input_hash, "session_ref": session_ref, "offset": int(offset)})
+    except (LedgerHttpError, LedgerUnavailable) as exc:
+        print(f"[ledger-sync] upload/session 保存失敗（続行）: {exc}")
+
+
+def upload_result(vol: int, input_hash: str, video_id: str, privacy: str, publish_at: Optional[str]) -> bool:
+    vol_id = ensure_vol(vol)
+    if vol_id is None:
+        return False
+    try:
+        _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/result",
+                        payload={"input_hash": input_hash, "video_id": video_id, "privacy": privacy, "publish_at": publish_at})
+        return True
+    except (LedgerHttpError, LedgerUnavailable) as exc:
+        print(f"[ledger-sync] upload/result 報告失敗: {exc}")
+        return False
+
+
+def upload_unknown(vol: int, input_hash: str, error: str) -> bool:
+    vol_id = ensure_vol(vol)
+    if vol_id is None:
+        return False
+    try:
+        _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/unknown",
+                        payload={"input_hash": input_hash, "error": error[:2000]})
+        return True
+    except (LedgerHttpError, LedgerUnavailable) as exc:
+        print(f"[ledger-sync] upload/unknown 報告失敗: {exc}")
+        return False
+
+
 def fetch_vol(vol: int) -> Optional[dict]:
     vol_id = ensure_vol(vol)
     if vol_id is None:
