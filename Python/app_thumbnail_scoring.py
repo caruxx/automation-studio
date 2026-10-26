@@ -165,7 +165,12 @@ def score_thumbnails(
         except Exception:
             pass
         e["evaluated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
-    return {"evaluations": evals, "raw": raw[:4000], "error": ""}
+    try:
+        import app_llm_runner as _r
+        backend = _r.LAST_BACKEND
+    except Exception:
+        backend = "unknown"
+    return {"evaluations": evals, "raw": raw[:4000], "error": "", "backend": backend}
 
 
 # ─── 自動承認判定 ─────────────────────

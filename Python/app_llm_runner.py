@@ -112,6 +112,9 @@ def _short(s: str, n: int = 220) -> str:
     return s[:n]
 
 
+LAST_BACKEND = "unknown"  # 直近の run_llm で実際に答えた CLI（claude / codex）。選定記録の judge_backend に使う
+
+
 def run_llm(prompt: str, *, cli_cmd: str | None = None, timeout: int = 300,
             add_dirs=None, allow_read: bool = False, image_paths=None,
             label: str = "") -> str:
@@ -137,6 +140,8 @@ def run_llm(prompt: str, *, cli_cmd: str | None = None, timeout: int = 300,
         rc, out, err = _run_claude_cli(claude_cli, prompt, timeout,
                                        add_dirs=eff_add_dirs, allow_read=allow_read)
         if rc == 0 and out.strip():
+            global LAST_BACKEND
+            LAST_BACKEND = "claude"
             return out
         claude_reason = f"rc={rc}: {_short(err or out)}"
     except subprocess.TimeoutExpired:
@@ -157,6 +162,7 @@ def run_llm(prompt: str, *, cli_cmd: str | None = None, timeout: int = 300,
         rc, out, err = _run_codex_cli(codex_cli, prompt, timeout, image_paths=paths)
         if rc == 0 and out.strip():
             print(f"  ✓ Codex フォールバック成功{tag}")
+            globals()["LAST_BACKEND"] = "codex"
             return out
         codex_reason = f"rc={rc}: {_short(err or out)}"
     except subprocess.TimeoutExpired:
