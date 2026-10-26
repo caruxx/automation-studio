@@ -455,7 +455,8 @@ def format_hint_with_evidence(items: list[dict]) -> tuple[str, list[str]]:
             break  # 全文が入らない学びは渡さない（根拠にも数えない）
         lines = trial
         prev = it.get("category")
-        for e in it.get("evidence_ids") or []:
+        ev = it.get("evidence_ids")
+        for e in ev if isinstance(ev, list) else []:
             if isinstance(e, str) and e not in used:
                 used.append(e)
     return "\n".join(lines).strip(), used

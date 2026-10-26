@@ -324,6 +324,7 @@ class AdapterHardeningTest(unittest.TestCase):
         fake = {"content": [{"type": "text", "text": "evilyoutube.com/watch?v=AAAAAAAAAAA youtube.com/shorts/DDDDDDDDDDD"}]}
         self.assertEqual(va.normalize(call, fake)["video_ids"], ["DDDDDDDDDDD"])
         self.assertFalse(va.is_configured({"vidiq_keywords": "lofi"}))
+        self.assertEqual(va.format_hint_with_evidence([{"category": "t", "insight": "a", "evidence_ids": "vidiq:x:1"}])[1], [])
 
 
 if __name__ == "__main__":
