@@ -130,6 +130,15 @@ class ThumbnailPipelineTest(unittest.TestCase):
         import app_orchestrator as o
         self.assertTrue(o._stage_artifact_done("thumbnail", self.folder, 7))
 
+    def test_posted_vol_is_not_queued_for_selection(self):
+        import app_orchestrator as o
+        w = o.WORKERS["thumbnail"]
+        with patch.object(o, "_stage_artifact_done", side_effect=lambda st, *a, **k: st != "thumbnail"), \
+                patch.object(w, "_slot_available", lambda **kw: True):
+            self.assertTrue(w.can_run(7, self.folder))  # 未投稿なら選定する
+            (self.folder / "youtube_upload.json").write_text(json.dumps({"video_id": "vidOLD"}), encoding="utf-8")
+            self.assertFalse(w.can_run(7, self.folder))  # 投稿済みの旧 vol は対象外
+
     def test_thumbnail_is_not_backfilled_from_ledger(self):
         import app_orchestrator as o
         with patch.object(o, "_ledger_stage_done", return_value=True):

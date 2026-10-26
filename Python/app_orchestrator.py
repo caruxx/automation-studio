@@ -357,6 +357,14 @@ def _stage_artifact_done(stage: str, folder: Path, vol: int, channel_id: str = "
     return _ledger_stage_done(stage, vol, channel_id)
 
 
+def _thumbnail_already_posted(folder: Path) -> bool:
+    try:
+        d = json.loads((Path(folder) / "youtube_upload.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return bool(isinstance(d, dict) and str(d.get("video_id") or "").strip())
+
+
 @dataclass
 class StepWorker(StageWorker):
     """1 stage = 1 ワーカーの汎用実装。can_run は _stage_artifact_done で
@@ -370,6 +378,8 @@ class StepWorker(StageWorker):
         prev = self.prev_stage(head)
         prev_done = True if prev is None else _stage_artifact_done(prev, folder, vol, channel_id=channel_id)
         self_done = _stage_artifact_done(head, folder, vol, channel_id=channel_id)
+        if head == "thumbnail" and _thumbnail_already_posted(folder):
+            return False  # 投稿済み（marker に video_id）の vol は選定しても投稿に使われない（費用を使わない）
         if head == "thumbnail" and hasattr(_pipe, "_thumbnail_waiting") and _pipe._thumbnail_waiting(folder, vol):
             return False  # 同じ入力で品質待機中: 人の採用か入力の変化まで再生成しない（費用を使わない）
         return prev_done and not self_done and self._slot_available(channel_id=channel_id)
