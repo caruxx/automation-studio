@@ -55,6 +55,8 @@ def validate_event(event: dict[str, Any]) -> Optional[str]:
             return f"invalid_{k}"
     if event.get("kind") not in KINDS:
         return "invalid_kind"
+    if event.get("channel_key") is not None and len(str(event["channel_key"])) > 64:
+        return "invalid_channel_key"
     return None
 
 
@@ -65,6 +67,11 @@ def new_event_id() -> str:
 _SCHEMA = """CREATE TABLE IF NOT EXISTS events (
         event_id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, run_id INTEGER, vol INTEGER,
         channel_key TEXT, created_at TEXT NOT NULL, migrated_at TEXT, rejected_at TEXT, last_error TEXT)"""
+
+
+def _looks_corrupt(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "not a database" in text or "malformed" in text or "corrupt" in text
 
 
 def _connect() -> sqlite3.Connection:
@@ -84,8 +91,10 @@ def _connect() -> sqlite3.Connection:
             except OSError:
                 pass
             return conn
+        except sqlite3.OperationalError:
+            raise  # ロック待ち（database is locked）等は破損ではない。退避 DB を動かさない
         except sqlite3.DatabaseError as exc:
-            if attempt == 2:
+            if attempt == 2 or not _looks_corrupt(exc):
                 raise
             try:
                 conn.close()
@@ -103,6 +112,19 @@ def _store_local(event: dict[str, Any], error: str) -> None:
         conn.execute("INSERT OR IGNORE INTO events(event_id, kind, body, run_id, vol, channel_key, created_at, last_error) VALUES (?,?,?,?,?,?,?,?)",
                      (event["event_id"], event["kind"], event["body"], event.get("run_id"), event.get("vol"), event.get("channel_key"),
                       datetime.now(timezone.utc).isoformat(timespec="seconds"), (error or "")[:500]))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _note_error(event_ids: list[str], error: str) -> None:
+    try:
+        conn = _connect()
+    except Exception:
+        return
+    try:
+        for eid in event_ids:
+            conn.execute("UPDATE events SET last_error=? WHERE event_id=? AND migrated_at IS NULL", (error[:500], eid))
         conn.commit()
     finally:
         conn.close()
@@ -175,6 +197,7 @@ def notify(body: str, *, kind: Optional[str] = None, run_id: Optional[int] = Non
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"[:500]
         if stored:
+            _note_error([event["event_id"]], err)
             print(f"[notify] VPS に送れないためローカルに退避: {err}", file=sys.stderr)
             return {**event, "delivered_to": "local", "error": err}
         print(f"[notify] 通知を記録できません（本文はログのみ）: {event['body'][:200]}", file=sys.stderr)
@@ -216,18 +239,20 @@ def flush_local(limit: int = 200) -> dict[str, Any]:
         try:
             res = _send_to_vps(batch)
         except Exception as exc:
-            return f"{type(exc).__name__}: {exc}"[:300]
+            err = f"{type(exc).__name__}: {exc}"[:300]
+            _note_error([e["event_id"] for e in batch], err)
+            return err
         acc = list(res.get("accepted") or []); dup = list(res.get("duplicate") or [])
         _mark(acc + dup, migrated=True)
         migrated += len(acc); duplicate += len(dup)
         return None
     error = _send_batch(valid) if valid else None
-    if error and "422" in error and len(valid) > 1:
+    if error and error.startswith("LedgerHttpError: HTTP 422") and len(valid) > 1:
         # VPS が一括で拒否した: 1 件ずつ送り、拒否された event だけ除外する
         error = None
         for e in valid:
             err1 = _send_batch([e])
-            if err1 and "422" in err1:
+            if err1 and err1.startswith("LedgerHttpError: HTTP 422"):
                 _mark([e["event_id"]], rejected=err1); rejected += 1
             elif err1:
                 error = err1

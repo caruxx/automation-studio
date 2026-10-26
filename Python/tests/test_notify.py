@@ -82,6 +82,22 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(calls[0], ["mac-good-0001", "mac-bad-00001"])
         self.assertEqual(sorted(len(c) for c in calls[1:]), [1, 1])
 
+    def test_locked_queue_is_not_treated_as_corrupt(self):
+        import sqlite3
+        q = notify.queue_path()
+        notify._connect().close()
+        holder = sqlite3.connect(str(q), timeout=1)
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            with patch.object(sqlite3, "connect", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked"))):
+                with self._vps(fail=vls.LedgerUnavailable("down")):
+                    r = notify.notify("during lock")
+        finally:
+            holder.rollback(); holder.close()
+        self.assertEqual(r["delivered_to"], "none")
+        self.assertEqual(list(q.parent.glob("q.sqlite.corrupt-*")), [])  # ロック待ちで退避 DB を動かさない
+        self.assertTrue(q.exists())
+
     def test_corrupted_queue_is_moved_aside(self):
         q = notify.queue_path()
         q.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +145,9 @@ class NotifyTest(unittest.TestCase):
             r = notify.notify("❌ failed thing", vol=4)
         self.assertEqual((r["delivered_to"], r["kind"]), ("local", "alert"))
         self.assertEqual(notify.local_status()["pending"], 1)
+        import sqlite3
+        with sqlite3.connect(str(notify.queue_path())) as c:
+            self.assertIn("LedgerUnavailable", c.execute("SELECT last_error FROM events WHERE migrated_at IS NULL").fetchone()[0])
         # VPS 未設定 → ローカル退避
         with self._vps(enabled=False):
             r = notify.notify("x")
