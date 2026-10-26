@@ -536,7 +536,7 @@ def run_insights_refresh(args: argparse.Namespace) -> int:
             cfg[name] = settings_service.config_get(f"channel.{name}", channel_id=key).get("value") or []
         except Exception as exc:
             emit({"ok": False, "intent": "insights-refresh", "error": "config", "message": f"{type(exc).__name__}"})
-            return int(ExitCode.USAGE)
+            return int(ExitCode.FAIL)
     max_calls = args.max_calls if args.max_calls is not None else _va.DEFAULT_MAX_CALLS
     if max_calls < 1 or max_calls > 10:
         emit({"ok": False, "intent": "insights-refresh", "error": "usage", "message": "--max-calls は 1〜10"})
@@ -561,7 +561,9 @@ def run_insights_refresh(args: argparse.Namespace) -> int:
         else:
             out["vps"] = {"pushed": False, "reason": "vps_not_configured"}
     except Exception as exc:
-        out["vps"] = {"pushed": False, "reason": type(exc).__name__, "status": getattr(exc, "status", None)}
+        detail = getattr(exc, "detail", None)
+        out["vps"] = {"pushed": False, "reason": type(exc).__name__, "status": getattr(exc, "status", None),
+                      "detail": detail if isinstance(detail, (str, list, dict)) else None}
         out["ok"] = False
         emit(out)
         return int(ExitCode.FAIL)

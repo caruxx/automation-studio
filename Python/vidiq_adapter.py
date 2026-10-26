@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -24,6 +25,7 @@ from typing import Any, Callable, Optional
 
 DEFAULT_ENDPOINT = "https://mcp.vidiq.com/mcp"
 PROTOCOL_VERSION = "2025-06-18"
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
 TTL_HOURS = 24
 DEFAULT_MAX_CALLS = 3
 INSIGHT_MAX = 300
@@ -31,7 +33,10 @@ MAX_ITEMS = 30
 SOURCE = "vidiq"
 DEGRADED_REASONS = ("not_configured", "not_fetched", "expired", "fetch_failed", "unavailable")
 
-_VIDEO_ID_RE = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])")
+_VIDEO_ID_RE = re.compile(
+    r"(?:(?:www\.|m\.|music\.)?youtube\.com/(?:watch\?(?:[^\s\"'<>]*&)?v=|shorts/|embed/|live/)|youtu\.be/)"
+    r"([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])")
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _ID_ONLY_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _TOOL_SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]")
 _CATEGORY_BY_TOOL = {"keyword_research": "title", "outliers": "concept", "trending_videos": "concept",
@@ -80,12 +85,33 @@ def endpoint() -> str:
     return (os.environ.get("VIDIQ_MCP_ENDPOINT") or DEFAULT_ENDPOINT).strip()
 
 
+def check_endpoint(url: str) -> None:
+    """API キーを平文で送らない: https:// だけを許す（テスト用の localhost / 127.0.0.1 の http は可）。"""
+    from urllib.parse import urlparse
+    u = urlparse(url)
+    if u.scheme == "https" and u.hostname:
+        return
+    if u.scheme == "http" and u.hostname in ("localhost", "127.0.0.1", "::1"):
+        return
+    raise VidiqError("insecure_endpoint", "VIDIQ_MCP_ENDPOINT は https:// にしてください")
+
+
 # ─── MCP クライアント ───
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """転送を追わない（追うと Authorization ヘッダが転送先へそのまま渡る）。3xx は呼び出し側で失敗にする。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
 
 def _urllib_transport(url: str, headers: dict[str, str], body: bytes, timeout: float) -> tuple[int, dict[str, str], bytes]:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b""
@@ -118,6 +144,7 @@ class McpHttpClient:
     timeout: float = 30.0
     transport: Optional[Transport] = None
     session_id: Optional[str] = None
+    protocol_version: str = PROTOCOL_VERSION
     _next_id: int = 1
     _initialized: bool = False
 
@@ -125,7 +152,7 @@ class McpHttpClient:
         h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
              "Authorization": f"Bearer {self.token}", "User-Agent": "automation-studio-vidiq/1"}
         if self._initialized:
-            h["MCP-Protocol-Version"] = PROTOCOL_VERSION
+            h["MCP-Protocol-Version"] = self.protocol_version
         if self.session_id:
             h["Mcp-Session-Id"] = self.session_id
         return h
@@ -138,6 +165,8 @@ class McpHttpClient:
             self.session_id = sid
         if status in (401, 403):
             raise VidiqError("unauthorized", f"HTTP {status}")
+        if 300 <= status < 400:
+            raise VidiqError(f"http_{status}", "redirect is not followed")
         if status >= 400:
             raise VidiqError(f"http_{status}")
         return status, headers, body
@@ -167,6 +196,10 @@ class McpHttpClient:
     def initialize(self) -> dict:
         res = self.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                           "clientInfo": {"name": "automation-studio", "version": "1"}})
+        negotiated = str(res.get("protocolVersion") or PROTOCOL_VERSION)
+        if negotiated not in SUPPORTED_PROTOCOL_VERSIONS:
+            raise VidiqError("protocol_version", negotiated[:32])
+        self.protocol_version = negotiated
         self._initialized = True
         self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
         return res
@@ -188,10 +221,27 @@ class McpHttpClient:
 
 # ─── 呼び出しの計画 ───
 
+_JSON_TYPES = {"string": (str,), "integer": (int,), "number": (int, float), "boolean": (bool,),
+               "array": (list,), "object": (dict,)}
+
+
 def _required_ok(tool: dict, arguments: dict) -> bool:
+    """必須引数がそろい、スキーマが型を宣言している引数は型も合う。"""
     schema = tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict) else {}
     required = schema.get("required") if isinstance(schema.get("required"), list) else []
-    return all(k in arguments for k in required)
+    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    if not all(k in arguments for k in required):
+        return False
+    for k, v in arguments.items():
+        typ = props.get(k, {}).get("type") if isinstance(props.get(k), dict) else None
+        allowed = _JSON_TYPES.get(typ) if isinstance(typ, str) else None
+        if allowed is None:
+            continue
+        if isinstance(v, bool) and typ in ("integer", "number"):
+            return False
+        if not isinstance(v, allowed):
+            return False
+    return True
 
 
 def _single_required_string(tool: dict) -> Optional[str]:
@@ -212,6 +262,12 @@ def plan_calls(tools: list[dict], channel_cfg: dict, max_calls: int = DEFAULT_MA
     planned: list[dict] = []
     skipped: list[dict] = []
     requests = channel_cfg.get("vidiq_requests")
+    keywords_raw = channel_cfg.get("vidiq_keywords")
+    if requests not in (None, "", []) and not isinstance(requests, list):
+        return [], [{"tool": None, "reason": "invalid_config"}]  # 文字列などは呼ばない（1 文字ずつ有料で呼ぶ事故を防ぐ）
+    if not requests and keywords_raw not in (None, "", []) and not isinstance(keywords_raw, list):
+        return [], [{"tool": "keyword_research", "reason": "invalid_config"}]
+    seen: set[str] = set()
     if isinstance(requests, list) and requests:
         for req in requests:
             if not isinstance(req, dict):
@@ -224,10 +280,15 @@ def plan_calls(tools: list[dict], channel_cfg: dict, max_calls: int = DEFAULT_MA
             elif args is None or not _required_ok(by_name[name], args):
                 skipped.append({"tool": name, "reason": "required_arguments_missing"})
             else:
+                sig = json.dumps([name, args], sort_keys=True, ensure_ascii=False)
+                if sig in seen:
+                    skipped.append({"tool": name, "reason": "duplicate"})
+                    continue
+                seen.add(sig)
                 cat = req.get("category") if req.get("category") in _CATEGORIES else _CATEGORY_BY_TOOL.get(name, "other")
                 planned.append({"tool": name, "arguments": dict(args), "category": cat})
     else:
-        keywords = [str(k).strip() for k in (channel_cfg.get("vidiq_keywords") or []) if str(k).strip()]
+        keywords = list(dict.fromkeys(k.strip() for k in (keywords_raw or []) if isinstance(k, str) and k.strip()))
         if keywords:
             tool = by_name.get("keyword_research")
             field = _single_required_string(tool) if tool else None
@@ -301,8 +362,10 @@ def normalize(call: dict, result: dict) -> Optional[dict]:
         for k, v in data.items():
             if len(metrics) >= 20:
                 break
+            if isinstance(v, float) and not math.isfinite(v):
+                continue  # NaN / Infinity は JSON 列に保存できない
             if isinstance(v, (int, float, bool)) or (isinstance(v, str) and len(v) <= 200):
-                metrics[str(k)[:64]] = v
+                metrics[_CTRL_RE.sub("", str(k))[:64]] = _CTRL_RE.sub("", v) if isinstance(v, str) else v
             elif isinstance(v, list):
                 metrics[f"{str(k)[:58]}_count"] = len(v)
     elif isinstance(data, list):
@@ -310,8 +373,8 @@ def normalize(call: dict, result: dict) -> Optional[dict]:
     label = ", ".join(f"{v}" for v in call.get("arguments", {}).values() if isinstance(v, (str, int, float)))[:60]
     head = f"VidIQ {call['tool']}" + (f"（{label}）" if label else "") + ": "
     body_src = text if text.strip() and data is None else json.dumps(data, ensure_ascii=False)
-    body = " ".join(body_src.split())
-    insight = (head + body)[:INSIGHT_MAX]
+    body = " ".join(_CTRL_RE.sub(" ", body_src).split())
+    insight = (_CTRL_RE.sub("", head) + body)[:INSIGHT_MAX]
     return {"category": call.get("category") or "other", "insight": insight, "video_ids": ids[:50],
             "metrics": metrics, "evidence_ids": [evidence_id(call["tool"], result)]}
 
@@ -420,6 +483,7 @@ def refresh(channel_key: str, channel_cfg: dict, *, client_factory: Optional[Cal
     items: list[dict] = []
     raw: list[dict] = []
     try:
+        check_endpoint(endpoint())
         client = factory(endpoint(), token)
         client.initialize()
         tools = client.list_tools()

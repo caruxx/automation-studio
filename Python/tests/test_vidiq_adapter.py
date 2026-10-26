@@ -232,5 +232,96 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual((code, obj["dry_run"], obj["fresh"], obj["reason"]), (0, True, False, "not_fetched"))
 
 
+class AdapterHardeningTest(unittest.TestCase):
+    """Task 2 レビュー対応: 転送でキーを渡さない、平文の接続先を拒否、設定の型、重複、値の洗浄。"""
+
+    def test_redirect_is_not_followed_and_key_not_forwarded(self):
+        import http.server
+        import threading
+        seen = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/stolen")
+                self.end_headers()
+
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            c = va.McpHttpClient(f"http://127.0.0.1:{srv.server_port}/mcp", SECRET, timeout=5)
+            with self.assertRaises(va.VidiqError) as cm:
+                c.initialize()
+            self.assertEqual(cm.exception.reason, "http_302")
+        finally:
+            srv.shutdown()
+        self.assertEqual([p for p, _ in seen], ["/mcp"])  # 転送先 /stolen には行かない
+
+    def test_insecure_endpoint_is_rejected_before_sending_key(self):
+        sent = []
+        with patch.dict(os.environ, {"VIDIQ_MCP_ENDPOINT": "http://vidiq.example/mcp", "VIDIQ_MCP_API_KEY": SECRET,
+                                     "APP_VIDIQ_DIR": tempfile.mkdtemp(prefix="vq_")}):
+            r = va.refresh("chx", {"vidiq_keywords": ["a"]},
+                           client_factory=lambda u, t: sent.append(u) or va.McpHttpClient(u, t, transport=FakeServer()))
+        self.assertEqual((r["ok"], r["error"], sent), (False, "insecure_endpoint", []))
+        va.check_endpoint("https://mcp.vidiq.com/mcp")
+        va.check_endpoint("http://127.0.0.1:8000/mcp")
+
+    def test_protocol_version_is_negotiated(self):
+        server = FakeServer()
+        c = va.McpHttpClient("u", SECRET, transport=server)
+        orig = server.__call__
+
+        def older(url, headers, body, timeout):
+            status, hdr, data = orig(url, headers, body, timeout)
+            msg = json.loads(body.decode())
+            if msg.get("method") == "initialize":
+                d = json.loads(data.decode())
+                d["result"]["protocolVersion"] = "2025-03-26"
+                data = json.dumps(d).encode()
+            return status, hdr, data
+        c.transport = older
+        c.initialize()
+        c.list_tools()
+        self.assertEqual(server.seen[-1][0]["MCP-Protocol-Version"], "2025-03-26")
+        bad = va.McpHttpClient("u", SECRET, transport=lambda u, h, b, t: (200, {"content-type": "application/json"}, json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "1999-01-01"}}).encode()))
+        with self.assertRaises(va.VidiqError) as cm:
+            bad.initialize()
+        self.assertEqual(cm.exception.reason, "protocol_version")
+
+    def test_string_config_duplicates_and_types_are_not_called(self):
+        self.assertEqual(va.plan_calls([KW_TOOL], {"vidiq_keywords": "lofi jazz"}), ([], [{"tool": "keyword_research", "reason": "invalid_config"}]))
+        self.assertEqual(va.plan_calls([KW_TOOL], {"vidiq_requests": "x"})[1][0]["reason"], "invalid_config")
+        planned, skipped = va.plan_calls([KW_TOOL], {"vidiq_keywords": ["a", "a", " a "]})
+        self.assertEqual(len(planned), 1)
+        req = {"vidiq_requests": [{"tool": "outliers", "arguments": {"query": "j", "limit": 5}},
+                                  {"tool": "outliers", "arguments": {"limit": 5, "query": "j"}},
+                                  {"tool": "outliers", "arguments": {"query": 1, "limit": 5}},
+                                  {"tool": "outliers", "arguments": {"query": "j", "limit": True}}]}
+        planned, skipped = va.plan_calls([OUT_TOOL], req)
+        self.assertEqual(len(planned), 1)
+        self.assertEqual([s["reason"] for s in skipped], ["duplicate", "required_arguments_missing", "required_arguments_missing"])
+
+    def test_normalize_scrubs_values_and_only_takes_youtube_ids(self):
+        call = {"tool": "keyword_research", "arguments": {"keyword": "a"}, "category": "title"}
+        res = {"content": [{"type": "text", "text": '{"score": NaN, "big": Infinity, "name": "x\\u0000y", "ok": 1}'}]}
+        item = va.normalize(call, res)
+        self.assertEqual(item["metrics"], {"name": "xy", "ok": 1})
+        self.assertNotIn("\x00", item["insight"])
+        text = {"content": [{"type": "text", "text": "https://example.com/page?v=hello_world1 https://www.youtube.com/watch?list=x&v=CCCCCCCCCCC"}]}
+        self.assertEqual(va.normalize(call, text)["video_ids"], ["CCCCCCCCCCC"])
+
+
 if __name__ == "__main__":
     unittest.main()
