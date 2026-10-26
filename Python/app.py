@@ -6773,9 +6773,11 @@ def _send_discord_notify(message: str):
                 message = format_for_discord(message=message)
         except Exception:
             pass
-        # 段階 3a: Discord は廃止。notify.py が VPS の outbox（Chatwork 配送）へ送り、届かなければローカルに退避する
+        # 段階 3a: Discord は廃止。notify.py が VPS の outbox（Chatwork 配送）へ送り、届かなければローカルに退避する。
+        # 以前の Popen と同じく呼び出し側（イベントループ・スケジューラ）を待たせない
+        import threading
         import notify as _notify
-        _notify.notify(message)
+        threading.Thread(target=_notify.notify, args=(message,), daemon=True).start()
     except Exception:
         pass
 

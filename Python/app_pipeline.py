@@ -428,7 +428,8 @@ RUNBOOK_HINT = " docs/runbook.md（共有ドライブ）に対応手順あり"
 def _notify_discord(message: str) -> None:
     """通知（段階 3a）: Discord は廃止。notify.py が VPS の outbox（Chatwork 配送）へ送り、届かなければローカルに退避する。
     失敗しても何もしない（通知失敗で本体を止めない）。全メッセージの末尾に runbook の参照を自動付与する。"""
-    full_message = f"{message}\n\n{RUNBOOK_HINT}"
+    limit = 4000 - len(RUNBOOK_HINT) - 2
+    full_message = f"{message[:limit]}\n\n{RUNBOOK_HINT}"  # runbook の参照が切り詰めで消えないよう本文側を先に切る
     try:
         import notify as _notify
         _notify.notify(full_message)

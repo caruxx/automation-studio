@@ -389,7 +389,7 @@ def post_notify(events: list[dict[str, Any]]) -> dict[str, Any]:
     if not enabled():
         raise LedgerUnavailable("vps_not_configured")
     payload = [{k: v for k, v in e.items() if v is not None} for e in events]
-    return _request_strict("POST", "/api/worker/notify", payload={"events": payload}, timeout=10)
+    return _request_strict("POST", "/api/worker/notify", payload={"events": payload}, timeout=5)
 
 
 def fetch_vol(vol: int) -> Optional[dict]:

@@ -9,5 +9,9 @@ if [[ -z "$PY" ]]; then
 fi
 MESSAGE="${1:-}"
 if [[ -z "$MESSAGE" ]]; then echo "usage: app_notify.sh <message>" >&2; exit 2; fi
-"$PY" "$DIR/notify.py" "$MESSAGE" --json >/dev/null 2>&1 || true
-echo "通知を送信しました（VPS outbox）"
+if "$PY" "$DIR/notify.py" "$MESSAGE" --json >/dev/null 2>&1; then
+    echo "通知を送信しました（VPS outbox またはローカル退避）"
+else
+    echo "通知を記録できませんでした" >&2
+    exit 1
+fi
