@@ -167,7 +167,7 @@ def score_thumbnails(
         e["evaluated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
     try:
         import app_llm_runner as _r
-        backend = _r.LAST_BACKEND
+        backend = _r.last_backend()
     except Exception:
         backend = "unknown"
     return {"evaluations": evals, "raw": raw[:4000], "error": "", "backend": backend}

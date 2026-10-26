@@ -88,7 +88,8 @@ class SelectionTest(unittest.TestCase):
                                compose=self._compose, run_id="r2", max_attempts=1, n_per_attempt=1, log=lambda m: None)
         self.assertEqual(res.status, "quality_wait")
         rec = ts.load(self.folder)
-        self.assertEqual(rec["history"][-1]["ignored_evaluations"], ["a1_9.jpg", "a1_9.jpg", "ghost.jpg"])
+        self.assertEqual([i["reason"] for i in rec["history"][-1]["ignored_evaluations"]], ["not_a_candidate"] * 3)
+        self.assertEqual(rec["history"][-1]["ignored_evaluations"][1]["raw"], "../../old/a1/a1_9.jpg")
         self.assertIsNone(rec["selected_id"])
         self.assertFalse((self.folder / ts.SELECTED_FILE).exists())
 
@@ -118,6 +119,57 @@ class SelectionTest(unittest.TestCase):
                                compose=self._compose, run_id="r5", max_total=6, log=lambda m: None)
         self.assertEqual(res.status, "quality_wait")
         self.assertEqual(len(ts.load(self.folder)["candidate_ids"]), 6)  # 4 + 2（上限）
+
+    def test_duplicate_evaluations_use_first_only(self):
+        def score(paths):
+            return ts.ScoreOutput([{"filename": "a1_1.jpg", "score_total": 10, "ctr_predict": 1, "similarity": 0},
+                                   {"filename": "a1_1.jpg", "score_total": 95, "ctr_predict": 20, "similarity": 0}], backend="codex")
+        res = ts.run_selection(self.folder, 9, generate=self._gen([[(5, 5, 5)]]), score=score, compose=self._compose,
+                               run_id="rd", max_attempts=1, n_per_attempt=1, log=lambda m: None)
+        self.assertEqual(res.status, "quality_wait")
+        rec = ts.load(self.folder)
+        self.assertEqual(rec["history"][-1]["ignored_evaluations"][0]["reason"], "duplicate")
+        self.assertIn("rd/a1/a1_1.jpg", rec["rejected_reasons"])
+
+    def test_score_failure_is_not_quality_wait_and_does_not_regenerate(self):
+        res = ts.run_selection(self.folder, 9, generate=self._gen([[(1, 1, 1)] * 4] * 3),
+                               score=lambda paths: ts.ScoreOutput([], error="LLMError: both failed"), compose=self._compose,
+                               run_id="rf", log=lambda m: None)
+        self.assertEqual(res.status, "score_failure")
+        self.assertEqual(self.calls["gen"], 1)  # 再生成しない
+        rec = ts.load(self.folder)
+        self.assertTrue(all(v.startswith("score_failed") for v in rec["rejected_reasons"].values()))
+        res = ts.run_selection(self.folder, 9, generate=self._gen([[(1, 1, 1)]]), score=lambda paths: ts.ScoreOutput([]),
+                               compose=self._compose, run_id="rg", log=lambda m: None)
+        self.assertEqual((res.status, res.reason), ("score_failure", "empty_evaluations"))
+
+    def test_verify_requires_candidate_hash_and_run(self):
+        ts.run_selection(self.folder, 9, generate=self._gen([[(9, 1, 1)]]), score=self._score({1: {1: 90}}), compose=self._compose,
+                         run_id="rv", max_attempts=1, n_per_attempt=1, log=lambda m: None)
+        self.assertEqual(ts.verify(self.folder), (True, "ok"))
+        rec = ts.load(self.folder)
+        broken = dict(rec); broken["candidate_hashes"] = {}
+        (self.folder / ts.SELECTION_FILE).write_text(json.dumps(broken), encoding="utf-8")
+        self.assertEqual(ts.verify(self.folder)[1], "candidate_hash_mismatch")
+        broken = dict(rec); broken["run_id"] = "other"
+        (self.folder / ts.SELECTION_FILE).write_text(json.dumps(broken), encoding="utf-8")
+        self.assertEqual(ts.verify(self.folder)[1], "selected_id_not_in_run")
+        with self.assertRaises(ValueError):
+            ts.run_selection(self.folder, 9, generate=self._gen([[(1, 1, 1)]]), score=self._score({}), compose=self._compose,
+                             run_id="../x", log=lambda m: None)
+
+    def test_contact_sheet_failure_does_not_stop_selection_and_llm_backend(self):
+        from unittest.mock import patch
+        import app_image_compositor
+        with patch.object(app_image_compositor, "contact_sheet", side_effect=OSError("disk")):
+            res = ts.run_selection(self.folder, 9, generate=self._gen([[(3, 3, 3)]]), score=self._score({1: {1: 90}}),
+                                   compose=self._compose, run_id="rc", max_attempts=1, n_per_attempt=1, log=lambda m: None)
+        self.assertEqual(res.status, "selected")
+        import app_llm_runner as r
+        with patch.object(r, "_run_claude_cli", lambda *a, **k: (0, "ok", "")):
+            r.run_llm("x"); self.assertEqual(r.last_backend(), "claude")
+        with patch.object(r, "_run_claude_cli", lambda *a, **k: (1, "", "limit")), patch.object(r, "_run_codex_cli", lambda *a, **k: (0, "ok", "")):
+            r.run_llm("x"); self.assertEqual(r.last_backend(), "codex")
 
     def test_adopt_rejects_modified_candidate(self):
         ts.run_selection(self.folder, 9, generate=self._gen([[(1, 1, 1)]]), score=self._score({}), compose=self._compose,

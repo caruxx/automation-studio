@@ -25,6 +25,7 @@ SELECTION_FILE = ".thumbnail_selection.json"
 SELECTED_FILE = "thumbnail_selected.jpg"
 CANDIDATE_ROOT = "thumbnail_candidates"
 SCHEMA_VERSION = 1
+_RUN_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_.-]{1,64}$")
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 
 
@@ -47,7 +48,7 @@ class ScoreOutput:
 
 @dataclass
 class SelectionResult:
-    status: str  # selected / quality_wait / generation_failure
+    status: str  # selected / quality_wait / generation_failure / score_failure
     run_id: str
     selected_id: Optional[str] = None
     selected_hash: Optional[str] = None
@@ -121,6 +122,8 @@ def verify(folder: Path) -> tuple[bool, str]:
     sel_id = data.get("selected_id")
     if not sel_id or sel_id not in (data.get("candidate_ids") or []):
         return False, "selected_id_not_in_candidates"
+    if not str(sel_id).startswith(f"{data.get('run_id')}/"):
+        return False, "selected_id_not_in_run"
     selected = folder / SELECTED_FILE
     if not selected.is_file():
         return False, "selected_file_missing"
@@ -128,7 +131,7 @@ def verify(folder: Path) -> tuple[bool, str]:
     if actual != data.get("selected_hash"):
         return False, "selected_hash_mismatch"
     expected = (data.get("candidate_hashes") or {}).get(sel_id)
-    if expected and expected != actual:
+    if not expected or expected != actual:
         return False, "candidate_hash_mismatch"
     return True, "ok"
 
@@ -137,6 +140,8 @@ def _thresholds(score_threshold: int, ctr_threshold: float, similarity_max: int)
     return {"score": score_threshold, "predicted_ctr": ctr_threshold, "similarity_max": similarity_max}
 
 
+# 注: 計画は app_image_eval_loop.run_eval_loop の再利用だが、attempt ごとの候補集合・ハッシュ・候補外評価の排除・
+# 採点失敗の区別を扱えないため独自ループにした（build_feedback / judge_auto_approval / best_of は再利用）。
 def run_selection(folder: Path, vol: int, *, generate: Callable[[Path, int, int, str], GenerateResult],
                   score: Callable[[list], ScoreOutput], compose: Callable[[Path, Path], None],
                   concept_hint: str = "", thumbnail_axis: Optional[dict] = None, run_id: Optional[str] = None,
@@ -154,6 +159,8 @@ def run_selection(folder: Path, vol: int, *, generate: Callable[[Path, int, int,
 
     folder = Path(folder)
     run_id = run_id or datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    if not _RUN_ID_RE.match(run_id):
+        raise ValueError(f"run_id に使えない文字があります: {run_id!r}")
     run_dir = folder / CANDIDATE_ROOT / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     data = load(folder)
@@ -162,6 +169,8 @@ def run_selection(folder: Path, vol: int, *, generate: Callable[[Path, int, int,
     thresholds = _thresholds(score_threshold, ctr_threshold, similarity_max)
     candidate_ids: list[str] = []
     candidate_hashes: dict[str, str] = {}
+    candidate_paths: dict[str, Path] = {}  # 候補 id → 実ファイル（id を分解し直してパスを作らない）
+    score_failures = 0
     rejected: dict[str, str] = {}
     all_judged: list[dict] = []
     model = DEFAULT_IMAGE_MODEL
@@ -206,22 +215,37 @@ def run_selection(folder: Path, vol: int, *, generate: Callable[[Path, int, int,
             att_ids.append(cid)
             candidate_ids.append(cid)
             candidate_hashes[cid] = sha256_file(p)
+            candidate_paths[cid] = p
         if not files:
             history.append({"run_id": run_id, "attempt": attempt, "at": _now(), "status": "compose_failed"})
             continue
         sc = score(list(files.values()))
         judge_backend = sc.backend or judge_backend
-        if sc.error:
+        if sc.error or not (sc.evaluations or []):
+            # 採点基盤の失敗（LLM 障害・JSON を読めない）は品質不足ではない。再生成で費用を使わず基盤失敗として止める
+            err = (sc.error or "empty_evaluations")[:300]
+            for cid in att_ids:
+                rejected[cid] = f"score_failed: {err}"
             history.append({"run_id": run_id, "attempt": attempt, "at": _now(), "status": "score_failed",
-                            "error": sc.error[:300], "candidate_ids": att_ids})
-            continue
-        valid, ignored = [], []
+                            "error": err, "candidate_ids": att_ids})
+            score_failures += 1
+            status, reason = "score_failure", err
+            break
+        valid, ignored, seen_names = [], [], set()
         for e in sc.evaluations or []:
-            name = Path(str((e or {}).get("filename") or "")).name
-            if name in files:
-                valid.append({**e, "filename": name})
-            else:
-                ignored.append(name)  # 候補外のファイル名（他 run の画像や架空の名前）は採用対象にしない
+            if not isinstance(e, dict):
+                ignored.append({"raw": str(e)[:80], "reason": "not_an_object"})
+                continue
+            raw_name = str(e.get("filename") or "")
+            name = Path(raw_name).name
+            if name not in files:
+                ignored.append({"raw": raw_name[:200], "reason": "not_a_candidate"})  # 他 run の画像や架空の名前は採用対象にしない
+                continue
+            if name in seen_names:
+                ignored.append({"raw": raw_name[:200], "reason": "duplicate"})  # 同じ候補の 2 件目以降は使わない
+                continue
+            seen_names.add(name)
+            valid.append({**e, "filename": name})
         judged = judge_auto_approval(valid, mode="conditional", score_threshold=score_threshold,
                                      ctr_threshold=ctr_threshold, similarity_max=similarity_max)
         for e in judged:
@@ -254,6 +278,8 @@ def run_selection(folder: Path, vol: int, *, generate: Callable[[Path, int, int,
         hint, axis = build_feedback(judged, best_of(all_judged), concept_hint, axis)
     else:
         reason = reason or "all_rejected"
+    if status == "quality_wait" and not reason:
+        reason = "all_rejected"
 
     record = {
         "status": status, "run_id": run_id, "attempt": len([h for h in history if h.get("run_id") == run_id]),
@@ -264,7 +290,7 @@ def run_selection(folder: Path, vol: int, *, generate: Callable[[Path, int, int,
     }
     if chosen is not None:
         cid = chosen["candidate_id"]
-        src = run_dir / cid.split("/", 1)[1]
+        src = candidate_paths[cid]
         _atomic_copy(src, folder / SELECTED_FILE)
         sel_hash = sha256_file(folder / SELECTED_FILE)
         if sel_hash != candidate_hashes.get(cid):
@@ -282,7 +308,7 @@ def adopt(folder: Path, candidate_id: str, *, by: str = "human") -> SelectionRes
     """直近 run の候補集合にある candidate_id を採用する（候補外・ハッシュ不一致は拒否）。"""
     folder = Path(folder)
     data = load(folder)
-    if not data:
+    if not data or not data.get("run_id"):
         raise ValueError("選定の記録がありません（先に thumbnail-select を実行してください）")
     if candidate_id not in (data.get("candidate_ids") or []):
         raise ValueError(f"候補外の画像は採用できません: {candidate_id}")
@@ -297,6 +323,8 @@ def adopt(folder: Path, candidate_id: str, *, by: str = "human") -> SelectionRes
         raise ValueError("候補ファイルが選定時から変わっています")
     _atomic_copy(src, folder / SELECTED_FILE)
     sel_hash = sha256_file(folder / SELECTED_FILE)
+    if sel_hash != (data.get("candidate_hashes") or {}).get(candidate_id):
+        raise ValueError("採用画像のコピーが候補と一致しません（照合中に変わりました）")
     data.update({"status": "selected", "selected_id": candidate_id, "selected_hash": sel_hash, "decided_by": by,
                  "decided_at": _now(), "selection_revision": int(data.get("selection_revision") or 0) + 1})
     data.setdefault("history", []).append({"run_id": data["run_id"], "at": _now(), "status": "adopted", "by": by,
