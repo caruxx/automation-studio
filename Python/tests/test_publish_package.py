@@ -134,6 +134,20 @@ class UploadTest(unittest.TestCase):
         self.assertEqual([s[1] for s in sessions], [30, 70])
         self.assertEqual(yt.insert_kwargs["part"], "snippet,status,localizations")
 
+    def test_single_chunk_completion_does_not_report_session(self):
+        yt = FakeYouTube(FakeRequest([]))  # 最初の next_chunk で完了
+        sessions = []
+        res = pub.upload(yt, self._req(), on_session=lambda u, o: sessions.append(u) or (_ for _ in ()).throw(RuntimeError("vps down")),
+                         media_factory=lambda *a, **k: object())
+        self.assertEqual(res.video_id, "vid1")
+        self.assertEqual(sessions, [])  # 完了後に報告の失敗で video_id を捨てない
+        # 状態照会: 完了 / 未完了
+        yt = FakeYouTube(FakeRequest([]))
+        self.assertEqual(pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, media_factory=lambda *a, **k: object())[0], "complete")
+        req = FakeRequest([0.4]); yt = FakeYouTube(req)
+        kind, off = pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, media_factory=lambda *a, **k: object())
+        self.assertEqual((kind, off), ("incomplete", 40))
+
     def test_retryable_and_unknown(self):
         yt = FakeYouTube(FakeRequest([0.5], fail=(2, _http_error(503))))
         with self.assertRaises(pub.RetryableUploadError):
@@ -188,6 +202,7 @@ class RealHttpRequestResumeTest(unittest.TestCase):
             video = root / "v.mp4"; video.write_bytes(b"x" * 1000)
             http = HttpMockSequence([
                 ({"status": "308", "range": "0-499"}, ""),            # 状態照会: 500 バイトまで受信済み
+                ({"status": "308", "range": "0-749"}, ""),            # 続きのチャンクを送る（まだ途中）
                 ({"status": "200"}, json.dumps({"id": "vidResumed"})),  # 残りを送って完了
             ])
             media = MediaFileUpload(str(video), mimetype="video/mp4", resumable=True, chunksize=256 * 1024)
@@ -212,7 +227,7 @@ class RealHttpRequestResumeTest(unittest.TestCase):
             self.assertEqual(res.video_id, "vidResumed")
             self.assertEqual(calls[0][0], "https://upload.example/session/9")
             self.assertTrue(calls[0][2])  # 最初の呼び出しは状態照会（_in_error_state）
-            self.assertEqual(sessions[0], ("https://upload.example/session/9", 500))  # 照会で offset が 500 に補正される
+            self.assertEqual(sessions[0], ("https://upload.example/session/9", 750))  # 照会で offset が補正され、続きを送った位置を報告する
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

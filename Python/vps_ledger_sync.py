@@ -286,11 +286,12 @@ def _request_strict(method: str, path: str, *, payload: Optional[dict[str, Any]]
     return result if isinstance(result, dict) else {}
 
 
-def allocate_vol() -> Optional[dict[str, Any]]:
-    """Mac の vol_create 用: VPS で次の vol 番号と公開枠を採番する。VPS 未設定なら None（従来の採番）。"""
+def allocate_vol(channel_key: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Mac の vol_create 用: VPS で次の vol 番号と公開枠を採番する。VPS 未設定なら None（従来の採番）。
+    channel_key を渡さないときは環境（APP_CHANNEL_FOLDER）/ アクティブ設定から解決する。"""
     if not enabled():
         return None
-    channel_key = resolve_channel_key()
+    channel_key = channel_key or resolve_channel_key()
     if channel_key is None:
         raise LedgerConfigError("channels.json からチャンネル（channel_key）を解決できません")
     data = _request_strict("POST", "/api/worker/vols/allocate", payload={"channel_key": channel_key})
@@ -298,6 +299,15 @@ def allocate_vol() -> Optional[dict[str, Any]]:
         raise LedgerUnavailable("allocate の応答に vol_number がありません")
     _VOL_CACHE[(channel_key, int(data["vol_number"]))] = int(data["id"]) if isinstance(data.get("id"), int) else _VOL_CACHE.get((channel_key, int(data["vol_number"])))
     return data
+
+
+def upload_discard(vol: int, input_hash: str, begin_token: Optional[str]) -> Optional[dict[str, Any]]:
+    """状態照会で未完了と確認したセッションを捨て、新規送信（insert）に戻す。"""
+    vol_id = ensure_vol(vol)
+    if vol_id is None:
+        raise LedgerUnavailable("vol を VPS で解決できません")
+    return _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/discard",
+                           payload={"input_hash": input_hash, "begin_token": begin_token})
 
 
 def upload_failed(vol: int, input_hash: str, error: str) -> bool:

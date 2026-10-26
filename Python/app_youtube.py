@@ -1032,6 +1032,42 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             if mode == "resume" and begin.get("session_ref"):
                 resume = {"session_uri": begin["session_ref"], "offset": int(begin.get("offset") or 0)}
                 print(f" 前回のセッションから再開します（offset={resume['offset']}）", flush=True)
+                if begin.get("publish_at_changed"):
+                    # 予約が変わっている: 送信済みかもしれないので先に状態だけ照会する（結果不明のまま INSERT しない）
+                    probe_req = _pub.UploadRequest(video_path=video_file, title=title, description=description, tags=list(tags or []))
+                    try:
+                        kind, payload_obj = _pub.query_session(youtube, probe_req, resume)
+                    except _pub.RetryableUploadError as e:
+                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会に失敗: {e}", flush=True)
+                        sys.exit(EXIT_RETRYABLE)
+                    except _pub.UploadResultUnknown as e:
+                        print(f"\n[UPLOAD_RESULT_UNKNOWN] {e}", flush=True)
+                        _ledger.upload_unknown(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", str(e)))
+                        sys.exit(1)
+                    if kind == "complete":
+                        video_id = payload_obj["id"]
+                        new_at = str(begin.get("publish_at") or "").replace("+00:00", "")
+                        if new_at and not new_at.endswith("Z"):
+                            new_at += "Z"
+                        print(f" 前回の送信は完了していました (video_id={video_id})。予約を {new_at or 'なし'} に更新します", flush=True)
+                        if new_at:
+                            _pub.update_publish_at(youtube, video_id, new_at)
+                        _ledger.upload_result(vol_num, input_hash, video_id, "private", new_at or None)
+                        _write_marker(folder, video_id, title[:100], "private", new_at or None, s, localizations, note="resumed-complete")
+                        if thumbnail:
+                            try:
+                                _pub.set_thumbnail(youtube, video_id, thumbnail, execute=execute_youtube)
+                            except Exception as e:
+                                print(f"  警告: サムネイル設定に失敗しました（動画は投稿済み video_id={video_id}）: {e}", flush=True)
+                        return video_id
+                    print(f" 前回の送信は未完了（offset={payload_obj}）。予約が変わったのでセッションを捨てて新規送信します", flush=True)
+                    try:
+                        begin = _ledger.upload_discard(vol_num, input_hash, begin_token)
+                    except (_ledger.LedgerHttpError, _ledger.LedgerUnavailable) as e:
+                        print(f"\n[VPS_UNAVAILABLE] セッション破棄を VPS に記録できません: {e}", flush=True)
+                        sys.exit(EXIT_RETRYABLE)
+                    begin_token = begin.get("begin_token") or begin_token
+                    resume = None
             vps_publish_at = begin.get("publish_at")
             if vps_publish_at:
                 # VPS の予約時刻（naive UTC）を正本にする。フォルダ名の日付は使わない

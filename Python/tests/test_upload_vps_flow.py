@@ -33,6 +33,8 @@ class FakeLedger:
     def upload_result(self, vol, h, vid, privacy, publish_at): self.calls.append(("result", vid, privacy, publish_at)); return True
     def upload_unknown(self, vol, h, err): self.calls.append(("unknown", err)); return True
     def upload_failed(self, vol, h, err): self.calls.append(("failed", err)); return True
+    discard_response = None
+    def upload_discard(self, vol, h, token): self.calls.append(("discard", token)); return self.discard_response
     def enabled(self): return self.begin is not None
     LedgerUnavailable = vls.LedgerUnavailable
     LedgerHttpError = vls.LedgerHttpError
@@ -132,6 +134,33 @@ class UploadVpsFlowTest(unittest.TestCase):
         with patch.object(pub, "verify_video", return_value={"privacy_status": "private", "publish_at": "2026-12-24T03:00:00Z"}):
             self._run(ledger, fake_upload)
         self.assertEqual(ledger.calls[-1], ("result", "vidR", "private", "2026-12-24T03:00:00Z"))  # セッション開始時の値を正とする
+
+    def test_resume_with_changed_publish_at_probes_first(self):
+        base = {"mode": "resume", "upload_id": 3, "state": "uploading", "publish_at": "2026-12-26T03:00:00", "publish_at_changed": True,
+                "session_ref": "https://upload.example/old", "offset": 50, "begin_token": "t"}
+        # 完了していた: INSERT せず予約を更新して result を記録
+        ledger = FakeLedger(dict(base))
+        updated = []
+        with patch.object(pub, "query_session", return_value=("complete", {"id": "vidDone"})), \
+             patch.object(pub, "update_publish_at", lambda yt, vid, at: updated.append((vid, at))):
+            vid = self._run(ledger, lambda *a, **k: self.fail("must not upload"))
+        self.assertEqual(vid, "vidDone")
+        self.assertEqual(updated, [("vidDone", "2026-12-26T03:00:00Z")])
+        self.assertEqual(ledger.calls[-1], ("result", "vidDone", "private", "2026-12-26T03:00:00Z"))
+        self.assertTrue((self.folder / "youtube_upload.json").exists())
+        # 未完了: discard してから新規送信
+        ledger = FakeLedger(dict(base))
+        ledger.discard_response = {"mode": "insert", "upload_id": 3, "state": "pending", "publish_at": "2026-12-26T03:00:00", "begin_token": "t2"}
+        seen = {}
+
+        def fake_upload(youtube, req, **kw):
+            seen["resume"] = kw.get("resume"); seen["publish_at"] = req.publish_at
+            return pub.UploadResult(video_id="vidNew", url="u", privacy="private", publish_at=req.publish_at, thumbnail_set=False, elapsed_sec=1.0)
+        with patch.object(pub, "query_session", return_value=("incomplete", 50)):
+            self.assertEqual(self._run(ledger, fake_upload), "vidNew")
+        self.assertIsNone(seen["resume"])
+        self.assertEqual(seen["publish_at"], "2026-12-26T03:00:00Z")
+        self.assertIn(("discard", "t"), ledger.calls)
 
     def test_config_error_exits_1_not_retry(self):
         with self.assertRaises(SystemExit) as cm:

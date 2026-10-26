@@ -70,30 +70,35 @@ class MacSchedulerStage3Test(unittest.TestCase):
         ch = Path(tempfile.mkdtemp(prefix="vc_"))
         try:
             (ch / "4_test_260101").mkdir()
+            seen = {}
             fake = type("L", (), {"enabled": staticmethod(lambda: True),
-                                  "allocate_vol": staticmethod(lambda: {"id": 9, "vol_number": 5, "publish_date": "2026-12-24"}),
+                                  "allocate_vol": staticmethod(lambda channel_key=None: seen.setdefault("key", channel_key) and {"id": 9, "vol_number": 5, "publish_date": "2026-12-24"}),
+                                  "resolve_channel_key": staticmethod(lambda: "from-env"),
                                   "push_context": staticmethod(lambda vol, folder: None)})
             with patch.dict(sys.modules, {"vps_ledger_sync": fake}), patch.object(studio, "get_file_prefix", return_value="test"):
                 vol, err = studio._allocate_next_vol(ch, "edm", "EDM")
             self.assertEqual((vol, err), (5, ""))
+            self.assertEqual(seen["key"], "edm")  # ジョブのチャンネルで採番（アクティブチャンネルと混線しない）
             self.assertTrue((ch / "5_test_261224").is_dir())  # VPS の公開日でフォルダを作る
-            # 再実行: 既存フォルダを使う
+            # 同じ番号のフォルダが既にある / 番号が既存以下 → 作らず error（古いフォルダに新しい vol を走らせない）
             with patch.dict(sys.modules, {"vps_ledger_sync": fake}), patch.object(studio, "get_file_prefix", return_value="test"):
-                self.assertEqual(studio._allocate_next_vol(ch, "edm", "EDM"), (5, ""))
-            # VPS の採番が Mac の既存より小さく、該当フォルダも無ければ作らず error
+                vol, err = studio._allocate_next_vol(ch, "edm", "EDM")
+            self.assertIsNone(vol); self.assertIn("既にあります", err)
             bad = type("L", (), {"enabled": staticmethod(lambda: True),
-                                 "allocate_vol": staticmethod(lambda: {"id": 1, "vol_number": 3, "publish_date": "2026-12-25"}),
+                                 "allocate_vol": staticmethod(lambda channel_key=None: {"id": 1, "vol_number": 3, "publish_date": "2026-12-25"}),
+                                 "resolve_channel_key": staticmethod(lambda: None),
                                  "push_context": staticmethod(lambda vol, folder: None)})
             with patch.dict(sys.modules, {"vps_ledger_sync": bad}):
                 vol, err = studio._allocate_next_vol(ch, "edm", "EDM")
-            self.assertIsNone(vol) and self.assertIn("食い違", err)
+            self.assertIsNone(vol)
             self.assertFalse((ch / "3_test_261225").exists())
             # VPS 未設定: 従来どおり最大 + 1（フォルダは作らない）
             legacy = type("L", (), {"enabled": staticmethod(lambda: False), "allocate_vol": staticmethod(lambda: None)})
             with patch.dict(sys.modules, {"vps_ledger_sync": legacy}):
                 self.assertEqual(studio._allocate_next_vol(ch, "edm", "EDM"), (6, ""))
             # VPS 到達不能: 採番しない（二重起票しない）
-            down = type("L", (), {"enabled": staticmethod(lambda: True), "allocate_vol": staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("down")))})
+            down = type("L", (), {"enabled": staticmethod(lambda: True), "resolve_channel_key": staticmethod(lambda: "edm"),
+                                  "allocate_vol": staticmethod(lambda channel_key=None: (_ for _ in ()).throw(RuntimeError("down")))})
             with patch.dict(sys.modules, {"vps_ledger_sync": down}):
                 vol, err = studio._allocate_next_vol(ch, "edm", "EDM")
             self.assertIsNone(vol)

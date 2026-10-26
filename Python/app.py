@@ -7113,25 +7113,36 @@ def _schedule_resume(parent_payload: dict, from_stage: str, attempt: int) -> boo
 def _allocate_next_vol(ch_dir: Path, ch_id: Optional[str], ch_name: Optional[str]) -> tuple:
     """次の vol 番号を決め、VPS が設定されていれば公開日付きのフォルダも作る。Returns (vol or None, error)。
 
-    - VPS あり: allocate の vol_number / publish_date を使う。同番号のフォルダが既にあればそれを使う（再実行）。
-      番号が既存フォルダより小さい（台帳と Mac のずれ）場合は作らず error（人が照合する）。
+    - VPS あり: allocate の vol_number / publish_date を使う。同番号のフォルダが既にある、または番号が既存フォルダ以下
+      （台帳と Mac のずれ）なら作らず error（人が照合する。古いフォルダに新しい vol を走らせない）。
     - VPS なし: 従来どおり最大番号 + 1（フォルダは pipeline の plan 工程が作る）。"""
     max_n = 0
     for d in ch_dir.iterdir():
         m = re.match(r"^(\d+)_", d.name)
         if m: max_n = max(max_n, int(m.group(1)))
+    # ジョブのチャンネルを明示して VPS を呼ぶ（親プロセスのアクティブチャンネルと混線させない）
+    saved_env = os.environ.get("APP_CHANNEL_FOLDER")
+    os.environ["APP_CHANNEL_FOLDER"] = str(ch_dir)
     try:
-        import vps_ledger_sync as _vls
-        alloc = _vls.allocate_vol() if _vls.enabled() else None
-    except Exception as e:
-        return None, f"VPS の採番に失敗: {e}"
-    if alloc is None:
-        return max_n + 1, ""
-    vol = int(alloc["vol_number"])
-    if vol <= max_n and not any(re.match(rf"^{vol}_", d.name) for d in ch_dir.iterdir()):
-        return None, f"VPS の採番 {vol} が Mac の既存フォルダ（最大 {max_n}）と食い違います。台帳とフォルダを照合してください"
-    existing = next((d for d in ch_dir.iterdir() if d.is_dir() and re.match(rf"^{vol}_", d.name)), None)
-    if existing is None:
+        try:
+            import vps_ledger_sync as _vls
+            if _vls.enabled():
+                key = (ch_id or "").strip() or _vls.resolve_channel_key()
+                if not key:
+                    return None, "VPS の channel_key を解決できません（channels.json の folder と一致しません）"
+                alloc = _vls.allocate_vol(channel_key=key)
+            else:
+                alloc = None
+        except Exception as e:
+            return None, f"VPS の採番に失敗: {e}"
+        if alloc is None:
+            return max_n + 1, ""
+        vol = int(alloc["vol_number"])
+        existing = next((d for d in ch_dir.iterdir() if d.is_dir() and re.match(rf"^{vol}_", d.name)), None)
+        if existing is not None or vol <= max_n:
+            # 台帳と Mac のフォルダがずれている（VPS 未登録のフォルダが残っている等）。古いフォルダに新しい vol を走らせない
+            return None, (f"VPS の採番 {vol} に対応するフォルダ {existing.name if existing else ''} が既にあります"
+                          f"（Mac の最大 {max_n}）。台帳とフォルダを照合してください")
         pd = str(alloc.get("publish_date") or "")
         try:
             date_str = datetime.strptime(pd, "%Y-%m-%d").strftime("%y%m%d")
@@ -7141,11 +7152,15 @@ def _allocate_next_vol(ch_dir: Path, ch_id: Optional[str], ch_name: Optional[str
         new_dir = ch_dir / f"{vol}_{prefix}_{date_str}"
         new_dir.mkdir(exist_ok=True)
         try:
-            import vps_ledger_sync as _vls
             _vls.push_context(vol, new_dir)  # publish_date は VPS 側が割り当て済みなので上書きされない
         except Exception as e:
             print(f"[ledger-sync] vol 作成同期失敗: {e}")
-    return vol, ""
+        return vol, ""
+    finally:
+        if saved_env is None:
+            os.environ.pop("APP_CHANNEL_FOLDER", None)
+        else:
+            os.environ["APP_CHANNEL_FOLDER"] = saved_env
 
 
 async def _job_vol_create(job: dict):

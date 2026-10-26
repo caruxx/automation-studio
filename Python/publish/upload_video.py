@@ -134,7 +134,9 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
             status_obj, response = request.next_chunk()
             uri = getattr(request, "resumable_uri", None)
             offset = int(getattr(request, "resumable_progress", 0) or 0)
-            if uri and on_session and (uri != last_uri or status_obj is not None):
+            # 送信が完了した後（response あり）はセッション報告を呼ばない（1 チャンクで完了する小さな動画で、
+            # 報告の失敗を理由に取得済みの video_id を捨てない）
+            if response is None and uri and on_session and (uri != last_uri or status_obj is not None):
                 on_session(uri, offset)
                 last_uri = uri
             if status_obj is not None and progress:
@@ -170,6 +172,41 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
     return UploadResult(video_id=video_id, url=f"https://youtu.be/{video_id}", privacy=body["status"]["privacyStatus"],
                         publish_at=body["status"].get("publishAt"), thumbnail_set=False,
                         elapsed_sec=time.time() - started)
+
+
+def query_session(youtube, req: UploadRequest, resume: dict, *, chunk_size: int = DEFAULT_CHUNK,
+                  media_factory: Callable[..., Any] = MediaFileUpload) -> tuple[str, Any]:
+    """保存したセッションの状態だけを照会する（送信はしない）。
+    Returns ("complete", response) か ("incomplete", offset)。セッション失効（404 / 410）は UploadResultUnknown。"""
+    body, parts = build_body(req)
+    media = media_factory(str(req.video_path), mimetype="video/mp4", resumable=True, chunksize=chunk_size)
+    request = youtube.videos().insert(part=",".join(parts), body=body, media_body=media,
+                                      notifySubscribers=bool(req.notify_subscribers))
+    request.resumable_uri = resume["session_uri"]
+    request.resumable_progress = int(resume.get("offset") or 0)
+    request._in_error_state = True
+    try:
+        status_obj, response = request.next_chunk()
+    except HttpError as exc:
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        if status in (404, 410):
+            raise UploadResultUnknown(redact_urls(f"resumable session expired (HTTP {status})")) from exc
+        if is_retryable_http_error(exc):
+            raise RetryableUploadError(f"HTTP {status}", status=status) from exc
+        raise
+    except Exception as exc:
+        raise RetryableUploadError(f"{type(exc).__name__}: {exc}", status=None) from exc
+    if response is not None:
+        return "complete", response
+    return "incomplete", int(getattr(request, "resumable_progress", 0) or 0)
+
+
+def update_publish_at(youtube, video_id: str, publish_at: Optional[str]) -> None:
+    """既存動画の予約時刻を変更する（private + publishAt）。"""
+    body = {"id": video_id, "status": {"privacyStatus": "private"}}
+    if publish_at:
+        body["status"]["publishAt"] = publish_at
+    youtube.videos().update(part="status", body=body).execute()
 
 
 def set_thumbnail(youtube, video_id: str, thumbnail_path: Path, *, media_factory: Callable[..., Any] = MediaFileUpload,
