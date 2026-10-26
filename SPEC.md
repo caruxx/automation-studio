@@ -414,7 +414,7 @@ OAuth 認証 → MP4/サムネ/説明/タグ/タイトルを**保存ファイル
 - 公開枠は **1 日 1 枠 / チャンネル**。VPS の `publish_schedules`（timezone / publish_time / produce_lead_days /
   late_policy / enabled / revision）で決め、`publish_verify`（VPS の tick）が `private + 未来の publishAt` と、
   到来後の `public` を YouTube から読み戻して記録する。期限超過は alert（配送は段階 3a の Chatwork）。
-- Mac の APScheduler は補助ジョブ（digest / token_health 等）だけを持つ。`vol_create` / `spot_create` は登録せず、
+- Mac の APScheduler の `vol_create` は VPS の `allocate`（採番 + 公開枠）を受けてフォルダを作り pipeline を実行する。
   公開ゲートと auto_resume は撤去。CLI: `studio.py schedule-status [--vol N]`、`schedule-put`（管理者 JWT を
   環境変数 `APP_VPS_ADMIN_TOKEN` で）。
 
