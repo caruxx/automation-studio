@@ -17,7 +17,7 @@
 6. **鮮度**: `expires_at = fetched_at + 24h`。期限内なら `insights-refresh` は再取得しない（`--force` で再取得）。期限切れの VidIQ 行はメタ生成のヒントから外す。
 7. **保存先**: VPS の `insights` テーブル（`source='vidiq'`）が正本。VPS 連携が無効な Mac では、同じ形のローカルキャッシュをヒントに使う。
 8. **劣化（`vidiq_degraded`）**: VidIQ が未設定・期限切れ・取得失敗のときもメタ生成と投稿は止めない。メタに `insights_degraded=true` と `degraded_reason` を記録する。info 通知は「チャンネルで VidIQ を設定済みなのに使えない」ときだけ出す（未設定のチャンネルで毎回通知しない）。VPS 連携時は VPS がメタ受領時に通知を積み、Mac は VPS 無効時だけ自分で通知する（二重通知しない）。
-9. **メタの契約**: `{title, description, tags, evidence_ids, insights_degraded, degraded_reason}`。`evidence_ids` は「プロンプトに渡した VidIQ の根拠」の id（LLM が実際に使ったかは判定しない）。Mac は `youtube_meta.json` に保存する。このファイルは stage_state の出力に含めない（取得時刻の違いで後段を失効させない）。
+9. **メタの契約**: `{title, description, tags, evidence_ids, insights_degraded, degraded_reason}`。`degraded_reason` は `not_configured / not_fetched / expired / fetch_failed / unavailable` のどれか。`evidence_ids` は「プロンプトに渡した VidIQ の根拠」の id（LLM が実際に使ったかは判定しない）。Mac は `youtube_meta.json` に保存する。このファイルは stage_state の出力に含めない（取得時刻の違いで後段を失効させない）。
 
 ## Global Constraints
 
@@ -36,7 +36,10 @@
   - `POST /api/worker/insights/vidiq`: `{channel_id, fetched_at, ttl_hours(1..72, 既定 24), items[1..30]: {category, insight(<=300), video_ids[], metrics{}, evidence_ids[1..]}}`。チャンネルの権限確認は既存の insights と同じ。同じチャンネルの既存 `source='vidiq'` 行を消して入れ替える（1 トランザクション）。evidence_ids が空の item は 422。
   - `GET /api/worker/vols/{id}`: `insights_vidiq: {fresh, fetched_at, expires_at, evidence_ids}` を追加。
   - `VolMeta`: `evidence_ids: list[str] = []`、`insights_degraded: bool = False`、`degraded_reason: str | None = None` を任意項目で追加（旧クライアント互換）。
-  - `report_vol_meta`: `insights_degraded` かつ理由が `not_configured` 以外なら info 通知を積む（event_id は `vidiq-degraded:<vol_id>:<理由>`）。
+  - `report_vol_meta`: `insights_degraded` かつ理由が `not_configured` / `not_fetched` 以外なら info 通知を積む（event_id は `vidiq-degraded:<vol_id>:<理由>`）。VPS はチャンネルの VidIQ 設定を知らないため、一度も取り込んでいない（`not_fetched`）ときは通知しない。
+  - 劣化の記録が契約と合わなくてもメタは 422 にしない: 未知の理由は `unavailable`、劣化なしの理由は消す、劣化ありの evidence は空、evidence は 50 件まで（Global Constraint 4）。
+  - 取り込みはチャンネルを `channel_key` で指定する（Mac が持つのは channel_key）。期限切れになる fetched_at は 422。
+  - 根拠 id は、ヒント本文に全文が入った VidIQ 行だけから集める。期限内の行があってもヒントに入らなければ `fresh=false`、理由 `unavailable`。
 - `app/api/insights.py`: 一覧の source 型に `vidiq` を足す（手動作成では選べないまま）。
 - `worker/client.py` `run_meta`: `insights_vidiq` を見て、メタに `evidence_ids` / `insights_degraded` / `degraded_reason` を入れて送る。
 - テスト: 取り込みの入れ替え、権限、evidence 空の拒否、期限切れのヒント除外、vol 応答の `insights_vidiq`、メタの新項目と互換、劣化時の通知 1 件、worker のメタ送信。
@@ -57,7 +60,7 @@
 ## Task 3: Mac — メタ生成への注入と劣化の記録
 
 - `claude_proposer.py`: `propose_titles` / `propose_description` / `propose_tags` が `insights_hint` を受け取り、ベンチマーク節の後ろに足す（マスタープロンプトの書式は変えない）。
-- `app_pipeline.step_meta`: VPS 連携時は vol 応答の `insights_hint` と `insights_vidiq`、無効時はローカルキャッシュ（期限内だけ）からヒントと evidence を作る。`youtube_meta.json` に契約どおり保存し、`push_meta` で新項目も送る。劣化の通知は前提 8 のとおり。
+- `app_pipeline.step_meta`: VPS 連携時は vol 応答の `insights_hint` と `insights_vidiq`、無効時はローカルキャッシュ（期限内だけ）からヒントと evidence を作る。チャンネルで VidIQ を設定済み（`vidiq_keywords` か `vidiq_requests`）なのに VPS が `not_fetched` を返すときは `unavailable` として記録し、通知が出るようにする。`youtube_meta.json` に契約どおり保存し、`push_meta` で新項目も送る。劣化の通知は前提 8 のとおり。
 - テスト: 新鮮な VidIQ がプロンプトに入り evidence が記録される、期限切れ・未設定で劣化として完走する、通知の出し分け、VPS 生成メタ採用経路が壊れていない。
 
 ## Task 4: 文書

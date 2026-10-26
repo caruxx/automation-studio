@@ -1648,6 +1648,32 @@
         "scope": "global",
         "max_parallel": 1
       }
+    },
+    "insights-refresh": {
+      "aliases": [
+        "VidIQ で分析して",
+        "VidIQ を取り込んで",
+        "insights-refresh"
+      ],
+      "description": "VidIQ MCP から分析を取り直し、VPS の insights（source=vidiq、24 時間有効）へ保存する。期限内は再取得しない（--force で再取得、クレジットを消費）",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "insights-refresh",
+          "--channel",
+          "{channel}",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "外部の VidIQ MCP と VPS の worker API を呼ぶため CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 1
+      }
     }
   }
 }

@@ -392,6 +392,11 @@ def post_notify(events: list[dict[str, Any]]) -> dict[str, Any]:
     return _request_strict("POST", "/api/worker/notify", payload={"events": payload}, timeout=5)
 
 
+def push_vidiq_insights(payload: dict[str, Any]) -> dict[str, Any]:
+    """段階 6: VidIQ の取り込み結果を VPS の insights（source='vidiq'）へ送る。失敗は例外（呼び出し側が報告する）。"""
+    return _request_strict("POST", "/api/worker/insights/vidiq", payload=payload)
+
+
 def fetch_vol(vol: int) -> Optional[dict]:
     vol_id = ensure_vol(vol)
     if vol_id is None:

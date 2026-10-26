@@ -521,6 +521,54 @@ def run_thumbnail_select(args: argparse.Namespace) -> int:
     return proc.returncode if proc.returncode in (int(ExitCode.SELECTION_PENDING),) else int(ExitCode.FAIL)
 
 
+def run_insights_refresh(args: argparse.Namespace) -> int:
+    """insights-refresh: VidIQ MCP から分析を取り直し、ローカルキャッシュと VPS の insights に保存する（段階 6）。
+    終了コード: 0 取得済み・期限内 / 1 取得または VPS 送信の失敗 / 2 使い方。API キーは出力しない。"""
+    import vidiq_adapter as _va
+    from exit_codes import ExitCode
+    key = (args.channel or "").strip()
+    if not key or key == "all":
+        emit({"ok": False, "intent": "insights-refresh", "error": "usage", "message": "--channel <id> が必要です"})
+        return int(ExitCode.USAGE)
+    cfg = {}
+    for name in ("vidiq_keywords", "vidiq_requests"):
+        try:
+            cfg[name] = settings_service.config_get(f"channel.{name}", channel_id=key).get("value") or []
+        except Exception as exc:
+            emit({"ok": False, "intent": "insights-refresh", "error": "config", "message": f"{type(exc).__name__}"})
+            return int(ExitCode.USAGE)
+    max_calls = args.max_calls if args.max_calls is not None else _va.DEFAULT_MAX_CALLS
+    if max_calls < 1 or max_calls > 10:
+        emit({"ok": False, "intent": "insights-refresh", "error": "usage", "message": "--max-calls は 1〜10"})
+        return int(ExitCode.USAGE)
+    if getattr(args, "dry_run", False):
+        cache = _va.load_cache(key)
+        fresh, why = _va.freshness(cache)
+        emit({"ok": True, "intent": "insights-refresh", "dry_run": True, "channel": key, "configured": _va.is_configured(cfg),
+              "fresh": fresh, "reason": why, "expires_at": cache.get("expires_at"), "max_calls": max_calls,
+              "endpoint": _va.endpoint()})
+        return 0
+    data = _va.refresh(key, cfg, max_calls=max_calls, force=bool(args.force))
+    out = {"intent": "insights-refresh", "channel": key, **_va.public_view(data)}
+    if not data.get("ok"):
+        emit(out)
+        return int(ExitCode.FAIL)
+    try:
+        import vps_ledger_sync as _vls
+        if _vls.enabled():
+            res = _vls.push_vidiq_insights(_va.vps_payload(data))
+            out["vps"] = {"pushed": True, "inserted": res.get("inserted"), "expires_at": res.get("expires_at")}
+        else:
+            out["vps"] = {"pushed": False, "reason": "vps_not_configured"}
+    except Exception as exc:
+        out["vps"] = {"pushed": False, "reason": type(exc).__name__, "status": getattr(exc, "status", None)}
+        out["ok"] = False
+        emit(out)
+        return int(ExitCode.FAIL)
+    emit(out)
+    return 0
+
+
 def run_preflight(args: argparse.Namespace) -> int:
     """ffmpeg 専用構成の実行環境検査。欠けている項目を JSON で返す。"""
     try:
@@ -774,6 +822,8 @@ def main() -> int:
     parser.add_argument("--request-id", help="run の冪等キー（省略時は自動生成）")
     parser.add_argument("--intent", dest="run_intent", default="pipeline", help="run が VPS に発行する intent（既定 pipeline）")
     parser.add_argument("--state", help="run-status の一覧フィルタ")
+    parser.add_argument("--force", action="store_true", help="insights-refresh: 期限内でも VidIQ から取り直す（クレジットを消費）")
+    parser.add_argument("--max-calls", type=int, default=None, help="insights-refresh: 1 回の更新で呼ぶ VidIQ ツールの上限（既定 3、1〜10）")
     parser.add_argument("--adopt", help="thumbnail-select: 直近 run の候補 id を人が採用する（例: <run>/a2/a2_3.jpg）")
     parser.add_argument("--publish-time", help="schedule-put: 公開時刻 HH:MM（チャンネルの timezone）")
     parser.add_argument("--timezone", help="schedule-put: IANA タイムゾーン（既定 Asia/Tokyo）")
@@ -862,6 +912,9 @@ def main() -> int:
 
     if args.intent == "thumbnail-select":
         return run_thumbnail_select(args)
+
+    if args.intent == "insights-refresh":
+        return run_insights_refresh(args)
 
     if args.intent == "notify-flush":
         import notify as _notify

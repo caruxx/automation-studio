@@ -2282,6 +2282,32 @@
       },
       "default": "gpt-image-2",
       "category": "posting"
+    },
+    {
+      "key": "channel.vidiq_keywords",
+      "label_ja": "VidIQ で調べる語",
+      "description_ja": "insights-refresh で VidIQ の keyword_research に渡す語。1 語ごとに 1 回呼び出し、クレジットを消費します（既定の上限 3 回）",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "vidiq_keywords"
+      },
+      "type": "array",
+      "category": "posting"
+    },
+    {
+      "key": "channel.vidiq_requests",
+      "label_ja": "VidIQ のツール呼び出し",
+      "description_ja": "insights-refresh で呼ぶ VidIQ のツールと引数（[{\"tool\": ..., \"arguments\": {...}, \"category\": ...}]）。設定すると vidiq_keywords より優先します。ツール一覧にない名前や必須引数の欠けた呼び出しは行いません",
+      "tier": "advanced",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "vidiq_requests"
+      },
+      "type": "array",
+      "category": "posting"
     }
   ]
 }
