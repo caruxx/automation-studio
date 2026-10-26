@@ -174,39 +174,44 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
                         elapsed_sec=time.time() - started)
 
 
-def query_session(youtube, req: UploadRequest, resume: dict, *, chunk_size: int = DEFAULT_CHUNK,
-                  media_factory: Callable[..., Any] = MediaFileUpload) -> tuple[str, Any]:
-    """保存したセッションの状態だけを照会する（送信はしない）。
-    Returns ("complete", response) か ("incomplete", offset)。セッション失効（404 / 410）は UploadResultUnknown。"""
-    body, parts = build_body(req)
-    media = media_factory(str(req.video_path), mimetype="video/mp4", resumable=True, chunksize=chunk_size)
-    request = youtube.videos().insert(part=",".join(parts), body=body, media_body=media,
-                                      notifySubscribers=bool(req.notify_subscribers))
-    request.resumable_uri = resume["session_uri"]
-    request.resumable_progress = int(resume.get("offset") or 0)
-    request._in_error_state = True
+def query_session(youtube, req: UploadRequest, resume: dict, *, http=None, **_ignored) -> tuple[str, Any]:
+    """保存したセッションの状態だけを照会する。本体は送らない（Content-Range: bytes */size の空 PUT）。
+    Returns ("complete", response_json) か ("incomplete", offset)。セッション失効（404 / 410）は UploadResultUnknown。"""
+    import json as _json
+    size = Path(req.video_path).stat().st_size
+    transport = http or getattr(youtube, "_http", None)
+    if transport is None:
+        raise RuntimeError("query_session には認証済み http が必要です")
     try:
-        status_obj, response = request.next_chunk()
-    except HttpError as exc:
-        status = getattr(getattr(exc, "resp", None), "status", None)
-        if status in (404, 410):
-            raise UploadResultUnknown(redact_urls(f"resumable session expired (HTTP {status})")) from exc
-        if is_retryable_http_error(exc):
-            raise RetryableUploadError(f"HTTP {status}", status=status) from exc
-        raise
+        resp, content = transport.request(resume["session_uri"], method="PUT", body="",
+                                          headers={"Content-Range": f"bytes */{size}", "Content-Length": "0"})
     except Exception as exc:
         raise RetryableUploadError(f"{type(exc).__name__}: {exc}", status=None) from exc
-    if response is not None:
-        return "complete", response
-    return "incomplete", int(getattr(request, "resumable_progress", 0) or 0)
+    status = int(getattr(resp, "status", 0) or resp.get("status", 0))
+    if status in (200, 201):
+        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+        return "complete", _json.loads(text)
+    if status == 308:
+        rng = resp.get("range") or resp.get("Range") or ""
+        offset = int(rng.split("-")[-1]) + 1 if rng else 0
+        return "incomplete", offset
+    if status in (404, 410):
+        raise UploadResultUnknown(redact_urls(f"resumable session expired (HTTP {status})"))
+    if status in RETRYABLE_STATUS:
+        raise RetryableUploadError(f"HTTP {status}", status=status)
+    raise RuntimeError(f"unexpected status {status} from session query")
 
 
-def update_publish_at(youtube, video_id: str, publish_at: Optional[str]) -> None:
-    """既存動画の予約時刻を変更する（private + publishAt）。"""
-    body = {"id": video_id, "status": {"privacyStatus": "private"}}
+def update_publish_at(youtube, video_id: str, publish_at: Optional[str], req: UploadRequest) -> None:
+    """既存動画の予約時刻を変更する。status は投稿時の設定（AI 生成の申告・ライセンス等）を全部送り、publishAt だけ差し替える
+    （part=status の update は送らなかった項目が既定に戻るため）。"""
+    status = build_body(req)[0]["status"]
+    status["privacyStatus"] = "private"
     if publish_at:
-        body["status"]["publishAt"] = publish_at
-    youtube.videos().update(part="status", body=body).execute()
+        status["publishAt"] = publish_at
+    else:
+        status.pop("publishAt", None)
+    youtube.videos().update(part="status", body={"id": video_id, "status": status}).execute()
 
 
 def set_thumbnail(youtube, video_id: str, thumbnail_path: Path, *, media_factory: Callable[..., Any] = MediaFileUpload,

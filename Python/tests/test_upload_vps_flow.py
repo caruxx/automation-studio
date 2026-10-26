@@ -142,12 +142,21 @@ class UploadVpsFlowTest(unittest.TestCase):
         ledger = FakeLedger(dict(base))
         updated = []
         with patch.object(pub, "query_session", return_value=("complete", {"id": "vidDone"})), \
-             patch.object(pub, "update_publish_at", lambda yt, vid, at: updated.append((vid, at))):
+             patch.object(pub, "verify_video", return_value={"privacy_status": "private", "publish_at": "2026-12-20T03:00:00Z"}), \
+             patch.object(pub, "update_publish_at", lambda yt, vid, at, req: updated.append((vid, at, req.synthetic_media))):
             vid = self._run(ledger, lambda *a, **k: self.fail("must not upload"))
         self.assertEqual(vid, "vidDone")
-        self.assertEqual(updated, [("vidDone", "2026-12-26T03:00:00Z")])
+        self.assertEqual(updated[0][:2], ("vidDone", "2026-12-26T03:00:00Z"))
+        self.assertIsInstance(updated[0][2], bool)  # 投稿時の status 設定（merge_settings 由来）をそのまま渡す
         self.assertEqual(ledger.calls[-1], ("result", "vidDone", "private", "2026-12-26T03:00:00Z"))
         self.assertTrue((self.folder / "youtube_upload.json").exists())
+        # 既に公開されていたら非公開に戻さず published として記録
+        ledger = FakeLedger(dict(base))
+        with patch.object(pub, "query_session", return_value=("complete", {"id": "vidPub"})), \
+             patch.object(pub, "verify_video", return_value={"privacy_status": "public", "publish_at": "2026-12-20T03:00:00Z"}), \
+             patch.object(pub, "update_publish_at", side_effect=AssertionError("must not re-private")):
+            self.assertEqual(self._run(ledger, lambda *a, **k: self.fail("x")), "vidPub")
+        self.assertEqual(ledger.calls[-1], ("result", "vidPub", "public", "2026-12-20T03:00:00Z"))
         # 未完了: discard してから新規送信
         ledger = FakeLedger(dict(base))
         ledger.discard_response = {"mode": "insert", "upload_id": 3, "state": "pending", "publish_at": "2026-12-26T03:00:00", "begin_token": "t2"}

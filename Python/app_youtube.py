@@ -1019,6 +1019,15 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             print(f"\n[VPS_REJECTED] 投稿記録の開始が拒否されました: {e}", flush=True)
             sys.exit(1)
         begin_token = None
+        # 投稿設定（status を含む）は resume の予約更新でも使うので先に組む
+        full_req = _pub.UploadRequest(
+            video_path=video_file, title=title, description=description, tags=list(tags or []),
+            privacy=privacy, publish_at=schedule, category_id=str(s["category_id"]),
+            default_language=s["default_language"], default_audio_language=s["default_audio_language"],
+            made_for_kids=bool(s["made_for_kids"]), synthetic_media=bool(s["synthetic_media"]),
+            license=s["license"], embeddable=bool(s["embeddable"]), public_stats_viewable=bool(s["public_stats_viewable"]),
+            notify_subscribers=bool(s["notify_subscribers"]), localizations=localizations, thumbnail_path=thumbnail,
+        )
         if begin is not None:
             vps_mode = True
             mode = begin.get("mode")
@@ -1034,9 +1043,8 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                 print(f" 前回のセッションから再開します（offset={resume['offset']}）", flush=True)
                 if begin.get("publish_at_changed"):
                     # 予約が変わっている: 送信済みかもしれないので先に状態だけ照会する（結果不明のまま INSERT しない）
-                    probe_req = _pub.UploadRequest(video_path=video_file, title=title, description=description, tags=list(tags or []))
                     try:
-                        kind, payload_obj = _pub.query_session(youtube, probe_req, resume)
+                        kind, payload_obj = _pub.query_session(youtube, full_req, resume)
                     except _pub.RetryableUploadError as e:
                         print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会に失敗: {e}", flush=True)
                         sys.exit(EXIT_RETRYABLE)
@@ -1049,9 +1057,19 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                         new_at = str(begin.get("publish_at") or "").replace("+00:00", "")
                         if new_at and not new_at.endswith("Z"):
                             new_at += "Z"
+                        # 旧 publishAt を過ぎて既に公開されていれば、非公開に戻さず published として記録する
+                        current = None
+                        try:
+                            current = _pub.verify_video(youtube, video_id)
+                        except Exception as e:
+                            print(f"  警告: 状態の読み戻しに失敗: {e}", flush=True)
+                        if current and current.get("privacy_status") == "public":
+                            print(f" 前回の送信は完了し、既に公開されています (video_id={video_id})", flush=True)
+                            _ledger.upload_result(vol_num, input_hash, video_id, "public", current.get("publish_at"))
+                            _write_marker(folder, video_id, title[:100], "public", current.get("publish_at"), s, localizations, note="resumed-published")
+                            return video_id
                         print(f" 前回の送信は完了していました (video_id={video_id})。予約を {new_at or 'なし'} に更新します", flush=True)
-                        if new_at:
-                            _pub.update_publish_at(youtube, video_id, new_at)
+                        _pub.update_publish_at(youtube, video_id, new_at or None, full_req)
                         _ledger.upload_result(vol_num, input_hash, video_id, "private", new_at or None)
                         _write_marker(folder, video_id, title[:100], "private", new_at or None, s, localizations, note="resumed-complete")
                         if thumbnail:
@@ -1115,14 +1133,9 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                 # 誤検知より二重投稿防止を優先。読み取り失敗時は実アップロードを止める。
                 sys.exit(EXIT_RETRYABLE)
 
-        req = _pub.UploadRequest(
-            video_path=video_file, title=title, description=description, tags=list(tags or []),
-            privacy=privacy, publish_at=schedule, category_id=str(s["category_id"]),
-            default_language=s["default_language"], default_audio_language=s["default_audio_language"],
-            made_for_kids=bool(s["made_for_kids"]), synthetic_media=bool(s["synthetic_media"]),
-            license=s["license"], embeddable=bool(s["embeddable"]), public_stats_viewable=bool(s["public_stats_viewable"]),
-            notify_subscribers=bool(s["notify_subscribers"]), localizations=localizations, thumbnail_path=thumbnail,
-        )
+        req = full_req
+        req.publish_at = schedule
+        req.privacy = privacy
         chunk_size = 10 * 1024 * 1024
         print(f"\nアップロード開始... ({file_size_mb:.0f} MB / チャンク {chunk_size // 1024 // 1024}MB)")
         sys.stdout.flush()

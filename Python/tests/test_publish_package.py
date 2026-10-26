@@ -141,12 +141,45 @@ class UploadTest(unittest.TestCase):
                          media_factory=lambda *a, **k: object())
         self.assertEqual(res.video_id, "vid1")
         self.assertEqual(sessions, [])  # 完了後に報告の失敗で video_id を捨てない
-        # 状態照会: 完了 / 未完了
+        # 状態照会は本体を送らない空 PUT（Content-Range bytes */size）。完了 / 未完了 / 失効
+        sent = []
+
+        class H:
+            def __init__(self, status, body=b"", rng=None):
+                self.status, self.body, self.rng = status, body, rng
+            def request(self, uri, method=None, body=None, headers=None):
+                sent.append((uri, method, body, headers))
+                resp = {"status": str(self.status)}
+                if self.rng: resp["range"] = self.rng
+                return resp, self.body
         yt = FakeYouTube(FakeRequest([]))
-        self.assertEqual(pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, media_factory=lambda *a, **k: object())[0], "complete")
-        req = FakeRequest([0.4]); yt = FakeYouTube(req)
-        kind, off = pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, media_factory=lambda *a, **k: object())
-        self.assertEqual((kind, off), ("incomplete", 40))
+        kind, data = pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, http=H(200, b'{"id":"done1"}'))
+        self.assertEqual((kind, data["id"]), ("complete", "done1"))
+        self.assertEqual(sent[-1][1:3], ("PUT", ""))
+        self.assertEqual(sent[-1][3]["Content-Range"], "bytes */10")
+        self.assertEqual(pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, http=H(308, rng="0-4")), ("incomplete", 5))
+        with self.assertRaises(pub.UploadResultUnknown):
+            pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, http=H(410))
+        with self.assertRaises(pub.RetryableUploadError):
+            pub.query_session(yt, self._req(), {"session_uri": "https://u/s", "offset": 3}, http=H(503))
+        # 予約の更新は投稿時の status をすべて送る（AI 生成の申告などを落とさない）
+        class U:
+            def __init__(self): self.body = None
+            def videos(self_inner):
+                u = self_inner
+                class V:
+                    def update(self_v, part, body):
+                        u.body = (part, body)
+                        class C:
+                            def execute(self_c): return {}
+                        return C()
+                return V()
+        u = U()
+        req = self._req(synthetic_media=True, license="creativeCommon")
+        pub.update_publish_at(u, "vid1", "2026-10-01T03:00:00Z", req)
+        self.assertEqual(u.body[0], "status")
+        st = u.body[1]["status"]
+        self.assertEqual((st["privacyStatus"], st["publishAt"], st["containsSyntheticMedia"], st["license"]), ("private", "2026-10-01T03:00:00Z", True, "creativeCommon"))
 
     def test_retryable_and_unknown(self):
         yt = FakeYouTube(FakeRequest([0.5], fail=(2, _http_error(503))))
