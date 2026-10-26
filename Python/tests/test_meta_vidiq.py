@@ -253,6 +253,29 @@ class MetaVidiqEdgeTest(MetaVidiqTest):
         self.assertEqual((rec["insights_degraded"], rec["degraded_reason"], rec["generation_complete"]), (True, "expired", False))
         self.assertEqual(len(notes), 1)
 
+    def test_missing_old_file_still_records_and_notifies(self):
+        self._write_cache(datetime.now(timezone.utc) - timedelta(hours=30))  # 期限切れ、以前のタイトルファイルも無い
+
+        def failing(_cli, prompt, **_kw):
+            if '"titles"' in prompt:
+                raise RuntimeError("llm down")
+            return self._fake_run(_cli, prompt)
+        notes = []
+        ledger = FakeLedger(enabled=False)
+        with patch.object(ap, "_load_ledger_sync", return_value=ledger), \
+                patch.object(ap, "_load_dashboard_config", return_value=self.cfg), \
+                patch.object(ap, "_load_suno_config", return_value={}), \
+                patch.object(ap, "_vps_result_is_newer", return_value=False), \
+                patch.object(cp, "gather_context", return_value={"songs": ["A"], "song_count": 1}), \
+                patch.object(cp, "_run_claude", side_effect=failing), \
+                patch.object(cp, "_load_benchmark_analysis", return_value=None), \
+                patch("notify.notify", side_effect=lambda body, **kw: notes.append(kw)):
+            self.assertIs(ap.step_meta(5, self.folder, False), True)
+        rec = json.loads((self.folder / ap.META_RECORD_FILE).read_text(encoding="utf-8"))
+        self.assertEqual((rec["title"], rec["degraded_reason"], rec["generation_complete"]), ("", "expired", False))
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(ledger.pushed, [])  # 3 項目そろわないメタは VPS に送らない（従来どおり）
+
     def test_push_meta_payload_shape(self):
         import vps_ledger_sync as vls
         sent = []

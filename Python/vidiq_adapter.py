@@ -309,10 +309,15 @@ def plan_calls(tools: list[dict], channel_cfg: dict, max_calls: int = DEFAULT_MA
 # ─── 正規化 ───
 
 def _content_text(result: dict) -> str:
+    """text ブロックを連結する。中身の無いブロック（空白だけ、"" や null・{} などの空 JSON）は除く。"""
     parts = []
     for c in result.get("content") or []:
         if isinstance(c, dict) and c.get("type") == "text" and isinstance(c.get("text"), str):
-            parts.append(c["text"])
+            t = c["text"]
+            parsed = _parse_text_json(t)
+            if not t.strip() or (parsed is not _NOT_JSON and not _meaningful(parsed)):
+                continue
+            parts.append(t)
     return "\n".join(parts)
 
 
@@ -340,7 +345,7 @@ def _structured(result: dict, text: str) -> Any:
         return sc
     parsed = _parse_text_json(text)
     if parsed is not _NOT_JSON:
-        return parsed if _has_content(parsed) else _EMPTY
+        return parsed if _meaningful(parsed) else _EMPTY
     return None if text.strip() else _EMPTY
 
 
@@ -353,6 +358,15 @@ def _has_content(obj: Any) -> bool:
     if isinstance(obj, str):
         return bool(obj.strip())
     return obj is not None
+
+
+def _meaningful(obj: Any) -> bool:
+    """結果全体として中身があるか。数値や真偽値だけの結果（0、false など）は分析として扱わない。"""
+    if isinstance(obj, (dict, list)):
+        return _has_content(obj)
+    if isinstance(obj, str):
+        return bool(obj.strip())
+    return False
 
 
 def _walk_video_ids(obj: Any, out: list[str]) -> None:

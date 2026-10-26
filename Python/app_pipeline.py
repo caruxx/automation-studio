@@ -1997,14 +1997,16 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
                 print(f"  ✓ タグ: {len(tags)} 件")
         except Exception as e:
             print(f"  ⚠️ タグ: {e}")
-        try:
-            local_title = (folder / "youtube_title.txt").read_text(encoding="utf-8").strip()
-            local_description = (folder / "youtube_description.txt").read_text(encoding="utf-8").strip()
-            local_tags = [
-                line.strip()
-                for line in (folder / "youtube_tags.txt").read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
+        def _read_meta_file(name: str) -> str:
+            try:
+                return (folder / name).read_text(encoding="utf-8")
+            except OSError as e:
+                print(f"[ledger-sync] ローカルメタ読込失敗: {e}")
+                return ""
+        if True:  # 読めない項目は空として扱い、記録と通知は必ず行う（送信は 3 項目そろったときだけ）
+            local_title = _read_meta_file("youtube_title.txt").strip()
+            local_description = _read_meta_file("youtube_description.txt").strip()
+            local_tags = [line.strip() for line in _read_meta_file("youtube_tags.txt").splitlines() if line.strip()]
             complete = generated == {"title", "description", "tags"}
             if not complete:
                 # 一部または全部が今回生成できず以前のファイルを使う: 今回の根拠を古い中身に付けない。
@@ -2022,8 +2024,6 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
                     insights={k: rec[k] for k in ("evidence_ids", "insights_degraded", "degraded_reason")},
                 ))
             _notify_vidiq_degraded(vol, vidiq, ledger_sync, vps_received=delivered)  # VidIQ が使えなかった通知は生成の成否と無関係
-        except OSError as e:
-            print(f"[ledger-sync] ローカルメタ読込失敗: {e}")
         print(f"\n {STEP_LABELS['meta']} 完了")
         return True
 

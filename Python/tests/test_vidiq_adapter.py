@@ -329,7 +329,11 @@ class AdapterHardeningTest(unittest.TestCase):
         for empty in ({"structuredContent": {}, "content": []}, {"structuredContent": [], "content": []},
                       {"content": [{"type": "text", "text": "{}"}]}, {"content": [{"type": "text", "text": '{"a": [], "b": ""}'}]}):
             self.assertIsNone(va.normalize(call, empty))  # 中身の無い結果からは学びも根拠も作らない
-        for blank in ('""', '"   "', "null", "[[], {}]"):
+        multi = {"content": [{"type": "text", "text": '""'}, {"type": "text", "text": '"   "'}, {"type": "text", "text": " "}]}
+        self.assertIsNone(va.normalize(call, multi))  # 空のブロックを連結しても中身にならない
+        mixed = va.normalize(call, {"content": [{"type": "text", "text": '""'}, {"type": "text", "text": "real note"}]})
+        self.assertTrue(mixed["insight"].endswith("real note"))
+        for blank in ('""', '"   "', "null", "[[], {}]", "0", "false", "3.5"):
             self.assertIsNone(va.normalize(call, {"content": [{"type": "text", "text": blank}]}), blank)
         both = va.normalize(call, {"structuredContent": {}, "content": [{"type": "text", "text": "Outlier: night jazz 3x views"}]})
         self.assertIn("night jazz 3x views", both["insight"])  # 構造化結果が空でも本文に中身があれば使う
