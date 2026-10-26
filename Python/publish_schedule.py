@@ -48,8 +48,6 @@ def resolve_publish_at_iso(
 # ─── 再起動時の公開予約復旧 ───
 # marker の scheduled_publish_at は世代差で naive（ローカル時刻）と aware（"…Z" / "+09:00"）が混在する。
 # Python 3.11+ の fromisoformat は "Z" を aware として読むため、naive の now() と直接比較すると TypeError になる。
-DEFAULT_RECOVER_MAX_STALE_DAYS = 7
-MAX_RECOVER_STALE_DAYS = 3650  # timedelta のオーバーフロー防止と設定ミスの上限
 
 # 段階 3: 起動時復旧専用のヘルパー（normalize_scheduled_local / scheduler_run_at / resolve_recover_max_stale_days /
 # plan_scheduled_publish_recovery）は Mac の公開ゲート撤去に伴い削除した。予約の照合は VPS の publish_verify。

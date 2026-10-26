@@ -235,3 +235,54 @@ class StudioIntentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScheduleIntentsTest(unittest.TestCase):
+    """段階 3: schedule-status / schedule-put（VPS をモック）。"""
+
+    def _run(self, argv, env=None):
+        import os, subprocess
+        here = Path(__file__).resolve().parents[1]
+        e = {**os.environ, **(env or {})}
+        r = subprocess.run([sys.executable, str(here / "studio.py"), *argv], capture_output=True, text=True, env=e, timeout=60)
+        last = [l for l in r.stdout.splitlines() if l.strip().startswith("{")][-1]
+        return r.returncode, json.loads(last)
+
+    def test_status_and_put_dry_run_and_admin_token_required(self):
+        import tempfile
+        cfg = Path(tempfile.mkdtemp(prefix="vr_")) / "worker.json"
+        cfg.write_text(json.dumps({"base_url": "https://vps.example", "ai_token": "aitok"}), encoding="utf-8")
+        env = {"APP_WORKER_CONFIG": str(cfg)}
+        code, out = self._run(["schedule-status", "--channel", "edm", "--vol", "7", "--dry-run", "--json"], env)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["query"], {"channel_key": "edm", "vol": 7})
+        code, out = self._run(["schedule-put", "--channel", "edm", "--publish-time", "19:00", "--lead-days", "3", "--disabled", "--dry-run", "--json"], env)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["payload"]["publish_time"], "19:00")
+        self.assertEqual(out["payload"]["produce_lead_days"], 3)
+        self.assertFalse(out["payload"]["enabled"])
+        self.assertEqual(out["method"], "PUT")
+        # 実行は管理者 JWT が無ければ使い方エラー（送信しない）
+        code, out = self._run(["schedule-put", "--channel", "edm", "--publish-time", "19:00", "--json"], {**env, "APP_VPS_ADMIN_TOKEN": ""})
+        self.assertEqual(code, 2)
+        self.assertEqual(out["error"], "admin_token_required")
+        self.assertNotIn("aitok", json.dumps(out))
+
+    def test_schedule_status_calls_api_with_ai_token(self):
+        import vps_runs
+        sent = []
+
+        class R(io.BytesIO):
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def opener(req, timeout=0):
+            sent.append((req.get_method(), req.full_url, req.headers.get("Authorization")))
+            return R(json.dumps({"channel_key": "edm", "schedule": {}}).encode())
+        settings = {"base_url": "https://vps.example", "ai_token": "aitok"}
+        data = vps_runs.schedule_status("edm", 7, settings=settings, opener=opener)
+        self.assertEqual(data["channel_key"], "edm")
+        self.assertEqual(sent[0], ("GET", "https://vps.example/api/runs/schedule-status?channel_key=edm&vol=7", "Bearer aitok"))
+        data = vps_runs.put_publish_schedule("edm", {"publish_time": "19:00"}, settings={"base_url": "https://vps.example", "ai_token": "admin-jwt"}, opener=opener)
+        self.assertEqual(sent[1], ("PUT", "https://vps.example/api/schedules/publish/edm", "Bearer admin-jwt"))

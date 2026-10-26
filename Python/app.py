@@ -7106,7 +7106,7 @@ def _schedule_resume(parent_payload: dict, from_stage: str, attempt: int) -> boo
     parent_id = parent_payload.get("id", "?")
     vol = parent_payload.get("vol") or parent_payload.get("_resolved_vol")
     _record_history(str(parent_id), "warn",
-                    f"vol.{vol} の自動再投入は停止中（段階 3）。再開: studio.py run-resume --from {from_stage}")
+                    f"vol.{vol} の自動再投入は停止中（段階 3）。再開: studio.py run --vol {vol} --from {from_stage}（または run-resume --run-id <id>）")
     return False
 
 
@@ -7191,7 +7191,7 @@ async def _job_vol_create(job: dict):
                 _schedule_resume(resume_payload, failed_stage, attempt=2)
                 _send_line_notify(
                     f"❌ [{ch_name}] vol.{next_vol} 失敗（{failed_stage}）。"
-                    f"再開は studio.py run-resume --from {failed_stage}（自動再投入は停止中）"
+                    f"再開は studio.py run --vol {next_vol} --from {failed_stage}（自動再投入は停止中）"
                 )
             else:
                 _label, _, _prefix = _exit_outcome(proc.returncode)
@@ -7308,7 +7308,7 @@ async def _job_spot_create(job: dict):
                 _schedule_resume(resume_payload, failed_stage, attempt=2)
                 _send_line_notify(
                     f"❌ [{ch_name}] スポット vol.{vol} 失敗（{failed_stage}）。"
-                    f"再開は studio.py run-resume --from {failed_stage}（自動再投入は停止中）"
+                    f"再開は studio.py run --vol {vol} --from {failed_stage}（自動再投入は停止中）"
                 )
             else:
                 _label, _, _prefix = _exit_outcome(proc.returncode)
@@ -7896,6 +7896,7 @@ def _scheduler_register_job(job: dict):
 
 # 段階 3: 起票（vol_create / spot_create）の正本は VPS（publish_schedules + scheduled_tasks）。Mac では登録しない。
 _VPS_OWNED_JOB_TYPES = ("vol_create", "spot_create")
+_RELOAD_MANAGED_IDS: set = set()  # _scheduler_reload が登録した jobs.json 由来のジョブ id
 
 
 def _scheduler_reload():
@@ -7903,21 +7904,26 @@ def _scheduler_reload():
 
     jobs.json 由来のジョブだけを入れ替える（orchestrator_tick / digest などの固定ジョブは消さない）。
     vol_create / spot_create は段階 3 で VPS に移したため登録しない（定義は残るが警告のみ）。"""
+    global _RELOAD_MANAGED_IDS
     if _scheduler is None:
         return
     jobs = _scheduler_get_jobs()
-    known_ids = {str(j.get("id")) for j in jobs if j.get("id")}
+    # 前回この関数が登録した id と、今の jobs.json の id を両方外す（jobs.json から消したジョブも止まる）
+    stale_ids = set(_RELOAD_MANAGED_IDS) | {str(j.get("id")) for j in jobs if j.get("id")}
     for j in _scheduler.get_jobs():
-        if j.id in known_ids:
+        if j.id in stale_ids:
             try: _scheduler.remove_job(j.id)
             except Exception: pass
+    registered: set[str] = set()
     for job in jobs:
         if not job.get("enabled", True):
             continue
         if job.get("type") in _VPS_OWNED_JOB_TYPES:
             print(f"[scheduler] {job.get('id')} ({job.get('type')}) は VPS が起票するため Mac では登録しません（段階 3）")
             continue
-        _scheduler_register_job(job)
+        if _scheduler_register_job(job):
+            registered.add(str(job.get("id")))
+    _RELOAD_MANAGED_IDS = registered
 
 # ─── D1: orchestrator 無人稼働 tick（autopilot ON の channel のみ・既定 dormant）───
 # ⚠ 安全境界:

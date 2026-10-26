@@ -160,6 +160,12 @@ class UploadTest(unittest.TestCase):
         yt = FakeYouTube(FakeRequest([0.5], fail=(2, socket.timeout("timed out"))))
         with self.assertRaises(pub.RetryableUploadError):
             pub.upload(yt, self._req(), media_factory=lambda *a, **k: object())
+        # 最初の PUT で落ちても、セッション URI は on_session で残す
+        sessions = []
+        yt = FakeYouTube(FakeRequest([], fail=(1, socket.timeout("timed out"))))
+        with self.assertRaises(pub.RetryableUploadError):
+            pub.upload(yt, self._req(), on_session=lambda u, o: sessions.append(u), media_factory=lambda *a, **k: object())
+        self.assertEqual(sessions, ["https://upload.example/session/1"])
         req = FakeRequest([], fail=(1, ConnectionError("reset")))
         req.resumable_uri = None
         class NoSession(FakeRequest):

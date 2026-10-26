@@ -409,6 +409,66 @@ def run_vps_runs(args: argparse.Namespace) -> int:
     return 0 if out["ok"] else int(ExitCode.FAIL)
 
 
+def run_schedule(args: argparse.Namespace) -> int:
+    """schedule-status / schedule-put: VPS の公開スケジュール（段階 3）。stdout は JSON 1 行。
+
+    schedule-status は ai:runs トークンで可。schedule-put は管理者 JWT（環境変数 APP_VPS_ADMIN_TOKEN）が必要。
+    終了コード: 0 成功 / 1 失敗 / 2 使い方。"""
+    import vps_runs
+    from exit_codes import ExitCode
+    intent = args.intent
+    channel_key = (args.channel or get_active_channel_info().get("id") or "").strip()
+    if not channel_key:
+        emit({"ok": False, "intent": intent, "error": "usage", "message": "--channel かアクティブチャンネルが必要です"})
+        return int(ExitCode.USAGE)
+    vol_n = None
+    if args.vol:
+        try:
+            vol_n = int(str(args.vol).strip())
+        except (TypeError, ValueError):
+            emit({"ok": False, "intent": intent, "error": "usage", "message": "--vol は整数"})
+            return int(ExitCode.USAGE)
+    body = None
+    if intent == "schedule-put":
+        try:
+            current = None if getattr(args, "dry_run", False) else vps_runs.get_publish_schedule(channel_key)
+        except vps_runs.VpsRunsError as exc:
+            emit({"ok": False, "intent": intent, "error": exc.code, "message": str(exc), "detail": exc.detail})
+            return int(ExitCode.USAGE) if exc.code in ("vps_not_configured", "admin_token_required") else int(ExitCode.FAIL)
+        base = current or {"timezone": "Asia/Tokyo", "publish_time": "12:00", "produce_lead_days": 2, "late_policy": "next_free_slot", "enabled": True, "revision": None}
+        body = {
+            "timezone": args.timezone or base["timezone"],
+            "publish_time": args.publish_time or base["publish_time"],
+            "produce_lead_days": args.lead_days if args.lead_days is not None else base["produce_lead_days"],
+            "late_policy": args.late_policy or base["late_policy"],
+            "enabled": args.schedule_enabled if args.schedule_enabled is not None else base["enabled"],
+            "revision": args.revision if args.revision is not None else base.get("revision"),
+        }
+    if getattr(args, "dry_run", False):
+        preview = {"ok": True, "intent": intent, "dry_run": True, "channel_key": channel_key}
+        if intent == "schedule-put":
+            preview.update({"method": "PUT", "path": f"/api/schedules/publish/{channel_key}", "payload": body})
+        else:
+            preview.update({"method": "GET", "path": "/api/runs/schedule-status", "query": {"channel_key": channel_key, "vol": vol_n}})
+        emit(preview)
+        return 0
+    try:
+        if intent == "schedule-put":
+            data = vps_runs.put_publish_schedule(channel_key, body)
+        else:
+            data = vps_runs.schedule_status(channel_key, vol_n)
+    except vps_runs.VpsRunsError as exc:
+        emit({"ok": False, "intent": intent, "error": exc.code, "message": str(exc), "detail": exc.detail})
+        if exc.code in ("vps_not_configured", "invalid_request", "admin_token_required"):
+            return int(ExitCode.USAGE)
+        if exc.code == "vps_unreachable":
+            return int(ExitCode.RETRYABLE)
+        return int(ExitCode.FAIL)
+    data.pop("_status", None)
+    emit({"ok": True, "intent": intent, **data})
+    return 0
+
+
 def run_preflight(args: argparse.Namespace) -> int:
     """ffmpeg 専用構成の実行環境検査。欠けている項目を JSON で返す。"""
     try:
@@ -662,6 +722,13 @@ def main() -> int:
     parser.add_argument("--request-id", help="run の冪等キー（省略時は自動生成）")
     parser.add_argument("--intent", dest="run_intent", default="pipeline", help="run が VPS に発行する intent（既定 pipeline）")
     parser.add_argument("--state", help="run-status の一覧フィルタ")
+    parser.add_argument("--publish-time", help="schedule-put: 公開時刻 HH:MM（チャンネルの timezone）")
+    parser.add_argument("--timezone", help="schedule-put: IANA タイムゾーン（既定 Asia/Tokyo）")
+    parser.add_argument("--lead-days", type=int, help="schedule-put: 制作先行日数（既定 2）")
+    parser.add_argument("--late-policy", choices=["next_free_slot", "same_day_15min"], help="schedule-put: 当日の時刻超過時の扱い")
+    parser.add_argument("--enabled", dest="schedule_enabled", action="store_true", default=None, help="schedule-put: 定期起票を有効にする")
+    parser.add_argument("--disabled", dest="schedule_enabled", action="store_false", help="schedule-put: 定期起票を無効にする")
+    parser.add_argument("--revision", type=int, help="schedule-put: 現在の revision（競合検出。省略時は照合しない）")
     parser.add_argument("--publish-date", default="YYYY-MM-DD")
     parser.add_argument("--prompt", default="lounge jazz BGM, elegant cafe atmosphere")
     parser.add_argument("--count", default="20")
@@ -736,6 +803,9 @@ def main() -> int:
     if args.intent in ("run", "run-status", "run-resume", "run-cancel"):
         args.intent_name = args.intent
         return run_vps_runs(args)
+
+    if args.intent in ("schedule-status", "schedule-put"):
+        return run_schedule(args)
 
     if args.intent == "autopilot":
         return run_autopilot(args)

@@ -57,6 +57,13 @@ class MacSchedulerStage3Test(unittest.TestCase):
         self.assertNotIn("job_c", fake.jobs)
         self.assertIn("job_b", fake.jobs)
         self.assertEqual([c.args[0]["id"] for c in reg.call_args_list], ["job_b"])
+        # jobs.json から job_b を消して reload すると、APScheduler からも外れる（固定ジョブは残る）
+        with patch.object(studio, "_scheduler", fake), patch.object(studio, "_scheduler_get_jobs", return_value=[]), \
+             patch.object(studio, "_scheduler_register_job", side_effect=lambda job: True):
+            studio._scheduler_reload()
+        self.assertNotIn("job_b", fake.jobs)
+        self.assertIn("orchestrator_tick", fake.jobs)
+        self.assertIn("daily_digest", fake.jobs)
 
     def test_orchestrator_tick_default_off(self):
         import os

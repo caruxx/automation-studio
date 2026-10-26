@@ -132,6 +132,12 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
                 progress(float(status_obj.progress()))
     except HttpError as exc:
         status = getattr(getattr(exc, "resp", None), "status", None)
+        uri = getattr(request, "resumable_uri", None)
+        if uri and on_session and uri != last_uri and is_retryable_http_error(exc):
+            try:
+                on_session(uri, int(getattr(request, "resumable_progress", 0) or 0))
+            except Exception:
+                pass
         if resumed and status in (404, 410):
             raise UploadResultUnknown(f"resumable session expired (HTTP {status}); 結果を確定できません") from exc
         if is_retryable_http_error(exc):
@@ -141,7 +147,13 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
         raise
     except Exception as exc:
         # 通信例外（タイムアウト・切断・SSL 等）。セッションがあれば次回 resume で結果が分かるので再試行扱い。
-        if getattr(request, "resumable_uri", None):
+        uri = getattr(request, "resumable_uri", None)
+        if uri:
+            if on_session and uri != last_uri:
+                try:
+                    on_session(uri, int(getattr(request, "resumable_progress", 0) or 0))  # 最初の PUT で落ちても URI を残す
+                except Exception:
+                    pass
             raise RetryableUploadError(f"{type(exc).__name__}: {exc}", status=None) from exc
         raise
     video_id = response["id"]

@@ -122,3 +122,28 @@ def resume_run(run_id: int, *, from_step: Optional[str] = None, **kw) -> dict[st
 
 def cancel_run(run_id: int, **kw) -> dict[str, Any]:
     return request("POST", f"/api/runs/{int(run_id)}/cancel", payload={}, **kw)
+
+
+# ─── 段階 3: 公開スケジュール ───
+
+def schedule_status(channel_key: str, vol: Optional[int] = None, **kw) -> dict[str, Any]:
+    return request("GET", "/api/runs/schedule-status", query={"channel_key": channel_key, "vol": vol}, **kw)
+
+
+def admin_settings() -> dict[str, str]:
+    """schedule-put は管理者の JWT が必要（ai:runs トークンでは設定を変えられない）。環境変数 APP_VPS_ADMIN_TOKEN で渡す。"""
+    settings = load_settings()
+    token = str(os.environ.get("APP_VPS_ADMIN_TOKEN") or "").strip()
+    if not token:
+        raise VpsRunsError("admin_token_required", "schedule-put には管理者の JWT が必要です。環境変数 APP_VPS_ADMIN_TOKEN に設定してください（値は表示しません）")
+    if any(ord(c) < 33 or ord(c) > 126 for c in token):
+        raise VpsRunsError("admin_token_required", "APP_VPS_ADMIN_TOKEN に使えない文字が含まれています")
+    return {"base_url": settings["base_url"], "ai_token": token}
+
+
+def get_publish_schedule(channel_key: str, **kw) -> dict[str, Any]:
+    return request("GET", f"/api/schedules/publish/{channel_key}", settings=kw.pop("settings", None) or admin_settings(), **kw)
+
+
+def put_publish_schedule(channel_key: str, body: dict[str, Any], **kw) -> dict[str, Any]:
+    return request("PUT", f"/api/schedules/publish/{channel_key}", payload=body, settings=kw.pop("settings", None) or admin_settings(), **kw)
