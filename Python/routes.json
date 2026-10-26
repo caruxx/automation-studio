@@ -1599,6 +1599,29 @@
         "scope": "global",
         "max_parallel": 1
       }
+    },
+    "notify-flush": {
+      "aliases": [
+        "通知を再送",
+        "notify-flush"
+      ],
+      "description": "VPS に届かずローカルに退避した通知 event を、同じ event_id で VPS の outbox へ移管する（自動では行わない）",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "notify-flush",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "VPS の worker API を呼ぶため CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 1
+      }
     }
   }
 }

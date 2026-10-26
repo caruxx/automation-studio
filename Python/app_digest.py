@@ -289,27 +289,33 @@ def build_digest(*, test: bool = False) -> dict[str, Any]:
     }
 
 
+def embed_to_text(embed: dict[str, Any]) -> str:
+    """Discord 用 embed を Chatwork 向けのプレーンテキストにする（段階 3a）。"""
+    lines = []
+    if embed.get("title"):
+        lines.append(str(embed["title"]))
+    if embed.get("description"):
+        lines.append(str(embed["description"]))
+    for f in embed.get("fields") or []:
+        name = str(f.get("name") or "").strip()
+        value = str(f.get("value") or "").strip()
+        lines.append(f"{name}: {value}" if name else value)
+    if (embed.get("footer") or {}).get("text"):
+        lines.append(str(embed["footer"]["text"]))
+    return "\n".join(l for l in lines if l)
+
+
 def send_digest(*, test: bool = False) -> dict[str, Any]:
+    """日次ダイジェストを通知する。段階 3a: Discord Webhook は廃止し、notify.py（VPS outbox → Chatwork）に送る。"""
     data = build_digest(test=test)
-    cfg = json.loads(DISCORD_CONFIG.read_text(encoding="utf-8"))
-    webhook = (cfg.get("webhook_url") or "").strip()
-    if not webhook:
-        raise RuntimeError("Discord Webhook URL が未設定です")
-    payload = {"embeds": [data["embed"]], "username": cfg.get("username") or "Automation Studio"}
-    if cfg.get("avatar_url"):
-        payload["avatar_url"] = cfg["avatar_url"]
-    r = subprocess.run(
-        ["curl", "-fsS", "-X", "POST", webhook, "-H", "Content-Type: application/json",
-         "-d", json.dumps(payload, ensure_ascii=False)],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
-    )
-    data["discord"] = {
-        "sent": r.returncode == 0,
-        "status_code": 204 if r.returncode == 0 else None,
-        "stderr": (r.stderr or "")[-500:],
-    }
-    if r.returncode != 0:
-        raise RuntimeError(f"Discord送信失敗: {r.stderr.strip() or r.stdout.strip() or r.returncode}")
+    import notify as _notify
+    res = _notify.notify(embed_to_text(data["embed"]), kind="info", event_id=None if test else f"digest-{datetime.now().strftime('%Y%m%d')}")
+    dup = bool(res.get("duplicate"))  # 同じ日に再送すると VPS は duplicate として受ける（配送は 1 回）
+    data["notify"] = {"sent": res.get("delivered_to") in ("vps", "local") and not dup, "duplicate": dup, "delivered_to": res.get("delivered_to"),
+                      "event_id": res.get("event_id"), "error": res.get("error")}
+    data["discord"] = {"sent": data["notify"]["sent"], "status_code": None, "stderr": ""}  # 旧 API 応答との互換キー
+    if res.get("delivered_to") == "none":
+        raise RuntimeError(f"通知を記録できませんでした: {res.get('error')}")
     return data
 
 

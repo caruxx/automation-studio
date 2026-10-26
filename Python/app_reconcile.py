@@ -401,12 +401,10 @@ def notify_duplicate_skip(vol: str, channel_name: str = "") -> dict[str, Any]:
     msg = f"vol.{vol}は既にYouTube上に存在するためスキップしました"
     if channel_name:
         msg = f"[{channel_name}] {msg}"
-    script = SHARED_BASE / "Python" / "app_notify.sh"
-    if not script.exists():
-        return {"sent": False, "message": msg, "error": "app_notify.sh not found"}
     try:
-        subprocess.run(["bash", str(script), msg], capture_output=True, text=True, timeout=10)
-        return {"sent": True, "message": msg}
+        import notify as _notify
+        res = _notify.notify(msg, kind="alert")
+        return {"sent": res.get("delivered_to") in ("vps", "local"), "message": msg, "delivered_to": res.get("delivered_to")}
     except Exception as e:
         return {"sent": False, "message": msg, "error": str(e)[:200]}
 

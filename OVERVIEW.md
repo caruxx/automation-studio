@@ -242,7 +242,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 | 投稿 | YouTube Data API v3 + OAuth |
 | AI（文章・画像・画像理解） | Claude CLI（第一候補・API キー不要）→ Codex CLI（控え）。任意で Gemini・ChatGPT・OpenAI Image・Google Flow |
 | 状態の保存 | フォルダ内ファイル + SQLite（順番待ち・履歴）+ JSON（設定） |
-| 通知 | Discord Webhook |
+| 通知 | Chatwork（VPS の outbox 経由） |
 | 自動運転 | VPS の scheduler（起票・公開枠・publish_verify）。Mac の APScheduler は補助ジョブのみ（段階 3） |
 | 外部アクセス | Cloudflare Tunnel + 認証 + PWA |
 
@@ -352,7 +352,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 |---|---|
 | `app_llm_runner.py` | Claude→Codex フォールバック共通ランナー（全 AI 呼び出しの集約点） |
 | `srt_timecode.py` | SRT 字幕とタイムコードの生成（純関数） |
-| `app_notify.sh` | Discord 通知（シェル） |
+| `app_notify.sh` | 通知の互換ラッパー（`notify.py` → VPS outbox → Chatwork） |
 | `start.sh` / `setup.sh` | 起動（リロード無し）/ 依存導入 |
 
 ---
@@ -407,7 +407,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 | Codex CLI | `codex exec` | 未認証(401)時は `codex login` 案内付きでエラー |
 | ffmpeg / ffprobe | 子プロセス | 不在は preflight（exit 78）で停止 |
 | YouTube Data API v3 | google-api-python-client + OAuth | token 失効は自動更新 |
-| Discord Webhook | HTTP POST | 未設定時はボタン無効 |
+| Chatwork（VPS outbox） | HTTP POST | VPS 未設定時はローカル退避 |
 
 ---
 

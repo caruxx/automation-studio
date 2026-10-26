@@ -20,8 +20,8 @@ cron 風のスケジュール管理で、PC を起動しておくだけで定期
 ### 実行履歴
 直近 50 件の start/done/error を `/api/schedule/history` で返却。UI の「📜 実行履歴」アコーディオンから参照可能。
 
-### Discord 通知
-ジョブ完了時に [Python/app_notify.sh](../Python/app_notify.sh) で Discord Webhook。`discord_config.json` に token がある前提。
+### 通知（段階 3a）
+ジョブ完了・失敗は [Python/notify.py](../Python/notify.py) が VPS の outbox に送り、VPS が Chatwork に配送する。Discord Webhook は廃止。VPS に届かないときは `~/.config/automation-studio/notify_queue.sqlite` に退避し、`studio.py notify-flush` で移管する。
 
 ## 4 つのジョブ種別
 

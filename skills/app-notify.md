@@ -1,3 +1,11 @@
+# app-notify: 通知（Chatwork、VPS outbox 経由）
+
+> **段階 3a（2026-10-26）**: Discord Webhook は廃止。Mac は `Python/notify.py` が VPS の outbox（`POST /api/worker/notify`）に
+> event を送り、VPS が Chatwork に配送する（トークンは VPS の環境変数だけに置く）。VPS が未設定 / 到達不能のときは
+> `~/.config/automation-studio/notify_queue.sqlite` に退避し、`studio.py notify-flush` で同じ event_id のまま移管する（自動では移管しない）。
+> kind は info / action_required / alert（省略時は本文から推定）。[To] は action_required と alert だけ。
+> 以下の Discord の設定手順は履歴として残す。
+
 # app-notify: Discord スケジュール通知
 
 Discord Webhook を使用して、動画の公開スケジュールやタスク通知を送信するスキル。

@@ -6761,7 +6761,7 @@ def _record_history(job_id: str, status: str, detail: str = ""):
         _scheduler_history[:] = _scheduler_history[-50:]
 
 def _send_discord_notify(message: str):
-    """Discord 通知を非同期 fire-and-forget で送る。失敗は無視。"""
+    """通知を送る（名前は互換のため据え置き。送信先は VPS の outbox → Chatwork）。失敗は無視。"""
     try:
         try:
             from error_humanizer import format_for_discord
@@ -6773,10 +6773,11 @@ def _send_discord_notify(message: str):
                 message = format_for_discord(message=message)
         except Exception:
             pass
-        notify_script = SHARED_BASE / "Python" / "app_notify.sh"
-        if notify_script.exists():
-            subprocess.Popen(["bash", str(notify_script), message],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 段階 3a: Discord は廃止。notify.py が VPS の outbox（Chatwork 配送）へ送り、届かなければローカルに退避する。
+        # 以前の Popen と同じく呼び出し側（イベントループ・スケジューラ）を待たせない
+        import threading
+        import notify as _notify
+        threading.Thread(target=_notify.notify, args=(message,), daemon=True).start()
     except Exception:
         pass
 
