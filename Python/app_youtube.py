@@ -1048,13 +1048,13 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                     except _pub.RetryableUploadError as e:
                         print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会に失敗: {e}", flush=True)
                         sys.exit(EXIT_RETRYABLE)
-                    except RuntimeError as e:  # 想定外の 4xx（401 / 400 等）: セッションは保持したまま再試行に回す
-                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会が想定外の応答: {re.sub(r'https?://\\S+', '<url>', str(e))}", flush=True)
-                        sys.exit(EXIT_RETRYABLE)
-                    except _pub.UploadResultUnknown as e:
+                    except _pub.UploadResultUnknown as e:  # RuntimeError の子なので、汎用の except より前に置く
                         print(f"\n[UPLOAD_RESULT_UNKNOWN] {e}", flush=True)
                         _ledger.upload_unknown(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", str(e)))
                         sys.exit(1)
+                    except RuntimeError as e:  # 想定外の 4xx（401 / 400 等）: セッションは保持したまま再試行に回す
+                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会が想定外の応答: {re.sub(r'https?://\\S+', '<url>', str(e))}", flush=True)
+                        sys.exit(EXIT_RETRYABLE)
                     if kind == "complete":
                         video_id = payload_obj["id"]
                         new_at = str(begin.get("publish_at") or "").replace("+00:00", "")

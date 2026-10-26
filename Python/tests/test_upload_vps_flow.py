@@ -167,6 +167,14 @@ class UploadVpsFlowTest(unittest.TestCase):
                     self._run(ledger, lambda *a, **k: self.fail("x"))
             self.assertEqual(cm.exception.code, code)
             self.assertEqual(ledger.calls[-1][0], last)
+        # 照会でセッション失効 → unknown（RuntimeError の子なので汎用 except に飲まれない）、想定外の応答 → 76
+        for exc, code, last in ((pub.UploadResultUnknown("expired"), 1, "unknown"), (RuntimeError("unexpected status 401"), ay.EXIT_RETRYABLE, "begin")):
+            ledger = FakeLedger(dict(base))
+            with patch.object(pub, "query_session", side_effect=exc):
+                with self.assertRaises(SystemExit) as cm:
+                    self._run(ledger, lambda *a, **k: self.fail("x"))
+            self.assertEqual(cm.exception.code, code)
+            self.assertEqual(ledger.calls[-1][0], last)
         # 未完了: discard してから新規送信
         ledger = FakeLedger(dict(base))
         ledger.discard_response = {"mode": "insert", "upload_id": 3, "state": "pending", "publish_at": "2026-12-26T03:00:00", "begin_token": "t2"}
