@@ -434,7 +434,7 @@
         ]
       },
       "prefer": "cli",
-      "via_api_safe": true,
+      "via_api_safe": false,
       "requires_vol": true,
       "parallelism": {
         "scope": "global",

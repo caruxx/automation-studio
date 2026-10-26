@@ -487,12 +487,20 @@ def run_thumbnail_select(args: argparse.Namespace) -> int:
     if args.adopt:
         if getattr(args, "dry_run", False):
             rec = _ts.load(folder)
-            emit({"ok": args.adopt in (rec.get("candidate_ids") or []), "intent": "thumbnail-select", "dry_run": True, "adopt": args.adopt})
-            return 0
+            known = args.adopt in (rec.get("candidate_ids") or [])
+            emit({"ok": known, "intent": "thumbnail-select", "dry_run": True, "adopt": args.adopt})
+            return 0 if known else int(ExitCode.FAIL)
         try:
             res = _ts.adopt(folder, args.adopt)
         except ValueError as exc:
             emit({"ok": False, "intent": "thumbnail-select", "error": "adopt_rejected", "message": str(exc)})
+            return int(ExitCode.FAIL)
+        try:
+            import stage_state as _ss
+            # 人の採用を現在の入力で完了と記録する（入力変化後の品質待機でも、採用が再選定で上書きされないように）
+            _ss.mark_done("thumbnail", folder, int(info.get("vol") or raw))
+        except Exception as exc:
+            emit({"ok": False, "intent": "thumbnail-select", "error": "state_record_failed", "message": f"{type(exc).__name__}"})
             return int(ExitCode.FAIL)
         emit({"ok": True, "intent": "thumbnail-select", "status": res.status, "selected_id": res.selected_id, "selected_hash": res.selected_hash})
         return 0

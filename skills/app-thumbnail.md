@@ -80,6 +80,13 @@ python3 Python/studio.py thumbnail-select --vol <N> --adopt <run_id>/a<N>/a<N>_<
 - `app_youtube.find_thumbnail` は選定記録があれば検証済みの `thumbnail_selected.jpg` だけを返す。記録がなければ旧来の `サムネイル.*` / `thumbnail.*` を使う。
 - 選定記録があるか VPS 連携が有効なとき、検証に通らなければ投稿を始めずに終了コード 1 で止める。
 
+## 段階 5 以前の vol（移行）
+
+- 旧 `step_thumbnail` は常に成功を記録していたため、thumbnail だけは台帳の done で完了を補わない。未投稿の旧 vol は投稿前に選定が走る。
+- 投稿済み（`youtube_upload.json` に video_id あり）の旧 vol は、選定記録がなくても snippet 更新ができる。
+- 投稿途中で再開待ちの旧 vol は、VPS 連携時に確定サムネが必要になる。反映は再開待ちの投稿が無いときに行う。
+- UI で手作りした `サムネイル.jpg` をそのまま投稿に使う経路は無い。使いたい場合は選定の候補から `--adopt` で確定する。
+
 ## 関連
 
 - [app-bgimage.md](./app-bgimage.md) — 背景画像（`vol{N}` 用。サムネ候補の背景とは別に生成）

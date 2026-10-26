@@ -251,8 +251,9 @@ class StageStateTest(unittest.TestCase):
             os.utime(self.folder / "music" / "a.mp3", ns=(5, 5))
             # 台帳に done があっても、入力が変わった工程は失効
             self.assertFalse(o._stage_artifact_done("meta", self.folder, self.vol, channel_id="ch"))
-            # 成果物が無くても台帳 done なら従来どおり補完（記録が無い場合）
-            self.assertTrue(o._stage_artifact_done("thumbnail", self.folder, self.vol, channel_id="ch"))
+            # 成果物が無くても台帳 done なら従来どおり補完（記録が無い場合）。thumbnail だけは段階 5 で補完対象外
+            self.assertTrue(o._stage_artifact_done("localization", self.folder, self.vol, channel_id="ch"))
+            self.assertFalse(o._stage_artifact_done("thumbnail", self.folder, self.vol, channel_id="ch"))
             # 廃止工程 premiere は従来の判定（mp4 の有無）に戻す
             o._ledger = type("L", (), {"list_runs": staticmethod(lambda **kw: [])})()
             self.assertFalse(o._stage_artifact_done("premiere", self.folder, self.vol, channel_id="ch"))

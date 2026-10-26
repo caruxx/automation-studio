@@ -160,7 +160,7 @@ STEP_LABELS = {
     "qa":            "7/11 QA チェック（解像度 / アスペクト / 尺 / コーデック）",
     "meta":          "8/11 動画メタ（タイトル・説明・タグ）",
     "localization":  "9/11 多言語メタデータ（メイン言語 → 各国翻訳）",
-    "thumbnail":     "10/11 AI サムネイル（PSD 合成失敗時のフォールバック）",
+    "thumbnail":     "10/11 サムネ AI 選定（候補生成・採点・確定）",
     "upload":        "11/11 YouTube アップロード",
 }
 
@@ -168,7 +168,7 @@ STEP_LABELS = {
 _FFMPEG_STEP_LABELS = {
     "composite": "5/11 画像合成（画像エディタ・Adobeなし）",
     "render": "6/11 FFmpeg書き出し・曲名・タイムスタンプ生成",
-    "thumbnail": "10/11 サムネイル確認（画像合成出力を利用）",
+    "thumbnail": "10/11 サムネ AI 選定（候補生成・採点・確定）",
 }
 
 
@@ -2883,7 +2883,7 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
         text = hint or prompt_base
         prompts = [(text, f"a{attempt}_bg{i}") for i in range(1, n + 1)]  # Codex CLI は n を無視するので 1 枚ずつ頼む
         try:
-            results = codex_imagegen.run(prompts, bg_dir, max_parallel=min(n, 4), reference_images=gen_refs,
+            results = codex_imagegen.run(prompts, bg_dir, max_parallel=max(1, min(n, int(os.environ.get("APP_THUMBNAIL_CODEX_MAX_PARALLEL", "1") or 1))), reference_images=gen_refs,
                                          model=model, size=size, quality=quality, backend=backend, n=1)
         except Exception as exc:
             return _ts.GenerateResult([], model=model, backend=backend, model_enforced=enforced,

@@ -352,6 +352,8 @@ def _stage_artifact_done(stage: str, folder: Path, vol: int, channel_id: str = "
         fn = _ARTIFACT_DONE.get(stage)
         if fn and fn(folder, vol):
             return True
+    if stage == "thumbnail":
+        return False  # 段階 5: 旧 step_thumbnail は常に成功を記録していたので、台帳の done では補わない（選定記録の verify だけが完了）
     return _ledger_stage_done(stage, vol, channel_id)
 
 

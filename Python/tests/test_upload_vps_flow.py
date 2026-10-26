@@ -309,6 +309,15 @@ class UploadVpsFlowTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         self.assertEqual(ledger.calls, [])  # begin より前に止まる
 
+    def test_posted_legacy_vol_updates_without_selection_in_vps_mode(self):
+        import thumbnail_selection
+        (self.folder / "youtube_upload.json").write_text(json.dumps({"video_id": "vidOLD"}), encoding="utf-8")
+        ledger = FakeLedger({"mode": "update", "video_id": "vidOLD", "upload_id": 1, "state": "uploaded"})
+        with patch.object(thumbnail_selection, "verify", return_value=(False, "no_selection")), \
+                patch.object(ay, "update_video_snippet", return_value={"status": "ok"}):
+            vid = self._run(ledger, lambda *a, **k: self.fail("must not upload"))
+        self.assertEqual(vid, "vidOLD")  # 段階 5 より前に投稿済みの vol は snippet 更新できる
+
     def test_legacy_path_without_vps(self):
         ledger = FakeLedger(None)  # VPS 未設定
 

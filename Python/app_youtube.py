@@ -911,7 +911,13 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         import vps_ledger_sync as _vls_check
         sel_exists = (Path(folder) / _ts.SELECTION_FILE).exists()
         ok_sel, why_sel = _ts.verify(folder)
-        if (sel_exists or _vls_check.enabled()) and not ok_sel:
+        try:
+            _mk = json.loads((Path(folder) / "youtube_upload.json").read_text(encoding="utf-8"))
+            already_posted = bool(isinstance(_mk, dict) and str(_mk.get("video_id") or "").strip())
+        except Exception:
+            already_posted = False
+        # 投稿済み（marker に video_id あり）の旧 vol は snippet 更新だけなので、選定記録が無くても止めない
+        if (sel_exists or (_vls_check.enabled() and not already_posted)) and not ok_sel:
             # 段階 5: 投稿するサムネは AI 選定で採用した画像だけ（ハッシュ一致）。未選定・不一致なら投稿しない
             print(f"エラー: 投稿用サムネが確定していません（{why_sel}）。studio.py thumbnail-select --vol {extract_vol_number(folder)} を実行してください")
             sys.exit(1)

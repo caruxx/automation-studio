@@ -104,13 +104,36 @@ class ThumbnailPipelineTest(unittest.TestCase):
         import app_orchestrator as o
         self.assertEqual(o._normalize_result("awaiting_thumbnail"), o.Exit.SELECTION_PENDING)
         w = o.WORKERS["thumbnail"]
-        with patch.object(o, "_stage_artifact_done", return_value=True):
-            w._slot_available = lambda **kw: True
+        with patch.object(o, "_stage_artifact_done", return_value=True), patch.object(w, "_slot_available", lambda **kw: True):
             self.assertFalse(w.can_run(7, self.folder))  # 品質待機中は再投入しない
         # 人が採用すると done
         cid = ts.load(self.folder)["candidate_ids"][0]
         ts.adopt(self.folder, cid)
         self.assertIs(ap.step_thumbnail(7, self.folder, False), True)
+
+    def test_human_adopt_after_input_change_is_not_overwritten(self):
+        # 一度採用済み → 入力（meta の出力）が変わって再選定が全不合格 → 人が採用 → 再生成しない
+        self._with(self._fake_run({"a1_1.jpg": 90}), lambda: ap.step_thumbnail(7, self.folder, False))
+        ss.mark_done("thumbnail", self.folder, 7)  # パイプラインの成功記録
+        (self.folder / "youtube_title.txt").write_text("Changed", encoding="utf-8")  # meta の出力が変わる
+        self.assertTrue(ss.is_stale("thumbnail", self.folder, 7))
+        self.assertEqual(self._with(self._fake_run({}), lambda: ap.step_thumbnail(7, self.folder, False)), "awaiting_thumbnail")
+        cid = ts.load(self.folder)["candidate_ids"][0]
+        import studio
+        import argparse
+        args = argparse.Namespace(vol="7", resolve_num=None, channel="", adopt=cid, dry_run=False)
+        with patch.object(studio, "resolve_vol", return_value={"ok": True, "folder": str(self.folder), "vol": 7}), \
+                patch.object(studio, "emit", lambda obj: None):
+            self.assertEqual(studio.run_thumbnail_select(args), 0)
+        r = self._with([patch("codex_imagegen.run", side_effect=AssertionError("must not regenerate"))], lambda: ap.step_thumbnail(7, self.folder, False))
+        self.assertIs(r, True)
+        import app_orchestrator as o
+        self.assertTrue(o._stage_artifact_done("thumbnail", self.folder, 7))
+
+    def test_thumbnail_is_not_backfilled_from_ledger(self):
+        import app_orchestrator as o
+        with patch.object(o, "_ledger_stage_done", return_value=True):
+            self.assertFalse(o._stage_artifact_done("thumbnail", self.folder, 7))  # 旧 step の常時成功記録では done にしない
 
     def test_model_is_not_silently_substituted(self):
         with patch.object(ap, "_load_dashboard_config", return_value={"image_model": "gpt-image-2.5-x"}):
