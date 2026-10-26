@@ -804,18 +804,19 @@ def find_video_file(folder):
 
 
 def find_thumbnail(folder):
-    """サムネイル画像を解決。優先順位:
-      1. サムネイル.jpg / サムネイル.png （日本語名の明示指定）
-      2. プロジェクトフォルダ直下の thumbnail.jpg / thumbnail.png
-      3. vol*.jpg / vol*.png （旧仕様の vol-prefix 命名）
-    """
+    """投稿するサムネ。段階 5: AI 選定の記録があれば採用画像（thumbnail_selected.jpg）だけを返す（ハッシュ不一致は None）。
+    記録が無い旧 vol は サムネイル.* / thumbnail.* のみ（vol*.jpg 等の背景画像へのフォールバックはしない）。"""
     folder = Path(folder)
+    try:
+        import thumbnail_selection as _ts
+        if (folder / _ts.SELECTION_FILE).exists():
+            ok, _why = _ts.verify(folder)
+            return (folder / _ts.SELECTED_FILE) if ok else None
+    except Exception:
+        return None
     for name in ("サムネイル.jpg", "サムネイル.jpeg", "サムネイル.png", "thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"):
-        p = folder / name
-        if p.exists():
-            return p
-    for pattern in ("vol*.jpg", "vol*.jpeg", "vol*.png"):
-        for f in folder.glob(pattern):
+        f = folder / name
+        if f.exists():
             return f
     return None
 
@@ -905,6 +906,20 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         sys.exit(1)
 
     thumbnail = find_thumbnail(folder)
+    try:
+        import thumbnail_selection as _ts
+        import vps_ledger_sync as _vls_check
+        sel_exists = (Path(folder) / _ts.SELECTION_FILE).exists()
+        ok_sel, why_sel = _ts.verify(folder)
+        if (sel_exists or _vls_check.enabled()) and not ok_sel:
+            # 段階 5: 投稿するサムネは AI 選定で採用した画像だけ（ハッシュ一致）。未選定・不一致なら投稿しない
+            print(f"エラー: 投稿用サムネが確定していません（{why_sel}）。studio.py thumbnail-select --vol {extract_vol_number(folder)} を実行してください")
+            sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"エラー: サムネ選定の照合に失敗しました: {e}")
+        sys.exit(1)
     description = load_description(folder)
 
     # タイトル: 引数 > youtube_title.txt > 既定

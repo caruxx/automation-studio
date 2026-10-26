@@ -25,7 +25,7 @@ SELECTION_FILE = ".thumbnail_selection.json"
 SELECTED_FILE = "thumbnail_selected.jpg"
 CANDIDATE_ROOT = "thumbnail_candidates"
 SCHEMA_VERSION = 1
-_RUN_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_RUN_ID_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # 先頭は英数字（"." / ".." を通さない）
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 
 

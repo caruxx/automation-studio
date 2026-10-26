@@ -77,7 +77,7 @@ def _normalize_result(r) -> Exit:
         return Exit.QUOTA_EXHAUSTED
     if r == "retryable":
         return Exit.RETRYABLE
-    if r == "awaiting_selection":
+    if r in ("awaiting_selection", "awaiting_thumbnail"):
         return Exit.SELECTION_PENDING
     return Exit.FAIL
 
@@ -368,6 +368,8 @@ class StepWorker(StageWorker):
         prev = self.prev_stage(head)
         prev_done = True if prev is None else _stage_artifact_done(prev, folder, vol, channel_id=channel_id)
         self_done = _stage_artifact_done(head, folder, vol, channel_id=channel_id)
+        if head == "thumbnail" and hasattr(_pipe, "_thumbnail_waiting") and _pipe._thumbnail_waiting(folder, vol):
+            return False  # 同じ入力で品質待機中: 人の採用か入力の変化まで再生成しない（費用を使わない）
         return prev_done and not self_done and self._slot_available(channel_id=channel_id)
 
 

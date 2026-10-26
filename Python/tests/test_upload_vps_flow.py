@@ -59,6 +59,8 @@ class UploadVpsFlowTest(unittest.TestCase):
             patch.object(ay, "quota_used_in_window", lambda *a, **k: 0),
             patch.object(ay, "_acquire_upload_lock", return_value=False),
         ]
+        import thumbnail_selection
+        self.patches.append(patch.object(thumbnail_selection, "verify", return_value=(True, "ok")))  # サムネ選定は確定済みとみなす
         for p in self.patches:
             p.start()
         import app_reconcile
@@ -297,6 +299,15 @@ class UploadVpsFlowTest(unittest.TestCase):
             self._run(ledger, bad_meta)
         self.assertEqual(ledger.calls[-1][0], "failed")
         self.assertFalse((self.folder / "youtube_upload.json").exists())
+
+    def test_upload_refuses_without_confirmed_thumbnail_in_vps_mode(self):
+        import thumbnail_selection
+        ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": "2026-12-24T03:00:00", "begin_token": "t"})
+        with patch.object(thumbnail_selection, "verify", return_value=(False, "not_selected (none)")):
+            with self.assertRaises(SystemExit) as cm:
+                self._run(ledger, lambda *a, **k: self.fail("must not upload"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertEqual(ledger.calls, [])  # begin より前に止まる
 
     def test_legacy_path_without_vps(self):
         ledger = FakeLedger(None)  # VPS 未設定

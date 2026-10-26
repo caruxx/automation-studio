@@ -2809,130 +2809,145 @@ def _run_thumbnail_eval_loop(vol: int, folder: Path, out_dir: Path,
     return True
 
 
+def _thumbnail_image_backend(cfg: dict) -> tuple[str, str, bool]:
+    """サムネ候補の生成 backend と model を決める（段階 5）。黙ってモデルを代替しない。
+
+    OpenAI API キーがあれば API で指定モデルを使う（強制できる）。無ければ Codex CLI（モデルを強制できない）で、
+    チャンネル設定 image_model が既定以外ならエラーにする。Returns (backend, model, model_enforced)。"""
+    import thumbnail_selection as _ts
+    model = str(cfg.get("image_model") or os.environ.get("APP_THUMBNAIL_IMAGE_MODEL") or _ts.DEFAULT_IMAGE_MODEL).strip()
+    if os.environ.get("OPENAI_API_KEY"):
+        return "api", model, True
+    if model != _ts.DEFAULT_IMAGE_MODEL:
+        raise ValueError(f"image_model={model} は Codex CLI 経路では強制できません。OPENAI_API_KEY を設定するか "
+                         f"image_model を {_ts.DEFAULT_IMAGE_MODEL} に戻してください（黙って別モデルで生成しません）")
+    return "codex", model, False
+
+
+def _thumbnail_waiting(folder: Path, vol: int) -> bool:
+    """同じ入力で既に全不合格（品質待機）になっている（再生成で費用を使わない）。"""
+    try:
+        import thumbnail_selection as _ts
+        import stage_state as _ss
+        return _ts.load(folder).get("status") == "quality_wait" and _ss.attempted_for_current_input("thumbnail", folder, vol)
+    except Exception:
+        return False
+
+
 def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
-    """サムネ自動生成（P2-5）。Codex（gpt-image）でプロンプト生成。
+    """投稿用サムネの AI 選定（段階 5）: 生成 → 合成 → 採点 → 判定 → 採用（必須工程。既存画像の有無ではスキップしない）。
 
-    出力先:
-      <vol_folder>/thumbnail_candidates/codex_*.png
-      → 先頭 1 枚を <vol_folder>/thumbnail.png に昇格
-
-    既存の thumbnail.png（手動配置 or vol*.jpg）があればスキップ。
-
-    プロバイダ選択（自動サムネ生成は codex 一本化。Flow は削除済み）:
-      env APP_THUMBNAIL_PROVIDERS=codex        → Codex のみ（既定）
-      env APP_THUMBNAIL_PROVIDERS=flow         → 警告のうえ codex にフォールバック
-      env APP_THUMBNAIL_DISABLE=1              → step 全体スキップ
-
-    失敗は upload を止めない（最終的な thumbnail.png が無くても upload は続行可能）。"""
+    採用画像は thumbnail_selected.jpg（投稿はこれだけを使う）。選定記録は .thumbnail_selection.json。
+    全不合格は品質待機（"awaiting_thumbnail" → 終了コード 79）。人は studio.py thumbnail-select --adopt で採用できる。
+    env: APP_THUMB_N_PER_ATTEMPT（既定 4）/ APP_THUMB_MAX_ATTEMPTS（3）/ APP_THUMB_MAX_TOTAL_GEN（12）/
+         APP_THUMB_SCORE_THRESHOLD（80）/ APP_THUMB_CTR_THRESHOLD（7.0）/ APP_THUMB_SIMILARITY_MAX（25）/
+         APP_THUMBNAIL_RESELECT=1（採用済み・品質待機でも選び直す）"""
+    import thumbnail_selection as _ts
+    import stage_state as _ss
     print(f"\n{'='*60}")
-    print(f"  {STEP_LABELS.get('thumbnail', '5.5/7 サムネイル自動生成')}")
+    print(f"  {STEP_LABELS.get('thumbnail', 'サムネイル選定')}")
     print(f"{'='*60}")
     if os.environ.get("APP_THUMBNAIL_DISABLE", "").strip() in ("1", "true", "yes"):
-        print("  ⏭ APP_THUMBNAIL_DISABLE=1 によりスキップ")
+        print("  警告: APP_THUMBNAIL_DISABLE は段階 5 で廃止しました（サムネ選定は必須工程）。無視して続行します")
+    reselect = os.environ.get("APP_THUMBNAIL_RESELECT", "").strip() in ("1", "true", "yes")
+    ok, why = _ts.verify(folder)
+    if ok and not reselect and not _ss.is_stale("thumbnail", folder, vol):
+        rec = _ts.load(folder)
+        print(f"  採用済み: {rec.get('selected_id')}（{rec.get('decided_by')}）")
         return True
-    # 既存のサムネがあればスキップ
-    final_path = folder / "thumbnail.png"
-    existing = final_path.exists() or any(folder.glob("vol*.jpg")) or (folder / "サムネイル.jpg").exists()
-    if existing:
-        print(f"  ⏭ 既存サムネあり → スキップ ({final_path if final_path.exists() else next(folder.glob('vol*.jpg'), None) or folder/'サムネイル.jpg'})")
-        return True
-
-    providers_raw = (os.environ.get("APP_THUMBNAIL_PROVIDERS") or "codex").lower()
-    raw_list = [p.strip() for p in providers_raw.split(",") if p.strip()]
-    if "flow" in raw_list:
-        print("  ⚠ Flow は削除済み → codex で生成します")
-    # Flow は除外。残るは codex のみ（自動サムネ生成は codex 一本化）
-    providers = [p for p in raw_list if p == "codex"]
-    if not providers:
-        # raw に flow しか無かった場合は codex にフォールバック、完全に空なら従来どおりスキップ
-        if "flow" in raw_list:
-            providers = ["codex"]
-        else:
-            print(f"  ⚠ APP_THUMBNAIL_PROVIDERS={providers_raw!r} が無効 → step スキップ")
-            return True
-
-    thumb_refs: list[Path] = []
+    if not reselect and _thumbnail_waiting(folder, vol):
+        print("  同じ入力で全候補が不合格のため品質待機中です。studio.py thumbnail-select --adopt <候補> で採用するか、"
+              "APP_THUMBNAIL_RESELECT=1 で選び直してください")
+        return "awaiting_thumbnail"
+    cfg = _load_dashboard_config()
     try:
-        thumb_cfg = _load_dashboard_config()
-        try:
-            thumb_refcount = int(os.environ.get("APP_THUMBNAIL_REFCOUNT")
-                                 or os.environ.get("APP_BGIMAGE_REFCOUNT", "3"))
-        except ValueError:
-            thumb_refcount = 3
-        thumb_refs = _gather_reference_images(thumb_cfg, folder, thumb_refcount)
-    except Exception as e:
-        print(f"  ⚠ サムネ参照画像の収集失敗: {e}")
-
-    prompt = _build_thumbnail_prompt(folder, ref_images=thumb_refs)
-    print(f" prompt: {prompt[:180]}{'…' if len(prompt) > 180 else ''}")
-    out_dir = folder / "thumbnail_candidates"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # D5: 自己評価付き反復生成ループ（既定OFF・APP_THUMB_EVAL_LOOP=1 でオプトイン）。
-    # ON 時は生成→Vision採点→合格まで再生成＋弱点還流。OFF 時は従来の単発生成（下記）と完全一致。
-    if (os.environ.get("APP_THUMB_EVAL_LOOP") or "").strip() in ("1", "true", "yes"):
-        looped = _run_thumbnail_eval_loop(vol, folder, out_dir, final_path, prompt, thumb_refs)
-        if looped is not None:
-            # ループが走った（昇格できなくても upload は止めない＝従来の non-fatal 方針）
-            return True
-        print("  ⚠ eval-loop 利用不可 → 従来の単発生成にフォールバック")
-
-    procs: list = []
-    # Codex（API 並列・OK）— 自動サムネ生成は codex 一本化（Flow は削除済み）
-    if "codex" in providers:
-        codex_max_parallel = os.environ.get("APP_THUMBNAIL_CODEX_MAX_PARALLEL", "1")
-        codex_cmd = [
-            sys.executable, "-u", str(BASE / "codex_imagegen.py"),
-            "--output-dir", str(out_dir),
-            "--max-parallel", codex_max_parallel,
-            "--model", os.environ.get("APP_THUMBNAIL_IMAGE_MODEL", "gpt-image-2"),
-            "--size", os.environ.get("APP_THUMBNAIL_IMAGE_SIZE", "1536x1024"),
-            "--quality", os.environ.get("APP_THUMBNAIL_IMAGE_QUALITY", "medium"),
-            "--prompt", f"{prompt}::vol{vol}_thumb",
-        ]
-        for r in thumb_refs:
-            codex_cmd += ["--reference-image", str(r)]
-        if thumb_refs:
-            print(f" codex reference: {len(thumb_refs)} 枚 ({', '.join(p.name for p in thumb_refs)})")
-        try:
-            p = subprocess.Popen(codex_cmd, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
-            procs.append(("codex", p))
-            print(f" codex_imagegen.py を起動 (pid={p.pid})")
-        except Exception as e:
-            print(f"  ❌ Codex 起動失敗: {e}")
-
-    # 起動した生成プロセスの終了を待つ（タイムアウト 600s）
-    results = {}
-    for name, p in procs:
-        try:
-            stdout, _ = p.communicate(timeout=600)
-            results[name] = (p.returncode, (stdout or "")[-300:])
-            tag = "" if p.returncode == 0 else "❌"
-            print(f"  {tag} {name}: exit={p.returncode}")
-        except subprocess.TimeoutExpired:
-            p.terminate()
-            results[name] = (-1, "timeout")
-            print(f" {name}: timeout 600s")
-
-    # 候補を thumbnail.png に昇格（先頭 1 枚を選ぶ。codex 生成物のみ）
-    candidates = []
-    for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
-        candidates.extend(out_dir.glob(ext))
-    if not candidates:
-        print(f"  ⚠ サムネ候補が生成されませんでした（results={results}）")
-        # upload を止めない
-        return True
-    # codex 一本化のため優先順位は不要。最も古い生成物を先頭に（mtime 昇順）
-    candidates.sort(key=lambda p: p.stat().st_mtime)
-    chosen = candidates[0]
+        backend, model, enforced = _thumbnail_image_backend(cfg)
+    except ValueError as exc:
+        print(f"  {exc}")
+        return False
     try:
-        import shutil as _sh
-        _sh.copy2(chosen, final_path)
-        print(f" {chosen.name} → {final_path.name}（残り {len(candidates) - 1} 件は thumbnail_candidates に保管）")
+        refcount = int(os.environ.get("APP_THUMBNAIL_REFCOUNT") or os.environ.get("APP_BGIMAGE_REFCOUNT", "3"))
+    except ValueError:
+        refcount = 3
+    try:
+        gen_refs = _gather_reference_images(cfg, folder, refcount)
     except Exception as e:
-        print(f"  ⚠ thumbnail.png コピー失敗: {e}")
-    return True
+        print(f"  サムネ参照画像の収集失敗（参照なしで続行）: {e}")
+        gen_refs = []
+    prompt_base = _build_thumbnail_prompt(folder, ref_images=gen_refs)
+    size = os.environ.get("APP_THUMBNAIL_IMAGE_SIZE", "1536x1024")
+    quality = os.environ.get("APP_THUMBNAIL_IMAGE_QUALITY", "medium")
+
+    def generate(bg_dir: Path, attempt: int, n: int, hint: str):
+        import codex_imagegen
+        text = hint or prompt_base
+        prompts = [(text, f"a{attempt}_bg{i}") for i in range(1, n + 1)]  # Codex CLI は n を無視するので 1 枚ずつ頼む
+        try:
+            results = codex_imagegen.run(prompts, bg_dir, max_parallel=min(n, 4), reference_images=gen_refs,
+                                         model=model, size=size, quality=quality, backend=backend, n=1)
+        except Exception as exc:
+            return _ts.GenerateResult([], model=model, backend=backend, model_enforced=enforced,
+                                      infra_error=f"{type(exc).__name__}")
+        paths = []
+        for r in results:
+            if r.get("ok"):
+                paths.extend(Path(x) for x in (r.get("paths") or [r.get("path")]) if x)
+        err = ""
+        if not paths:
+            low = " ".join(str(r.get("error") or "") for r in results).lower()
+            err = "quota" if ("quota" in low or "rate limit" in low) else ("auth" if ("401" in low or "unauthor" in low) else "no_images")
+        return _ts.GenerateResult(paths, model=model, backend=backend, model_enforced=enforced, infra_error=err)
+
+    def compose(bg: Path, out: Path):
+        from app_image_composite import compose_candidate
+        compose_candidate(bg, out, vol, cfg)
+
+    competitor: list = []
+    try:
+        import app_benchmark_thumbnail as _bt
+        competitor = [Path(p) for p in (_bt.get_picked_paths(limit=4) or []) if Path(p).exists()]
+    except Exception:
+        competitor = []
+    title = ""
+    tf = folder / "youtube_title.txt"
+    if tf.exists():
+        lines = [ln for ln in tf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        title = lines[0].strip() if lines else ""
+    concept = (folder / "concept.txt").read_text(encoding="utf-8").strip() if (folder / "concept.txt").exists() else ""
+
+    def score(paths: list):
+        from app_thumbnail_scoring import score_thumbnails
+        try:
+            sc = score_thumbnails(generated_paths=paths, competitor_paths=competitor[:4], video_title=title or folder.name,
+                                  video_concept=concept, channel_name=str(cfg.get("channel_name") or ""),
+                                  persona=str(cfg.get("persona") or ""), cli_cmd=_load_suno_config().get("claude_cli", "claude"),
+                                  timeout=600)
+        except Exception as exc:
+            return _ts.ScoreOutput([], error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return _ts.ScoreOutput(sc.get("evaluations") or [], backend=sc.get("backend") or "unknown", error=sc.get("error") or "")
+
+    res = _ts.run_selection(
+        folder, vol, generate=generate, score=score, compose=compose, concept_hint=prompt_base,
+        max_attempts=_eval_loop_env_int("APP_THUMB_MAX_ATTEMPTS", 3),
+        n_per_attempt=_eval_loop_env_int("APP_THUMB_N_PER_ATTEMPT", 4),
+        max_total=_eval_loop_env_int("APP_THUMB_MAX_TOTAL_GEN", 12),
+        score_threshold=_eval_loop_env_int("APP_THUMB_SCORE_THRESHOLD", 80),
+        ctr_threshold=_eval_loop_env_float("APP_THUMB_CTR_THRESHOLD", 7.0),
+        similarity_max=_eval_loop_env_int("APP_THUMB_SIMILARITY_MAX", 25),
+    )
+    if res.status == "selected":
+        print(f"  採用: {res.selected_id}（backend={backend}, model={model}, 強制={'可' if enforced else '不可'}）")
+        return True
+    if res.status == "quality_wait":
+        try:
+            _ss.mark_attempted("thumbnail", folder, vol)
+        except Exception:
+            pass
+        print(f"  全候補が不合格のため品質待機にします（run={res.run_id}）。"
+              f"コンタクトシート: {_ts.CANDIDATE_ROOT}/{res.run_id}/a*/contact_sheet.jpg")
+        return "awaiting_thumbnail"
+    print(f"  サムネ候補を生成できませんでした（{res.reason}）")
+    return False
 
 
 def _force_reupload_enabled() -> bool:
@@ -3373,6 +3388,11 @@ def main():
                     os.environ.pop(force_env, None)
                 else:
                     os.environ[force_env] = prev_force
+        if ok == "awaiting_thumbnail":
+            _ledger_call(ledger_sync, "report_step", args.vol, s, "pending", "サムネ品質待機（AI 選定で全候補が不合格）")
+            print(f"◀ STEP {s} 結果: THUMBNAIL_SELECTION_PENDING")
+            print(f"候補から採用: python3 studio.py thumbnail-select --vol {args.vol} --adopt <候補 id>")
+            sys.exit(EXIT_SELECTION_PENDING)
         if ok == "awaiting_selection":
             _ledger_call(ledger_sync, "report_step", args.vol, s, "pending",
                          {"human": "楽曲のハート選択待ち", "quality": "品質待機（AI 選曲で全候補が不合格）",
