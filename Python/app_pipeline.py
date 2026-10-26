@@ -2865,8 +2865,8 @@ def step_thumbnail(vol: int, folder: Path, via_api: bool, **kw):
         print(f"  採用済み: {rec.get('selected_id')}（{rec.get('decided_by')}）")
         return True
     explicit = os.environ.get("APP_THUMBNAIL_EXPLICIT", "").strip() == "1"
-    if not reselect and not explicit and not ok and _thumbnail_posted(folder):
-        print("  投稿済みの vol のため、自動のサムネ選定は行いません（選ぶ場合は studio.py thumbnail-select）")
+    if not reselect and not explicit and _thumbnail_posted(folder):
+        print("  投稿済みの vol のため、自動のサムネ選定・再選定は行いません（選ぶ場合は studio.py thumbnail-select）")
         return True
     if not reselect and _thumbnail_waiting(folder, vol):
         print("  同じ入力で全候補が不合格のため品質待機中です。studio.py thumbnail-select --adopt <候補> で採用するか、"

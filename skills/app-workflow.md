@@ -111,7 +111,7 @@ bash Python/start.sh       # http://localhost:8888/
 - 新しい背景で候補を生成し、`thumbnail_composition` で文字合成して採点し、1 枚を `thumbnail_selected.jpg` に確定（選定記録 `.thumbnail_selection.json`）
 - 全候補不合格は品質待ち（終了コード 79）。`python3 Python/studio.py thumbnail-select --vol <N> --adopt <候補ID>` で人が確定
 - env: `APP_THUMBNAIL_RESELECT=1` で選定やり直し。`APP_THUMBNAIL_DISABLE` は無視（警告のみ）
-- upload は確定サムネが検証に通らないと始めない（選定記録あり、または VPS 連携時）
+- 新規投稿は確定サムネが検証に通らないと始めない（VPS 連携の有無によらない）。投稿済み marker の vol は snippet 更新だけ通す
 - 完了条件: `thumbnail_selection.verify` 合格 → 10/11 ✓。詳細 [app-thumbnail.md](./app-thumbnail.md)
 
 ### STEP 11: アップロード（動画詳細「アップロード」タブ）

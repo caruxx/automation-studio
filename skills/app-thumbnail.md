@@ -86,7 +86,8 @@ python3 Python/studio.py thumbnail-select --vol <N> --adopt <run_id>/a<N>/a<N>_<
 
 - 旧 `step_thumbnail` は常に成功を記録していたため、thumbnail だけは台帳の done で完了を補わない。未投稿の旧 vol は投稿前に選定が走る。
 - 投稿済み（`youtube_upload.json` に video_id あり）の旧 vol は、選定記録がなくても snippet 更新ができる。パイプラインとオーケストレータはこの vol で自動選定しない。選ぶ場合は `studio.py thumbnail-select` を明示的に実行する。
-- 投稿途中で再開待ちの旧 vol は、VPS 連携時に確定サムネが必要になる。反映は再開待ちの投稿が無いときに行う。
+- 投稿途中で再開待ちの旧 vol も、送信の再開には確定サムネが必要になる。反映は再開待ちの投稿が無いときに行う。
+- marker に video_id があっても、新規送信へ進む場合（YouTube 側で動画が削除済みなど）は確定サムネが必要になる。
 - UI で手作りした `サムネイル.jpg` をそのまま投稿に使う経路は無い。使いたい場合は選定の候補から `--adopt` で確定する。
 
 ## 関連

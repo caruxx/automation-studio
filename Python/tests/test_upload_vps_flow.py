@@ -318,6 +318,17 @@ class UploadVpsFlowTest(unittest.TestCase):
                 self._run(ledger, lambda *a, **k: self.fail("must not upload"))
         self.assertEqual(cm.exception.code, 1)
 
+    def test_stale_marker_does_not_let_new_upload_skip_selection(self):
+        import thumbnail_selection
+        import app_reconcile
+        (self.folder / "youtube_upload.json").write_text(json.dumps({"video_id": "vidDELETED"}), encoding="utf-8")
+        ledger = FakeLedger(None)  # VPS 無効、YouTube 側では動画が削除済み（照合は既存なし）
+        with patch.object(thumbnail_selection, "verify", return_value=(False, "no_selection")), \
+                patch.object(app_reconcile, "find_existing_upload", return_value={"exists": False, "checked": {"uploads": 0}}):
+            with self.assertRaises(SystemExit) as cm:
+                self._run(ledger, lambda *a, **k: self.fail("must not upload"))
+        self.assertEqual(cm.exception.code, 1)
+
     def test_posted_legacy_vol_updates_without_selection_in_vps_mode(self):
         import thumbnail_selection
         (self.folder / "youtube_upload.json").write_text(json.dumps({"video_id": "vidOLD"}), encoding="utf-8")

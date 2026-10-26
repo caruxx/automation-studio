@@ -922,6 +922,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         sys.exit(1)
 
     thumbnail = find_thumbnail(folder)
+    thumb_confirmed = False
     try:
         import thumbnail_selection as _ts
         import vps_ledger_sync as _vls_check
@@ -937,6 +938,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             # 段階 5: 投稿するサムネは AI 選定で採用した画像だけ（ハッシュ一致）。未選定・不一致なら投稿しない
             print(f"エラー: 投稿用サムネが確定していません（{why_sel}）。studio.py thumbnail-select --vol {extract_vol_number(folder)} を実行してください")
             sys.exit(1)
+        thumb_confirmed = bool(ok_sel)
         if ok_sel:
             # 照合した画像を投稿単位のスナップショットに固定し、入力ハッシュと送信に同じ実体を使う（照合後の差し替えを送らない）
             thumbnail = _snapshot_selected_thumbnail(folder, _ts)
@@ -1181,6 +1183,12 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                 # 誤検知より二重投稿防止を優先。読み取り失敗時は実アップロードを止める。
                 sys.exit(EXIT_RETRYABLE)
 
+        if not thumb_confirmed:
+            # 照合を免除したのは投稿済み marker の snippet 更新のためだけ。新規送信へ進むなら確定サムネ必須
+            print(f"エラー: 新規投稿には確定したサムネが必要です。studio.py thumbnail-select --vol {vol_num} を実行してください", flush=True)
+            if vps_mode:
+                _ledger.upload_failed(vol_num, input_hash, "thumbnail_not_confirmed")
+            sys.exit(1)
         req = full_req
         req.publish_at = schedule
         req.privacy = privacy
