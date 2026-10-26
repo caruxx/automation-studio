@@ -179,7 +179,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 > **曲名焼き込み（`--burn-titles always`）** — 各曲の区間に曲名を**常時焼き込み**（drawtext、画像境界∪曲境界で分割→GOP→TS 連結）。書式は per-channel `.app_channel_config.json` の `burn_titles` ブロック（`font`/`fontsize`/`color`/`prefix`/`x`/`y`/`border`）で定義。mov_text ソフト字幕も併存。
 | 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py |
 | 9 | `localization` | （自動） | 多言語メタ（非 fatal） | app_pipeline.py `step_localization` |
-| 10 | `thumbnail` | 画像タブ | `thumbnail.png` / `vol*.jpg` / `サムネイル.jpg` | app_channel_thumbnail.py（画像合成が使えない時のフォールバック） |
+| 10 | `thumbnail` | 画像タブ | `.thumbnail_selection.json` + `thumbnail_selected.jpg`（`thumbnail_selection.verify` 合格） | thumbnail_selection.py（候補生成・採点・確定。全不合格は品質待ち 79） |
 | 11 | `upload` | アップロードタブ | `youtube_upload.json` | app_youtube.py |
 
 判定ロジックは [index.html](web/static/index.html) の `WORKFLOW_STEPS` 定数、自動実行順は `app_pipeline.py` の `STEPS` / `STEP_LABELS` / `STEP_FUNCS` / `RETRY_POLICY`（4箇所一貫更新）で定義。
@@ -293,7 +293,7 @@ YouTube Analytics API v2 (`reports.query`) をチャンネル別 OAuth トーク
 | POST | `/api/scene-text/suggest-from-benchmark` | `{mode:"titles"\|"vision", count}` → ベンチ（ライバル）からトーン/例/禁止語を提案 |
 | POST | `/api/channel-thumbnail/start` | （フォールバック）Vision 駆動の AI サムネを `{vol}/Image/` に一括生成 + スコアリング |
 
-> サムネの**正規フロー** = `bgimage`(背景・ベンチ参照) → `psd_composite`(画像合成・Pillow)。`channel-thumbnail`（AI 直接生成）は合成が使えない時のフォールバック。
+> サムネの**正規フロー** = `bgimage`(背景・ベンチ参照) → `psd_composite`(画像合成・Pillow) で `サムネイル.jpg` / `vol{N}.jpg` を作り、投稿用サムネは `thumbnail`（AI 選定）が候補を生成・採点して `thumbnail_selected.jpg` に確定する。投稿はこの確定画像だけを使う。全候補不合格は品質待ち（終了コード 79）で止まり、`studio.py thumbnail-select --vol N --adopt <候補ID>` で人が確定する。画像モデルはチャンネル設定 `image_model`（既定 gpt-image-2）。詳細は [skills/app-thumbnail.md](skills/app-thumbnail.md)。
 
 ### システム
 

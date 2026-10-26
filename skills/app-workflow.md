@@ -107,12 +107,12 @@ bash Python/start.sh       # http://localhost:8888/
 - 詳細: [Python/app_pipeline.py](../Python/app_pipeline.py) `step_localization()`
 - 完了条件: 多言語メタが生成される（非 fatal・失敗しても upload は継続）→ 9/11 ✓
 
-### STEP 10: サムネイル自動生成（フォールバック・動画詳細「画像」タブ）
-- codex でサムネ候補を生成 → 候補 1 枚を `thumbnail.png` に昇格（自動サムネは codex 一本化済み。Flow 経路は廃止）
-- 既存サムネ（手動配置 `vol*.jpg` / `サムネイル.jpg`）があればスキップ
-- env: `APP_THUMBNAIL_PROVIDERS=codex` / `APP_THUMBNAIL_DISABLE=1`
-- 失敗しても upload は止めない（手動でサムネを当てれば公開可能）
-- 完了条件: `thumbnail.png` または `vol*.jpg` または `サムネイル.jpg` のいずれか → 10/11 ✓
+### STEP 10: サムネ AI 選定（動画詳細「画像」タブ）
+- 新しい背景で候補を生成し、`thumbnail_composition` で文字合成して採点し、1 枚を `thumbnail_selected.jpg` に確定（選定記録 `.thumbnail_selection.json`）
+- 全候補不合格は品質待ち（終了コード 79）。`python3 Python/studio.py thumbnail-select --vol <N> --adopt <候補ID>` で人が確定
+- env: `APP_THUMBNAIL_RESELECT=1` で選定やり直し。`APP_THUMBNAIL_DISABLE` は無視（警告のみ）
+- upload は確定サムネが検証に通らないと始めない（選定記録あり、または VPS 連携時）
+- 完了条件: `thumbnail_selection.verify` 合格 → 10/11 ✓。詳細 [app-thumbnail.md](./app-thumbnail.md)
 
 ### STEP 11: アップロード（動画詳細「アップロード」タブ）
 - サムネ・タイトル・説明・タグを**保存ファイルから自動ロード**してプレビュー

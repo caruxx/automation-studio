@@ -204,7 +204,7 @@ bash Python/start.sh --replace
 | 「後処理して」 | `python3 app_process_tracks.py <folder>` |
 | 「背景画像を作って」 | `curl POST /api/bgimage/run {"video_name":"..."}` または `python3 app_pipeline.py <vol> --only bgimage` |
 | 「サムネを合成して」「画像合成して」 | `python3 app_pipeline.py <vol> --only psd_composite`（bgimage 後。Pillow 合成。`<vol_folder>/vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し） |
-| 「サムネを AI で作って」「サムネを自動生成して」 | `python3 app_pipeline.py <vol> --only thumbnail`（ベンチマーク分析 concept/visual_direction から**プロンプトを動的構築** → codex で生成 → `thumbnail.png` に昇格。`APP_THUMBNAIL_PROVIDERS=flow` 指定時も警告のうえ codex にフォールバック。詳細 [skills/app-thumbnail.md](skills/app-thumbnail.md)。⚠ 既に `サムネイル.jpg`(PSD合成)があるとスキップ） |
+| 「サムネを AI で作って」「サムネを自動生成して」「サムネを選んで」 | `python3 Python/studio.py thumbnail-select --vol <N>`（新しい背景で候補を生成・合成・採点し `thumbnail_selected.jpg` に確定。全不合格は品質待ち 79、`--adopt <候補ID>` で人が確定。投稿はこの確定画像だけを使う。詳細 [skills/app-thumbnail.md](skills/app-thumbnail.md)） |
 | 「参照画像フォルダを変更して」 | `python3 Python/studio.py config set channel.reference_image_dir <path> --channel <id>`（`.app_channel_config.json` の `reference_image_dir`）。Web UI の設定タブからも変更可 |
 | 「タイトルを提案して」 | `curl POST /api/videos/.../suggest {"mode":"titles"}` |
 | 「書き出して」 | `python3 app_pipeline.py <vol> --only export`（FFmpeg。配置は自動） |

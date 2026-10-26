@@ -1,81 +1,87 @@
-# app-thumbnail: サムネイル自動生成（パイプライン STEP）
+# app-thumbnail: サムネ AI 選定（パイプライン STEP）
 
-> 実装: `Python/app_pipeline.py` `step_thumbnail`（描画）/ `_build_thumbnail_prompt`（プロンプト構築）/ `Python/app_image_prompt.py`（visual brief 正規化）/ `Python/codex_imagegen.py`（Codex/gpt-image）
-> STEP キー: `thumbnail`（`STEPS` 内）。出力: `<vol_folder>/thumbnail.png`
-
-> ⚠ **自動サムネ生成は codex 一本化済み**。D8 で Flow/Midjourney は完全撤去され、`/api/flow/*` も存在しない（手動 UI 含め Flow 経路は無い）。
+> 実装: `Python/app_pipeline.py` `step_thumbnail` / `Python/thumbnail_selection.py`（選定の中核）/ `Python/app_image_composite.py` `compose_candidate` / `Python/app_thumbnail_scoring.py` `score_thumbnails` / `Python/codex_imagegen.py`
+> STEP キー: `thumbnail`（`STEPS` 内）。仕様: `docs/SPEC_REVISION_DRAFT_2026-10-25.md` §3.6
 
 ## 目的
 
-YouTube サムネイルを AI で自動生成する。**ベンチマーク分析（concept / visual_direction）からプロンプト文を動的構築**し、Codex（gpt-image-2）で生成、候補から 1 枚を `thumbnail.png` に昇格する。
+投稿に使うサムネを、AI が候補を作って採点し 1 枚に確定する。投稿（upload）は **確定済みの `thumbnail_selected.jpg` だけ** を使う。
 
-> ⚠ 背景画像（`step_bgimage` → [app-bgimage.md](./app-bgimage.md)）とは**別 step・別ロジック**。背景画像は「参照画像を渡して色/光を寄せる」が固定テンプレ寄り、サムネは「ベンチ分析からプロンプト文を組み立てる」動的構築。混同しない。
-> ⚠ 画像合成（`step_psd_composite` → [image.md](./image.md)）が先に `サムネイル.jpg` を出していれば、この AI サムネ生成は**スキップ**される（フォールバックとして共存）。
+## 流れ
 
-## プロンプトの作り方（動的構築・固定テンプレではない）
+1. 新しい背景画像を候補数ぶん生成する（`codex_imagegen.run`、1 プロンプト 1 枚、ファイル名 `a{attempt}_bg{i}`）。
+2. 各背景をチャンネル設定 `thumbnail_composition` で文字合成し、候補にする（`compose_candidate`）。
+3. 候補を `score_thumbnails` で採点する（ベンチマーク参照画像つき）。
+4. しきい値を満たす最良の候補を採用し、`thumbnail_selected.jpg` にコピーしてハッシュを再確認する。
+5. 不合格なら評価の改善点を次の試行のヒントにして再生成する。
 
-`_build_thumbnail_prompt(folder)` が以下の**5段優先**で `parts[]` を積み上げ、`". ".join(parts)` を concept 本文にする：
+既定の上限は次のとおり。
 
-1. `<vol_folder>/concept.txt`（per-vol 日本語コンセプト・最優先）
-2. `app_benchmark_concept.get_aggregate()` の `recommendation_for_self.vibe_one_line`
-3. `~/.config/{app_id}/benchmark/thumbnail.json` の `analysis.aggregate.recommendation_for_self.vibe_one_line`（= thumbnail_axis）
-4. `~/.config/{app_id}/competitor_analysis_cache.json` の `analysis.visual_direction`（time_of_day / atmosphere / composition / color_palette[:3] / subjects[:3] を ` | ` 連結 + avoid[:3]）
-5. どれも空なら dashboard config の `persona[:200]` を fallback
+| 項目 | 既定 |
+|------|------|
+| 試行回数 | 3 |
+| 1 試行あたりの候補 | 4 |
+| 候補の総数上限 | 12 |
+| 採点しきい値 | 80 |
+| 予測 CTR しきい値 | 7.0 |
+| 類似度の上限 | 25 |
 
-→ さらに `app_image_prompt.normalize_visual_direction(analysis, thumbnail_axis)` で competitor analysis と thumbnail aggregate から **subject / background / lighting / style / camera / atmosphere / viewer_hooks / avoid / transform** の構造化 visual brief を抽出し、`build_gpt_image2_prompt(concept=body, visual_direction=visual, for_flow=False, include_text_overlay=False)` でラベル付き多行プロンプト（`Subject: … / Background/context: … / Lighting: … / Constraints: 16:9 …; no text overlay`）を生成。
+## 出力
 
-- `app_image_prompt` の import に失敗した場合は `body + "Cinematic photorealistic 16:9 thumbnail … no text overlay, no logo, no watermark."` の簡易 fallback。
-- **要点**: ベンチマークの concept / visual_direction を参照してプロンプト文を動的に組み立てる ＝「ベンチ参照 → プロンプト作成 → 生成」の認識どおり。
+| パス | 内容 |
+|------|------|
+| `thumbnail_candidates/<run_id>/a<N>/a<N>_<i>.jpg` | 候補画像。試行ごとにコンタクトシートも出す |
+| `thumbnail_selected.jpg` | 採用画像。投稿はこれだけを使う |
+| `.thumbnail_selection.json` | 選定記録 |
 
-## 参照画像（picked、limit=1）
+選定記録の主なキーは `candidate_ids, candidate_hashes, selected_id, selected_hash, rejected_reasons, model, model_enforced, backend, judge_backend, thresholds, predicted_ctr, selection_revision, history`。
 
-Codex に `app_benchmark_thumbnail.get_picked_paths(limit=1)` の先頭 1 枚を `--reference-image` として渡す（`benchmark/thumbnail.json` の `picked[]` に対応するローカル画像）。
+`サムネイル.jpg` と `vol{N}.jpg` は書き換えない。書き出し（render）の入力を変えないためである。
 
-> ⚠ 背景画像は `get_picked_paths(limit=ref_count)`（複数）かつ reference_image_dir / rival_channels フォールバックを持つが、**サムネは picked のみ・limit=1 固定**。reference_image_dir / rival プールのフォールバックは無い。
+## 完了判定
 
-## 生成プロバイダ（Codex を subprocess 起動）
+`thumbnail_selection.verify` が次をすべて満たすときだけ完了とする。
 
-プロバイダは env `APP_THUMBNAIL_PROVIDERS`（**既定 `codex`**。自動サムネ生成は codex 一本化済み）。`flow` を指定すると「⚠ Flow は削除済み → codex で生成します」と警告のうえ codex にフォールバックする。値が完全に空・無効なときだけ step をスキップ。
+- 状態が `selected` で、`selected_id` が候補一覧にあり、現在の run のディレクトリ配下にある。
+- `thumbnail_selected.jpg` が存在し、そのハッシュが `selected_hash` と候補ハッシュに一致する。
 
-> ⚠ Flow（`flow_automation.py`）は D8 で完全撤去（`/api/flow/*` も廃止）。残っているのは `flow` 指定時の後方互換警告のみ。
+## 全候補不合格のとき（品質待ち）
 
-### Codex（`codex_imagegen.py`）
+全試行で採用候補が出なければ、工程は品質待ちで止まる。
+
+- パイプラインは保留「サムネ品質待機」を報告し、終了コード 79 で止まる。
+- オーケストレータは `SELECTION_PENDING` として扱い、同じ入力のまま再実行しない。
+- 採点そのものの失敗は `score_failure`、生成基盤の失敗は `generation_failure` として区別し、再生成しない。
+
+人が候補を選んで確定するには次を使う。
+
+```bash
+python3 Python/studio.py thumbnail-select --vol <N> --adopt <run_id>/a<N>/a<N>_<i>.jpg
 ```
---output-dir <vol_folder>/thumbnail_candidates
---max-parallel <APP_THUMBNAIL_CODEX_MAX_PARALLEL 既定1>
---model <APP_THUMBNAIL_IMAGE_MODEL 既定 gpt-image-2>
---size <既定 1536x1024>  --quality <既定 medium>
---prompt "<prompt>::vol{N}_thumb"   # ::vol{N}_thumb は codex_imagegen の出力ファイル名コンベンション
-```
 
-`Popen` を `communicate(timeout=600)` で待機。
+`--adopt` なしで実行すると選定をやり直す。`--dry-run` は実行内容だけを表示する。終了コードは成功 0、品質待ち 79、失敗 1、引数誤り 2。
 
-## 出力・候補昇格
+## 画像モデル
 
-- 候補は `<vol_folder>/thumbnail_candidates/` に `*.png/*.jpg/*.jpeg/*.webp`。
-- **mtime 昇順**でソートし、**先頭 1 枚を `<vol_folder>/thumbnail.png` に昇格**（`shutil.copy2`）。codex 一本化のため `_rank` のようなプロバイダ優先順位は廃止。
-- 候補ゼロでも警告のみで `return True`（**upload を止めない**）。
+チャンネル設定 `image_model`（既定 `gpt-image-2`）で背景生成のモデルを決める。
 
-## スキップ条件
+- `OPENAI_API_KEY` があれば API 経路でそのモデルを使い、記録の `model_enforced` を真にする。
+- Codex CLI 経路ではモデルを強制できないため、既定以外を指定するとエラーにする。
 
-- `APP_THUMBNAIL_DISABLE=1`
-- `<vol_folder>/thumbnail.png` 既存、または `vol*.jpg` 既存、または `サムネイル.jpg` 既存（= PSD 合成が先に出力済み）
+## 環境変数
 
-## 環境変数まとめ
+| 変数 | 役割 |
+|------|------|
+| `APP_THUMBNAIL_RESELECT=1` | 確定済みでも選定をやり直す |
+| `APP_THUMBNAIL_DISABLE` | 無視する（警告のみ）。投稿に確定サムネが必須のため |
 
-| 変数 | 既定 | 役割 |
-|------|------|------|
-| `APP_THUMBNAIL_PROVIDERS` | `codex` | 実質 `codex` のみ。`flow` 指定は警告のうえ codex にフォールバック（Flow 経路は削除済み） |
-| `APP_THUMBNAIL_DISABLE` | (未設定) | `1` で step 全体スキップ |
-| `APP_THUMBNAIL_CODEX_MAX_PARALLEL` | `1` | codex の並列数 |
-| `APP_THUMBNAIL_IMAGE_MODEL` | `gpt-image-2` | codex のモデル |
-| `APP_THUMBNAIL_IMAGE_SIZE` | `1536x1024` | codex の出力サイズ（16:9） |
-| `APP_THUMBNAIL_IMAGE_QUALITY` | `medium` | codex の品質 |
+## 投稿側の扱い
+
+- `app_youtube.find_thumbnail` は選定記録があれば検証済みの `thumbnail_selected.jpg` だけを返す。記録がなければ旧来の `サムネイル.*` / `thumbnail.*` を使う。
+- 選定記録があるか VPS 連携が有効なとき、検証に通らなければ投稿を始めずに終了コード 1 で止める。
 
 ## 関連
 
-- [app-bgimage.md](./app-bgimage.md) — 背景画像（別 step。参照画像で寄せる固定テンプレ寄り）
-- [image.md](./image.md) — 画像合成（先に `サムネイル.jpg` を出すと AI サムネはスキップ）
-- [app-image-select.md](./app-image-select.md) — `vol{N}.jpg` リネームで YouTube サムネ採用
-- [app-workflow.md](./app-workflow.md) — 全工程フロー（STEP 8 にサムネ生成の概要）
-- [Python/app_image_prompt.py](../Python/app_image_prompt.py) — `normalize_visual_direction` / `build_gpt_image2_prompt`
+- [app-bgimage.md](./app-bgimage.md) — 背景画像（`vol{N}` 用。サムネ候補の背景とは別に生成）
+- [image.md](./image.md) — 画像合成（`サムネイル.jpg` / `vol{N}.jpg`）
+- [app-image-select.md](./app-image-select.md) — `vol{N}.jpg` リネーム
