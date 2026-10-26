@@ -1834,9 +1834,10 @@ def _vidiq_meta_context(vol: int, remote_vol, cfg: dict, ledger_sync) -> dict:
     VPS 連携時は vol 応答の insights_hint / insights_vidiq、無効時はローカルキャッシュ（期限内だけ）を使う。"""
     out = {"hint": "", "evidence_ids": [], "insights_degraded": True, "degraded_reason": "unavailable",
            "channel_key": None}
+    configured = False
     try:
         import vidiq_adapter as _va
-        configured = _va.is_configured(cfg)
+        configured = _va.is_configured(cfg if isinstance(cfg, dict) else {})
         channel_key = None
         try:
             channel_key = ledger_sync.resolve_channel_key() if ledger_sync is not None else None
@@ -1857,10 +1858,11 @@ def _vidiq_meta_context(vol: int, remote_vol, cfg: dict, ledger_sync) -> dict:
             cache = _va.load_cache(channel_key) if channel_key else {}
             fresh, reason = _va.freshness(cache)
             if fresh:
-                out.update(hint=_va.format_hint(cache.get("items") or []),
-                           evidence_ids=[e for e in (cache.get("evidence_ids") or []) if isinstance(e, str)][:50],
-                           insights_degraded=False, degraded_reason=None)
-                return out
+                hint, used = _va.format_hint_with_evidence(cache.get("items") or [])
+                if used:
+                    out.update(hint=hint, evidence_ids=used[:50], insights_degraded=False, degraded_reason=None)
+                    return out
+                reason = "unavailable"
         if not configured:
             reason = "not_configured"
         elif reason == "not_fetched":
@@ -1868,6 +1870,8 @@ def _vidiq_meta_context(vol: int, remote_vol, cfg: dict, ledger_sync) -> dict:
         out["degraded_reason"] = reason
     except Exception as exc:
         print(f"  VidIQ の分析を読めませんでした（{type(exc).__name__}）。分析なしで生成します")
+        out.update(hint="", evidence_ids=[], insights_degraded=True,
+                   degraded_reason="unavailable" if configured else "not_configured")
     return out
 
 
@@ -1929,12 +1933,15 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
             title_path.write_text(remote_title, encoding="utf-8")
             (folder / "youtube_description.txt").write_text(remote_description, encoding="utf-8")
             (folder / "youtube_tags.txt").write_text("\n".join(remote_tags), encoding="utf-8")
-            degraded = remote_meta.get("insights_degraded") is True
-            _write_meta_record(folder, remote_title, remote_description, remote_tags, {
-                "insights_degraded": degraded or "insights_degraded" not in remote_meta,
-                "degraded_reason": (remote_meta.get("degraded_reason") or "unavailable") if degraded else
-                                   (None if "insights_degraded" in remote_meta else "not_fetched"),
-                "evidence_ids": [e for e in (remote_meta.get("evidence_ids") or []) if isinstance(e, str)]})
+            remote_ev = [e for e in (remote_meta.get("evidence_ids") or []) if isinstance(e, str) and e]
+            if remote_meta.get("insights_degraded") is True:
+                rec_ctx = {"insights_degraded": True, "degraded_reason": remote_meta.get("degraded_reason") or "unavailable"}
+            elif remote_ev:
+                rec_ctx = {"insights_degraded": False, "degraded_reason": None, "evidence_ids": remote_ev}
+            else:
+                # 段階 6 より前のメタ、または根拠の無いメタ: VidIQ を使った記録として扱わない
+                rec_ctx = {"insights_degraded": True, "degraded_reason": "not_fetched"}
+            _write_meta_record(folder, remote_title, remote_description, remote_tags, rec_ctx)
             print("  VPS 生成メタを採用")
             return True
 

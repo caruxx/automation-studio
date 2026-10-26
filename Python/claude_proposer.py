@@ -507,6 +507,15 @@ def _with_insights(benchmark_section: str, insights_hint: str) -> str:
     return (benchmark_section or "").rstrip() + "\n\nLearned insights (adapt, do not copy):\n" + hint
 
 
+def _ensure_insights(prompt: str, insights_hint: str) -> str:
+    """カスタムのマスタープロンプトに {benchmark_section} が無くても、学びをプロンプトの末尾に必ず入れる
+    （渡していない学びの根拠を記録しないため）。"""
+    hint = (insights_hint or "").strip()
+    if not hint or hint in prompt:
+        return prompt
+    return prompt.rstrip() + "\n\nLearned insights (adapt, do not copy):\n" + hint
+
+
 def _channel_master_prompts() -> dict:
     """アクティブチャンネルの master_prompts を返す。
 
@@ -603,6 +612,7 @@ def propose_titles(
         thumbnail_section=thumbnail_section,
     )
     # サムネがあれば Read ツールを許可してタイムアウトを延長
+    prompt = _ensure_insights(prompt, insights_hint)
     raw = _run_claude(cli_cmd, prompt,
                       timeout=240 if thumbnail else DEFAULT_TIMEOUT,
                       allow_read=bool(thumbnail),
@@ -654,6 +664,7 @@ def propose_description(
         thumbnail_section=thumbnail_section,
         handle_section=_handle_section(handle, source_lang),
     )
+    prompt = _ensure_insights(prompt, insights_hint)
     raw = _run_claude(cli_cmd, prompt,
                       timeout=300 if thumbnail else DEFAULT_TIMEOUT,
                       allow_read=bool(thumbnail),
@@ -752,6 +763,7 @@ def propose_tags(
         songs=songs_text,
         benchmark_section=benchmark_section,
     )
+    prompt = _ensure_insights(prompt, insights_hint)
     raw = _run_claude(cli_cmd, prompt)
     obj = _extract_json_object(raw)
     if not obj or "tags" not in obj:

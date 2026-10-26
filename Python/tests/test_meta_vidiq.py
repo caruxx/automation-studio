@@ -152,5 +152,61 @@ class MetaVidiqTest(unittest.TestCase):
         self.assertEqual((rec["insights_degraded"], rec["degraded_reason"]), (True, "unavailable"))
 
 
+class MetaVidiqEdgeTest(MetaVidiqTest):
+    """Task 3 レビュー対応: 打ち切られた学びの根拠を記録しない、旧 VPS、例外、カスタムプロンプト。"""
+
+    def test_truncated_items_are_not_counted_as_evidence(self):
+        fetched = datetime.now(timezone.utc) - timedelta(hours=1)
+        items = [{"category": "title", "insight": f"学び{i:02d} " + "y" * 290, "video_ids": [], "metrics": {},
+                  "evidence_ids": [f"vidiq:keyword_research:{i:016x}"]} for i in range(10)]
+        path = va.cache_path("ch-meta")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"fetched_at": va._iso(fetched), "expires_at": va._iso(fetched + timedelta(hours=24)),
+                                    "items": items, "evidence_ids": [i["evidence_ids"][0] for i in items]}), encoding="utf-8")
+        rec, _ = self._run(FakeLedger(enabled=False))
+        self.assertTrue(0 < len(rec["evidence_ids"]) < 10)
+        for i, it in enumerate(items):
+            if it["evidence_ids"][0] in rec["evidence_ids"]:
+                self.assertIn(it["insight"], self.prompts[0])  # 根拠に数えた学びはプロンプトに全文がある
+            else:
+                self.assertNotIn(it["insight"], self.prompts[0])
+
+    def test_old_vps_and_expired_vps_status(self):
+        rec, notes = self._run(FakeLedger(enabled=True, vol={"insights_hint": "## t\n- x"}))  # insights_vidiq の無い旧 VPS
+        self.assertEqual((rec["degraded_reason"], notes), ("unavailable", []))
+        rec, _ = self._run(FakeLedger(enabled=True, vol={"insights_hint": "", "insights_vidiq": {"fresh": False, "reason": "expired"}}))
+        self.assertEqual(rec["degraded_reason"], "expired")
+
+    def test_exception_path_respects_not_configured(self):
+        with patch.object(va, "load_cache", side_effect=RuntimeError("boom")):
+            rec, notes = self._run(FakeLedger(enabled=False), cfg={"persona": "p"})
+        self.assertEqual((rec["degraded_reason"], notes), ("not_configured", []))
+
+    def test_custom_prompt_without_placeholder_still_gets_hint(self):
+        self._write_cache(datetime.now(timezone.utc) - timedelta(hours=1))
+        with patch.object(cp, "_load_master_prompt", lambda key, fallback: "Return JSON {{\"titles\": []}} count={count}"
+                          if "title" in key else fallback):
+            rec, _ = self._run(FakeLedger(enabled=False))
+        self.assertIn("volume 1200", self.prompts[0])
+        self.assertEqual(rec["evidence_ids"], [EID])
+
+    def test_adopted_vps_meta_without_evidence_is_not_marked_as_used(self):
+        vol = {"meta": {"title": "R", "description": "D", "tags": ["t"], "evidence_ids": [], "insights_degraded": False}}
+        with patch.object(ap, "_load_ledger_sync", return_value=FakeLedger(enabled=True, vol=vol)), \
+                patch.object(ap, "_vps_result_is_newer", return_value=True):
+            ap.step_meta(5, self.folder, False)
+        rec = json.loads((self.folder / ap.META_RECORD_FILE).read_text(encoding="utf-8"))
+        self.assertEqual((rec["insights_degraded"], rec["degraded_reason"]), (True, "not_fetched"))
+
+    def test_push_meta_payload_shape(self):
+        import vps_ledger_sync as vls
+        sent = []
+        with patch.object(vls, "ensure_vol", return_value=9), patch.object(vls, "_request", lambda m, path, **kw: sent.append(kw["payload"])):
+            vls.push_meta(5, "T", "D", ["a"])
+            vls.push_meta(5, "T", "D", ["a"], insights={"evidence_ids": [EID], "insights_degraded": False, "degraded_reason": None})
+        self.assertEqual(sent[0]["meta"], {"title": "T", "description": "D", "tags": ["a"]})
+        self.assertEqual(sent[1]["meta"]["evidence_ids"], [EID])
+
+
 if __name__ == "__main__":
     unittest.main()

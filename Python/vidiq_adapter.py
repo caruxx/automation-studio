@@ -34,7 +34,7 @@ SOURCE = "vidiq"
 DEGRADED_REASONS = ("not_configured", "not_fetched", "expired", "fetch_failed", "unavailable")
 
 _VIDEO_ID_RE = re.compile(
-    r"(?:(?:www\.|m\.|music\.)?youtube\.com/(?:watch\?(?:[^\s\"'<>]*&)?v=|shorts/|embed/|live/)|youtu\.be/)"
+    r"(?:^|(?<=[/\s\"'(<]))(?:(?:www\.|m\.|music\.)?youtube\.com/(?:watch\?(?:[^\s\"'<>]*&)?v=|shorts/|embed/|live/)|youtu\.be/)"
     r"([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])")
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _ID_ONLY_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -435,20 +435,40 @@ def freshness(cache: dict, now: Optional[datetime] = None) -> tuple[bool, Option
     return True, None
 
 
-def format_hint(items: list[dict]) -> str:
-    """VPS の insights_hint と同じ書式（カテゴリ見出し + 箇条書き）。"""
+HINT_MAX_ITEMS = 20
+HINT_MAX_CHARS = 2000
+
+
+def format_hint_with_evidence(items: list[dict]) -> tuple[str, list[str]]:
+    """VPS の insights_hint と同じ書式（カテゴリ見出し + 箇条書き）の本文と、本文に全文が入った学びの根拠 id。"""
     lines = ["以下の学びはコピーではなく抽象パターンとして応用する。"]
+    used: list[str] = []
     prev = None
-    for it in items[:20]:
+    for it in (items if isinstance(items, list) else [])[:HINT_MAX_ITEMS]:
+        if not isinstance(it, dict):
+            continue
+        trial = list(lines)
         if it.get("category") != prev:
-            lines.append(f"\n## {it.get('category')}")
-            prev = it.get("category")
-        lines.append(f"- {str(it.get('insight') or '').strip()}")
-    return "\n".join(lines).strip()[:2000]
+            trial.append(f"\n## {it.get('category')}")
+        trial.append(f"- {str(it.get('insight') or '').strip()}")
+        if len("\n".join(trial).strip()) > HINT_MAX_CHARS:
+            break  # 全文が入らない学びは渡さない（根拠にも数えない）
+        lines = trial
+        prev = it.get("category")
+        for e in it.get("evidence_ids") or []:
+            if isinstance(e, str) and e not in used:
+                used.append(e)
+    return "\n".join(lines).strip(), used
+
+
+def format_hint(items: list[dict]) -> str:
+    return format_hint_with_evidence(items)[0]
 
 
 def is_configured(channel_cfg: dict) -> bool:
-    return bool((channel_cfg.get("vidiq_requests") or []) or (channel_cfg.get("vidiq_keywords") or []))
+    """VidIQ を呼ぶ設定があるか（list の設定だけを数える。文字列などは未設定と同じ扱い）。"""
+    req, kw = channel_cfg.get("vidiq_requests"), channel_cfg.get("vidiq_keywords")
+    return bool((isinstance(req, list) and req) or (isinstance(kw, list) and kw))
 
 
 def public_view(data: dict) -> dict:

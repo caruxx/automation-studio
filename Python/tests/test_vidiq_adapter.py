@@ -321,6 +321,9 @@ class AdapterHardeningTest(unittest.TestCase):
         self.assertNotIn("\x00", item["insight"])
         text = {"content": [{"type": "text", "text": "https://example.com/page?v=hello_world1 https://www.youtube.com/watch?list=x&v=CCCCCCCCCCC"}]}
         self.assertEqual(va.normalize(call, text)["video_ids"], ["CCCCCCCCCCC"])
+        fake = {"content": [{"type": "text", "text": "evilyoutube.com/watch?v=AAAAAAAAAAA youtube.com/shorts/DDDDDDDDDDD"}]}
+        self.assertEqual(va.normalize(call, fake)["video_ids"], ["DDDDDDDDDDD"])
+        self.assertFalse(va.is_configured({"vidiq_keywords": "lofi"}))
 
 
 if __name__ == "__main__":
