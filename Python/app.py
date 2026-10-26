@@ -7058,90 +7058,8 @@ def _build_job_env(ch_name: Optional[str], ch_folder: Optional[Path],
     return env
 
 
-# ─── P2-7: 公開ゲート — private upload + N 時間後に public 化 ──────
-# 完全自動運転の前提: per-channel `publish_delay_hours` で「アップロード後 N 時間
-# は private のまま、その後自動で public 化」を実現する。途中で運営者が
-# YouTube Studio で確認して取消したい場合は手動で削除できる猶予時間。
-
-async def _job_publish_now(payload: dict):
-    """指定 vol を private → public に切り替える非同期ハンドラ。
-
-    payload: {
-      "id": "publish_<channel_id>_<vol>",
-      "video_name": "78_vol_260420",
-      "channel_folder": "/path/to/channel",
-      "channel_name": "...",
-    }
-    """
-    job_id = payload.get("id", "?")
-    video_name = payload.get("video_name", "")
-    ch_folder = payload.get("channel_folder", "")
-    ch_name = payload.get("channel_name") or "(unknown)"
-    folder = resolve_video_folder(video_name, channel_root=ch_folder) if (ch_folder and video_name) else None
-    if not folder or not folder.exists():
-        _record_history(job_id, "error", f"publish: folder 不在 {folder}")
-        _send_line_notify(f"❌ 公開: [{ch_name}] {video_name} - フォルダ不在")
-        return
-    _record_history(job_id, "started", f"[{ch_name}] {video_name} を public に切替")
-    try:
-        # subprocess ではなくモジュール直接呼び出し（軽量）
-        sys.path.insert(0, str(SHARED_BASE / "Python"))
-        from app_youtube import publish_video_to_public
-        result = publish_video_to_public(folder)
-    except Exception as e:
-        _record_history(job_id, "error", f"publish 例外: {e}")
-        _send_line_notify(f"❌ 公開: [{ch_name}] {video_name} 例外: {str(e)[:80]}")
-        return
-    status = result.get("status")
-    vid = result.get("video_id", "")
-    if status == "ok":
-        url = f"https://youtu.be/{vid}"
-        _record_history(job_id, "done", f"[{ch_name}] {video_name} → public ({vid})")
-        _send_line_notify(f" [{ch_name}] {video_name} を public に公開しました\n{url}")
-    elif status == "already_public":
-        _record_history(job_id, "done", f"[{ch_name}] {video_name} は既に public")
-    elif status == "retryable":
-        # 30 分後に再投入
-        _record_history(job_id, "error", f"transient: {result.get('error','')}")
-        _send_line_notify(f"⚠ 公開: [{ch_name}] {video_name} transient エラー、30 分後に再試行")
-        try:
-            from apscheduler.triggers.date import DateTrigger
-            import datetime as _dt
-            run_at = _dt.datetime.now() + _dt.timedelta(minutes=30)
-            new_id = f"{job_id}_retry_{int(time.time())}"
-            payload2 = {**payload, "id": new_id}
-            _scheduler.add_job(_job_publish_now, trigger=DateTrigger(run_date=run_at),
-                               id=new_id, args=[payload2],
-                               replace_existing=True, misfire_grace_time=300)
-        except Exception as e:
-            print(f"[publish] retry 登録失敗: {e}")
-    else:
-        _record_history(job_id, "error", f"{status}: {result.get('error','')[:200]}")
-        _send_line_notify(f"❌ 公開: [{ch_name}] {video_name} 失敗 ({status})")
-
-
-def _schedule_publish(*, video_name: str, channel_folder: str, channel_name: str,
-                       run_at) -> str:
-    """指定時刻に publish ジョブを APScheduler の DateTrigger で登録。"""
-    if _scheduler is None:
-        raise RuntimeError("scheduler が起動していません")
-    from apscheduler.triggers.date import DateTrigger
-    # チャンネル + vol 単位で id を作る（同じ vol を二重登録しないため replace_existing で上書き）
-    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{channel_folder}_{video_name}")[-80:]
-    job_id = f"publish_{safe}"
-    payload = {
-        "id": job_id,
-        "video_name": video_name,
-        "channel_folder": channel_folder,
-        "channel_name": channel_name,
-    }
-    _scheduler.add_job(
-        _job_publish_now, trigger=DateTrigger(run_date=run_at),
-        id=job_id, args=[payload],
-        replace_existing=True, misfire_grace_time=600,
-    )
-    return job_id
-
+# ─── 段階 3: Mac 側の公開ゲート（_job_publish_now / _schedule_publish / 起動時復旧）は撤去。
+# 予約公開は upload 時の publishAt（VPS の投稿記録が正本）と、VPS の publish_verify が照合する。
 
 # ─── P2-6: auto_resume — 失敗 stage 検出 + N 分後に再投入 ────
 # pipeline は失敗時に標準出力末尾に「再開: python3 app_pipeline.py <vol> --from <stage>」を
@@ -7182,135 +7100,67 @@ def _should_auto_resume(returncode: int, stage: str, attempt: int, job: dict) ->
     return True, ""
 
 
-async def _job_auto_resume(payload: dict):
-    """auto_resume 専用ハンドラ。N 分後の DateTrigger で起動される。
-
-    payload は schedule_jobs.json には保存されない（一時的なメモリ内 APScheduler ジョブ）。
-    """
-    job_id = payload.get("id", "?")
-    vol = payload.get("vol")
-    if not vol:
-        _record_history(job_id, "error", "resume: vol 未指定")
-        return
-    ch_name, ch_dir, ch_id = _resolve_job_channel(payload)
-    if not ch_dir or not ch_dir.exists():
-        _record_history(job_id, "error", f"resume: channel_folder 不在: {ch_dir}")
-        _send_line_notify(f"❌ auto_resume: vol.{vol} - チャンネル不在")
-        return
-    from_stage = (payload.get("from_stage") or "").strip() or "suno"
-    attempt = int(payload.get("attempt", 1))
-    # P3-1: ledger に auto_resume として記録（parent を持つ）
-    run_id = ""
-    parent_rid = payload.get("_parent_run_id") or payload.get("parent_run_id") or ""
-    try:
-        import app_run_ledger as _ledger
-        run_id = _ledger.start_run(
-            kind="auto_resume", channel_folder=str(ch_dir),
-            channel_id=ch_id or "", channel_name=ch_name or "",
-            vol=int(vol), parent_run_id=parent_rid,
-            from_stage=from_stage,
-            meta={"attempt": attempt},
-        )
-    except Exception as e:
-        print(f"[ledger] start_run 失敗（無視）: {e}")
-    _record_history(job_id, "started",
-                    f"[{ch_name}] resume vol.{vol} from {from_stage} (attempt {attempt}, run={run_id[-12:] if run_id else '?'})")
-    _send_line_notify(
-        f" [{ch_name}] vol.{vol} を {from_stage} から自動再投入中（{attempt} 回目）"
-    )
-    cmd = [sys.executable, str(SHARED_BASE / "Python" / "app_pipeline.py"),
-           str(vol), "--auto", "--from", from_stage]
-    if ch_id:
-        cmd += ["--channel-id", ch_id]
-    else:
-        cmd += ["--channel-folder", str(ch_dir)]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            env=_build_job_env(ch_name, ch_dir, ch_id),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await proc.communicate()
-        stdout_str = (out or b"").decode(errors="replace")
-        if proc.returncode == 0:
-            _record_history(job_id, "done", f"[{ch_name}] resume vol.{vol} 完了")
-            _send_line_notify(f" [{ch_name}] vol.{vol} 再投入で完了")
-            if run_id:
-                try:
-                    import app_run_ledger as _ledger
-                    _ledger.finish_run(run_id, status="done", exit_code=0,
-                                       summary=f"resume vol.{vol} 完了 (attempt {attempt})")
-                except Exception:
-                    pass
-            return
-        # 再失敗 → さらに resume できるか
-        next_stage = _parse_failed_stage(stdout_str) or from_stage
-        ok, reason = _should_auto_resume(proc.returncode, next_stage, attempt, payload)
-        if run_id:
-            try:
-                import app_run_ledger as _ledger
-                _ledger.finish_run(run_id, status=_exit_codes.ledger_status_for(proc.returncode),
-                                   exit_code=proc.returncode,
-                                   failed_stage=next_stage,
-                                   summary=f"resume vol.{vol} {_exit_outcome(proc.returncode)[0]} (attempt {attempt}, next={next_stage})")
-            except Exception:
-                pass
-        if ok:
-            payload["_parent_run_id"] = run_id
-            _schedule_resume(payload, next_stage, attempt + 1)
-            _send_line_notify(
-                f"❌→ [{ch_name}] vol.{vol} 再失敗、{int(payload.get('auto_resume_delay_min') or 30)} 分後に再々投入をスケジュール（{attempt + 1} 回目）"
-            )
-            _record_history(job_id, "error",
-                            f"[{ch_name}] resume vol.{vol} 失敗、再々投入予約: {next_stage}")
-        else:
-            tail = stdout_str[-200:]
-            _label, _kind, _ = _exit_outcome(proc.returncode)
-            _record_history(job_id, _kind, f"resume 打ち切り ({_label}; {reason}): {tail}")
-            _send_line_notify(f"⛔ [{ch_name}] vol.{vol} 再投入打ち切り: {reason}")
-    except Exception as e:
-        _record_history(job_id, "error", f"resume 例外: {e}")
-        if run_id:
-            try:
-                import app_run_ledger as _ledger
-                _ledger.finish_run(run_id, status="failed", summary=f"例外: {str(e)[:100]}")
-            except Exception:
-                pass
-
-
 def _schedule_resume(parent_payload: dict, from_stage: str, attempt: int) -> bool:
-    """N 分後の DateTrigger で resume ジョブを APScheduler に登録（永続化なし）。"""
-    if _scheduler is None:
-        print("[scheduler] resume 失敗: scheduler が起動していない")
-        return False
-    delay_min = int(parent_payload.get("auto_resume_delay_min") or 30)
-    import datetime as _dt
-    run_at = _dt.datetime.now() + _dt.timedelta(minutes=delay_min)
+    """段階 3: Mac のメモリ内 auto_resume は撤去した（再起動で消え、reload で失われていた）。
+    再開は VPS の run（studio.py run-resume --run-id ... [--from <stage>]）で行う。ここでは履歴に案内を残すだけ。"""
     parent_id = parent_payload.get("id", "?")
-    payload = {
-        # 元のジョブ id を含めて新 id を組み立てる
-        "id": f"resume_{parent_id}_{attempt}",
-        "vol": parent_payload.get("vol") or parent_payload.get("_resolved_vol"),
-        "channel_id": parent_payload.get("channel_id"),
-        "from_stage": from_stage,
-        "attempt": attempt,
-        "auto_resume": True,
-        "auto_resume_delay_min": delay_min,
-        "auto_resume_max_attempts": int(parent_payload.get("auto_resume_max_attempts") or 3),
-        "name": f"auto_resume({parent_id})",
-    }
+    vol = parent_payload.get("vol") or parent_payload.get("_resolved_vol")
+    _record_history(str(parent_id), "warn",
+                    f"vol.{vol} の自動再投入は停止中（段階 3）。再開: studio.py run --vol {vol} --from {from_stage}（または run-resume --run-id <id>）")
+    return False
+
+
+def _allocate_next_vol(ch_dir: Path, ch_id: Optional[str], ch_name: Optional[str]) -> tuple:
+    """次の vol 番号を決め、VPS が設定されていれば公開日付きのフォルダも作る。Returns (vol or None, error)。
+
+    - VPS あり: allocate の vol_number / publish_date を使う。同番号のフォルダが既にある、または番号が既存フォルダ以下
+      （台帳と Mac のずれ）なら作らず error（人が照合する。古いフォルダに新しい vol を走らせない）。
+    - VPS なし: 従来どおり最大番号 + 1（フォルダは pipeline の plan 工程が作る）。"""
+    max_n = 0
+    for d in ch_dir.iterdir():
+        m = re.match(r"^(\d+)_", d.name)
+        if m: max_n = max(max_n, int(m.group(1)))
+    # ジョブのチャンネルを明示して VPS を呼ぶ（親プロセスのアクティブチャンネルと混線させない）
+    saved_env = os.environ.get("APP_CHANNEL_FOLDER")
+    os.environ["APP_CHANNEL_FOLDER"] = str(ch_dir)
     try:
-        from apscheduler.triggers.date import DateTrigger
-        _scheduler.add_job(
-            _job_auto_resume, trigger=DateTrigger(run_date=run_at),
-            id=payload["id"], args=[payload],
-            replace_existing=True, misfire_grace_time=300,
-        )
-        print(f"[scheduler] resume スケジュール: {payload['id']} at {run_at.isoformat()} (from={from_stage}, attempt={attempt})")
-        return True
-    except Exception as e:
-        print(f"[scheduler] resume 登録失敗: {e}")
-        return False
+        try:
+            import vps_ledger_sync as _vls
+            if _vls.enabled():
+                key = (ch_id or "").strip() or _vls.resolve_channel_key()
+                if not key:
+                    return None, "VPS の channel_key を解決できません（channels.json の folder と一致しません）"
+                alloc = _vls.allocate_vol(channel_key=key)
+            else:
+                alloc = None
+        except Exception as e:
+            return None, f"VPS の採番に失敗: {e}"
+        if alloc is None:
+            return max_n + 1, ""
+        vol = int(alloc["vol_number"])
+        existing = next((d for d in ch_dir.iterdir() if d.is_dir() and re.match(rf"^{vol}_", d.name)), None)
+        if existing is not None or vol <= max_n:
+            # 台帳と Mac のフォルダがずれている（VPS 未登録のフォルダが残っている等）。古いフォルダに新しい vol を走らせない
+            return None, (f"VPS の採番 {vol} に対応するフォルダ {existing.name if existing else ''} が既にあります"
+                          f"（Mac の最大 {max_n}）。台帳とフォルダを照合してください")
+        pd = str(alloc.get("publish_date") or "")
+        try:
+            date_str = datetime.strptime(pd, "%Y-%m-%d").strftime("%y%m%d")
+        except ValueError:
+            return None, f"VPS の publish_date が解釈できません: {pd!r}"
+        prefix = get_file_prefix()
+        new_dir = ch_dir / f"{vol}_{prefix}_{date_str}"
+        new_dir.mkdir(exist_ok=True)
+        try:
+            _vls.push_context(vol, new_dir)  # publish_date は VPS 側が割り当て済みなので上書きされない
+        except Exception as e:
+            print(f"[ledger-sync] vol 作成同期失敗: {e}")
+        return vol, ""
+    finally:
+        if saved_env is None:
+            os.environ.pop("APP_CHANNEL_FOLDER", None)
+        else:
+            os.environ["APP_CHANNEL_FOLDER"] = saved_env
 
 
 async def _job_vol_create(job: dict):
@@ -7325,12 +7175,16 @@ async def _job_vol_create(job: dict):
         _record_history(job_id, "error", f"channel_folder が存在しない: {ch_dir}")
         _send_line_notify(f"❌ Automation Studio 自動: vol 作成失敗 ({job_id}) - チャンネル不在")
         return
-    # 次の vol 番号を解決（グローバル config 経由ではなく、解決済み folder を直接スキャン）
-    max_n = 0
-    for d in ch_dir.iterdir():
-        m = re.match(r"^(\d+)_", d.name)
-        if m: max_n = max(max_n, int(m.group(1)))
-    next_vol = max_n + 1
+    # 次の vol 番号を解決。段階 3: VPS が設定されていれば採番と公開枠は VPS（/api/worker/vols/allocate）が正本で、
+    # Mac はその番号と公開日でフォルダを確保するだけ。VPS 未設定なら従来どおりフォルダをスキャンして採番。
+    try:
+        next_vol, alloc_error = _allocate_next_vol(ch_dir, ch_id, ch_name)
+    except Exception as e:
+        next_vol, alloc_error = None, str(e)
+    if next_vol is None:
+        _record_history(job_id, "error", f"vol 採番失敗: {alloc_error}")
+        _send_line_notify(f"❌ [{ch_name}] vol 作成失敗: {alloc_error}")
+        return
     # P3-1: ledger に in_progress で記録
     run_id = ""
     try:
@@ -7393,8 +7247,8 @@ async def _job_vol_create(job: dict):
             if ok:
                 _schedule_resume(resume_payload, failed_stage, attempt=2)
                 _send_line_notify(
-                    f"❌→ [{ch_name}] vol.{next_vol} 失敗（{failed_stage}）、"
-                    f"{int(job.get('auto_resume_delay_min') or 30)} 分後に自動再投入"
+                    f"❌ [{ch_name}] vol.{next_vol} 失敗（{failed_stage}）。"
+                    f"再開は studio.py run --vol {next_vol} --from {failed_stage}（自動再投入は停止中）"
                 )
             else:
                 _label, _, _prefix = _exit_outcome(proc.returncode)
@@ -7510,8 +7364,8 @@ async def _job_spot_create(job: dict):
             if should_resume:
                 _schedule_resume(resume_payload, failed_stage, attempt=2)
                 _send_line_notify(
-                    f"❌→ [{ch_name}] スポット vol.{vol} 失敗（{failed_stage}）、"
-                    f"{int(job.get('auto_resume_delay_min') or 30)} 分後に自動再投入"
+                    f"❌ [{ch_name}] スポット vol.{vol} 失敗（{failed_stage}）。"
+                    f"再開は studio.py run --vol {vol} --from {failed_stage}（自動再投入は停止中）"
                 )
             else:
                 _label, _, _prefix = _exit_outcome(proc.returncode)
@@ -7879,7 +7733,6 @@ JOB_HANDLERS = {
     "benchmark_refresh": _job_benchmark_refresh,
     "export_window": _job_export_window,
     "spot_create": _job_spot_create,
-    "publish_now": _job_publish_now,  # P2-7: 公開ゲート（DateTrigger 動的登録）
     "token_health": _job_token_health,  # P3-5: トークン期限の先回り通知
     "onboarding_verify_loop": _job_onboarding_verify_loop,
 }
@@ -8098,19 +7951,33 @@ def _scheduler_register_job(job: dict):
                        replace_existing=True, misfire_grace_time=300)
     return True
 
+# 段階 3: 採番と公開枠の正本は VPS（/api/worker/vols/allocate）。Mac の vol_create はフォルダ確保と実行を担う（登録は維持）。
+_VPS_OWNED_JOB_TYPES: tuple = ()
+_RELOAD_MANAGED_IDS: set = set()  # _scheduler_reload が登録した jobs.json 由来のジョブ id
+
+
 def _scheduler_reload():
-    """jobs.json を読み直して APScheduler に登録し直す"""
+    """jobs.json を読み直して APScheduler に登録し直す。
+
+    jobs.json 由来のジョブだけを入れ替える（orchestrator_tick / digest などの固定ジョブは消さない）。
+    vol_create / spot_create は登録する（採番と公開枠は VPS、フォルダ確保と実行は Mac）。"""
+    global _RELOAD_MANAGED_IDS
     if _scheduler is None:
         return
-    # 既存ジョブ全削除
+    jobs = _scheduler_get_jobs()
+    # 前回この関数が登録した id と、今の jobs.json の id を両方外す（jobs.json から消したジョブも止まる）
+    stale_ids = set(_RELOAD_MANAGED_IDS) | {str(j.get("id")) for j in jobs if j.get("id")}
     for j in _scheduler.get_jobs():
-        try: _scheduler.remove_job(j.id)
-        except Exception: pass
-    # 再登録
-    for job in _scheduler_get_jobs():
+        if j.id in stale_ids:
+            try: _scheduler.remove_job(j.id)
+            except Exception: pass
+    registered: set[str] = set()
+    for job in jobs:
         if not job.get("enabled", True):
             continue
-        _scheduler_register_job(job)
+        if _scheduler_register_job(job):
+            registered.add(str(job.get("id")))
+    _RELOAD_MANAGED_IDS = registered
 
 # ─── D1: orchestrator 無人稼働 tick（autopilot ON の channel のみ・既定 dormant）───
 # ⚠ 安全境界:
@@ -8120,10 +7987,10 @@ def _scheduler_reload():
 #     private/publishAt）を通った場合だけ実行する。plan は含めない。
 #   - 連続 BREAKER_THRESHOLD(=3) 失敗の channel は is_channel_tripped で自動停止。
 #   - AsyncIOScheduler は同期関数をスレッドプールで実行＝ブロッキング dispatch がループを止めない。
-#   - env: APP_ORCH_TICK_ENABLED(既定1) / APP_ORCH_TICK_MINUTES(既定5) / APP_ORCH_AUTOPILOT_STAGES(既定=AUTOPILOT_DEFAULT_STAGES)
+#   - env: APP_ORCH_TICK_ENABLED(既定0。段階 3 で VPS の autopilot に移行) / APP_ORCH_TICK_MINUTES(既定5) / APP_ORCH_AUTOPILOT_STAGES(既定=AUTOPILOT_DEFAULT_STAGES)
 def _orchestrator_tick():
     """APScheduler 定期ジョブ本体。autopilot ON の channel を orchestrator.tick に投入。"""
-    if (os.environ.get("APP_ORCH_TICK_ENABLED") or "1").strip() not in ("1", "true", "yes"):
+    if (os.environ.get("APP_ORCH_TICK_ENABLED") or "0").strip() not in ("1", "true", "yes"):
         return
     try:
         sys.path.insert(0, str(SHARED_BASE / "Python"))
@@ -8169,7 +8036,7 @@ async def _start_scheduler():
         _scheduler.start()
         _scheduler_reload()
         # D1: orchestrator tick を interval ジョブで登録（既定 dormant＝autopilot 全 OFF）
-        if (os.environ.get("APP_ORCH_TICK_ENABLED") or "1").strip() in ("1", "true", "yes"):
+        if (os.environ.get("APP_ORCH_TICK_ENABLED") or "0").strip() in ("1", "true", "yes"):
             try:
                 from apscheduler.triggers.interval import IntervalTrigger
                 _tick_min = max(1, int(os.environ.get("APP_ORCH_TICK_MINUTES") or 5))
@@ -8514,39 +8381,9 @@ class SchedulePublishRequest(BaseModel):
 
 @app.post("/api/youtube/schedule-publish")
 def api_youtube_schedule_publish(req: SchedulePublishRequest):
-    """指定 vol を delay_hours 経過後に public 化するジョブを APScheduler に登録。"""
-    if _scheduler is None:
-        raise HTTPException(503, "scheduler 未起動")
-    if req.delay_hours < 0:
-        raise HTTPException(400, "delay_hours は 0 以上")
-    ch_folder = req.channel_folder
-    ch_name = req.channel_name
-    if not ch_folder:
-        cfg = get_dashboard_config()
-        ch_folder = cfg.get("channel_folder") or ""
-        ch_name = ch_name or cfg.get("channel_name") or ""
-    if not ch_folder:
-        raise HTTPException(400, "channel_folder が解決できません")
-    folder = resolve_video_folder(req.video_name, channel_root=ch_folder)
-    import datetime as _dt
-    run_at = _dt.datetime.now() + _dt.timedelta(hours=req.delay_hours)
-    try:
-        job_id = _schedule_publish(
-            video_name=req.video_name, channel_folder=ch_folder,
-            channel_name=ch_name or "", run_at=run_at,
-        )
-    except Exception as e:
-        raise HTTPException(500, f"register failed: {e}")
-    # marker に scheduled_publish_at を追記（再起動時の復旧用）
-    try:
-        marker = folder / "youtube_upload.json"
-        if marker.exists():
-            d = json.loads(marker.read_text(encoding="utf-8"))
-            d["scheduled_publish_at"] = run_at.isoformat()
-            marker.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[publish] marker 更新失敗（無視）: {e}")
-    return {"status": "ok", "job_id": job_id, "scheduled_at": run_at.isoformat()}
+    """段階 3: Mac 側の公開ゲートは撤去した。予約公開は upload 時の publishAt（VPS の投稿記録が正本）で行う。"""
+    raise HTTPException(410, "Mac 側の公開ゲートは廃止されました。公開予定は VPS（studio.py schedule-status / schedule-put）で管理し、"
+                             "upload 時に publishAt として送られます。即時公開は /api/youtube/publish-now/{video_name} を使ってください。")
 
 
 @app.post("/api/youtube/publish-now/{video_name}")
@@ -8592,80 +8429,7 @@ def api_youtube_update_snippet(video_name: str, req: UpdateSnippetRequest = Upda
     return {"status": "ok", **result}
 
 
-@app.on_event("startup")
-async def _recover_scheduled_publishes():
-    """サーバ再起動時に、未公開の `scheduled_publish_at` を持つ vol を再登録。
-
-    完全自動運転で「app.py を再起動 → 公開ジョブが消える」事故を防ぐ。
-    過去日付の場合は now+1min で即時投入。"""
-    try:
-        chs = load_json(CHANNELS_CONFIG, []) if CHANNELS_CONFIG.exists() else []
-    except Exception:
-        chs = []
-    if not chs or _scheduler is None:
-        return
-    import datetime as _dt
-    from publish_schedule import (
-        JST as _JST,
-        plan_scheduled_publish_recovery as _plan_recovery,
-        resolve_recover_max_stale_days as _resolve_stale_days,
-        scheduler_run_at as _scheduler_run_at,
-    )
-    max_stale_days, stale_warn = _resolve_stale_days(os.environ.get("APP_PUBLISH_RECOVER_MAX_STALE_DAYS"))
-    if stale_warn:
-        print(f"[publish] 警告: {stale_warn}")
-    # スケジューラ（Asia/Tokyo）に合わせ JST の naive 時刻で統一する
-    now_local = _dt.datetime.now(_JST).replace(tzinfo=None)
-    n_recovered = 0
-    n_stale = 0
-    for ch in chs:
-        ch_folder_str = ch.get("folder") or ""
-        if not ch_folder_str:
-            continue
-        ch_folder = Path(ch_folder_str)
-        if not ch_folder.exists():
-            continue
-        for vol_dir in ch_folder.iterdir():
-            if not vol_dir.is_dir():
-                continue
-            marker = vol_dir / "youtube_upload.json"
-            if not marker.exists():
-                continue
-            try:
-                d = json.loads(marker.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            sched = d.get("scheduled_publish_at")
-            already = d.get("published_at") or (d.get("privacy") == "public")
-            if not sched or already:
-                continue
-            # naive/aware 混在を正規化し、max_stale_days より古い予約は再登録しない
-            # （旧環境で読み飛ばされていた古い予約を 3.12 で一斉投入する事故の防止）
-            kind, run_at = _plan_recovery(sched, now=now_local, max_stale_days=max_stale_days)
-            if kind == "invalid":
-                print(f"[publish] 復旧スキップ（解釈不能な scheduled_publish_at）: {ch.get('name', '')}/{vol_dir.name} = {sched!r}")
-                continue
-            if kind == "stale":
-                n_stale += 1
-                print(f"[publish] 警告: 古い公開予約を再登録しません（{max_stale_days} 日超過）: "
-                      f"{ch.get('name', '')}/{vol_dir.name} scheduled_publish_at={sched} "
-                      f"→ 公開するなら UI か studio.py から改めて予約してください")
-                continue
-            try:
-                _schedule_publish(
-                    video_name=vol_dir.name,
-                    channel_folder=str(ch_folder),
-                    channel_name=ch.get("name", ""),
-                    # DateTrigger は naive を OS の TZ で解釈するため JST 付きの aware で渡す
-                    run_at=_scheduler_run_at(run_at),
-                )
-                n_recovered += 1
-            except Exception as e:
-                print(f"[publish] 復旧失敗 {vol_dir.name}: {e}")
-    if n_recovered:
-        print(f"[publish] {n_recovered} 件の公開ゲートを再登録（再起動復旧）")
-    if n_stale:
-        print(f"[publish] 警告: {n_stale} 件の古い公開予約を再登録せず残しました（APP_PUBLISH_RECOVER_MAX_STALE_DAYS={max_stale_days}）")
+# 段階 3: 起動時の公開予約復旧（_recover_scheduled_publishes）は撤去。VPS の publish_verify が予約を照合する。
 
 
 # ─── API: スケジュール ───

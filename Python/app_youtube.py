@@ -853,6 +853,30 @@ def extract_vol_number(folder):
     return m.group(1) if m else "00"
 
 
+def _write_marker(folder, video_id, title, privacy, schedule, settings, localizations, *, note=None) -> None:
+    """アップロード完了マーカー youtube_upload.json（ダッシュボード用・ローカル互換）。privacy は実際に送った値。"""
+    try:
+        import datetime
+        marker = {
+            "video_id": video_id,
+            "url": f"https://youtu.be/{video_id}",
+            "title": title,
+            "privacy": privacy,
+            "schedule": schedule,
+            "uploaded_at": datetime.datetime.now().isoformat(),
+            "settings": settings,
+            "localizations_applied": list((localizations or {}).keys()),
+        }
+        if note:
+            marker["note"] = note
+        (Path(folder) / "youtube_upload.json").write_text(
+            json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"  ⚠️ マーカー書き出し失敗: {e}")
+        sys.stdout.flush()
+
+
 def upload_video(folder, title=None, schedule=None, privacy="private", tags=None,
                  video_path=None,
                  # 新規: 詳細設定（None ならデフォルト→override→組み込み既定の順で解決）
@@ -954,116 +978,223 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
 
     _upload_lock_acquired = _acquire_upload_lock(folder)
     try:
-        # 実アップロード直前の二重投稿ガード。YouTube の uploads プレイリスト直近50件と
-        # ローカル marker/title/vol を照合し、既存ならアップロードせずローカル状態だけ補正する。
+        # ─── 段階 3: 投稿は共通パッケージ publish.upload_video で行い、VPS の投稿記録で冪等にする ───
+        from publish import input_hash as _ih
+        from publish import upload_video as _pub
+        import vps_ledger_sync as _ledger
+
+        input_hash = _ih.compute_input_hash(video_path=video_file, thumbnail_path=thumbnail, title=title,
+                                            description=description, tags=tags, localizations=localizations)
+        resume = None
+        vps_mode = False
+        if _ledger.enabled() and (not str(vol_num).isdigit() or int(vol_num) < 1):
+            print(f"\n[VOL_UNRESOLVED] フォルダ名から vol 番号を解決できません: {folder.name}", flush=True)
+            sys.exit(1)
+        known_video_id = None
         try:
-            import app_reconcile
-            guard = app_reconcile.find_existing_upload(
-                folder,
-                title=title,
-                channel_id=ch_info.get("channel_id") or expected_channel_id or "",
-                token_path=resolve_token_path(video_folder=folder, override=token_file),
-                limit=50,
-                write_marker=True,
-            )
-            if guard.get("exists"):
-                match = guard.get("match") or {}
-                print(
-                    "\n[YT_DUPLICATE_GUARD] 既存投稿をYouTube実態で確認したためアップロードをスキップします",
-                    flush=True,
-                )
-                print(f"  reason={guard.get('reason')} video_id={match.get('video_id')} title={match.get('title')}", flush=True)
-                app_reconcile.notify_duplicate_skip(
-                    guard.get("vol") or vol_num,
-                    expected_channel_name or ch_info.get("channel_title") or "",
-                )
-                return match.get("video_id") or ""
-            print(f" 二重投稿ガード: 既存なし（uploads {guard.get('checked', {}).get('uploads', 0)}件照合）")
-        except Exception as e:
-            print(f"\n[YT_RECONCILE_GUARD_ERROR] YouTube実態照合に失敗: {e}", flush=True)
-            # 誤検知より二重投稿防止を優先。読み取り失敗時は実アップロードを止める。
+            _m = json.loads((Path(folder) / "youtube_upload.json").read_text(encoding="utf-8"))
+            known_video_id = (str(_m.get("video_id") or "").strip() or None) if isinstance(_m, dict) else None
+        except Exception:
+            known_video_id = None
+        try:
+            begin = _ledger.upload_begin(vol_num, input_hash, known_video_id=known_video_id)  # marker の既存投稿は台帳に取り込む（§4）
+        except _ledger.LedgerConfigError as e:
+            print(f"\n[VPS_CONFIG_ERROR] {e}", flush=True)
+            sys.exit(1)
+        except _ledger.LedgerUnavailable as e:
+            print(f"\n[VPS_UNAVAILABLE] 投稿記録の VPS に接続できないため投稿を保留します: {e}", flush=True)
             sys.exit(EXIT_RETRYABLE)
-
-        # YouTube制約に合わせて本文 snippet も title<=100 / description<=5000 に収める（invalidVideoMetadata 防止）
-        title = (title or "")[:100]
-        description = (description or "")[:5000]
-        snippet = {
-            "title": title,
-            "description": description,
-            "tags": tags,
-            "categoryId": str(s["category_id"]),
-            "defaultLanguage": s["default_language"],
-            "defaultAudioLanguage": s["default_audio_language"],
-        }
-        status = {
-            "privacyStatus": privacy,
-            "selfDeclaredMadeForKids": bool(s["made_for_kids"]),
-            "containsSyntheticMedia": bool(s["synthetic_media"]),
-            "license": s["license"] if s["license"] in ("youtube", "creativeCommon") else "youtube",
-            "embeddable": bool(s["embeddable"]),
-            "publicStatsViewable": bool(s["public_stats_viewable"]),
-        }
-        body = {"snippet": snippet, "status": status}
-        if localizations:
-            body["localizations"] = localizations
-
-        parts = ["snippet", "status"]
-        if localizations:
-            parts.append("localizations")
-
-        # 予約公開は privacyStatus=private + publishAt が正しい使い方
-        if schedule:
-            body["status"]["privacyStatus"] = "private"
-            body["status"]["publishAt"] = schedule
-
-        # チャンクサイズ: 10MB（進捗を細かく表示）
-        chunk_size = 10 * 1024 * 1024
-        media = MediaFileUpload(
-            str(video_file),
-            mimetype="video/mp4",
-            resumable=True,
-            chunksize=chunk_size,
+        except _ledger.LedgerHttpError as e:
+            detail = e.detail if isinstance(e.detail, dict) else {"error": e.detail}
+            err = detail.get("error")
+            if err == "upload_in_progress":
+                print(f"\n[UPLOAD_IN_PROGRESS] 同じ vol の別の投稿が未確定です（upload_id={detail.get('upload_id')}）。後で再試行します", flush=True)
+                sys.exit(EXIT_RETRYABLE)
+            if err == "upload_result_unknown":
+                print(f"\n[UPLOAD_RESULT_UNKNOWN] 前回の投稿結果が不明です。YouTube Studio で確認し、VPS の投稿記録を解決してください（upload_id={detail.get('upload_id')}）", flush=True)
+                sys.exit(1)
+            if err == "publish_at_in_past":
+                print(f"\n[PUBLISH_AT_IN_PAST] VPS の公開予定 {detail.get('publish_at')} が過去です。studio.py schedule-put か vol の予約を直してください", flush=True)
+                sys.exit(1)
+            print(f"\n[VPS_REJECTED] 投稿記録の開始が拒否されました: {e}", flush=True)
+            sys.exit(1)
+        begin_token = None
+        # 投稿設定（status を含む）は resume の予約更新でも使うので先に組む
+        full_req = _pub.UploadRequest(
+            video_path=video_file, title=title, description=description, tags=list(tags or []),
+            privacy=privacy, publish_at=schedule, category_id=str(s["category_id"]),
+            default_language=s["default_language"], default_audio_language=s["default_audio_language"],
+            made_for_kids=bool(s["made_for_kids"]), synthetic_media=bool(s["synthetic_media"]),
+            license=s["license"], embeddable=bool(s["embeddable"]), public_stats_viewable=bool(s["public_stats_viewable"]),
+            notify_subscribers=bool(s["notify_subscribers"]), localizations=localizations, thumbnail_path=thumbnail,
         )
+        if begin is not None:
+            vps_mode = True
+            mode = begin.get("mode")
+            begin_token = begin.get("begin_token")
+            if mode == "update":
+                print(f"\n[UPLOAD_UPDATE_ONLY] VPS に投稿記録があるため再投稿せず snippet を更新します (video_id={begin.get('video_id')})", flush=True)
+                _write_marker(folder, begin.get("video_id") or "", title[:100], "private", begin.get("publish_at"), s, localizations, note="update")
+                r = update_video_snippet(folder, token_override=token_file)
+                print(f"  snippet 更新: {r.get('status')}", flush=True)
+                return begin.get("video_id") or ""
+            if mode == "resume" and begin.get("session_ref"):
+                resume = {"session_uri": begin["session_ref"], "offset": int(begin.get("offset") or 0)}
+                print(f" 前回のセッションから再開します（offset={resume['offset']}）", flush=True)
+                if begin.get("publish_at_changed"):
+                    # 予約が変わっている: 送信済みかもしれないので先に状態だけ照会する（結果不明のまま INSERT しない）
+                    try:
+                        kind, payload_obj = _pub.query_session(youtube, full_req, resume)
+                    except _pub.RetryableUploadError as e:
+                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会に失敗: {e}", flush=True)
+                        sys.exit(EXIT_RETRYABLE)
+                    except _pub.UploadResultUnknown as e:  # RuntimeError の子なので、汎用の except より前に置く
+                        print(f"\n[UPLOAD_RESULT_UNKNOWN] {e}", flush=True)
+                        _ledger.upload_unknown(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", str(e)))
+                        sys.exit(1)
+                    except RuntimeError as e:  # 想定外の 4xx（401 / 400 等）: セッションは保持したまま再試行に回す
+                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会が想定外の応答: {_pub.redact_urls(str(e))}", flush=True)
+                        sys.exit(EXIT_RETRYABLE)
+                    if kind == "complete":
+                        video_id = payload_obj["id"]
+                        new_at = str(begin.get("publish_at") or "").replace("+00:00", "")
+                        if new_at and not new_at.endswith("Z"):
+                            new_at += "Z"
+                        # 旧 publishAt を過ぎて既に公開されていれば、非公開に戻さず published として記録する。
+                        # 読み戻せない / 見つからないときは予約更新を保留して再試行（公開済みを private に戻さない）
+                        try:
+                            current = _pub.verify_video(youtube, video_id)
+                        except Exception as e:
+                            print(f"\n [RETRYABLE_UPLOAD_ERROR] 送信済み動画 {video_id} の状態を読み戻せません。予約更新を保留します: {_pub.redact_urls(str(e))}", flush=True)
+                            sys.exit(EXIT_RETRYABLE)
+                        if current is None:
+                            print(f"\n[UPLOAD_RESULT_UNKNOWN] 送信済みのはずの動画 {video_id} が見つかりません", flush=True)
+                            _ledger.upload_unknown(vol_num, input_hash, f"video {video_id} not found after resumed completion")
+                            sys.exit(1)
+                        if current.get("privacy_status") == "public":
+                            print(f" 前回の送信は完了し、既に公開されています (video_id={video_id})", flush=True)
+                            _ledger.upload_result(vol_num, input_hash, video_id, "public", current.get("publish_at"))
+                            _write_marker(folder, video_id, title[:100], "public", current.get("publish_at"), s, localizations, note="resumed-published")
+                            return video_id
+                        print(f" 前回の送信は完了していました (video_id={video_id})。予約を {new_at or 'なし'} に更新します", flush=True)
+                        _pub.update_publish_at(youtube, video_id, new_at or None, full_req)
+                        _ledger.upload_result(vol_num, input_hash, video_id, "private", new_at or None)
+                        _write_marker(folder, video_id, title[:100], "private", new_at or None, s, localizations, note="resumed-complete")
+                        if thumbnail:
+                            try:
+                                _pub.set_thumbnail(youtube, video_id, thumbnail, execute=execute_youtube)
+                            except Exception as e:
+                                print(f"  警告: サムネイル設定に失敗しました（動画は投稿済み video_id={video_id}）: {e}", flush=True)
+                        return video_id
+                    print(f" 前回の送信は未完了（offset={payload_obj}）。予約が変わったのでセッションを捨てて新規送信します", flush=True)
+                    try:
+                        begin = _ledger.upload_discard(vol_num, input_hash, begin_token)
+                    except (_ledger.LedgerHttpError, _ledger.LedgerUnavailable) as e:
+                        print(f"\n[VPS_UNAVAILABLE] セッション破棄を VPS に記録できません: {e}", flush=True)
+                        sys.exit(EXIT_RETRYABLE)
+                    begin_token = begin.get("begin_token") or begin_token
+                    resume = None
+            vps_publish_at = begin.get("publish_at")
+            if vps_publish_at:
+                # VPS の予約時刻（naive UTC）を正本にする。フォルダ名の日付は使わない
+                schedule = str(vps_publish_at).replace("+00:00", "")
+                if not schedule.endswith("Z"):
+                    schedule += "Z"
+                print(f" 公開予定（VPS）: {schedule}", flush=True)
+            else:
+                if os.environ.get("APP_ALLOW_UNSCHEDULED_UPLOAD", "").strip() in ("1", "true", "yes"):
+                    schedule = None
+                    print(" 公開予定なしで private 投稿します（APP_ALLOW_UNSCHEDULED_UPLOAD=1）", flush=True)
+                else:
+                    print("\n[NO_VPS_PUBLISH_AT] VPS に公開予定が無いので投稿しません（予約の無い private 投稿を残さない）。"
+                          "studio.py schedule-status で確認し予約するか、APP_ALLOW_UNSCHEDULED_UPLOAD=1 で明示してください", flush=True)
+                    sys.exit(1)
 
+        if not vps_mode:
+            # 実アップロード直前の二重投稿ガード。YouTube の uploads プレイリスト直近50件と
+            # ローカル marker/title/vol を照合し、既存ならアップロードせずローカル状態だけ補正する。
+            try:
+                import app_reconcile
+                guard = app_reconcile.find_existing_upload(
+                    folder,
+                    title=title,
+                    channel_id=ch_info.get("channel_id") or expected_channel_id or "",
+                    token_path=resolve_token_path(video_folder=folder, override=token_file),
+                    limit=50,
+                    write_marker=True,
+                )
+                if guard.get("exists"):
+                    match = guard.get("match") or {}
+                    print(
+                        "\n[YT_DUPLICATE_GUARD] 既存投稿をYouTube実態で確認したためアップロードをスキップします",
+                        flush=True,
+                    )
+                    print(f"  reason={guard.get('reason')} video_id={match.get('video_id')} title={match.get('title')}", flush=True)
+                    app_reconcile.notify_duplicate_skip(
+                        guard.get("vol") or vol_num,
+                        expected_channel_name or ch_info.get("channel_title") or "",
+                    )
+                    return match.get("video_id") or ""
+                print(f" 二重投稿ガード: 既存なし（uploads {guard.get('checked', {}).get('uploads', 0)}件照合）")
+            except Exception as e:
+                print(f"\n[YT_RECONCILE_GUARD_ERROR] YouTube実態照合に失敗: {e}", flush=True)
+                # 誤検知より二重投稿防止を優先。読み取り失敗時は実アップロードを止める。
+                sys.exit(EXIT_RETRYABLE)
+
+        req = full_req
+        req.publish_at = schedule
+        req.privacy = privacy
+        chunk_size = 10 * 1024 * 1024
         print(f"\nアップロード開始... ({file_size_mb:.0f} MB / チャンク {chunk_size // 1024 // 1024}MB)")
         sys.stdout.flush()
-
         import time
         start_time = time.time()
 
-        request = youtube.videos().insert(
-            part=",".join(parts),
-            body=body,
-            media_body=media,
-            notifySubscribers=bool(s["notify_subscribers"]),
-        )
+        def _progress(frac: float) -> None:
+            elapsed = time.time() - start_time
+            uploaded_mb = frac * file_size_mb
+            speed = uploaded_mb / elapsed if elapsed > 0 else 0
+            remaining = (file_size_mb - uploaded_mb) / speed if speed > 0 else 0
+            print(f" {int(frac * 100)}% ({uploaded_mb:.0f}/{file_size_mb:.0f} MB) | {speed:.1f} MB/s | 残り約 {int(remaining // 60)}分{int(remaining % 60):02d}秒")
+            sys.stdout.flush()
 
-        response = None
+        last_report = {"uri": None, "at": 0.0}
+
+        def _on_session(uri: str, offset: int) -> None:
+            # 送信中のセッション報告は URI が変わったときと 60 秒おきに間引く（VPS の遅延で送信を遅くしない）
+            if not vps_mode:
+                return
+            now_t = time.time()
+            if uri != last_report["uri"] or now_t - last_report["at"] >= 60:
+                ok = _ledger.upload_session(vol_num, input_hash, uri, offset, begin_token)
+                if not ok and uri != last_report["uri"]:
+                    # セッションを VPS に残せないまま送り切ると、応答を失ったときに再 INSERT（二重投稿）になりうる。
+                    # 二重より保留: ここで止めて次回 resume に回す（未完了のセッションは動画にならない）。
+                    raise RuntimeError("VPS にセッションを保存できないため送信を中断します")
+                last_report["uri"], last_report["at"] = uri, now_t
+
         try:
-            while response is None:
-                status_obj, response = request.next_chunk()
-                if status_obj:
-                    pct = int(status_obj.progress() * 100)
-                    elapsed = time.time() - start_time
-                    uploaded_mb = status_obj.progress() * file_size_mb
-                    speed = uploaded_mb / elapsed if elapsed > 0 else 0
-                    remaining = (file_size_mb - uploaded_mb) / speed if speed > 0 else 0
-                    remaining_min = int(remaining // 60)
-                    remaining_sec = int(remaining % 60)
-                    print(f" {pct}% ({uploaded_mb:.0f}/{file_size_mb:.0f} MB) | {speed:.1f} MB/s | 残り約 {remaining_min}分{remaining_sec:02d}秒")
-                    sys.stdout.flush()
+            result = _pub.upload(youtube, req, chunk_size=chunk_size, on_session=_on_session, resume=resume,
+                                 progress=_progress, execute=execute_youtube)
+        except _pub.RetryableUploadError as e:
+            print(f"\n [RETRYABLE_UPLOAD_ERROR] {e} — pipeline retry layer へ委譲します（セッションは VPS に保存済み）", flush=True)
+            sys.exit(EXIT_RETRYABLE)
+        except _pub.UploadResultUnknown as e:
+            print(f"\n[UPLOAD_RESULT_UNKNOWN] {e}", flush=True)
+            if vps_mode:
+                # 例外文に upload URL（セッション URI）が混ざっても VPS の記録に平文を残さない
+                _ledger.upload_unknown(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", str(e)))
+            sys.exit(1)
         except HttpError as e:
-            # 403 quotaExceeded / 429 / 5xx は上位 retry 層に回す
-            if _is_retryable_http_error(e):
-                status = getattr(e.resp, "status", "?") if getattr(e, "resp", None) else "?"
-                print(f"\n [RETRYABLE_UPLOAD_ERROR] HTTP {status} — pipeline retry layer へ委譲します", flush=True)
-                sys.exit(EXIT_RETRYABLE)
+            # 回復できない 4xx（invalidVideoMetadata 等）: 動画は作られていない。記録を failed にして再 begin できるようにする
+            if vps_mode:
+                _ledger.upload_failed(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", f"HTTP {getattr(getattr(e, 'resp', None), 'status', '?')}: {e}")[:2000])
             raise
 
-        video_id = response["id"]
+        video_id = result.video_id
         record_quota("videos.insert", channel_id=os.environ.get("APP_CHANNEL_ID", ""), cost=QUOTA_PER_UPLOAD)
-        total_time = time.time() - start_time
-        print(f"\n アップロード完了: https://youtu.be/{video_id}")
+        total_time = result.elapsed_sec
+        print(f"\n アップロード完了: {result.url}")
         print(f"  所要時間: {int(total_time//60)}分{int(total_time%60):02d}秒")
         sys.stdout.flush()
 
@@ -1074,37 +1205,34 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             print(f" quota 消費記録: 累計 {used_after} unit / 24h")
         except Exception as e:
             print(f"  ⚠️ quota 記録失敗: {e}")
-
+        actual_publish_at = result.publish_at
+        if resume is not None:
+            # 再開したセッションの metadata は開始時のもの。実際の publishAt を読み戻して記録する
+            try:
+                info = _pub.verify_video(youtube, video_id)
+                if info and info.get("publish_at"):
+                    actual_publish_at = info["publish_at"]
+            except Exception as e:
+                print(f"  警告: 投稿後の状態読み戻しに失敗: {e}", flush=True)
+        # 先に結果を記録してから（video_id を失わない）、サムネを設定する
+        if vps_mode:
+            reported = False
+            for attempt in range(3):
+                if _ledger.upload_result(vol_num, input_hash, video_id, result.privacy, actual_publish_at):
+                    reported = True
+                    break
+                time.sleep(2 * (attempt + 1))
+            if not reported:
+                print("  警告: VPS への投稿結果の報告に 3 回失敗しました（marker は書きます。pipeline 終了時の report_upload で再送されます）", flush=True)
+        _write_marker(folder, video_id, title[:100], result.privacy, actual_publish_at, s, localizations)
         if thumbnail:
-            print(f"サムネイル設定中: {thumbnail.name}")
-            sys.stdout.flush()
-            thumb_mime = mimetypes.guess_type(str(thumbnail))[0] or "image/jpeg"
-            execute_youtube(youtube.thumbnails().set(
-                videoId=video_id,
-                media_body=MediaFileUpload(str(thumbnail), mimetype=thumb_mime),
-            ), "thumbnails.set")
-            print(" サムネイル設定完了")
-            sys.stdout.flush()
-
-        # アップロード完了マーカーを書き出し（ダッシュボード用）
-        try:
-            import datetime
-            marker = {
-                "video_id": video_id,
-                "url": f"https://youtu.be/{video_id}",
-                "title": title,
-                "privacy": privacy,
-                "schedule": schedule,
-                "uploaded_at": datetime.datetime.now().isoformat(),
-                "settings": s,
-                "localizations_applied": list(localizations.keys()),
-            }
-            (Path(folder) / "youtube_upload.json").write_text(
-                json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except Exception as e:
-            print(f"  ⚠️ マーカー書き出し失敗: {e}")
-            sys.stdout.flush()
+            try:
+                print(f"サムネイル設定中: {thumbnail.name}")
+                sys.stdout.flush()
+                _pub.set_thumbnail(youtube, video_id, thumbnail, execute=execute_youtube)
+                print(" サムネイル設定完了")
+            except Exception as e:
+                print(f"  警告: サムネイル設定に失敗しました（動画は投稿済み video_id={video_id}）: {e}", flush=True)
 
     finally:
         if _upload_lock_acquired:

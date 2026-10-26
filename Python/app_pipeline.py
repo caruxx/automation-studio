@@ -2998,12 +2998,23 @@ def step_upload(vol: int, folder: Path, via_api: bool, **kw):
     if gate:
         return gate
     cfg = _load_dashboard_config()
-    schedule = resolve_publish_at_iso(folder, cfg)
-    privacy = "private" if schedule else kw.get("privacy", "private")
-    if schedule:
-        print(f" publish_time_jst={cfg.get('publish_time_jst') or '12:00'} → private / publishAt={schedule}")
+    try:
+        import vps_ledger_sync as _vls
+        vps_schedules = _vls.enabled()
+    except Exception:
+        vps_schedules = False
+    if vps_schedules:
+        # 段階 3: 予約時刻の正本は VPS（app_youtube が投稿記録 begin の応答から取る）。フォルダ名の日付は使わない
+        schedule = None
+        privacy = "private"
+        print(" 公開予定は VPS の投稿記録から取得します（private + publishAt）")
     else:
-        print(" publish_date を解決できないため publishAt なしで upload")
+        schedule = resolve_publish_at_iso(folder, cfg)
+        privacy = "private" if schedule else kw.get("privacy", "private")
+        if schedule:
+            print(f" publish_time_jst={cfg.get('publish_time_jst') or '12:00'} → private / publishAt={schedule}")
+        else:
+            print(" publish_date を解決できないため publishAt なしで upload")
 
     if not _force_reupload_enabled():
         skip, marker = _local_upload_marker_allows_skip(folder)
@@ -3043,26 +3054,7 @@ def step_upload(vol: int, folder: Path, via_api: bool, **kw):
         return ok
 
 
-def _schedule_publish_after_upload(folder: Path, delay_hours: float) -> None:
-    """upload 成功直後に /api/youtube/schedule-publish を叩いて公開ゲートを登録。
-
-    API が落ちている場合は warn のみ（次回 app.py 起動時の startup hook で復旧される）。
-    """
-    cfg = _load_dashboard_config()
-    body = {
-        "video_name": folder.name,
-        "channel_folder": str(folder.parent),
-        "channel_name": cfg.get("channel_name") or "",
-        "delay_hours": float(delay_hours),
-    }
-    try:
-        r = _api_post("/api/youtube/schedule-publish", body, "公開ゲート登録")
-        if r and r.get("status") == "ok":
-            print(f" 公開予定: {r.get('scheduled_at')} ({delay_hours}h 後)")
-        else:
-            print(f"  ⚠ 公開ゲート登録の応答が不正（marker は更新済 → 次回起動で復旧）")
-    except Exception as e:
-        print(f"  ⚠ 公開ゲート登録失敗: {e}（marker は更新済）")
+# 段階 3: Mac 側の公開ゲート（_schedule_publish_after_upload）は撤去。公開時刻は VPS の publish_verify が照合する。
 
 
 STEP_FUNCS = {

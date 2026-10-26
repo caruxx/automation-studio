@@ -1,5 +1,13 @@
 # app-schedule: スケジュール自動実行（APScheduler）
 
+> **段階 3（2026-10-26）**: 採番・公開枠・投稿状態の正本は VPS に移った。Mac の `vol_create` は
+> `POST /api/worker/vols/allocate` で番号と公開日を受け取ってフォルダを作り、pipeline を実行する（VPS 未設定なら従来の採番）。
+> VPS 側の `scheduled_tasks` は Mac のフォルダを作らないので、同じチャンネルで両方を有効にしない。Mac 側の公開ゲート
+> （`/api/youtube/schedule-publish`、起動時の予約復旧）と auto_resume（N 分後の自動再投入）は撤去した。
+> 公開予定は `studio.py schedule-status` / `schedule-put`、再開は `studio.py run --vol N --from <stage>` /
+> `run-resume --run-id`。`orchestrator_tick` は既定 OFF（`APP_ORCH_TICK_ENABLED=1` で従来どおり）。
+> 詳細: `docs/SPEC_REVISION_DRAFT_2026-10-25.md` §3.4、`docs/plans/2026-10-26-stage3-schedule-publish.md`。
+
 cron 風のスケジュール管理で、PC を起動しておくだけで定期ジョブが走る。
 `AsyncIOScheduler` がサーバー起動時に立ち上がり、`~/.config/{app_id}/schedule_jobs.json` を読んで登録する。
 

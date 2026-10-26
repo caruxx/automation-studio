@@ -1552,6 +1552,53 @@
         "scope": "global",
         "max_parallel": 4
       }
+    },
+    "schedule-status": {
+      "aliases": [
+        "公開予定",
+        "schedule-status",
+        "予約状況"
+      ],
+      "description": "VPS の公開スケジュール（設定・次の空き枠・vol の公開予定と投稿記録）を取得。--vol で 1 本の詳細",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "schedule-status",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "VPS の API を AI トークンで呼ぶため CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 4
+      }
+    },
+    "schedule-put": {
+      "aliases": [
+        "公開時刻を設定",
+        "schedule-put"
+      ],
+      "description": "VPS のチャンネル別公開スケジュールを設定（管理者 JWT が必要: 環境変数 APP_VPS_ADMIN_TOKEN）。--publish-time / --timezone / --lead-days / --late-policy / --enabled|--disabled / --revision",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "schedule-put",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "管理者トークンで VPS の設定を変えるため CLI 直実行。",
+      "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 1
+      }
     }
   }
 }
