@@ -114,6 +114,8 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
     if resume and resume.get("session_uri"):
         request.resumable_uri = resume["session_uri"]
         request.resumable_progress = int(resume.get("offset") or 0)
+        # 保存した offset が古い可能性があるので、最初にサーバーへ状態照会（PUT Content-Range */size）させる
+        request._in_error_state = True
         resumed = True
     started = time.time()
     response = None
@@ -135,16 +137,25 @@ def upload(youtube, req: UploadRequest, *, chunk_size: int = DEFAULT_CHUNK,
         if is_retryable_http_error(exc):
             raise RetryableUploadError(f"HTTP {status}", status=status) from exc
         raise
+    except (RetryableUploadError, UploadResultUnknown):
+        raise
+    except Exception as exc:
+        # 通信例外（タイムアウト・切断・SSL 等）。セッションがあれば次回 resume で結果が分かるので再試行扱い。
+        if getattr(request, "resumable_uri", None):
+            raise RetryableUploadError(f"{type(exc).__name__}: {exc}", status=None) from exc
+        raise
     video_id = response["id"]
-    thumbnail_set = False
-    if req.thumbnail_path and Path(req.thumbnail_path).is_file():
-        mime = mimetypes.guess_type(str(req.thumbnail_path))[0] or "image/jpeg"
-        call = youtube.thumbnails().set(videoId=video_id, media_body=media_factory(str(req.thumbnail_path), mimetype=mime))
-        (execute(call, "thumbnails.set") if execute else call.execute())
-        thumbnail_set = True
+    # サムネはここでは設定しない（video_id を失わないよう、呼び出し側が結果を記録してから set_thumbnail を呼ぶ）
     return UploadResult(video_id=video_id, url=f"https://youtu.be/{video_id}", privacy=body["status"]["privacyStatus"],
-                        publish_at=body["status"].get("publishAt"), thumbnail_set=thumbnail_set,
+                        publish_at=body["status"].get("publishAt"), thumbnail_set=False,
                         elapsed_sec=time.time() - started)
+
+
+def set_thumbnail(youtube, video_id: str, thumbnail_path: Path, *, media_factory: Callable[..., Any] = MediaFileUpload,
+                  execute: Optional[Callable[[Any, str], Any]] = None) -> None:
+    mime = mimetypes.guess_type(str(thumbnail_path))[0] or "image/jpeg"
+    call = youtube.thumbnails().set(videoId=video_id, media_body=media_factory(str(thumbnail_path), mimetype=mime))
+    (execute(call, "thumbnails.set") if execute else call.execute())
 
 
 def verify_video(youtube, video_id: str) -> Optional[dict]:

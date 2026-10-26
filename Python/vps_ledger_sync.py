@@ -245,7 +245,11 @@ class LedgerHttpError(RuntimeError):
 
 
 class LedgerUnavailable(RuntimeError):
-    pass
+    """VPS に接続できない（待てば通る）。"""
+
+
+class LedgerConfigError(RuntimeError):
+    """設定の問題（チャンネル / vol を解決できない等）。待っても直らない。"""
 
 
 def enabled() -> bool:
@@ -282,23 +286,31 @@ def _request_strict(method: str, path: str, *, payload: Optional[dict[str, Any]]
     return result if isinstance(result, dict) else {}
 
 
-def upload_begin(vol: int, input_hash: str) -> Optional[dict[str, Any]]:
-    """投稿の開始（冪等）。VPS 未設定なら None（従来経路）。4xx は LedgerHttpError、接続不能は LedgerUnavailable。"""
+def upload_begin(vol: int, input_hash: str, begin_token: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """投稿の開始（冪等）。VPS 未設定なら None（従来経路）。4xx は LedgerHttpError、接続不能は LedgerUnavailable。
+    応答の begin_token は同じ送信元の session 報告・再 begin に添える。"""
     if not enabled():
         return None
+    if resolve_channel_key() is None:
+        raise LedgerConfigError("channels.json からチャンネル（channel_key）を解決できません")
     vol_id = ensure_vol(vol)
     if vol_id is None:
         raise LedgerUnavailable("vol を VPS で解決できません")
-    return _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/begin", payload={"input_hash": input_hash})
+    payload: dict[str, Any] = {"input_hash": input_hash}
+    if begin_token:
+        payload["begin_token"] = begin_token
+    return _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/begin", payload=payload)
 
 
-def upload_session(vol: int, input_hash: str, session_ref: str, offset: int) -> None:
+def upload_session(vol: int, input_hash: str, session_ref: str, offset: int, begin_token: Optional[str] = None) -> None:
+    """送信中のセッション URI と offset を報告する（15 分の引き継ぎ期限も延びる）。失敗しても送信は続ける。"""
     vol_id = _VOL_CACHE.get((resolve_channel_key() or "", int(vol))) or ensure_vol(vol)
     if vol_id is None:
         return
     try:
         _request_strict("POST", f"/api/worker/vols/{vol_id}/upload/session",
-                        payload={"input_hash": input_hash, "session_ref": session_ref, "offset": int(offset)})
+                        payload={"input_hash": input_hash, "session_ref": session_ref, "offset": int(offset),
+                                 "begin_token": begin_token})
     except (LedgerHttpError, LedgerUnavailable) as exc:
         print(f"[ledger-sync] upload/session 保存失敗（続行）: {exc}")
 

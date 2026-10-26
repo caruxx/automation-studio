@@ -28,11 +28,13 @@ class FakeLedger:
             raise self.begin
         return self.begin
 
-    def upload_session(self, vol, h, uri, off): self.calls.append(("session", uri, off))
+    def upload_session(self, vol, h, uri, off, token=None): self.calls.append(("session", uri, off, token))
     def upload_result(self, vol, h, vid, privacy, publish_at): self.calls.append(("result", vid, privacy, publish_at)); return True
     def upload_unknown(self, vol, h, err): self.calls.append(("unknown", err)); return True
+    def enabled(self): return self.begin is not None
     LedgerUnavailable = vls.LedgerUnavailable
     LedgerHttpError = vls.LedgerHttpError
+    LedgerConfigError = vls.LedgerConfigError
 
 
 class UploadVpsFlowTest(unittest.TestCase):
@@ -94,10 +96,45 @@ class UploadVpsFlowTest(unittest.TestCase):
         self.assertEqual(seen["publish_at"], "2026-12-24T03:00:00Z")
         kinds = [c[0] for c in ledger.calls]
         self.assertEqual(kinds, ["begin", "session", "result"])
+        self.assertEqual(ledger.calls[1], ("session", "https://upload.example/s1", 0, "t"))  # begin_token を添える
         self.assertEqual(ledger.calls[-1][1:], ("vidNEW", "private", "2026-12-24T03:00:00Z"))
         marker = json.loads((self.folder / "youtube_upload.json").read_text(encoding="utf-8"))
         self.assertEqual(marker["schedule"], "2026-12-24T03:00:00Z")
         self.assertEqual(marker["privacy"], "private")
+
+    def test_thumbnail_failure_keeps_result_and_marker(self):
+        ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": "2026-12-24T03:00:00", "begin_token": "t"})
+        (self.folder / "サムネイル.jpg").write_bytes(b"jpg")
+        order = []
+
+        def fake_upload(youtube, req, **kw):
+            order.append("upload")
+            return pub.UploadResult(video_id="vidT", url="u", privacy="private", publish_at=req.publish_at, thumbnail_set=False, elapsed_sec=1.0)
+
+        def boom_thumb(*a, **k):
+            order.append("thumb")
+            raise RuntimeError("thumbnails.set failed")
+        with patch.object(pub, "set_thumbnail", boom_thumb):
+            vid = self._run(ledger, fake_upload)
+        self.assertEqual(vid, "vidT")
+        self.assertEqual(order, ["upload", "thumb"])
+        self.assertEqual([c[0] for c in ledger.calls][-1], "result")  # 結果はサムネより先に記録される
+        self.assertTrue((self.folder / "youtube_upload.json").exists())
+
+    def test_resume_reads_back_actual_publish_at(self):
+        ledger = FakeLedger({"mode": "resume", "upload_id": 3, "state": "uploading", "publish_at": "2026-12-25T03:00:00",
+                             "session_ref": "https://upload.example/old", "offset": 50, "begin_token": "t"})
+
+        def fake_upload(youtube, req, **kw):
+            return pub.UploadResult(video_id="vidR", url="u", privacy="private", publish_at=req.publish_at, thumbnail_set=False, elapsed_sec=1.0)
+        with patch.object(pub, "verify_video", return_value={"privacy_status": "private", "publish_at": "2026-12-24T03:00:00Z"}):
+            self._run(ledger, fake_upload)
+        self.assertEqual(ledger.calls[-1], ("result", "vidR", "private", "2026-12-24T03:00:00Z"))  # セッション開始時の値を正とする
+
+    def test_config_error_exits_1_not_retry(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run(FakeLedger(vls.LedgerConfigError("channel unresolved")), lambda *a, **k: self.fail("x"))
+        self.assertEqual(cm.exception.code, 1)
 
     def test_insert_without_vps_publish_at_refuses_scheduled_upload(self):
         ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": None, "begin_token": "t"})
@@ -139,7 +176,7 @@ class UploadVpsFlowTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             self._run(ledger, fake_upload)
         self.assertEqual(cm.exception.code, ay.EXIT_RETRYABLE)
-        self.assertIn(("session", "https://upload.example/s2", 1024), ledger.calls)
+        self.assertIn(("session", "https://upload.example/s2", 1024, "t"), ledger.calls)
         self.assertFalse(any(c[0] in ("unknown", "result") for c in ledger.calls))
 
     def test_legacy_path_without_vps(self):

@@ -126,7 +126,10 @@ class UploadTest(unittest.TestCase):
         self.assertEqual(res.video_id, "vid1")
         self.assertEqual(res.privacy, "private")
         self.assertEqual(res.publish_at, "2026-09-01T03:00:00Z")
-        self.assertTrue(res.thumbnail_set and yt.thumb_calls)
+        self.assertFalse(res.thumbnail_set)  # サムネは upload() では設定しない（結果記録後に set_thumbnail）
+        self.assertEqual(yt.thumb_calls, [])
+        pub.set_thumbnail(yt, res.video_id, self.thumb, media_factory=lambda *a, **k: object())
+        self.assertEqual(yt.thumb_calls[0]["videoId"], "vid1")
         self.assertEqual(sessions[0][0], "https://upload.example/session/1")
         self.assertEqual([s[1] for s in sessions], [30, 70])
         self.assertEqual(yt.insert_kwargs["part"], "snippet,status,localizations")
@@ -146,11 +149,25 @@ class UploadTest(unittest.TestCase):
         yt = FakeYouTube(FakeRequest([], fail=(1, _http_error(410))))
         with self.assertRaises(HttpError):
             pub.upload(yt, self._req(), media_factory=lambda *a, **k: object())
-        # resume は URI と offset を request に設定する
+        # resume は URI と offset を request に設定し、最初に状態照会させる
         req = FakeRequest([])
         yt = FakeYouTube(req)
         pub.upload(yt, self._req(), resume={"session_uri": "https://upload.example/s9", "offset": 7}, media_factory=lambda *a, **k: object())
         self.assertEqual(req.resumable_uri, "https://upload.example/s9")
+        self.assertTrue(getattr(req, "_in_error_state", False))
+        # 送信中の通信例外: セッションがあれば再試行（resume で結果が分かる）、無ければそのまま失敗
+        import socket
+        yt = FakeYouTube(FakeRequest([0.5], fail=(2, socket.timeout("timed out"))))
+        with self.assertRaises(pub.RetryableUploadError):
+            pub.upload(yt, self._req(), media_factory=lambda *a, **k: object())
+        req = FakeRequest([], fail=(1, ConnectionError("reset")))
+        req.resumable_uri = None
+        class NoSession(FakeRequest):
+            def next_chunk(self):
+                raise ConnectionError("reset before session")
+        yt = FakeYouTube(NoSession([]))
+        with self.assertRaises(ConnectionError):
+            pub.upload(yt, self._req(), media_factory=lambda *a, **k: object())
 
 
 if __name__ == "__main__":

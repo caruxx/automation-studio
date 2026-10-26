@@ -1017,8 +1017,14 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                                             description=description, tags=tags, localizations=localizations)
         resume = None
         vps_mode = False
+        if _ledger.enabled() and (not str(vol_num).isdigit() or int(vol_num) < 1):
+            print(f"\n[VOL_UNRESOLVED] フォルダ名から vol 番号を解決できません: {folder.name}", flush=True)
+            sys.exit(1)
         try:
             begin = _ledger.upload_begin(vol_num, input_hash)
+        except _ledger.LedgerConfigError as e:
+            print(f"\n[VPS_CONFIG_ERROR] {e}", flush=True)
+            sys.exit(1)
         except _ledger.LedgerUnavailable as e:
             print(f"\n[VPS_UNAVAILABLE] 投稿記録の VPS に接続できないため投稿を保留します: {e}", flush=True)
             sys.exit(EXIT_RETRYABLE)
@@ -1036,12 +1042,14 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                 sys.exit(1)
             print(f"\n[VPS_REJECTED] 投稿記録の開始が拒否されました: {e}", flush=True)
             sys.exit(1)
+        begin_token = None
         if begin is not None:
             vps_mode = True
             mode = begin.get("mode")
+            begin_token = begin.get("begin_token")
             if mode == "update":
                 print(f"\n[UPLOAD_UPDATE_ONLY] VPS に投稿記録があるため再投稿せず snippet を更新します (video_id={begin.get('video_id')})", flush=True)
-                _write_marker(folder, begin.get("video_id") or "", title, privacy, None, s, localizations, note="update")
+                _write_marker(folder, begin.get("video_id") or "", title[:100], "private", begin.get("publish_at"), s, localizations, note="update")
                 r = update_video_snippet(folder, token_override=token_file)
                 print(f"  snippet 更新: {r.get('status')}", flush=True)
                 return begin.get("video_id") or ""
@@ -1081,9 +1089,16 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             print(f" {int(frac * 100)}% ({uploaded_mb:.0f}/{file_size_mb:.0f} MB) | {speed:.1f} MB/s | 残り約 {int(remaining // 60)}分{int(remaining % 60):02d}秒")
             sys.stdout.flush()
 
+        last_report = {"uri": None, "at": 0.0}
+
         def _on_session(uri: str, offset: int) -> None:
-            if vps_mode:
-                _ledger.upload_session(vol_num, input_hash, uri, offset)
+            # 送信中のセッション報告は URI が変わったときと 60 秒おきに間引く（VPS の遅延で送信を遅くしない）
+            if not vps_mode:
+                return
+            now_t = time.time()
+            if uri != last_report["uri"] or now_t - last_report["at"] >= 60:
+                _ledger.upload_session(vol_num, input_hash, uri, offset, begin_token)
+                last_report["uri"], last_report["at"] = uri, now_t
 
         try:
             result = _pub.upload(youtube, req, chunk_size=chunk_size, on_session=_on_session, resume=resume,
@@ -1111,13 +1126,28 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
             print(f" quota 消費記録: 累計 {used_after} unit / 24h")
         except Exception as e:
             print(f"  ⚠️ quota 記録失敗: {e}")
-        if result.thumbnail_set:
-            print(" サムネイル設定完了")
+        actual_publish_at = result.publish_at
+        if resume is not None:
+            # 再開したセッションの metadata は開始時のもの。実際の publishAt を読み戻して記録する
+            try:
+                info = _pub.verify_video(youtube, video_id)
+                if info and info.get("publish_at"):
+                    actual_publish_at = info["publish_at"]
+            except Exception as e:
+                print(f"  警告: 投稿後の状態読み戻しに失敗: {e}", flush=True)
+        # 先に結果を記録してから（video_id を失わない）、サムネを設定する
         if vps_mode:
-            if not _ledger.upload_result(vol_num, input_hash, video_id, result.privacy, result.publish_at):
+            if not _ledger.upload_result(vol_num, input_hash, video_id, result.privacy, actual_publish_at):
                 print("  警告: VPS への投稿結果の報告に失敗しました（pipeline 終了時の report_upload で再送されます）", flush=True)
-
-        _write_marker(folder, video_id, title, result.privacy, result.publish_at, s, localizations)
+        _write_marker(folder, video_id, title[:100], result.privacy, actual_publish_at, s, localizations)
+        if thumbnail:
+            try:
+                print(f"サムネイル設定中: {thumbnail.name}")
+                sys.stdout.flush()
+                _pub.set_thumbnail(youtube, video_id, thumbnail, execute=execute_youtube)
+                print(" サムネイル設定完了")
+            except Exception as e:
+                print(f"  警告: サムネイル設定に失敗しました（動画は投稿済み video_id={video_id}）: {e}", flush=True)
 
     finally:
         if _upload_lock_acquired:
