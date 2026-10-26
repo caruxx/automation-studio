@@ -331,5 +331,34 @@ def main() -> int:
     return 0
 
 
+def contact_sheet(paths, out_path, cols: int = 2, tile_width: int = 640) -> str:
+    """候補画像を並べた確認用のコンタクトシート（段階 5）。番号は左上に描く。"""
+    from PIL import Image, ImageDraw
+    imgs, names = [], []
+    for p in paths:
+        with Image.open(str(p)) as im:
+            imgs.append(im.convert("RGB"))
+        names.append(Path(p).name)
+    if not imgs:
+        raise ValueError("no images")
+    tiles = []
+    for im in imgs:
+        h = int(im.height * tile_width / max(1, im.width))
+        tiles.append(im.resize((tile_width, max(1, h))))
+    tile_h = max(t.height for t in tiles)
+    rows = (len(tiles) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * tile_width, rows * tile_h), (20, 20, 20))
+    draw = ImageDraw.Draw(sheet)
+    for i, t in enumerate(tiles):
+        x, y = (i % cols) * tile_width, (i // cols) * tile_h
+        sheet.paste(t, (x, y))
+        label = names[i]  # 番号ではなくファイル名（候補 id の末尾）を描く
+        draw.rectangle([x, y, x + 8 + 7 * len(label), y + 28], fill=(0, 0, 0))
+        draw.text((x + 8, y + 6), label, fill=(255, 255, 255))
+    sheet.save(str(out_path), "JPEG", quality=85)
+    return str(out_path)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
+

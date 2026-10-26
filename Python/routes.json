@@ -423,7 +423,7 @@
         "サムネをAIで作って",
         "サムネを自動生成"
       ],
-      "description": "AI サムネイル生成",
+      "description": "投稿用サムネの AI 選定（段階 5。thumbnail-select と同じ工程）",
       "cli": {
         "cmd": [
           "python3",
@@ -434,7 +434,7 @@
         ]
       },
       "prefer": "cli",
-      "via_api_safe": true,
+      "via_api_safe": false,
       "requires_vol": true,
       "parallelism": {
         "scope": "global",
@@ -1618,6 +1618,32 @@
       "via_api_safe": false,
       "via_api_unsafe_reason": "VPS の worker API を呼ぶため CLI 直実行。",
       "requires_vol": false,
+      "parallelism": {
+        "scope": "global",
+        "max_parallel": 1
+      }
+    },
+    "thumbnail-select": {
+      "aliases": [
+        "サムネを選んで",
+        "サムネ選定",
+        "thumbnail-select"
+      ],
+      "description": "投稿用サムネの AI 選定（生成 → 合成 → 採点 → 採用、最大 3 回）。--adopt <候補 id> で直近 run の候補を人が採用",
+      "cli": {
+        "cmd": [
+          "python3",
+          "studio.py",
+          "thumbnail-select",
+          "--vol",
+          "{vol}",
+          "--json"
+        ]
+      },
+      "prefer": "cli",
+      "via_api_safe": false,
+      "via_api_unsafe_reason": "画像生成と Vision 採点を含む長い処理のため CLI 直実行。",
+      "requires_vol": true,
       "parallelism": {
         "scope": "global",
         "max_parallel": 1

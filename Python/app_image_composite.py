@@ -67,3 +67,35 @@ def compose_images(folder: Path, vol: int, config: dict, *, force=False) -> bool
                 (folder / ("." + target.name + ".part")).unlink(missing_ok=True)
     print("Adobeなし画像合成: 動画背景とサムネを1920×1080で保存しました")
     return True
+
+
+def compose_candidate(source: Path, out_path: Path, vol: int, config: dict) -> Path:
+    """サムネ選定（段階 5）の候補 1 枚: 背景候補 source を compose_images と同じ設定で合成し、サムネ側だけを out_path に置く。
+    動画用の vol{N}.jpg / サムネイル.jpg には触れない。"""
+    source, out_path = Path(source), Path(out_path)
+    settings = config.get("thumbnail_composition") or {}
+    title = str(settings.get("title") or "").strip()
+    scene = out_path.parents[3] / "scene_en.txt" if len(out_path.parents) > 3 else None
+    if not title and config.get("scene_text_enabled") and scene is not None and scene.is_file():
+        title = scene.read_text(encoding="utf-8").strip()
+    with tempfile.TemporaryDirectory(prefix="studio-thumb-cand-") as raw:
+        scratch = Path(raw)
+        render_dual_thumbnail(
+            psd_path="", base_image=str(source), scene_text=title, out_dir=str(scratch),
+            vol_name=f"vol{vol}", target_width=1920, target_height=1080,
+            scene_text_font=settings.get("font"), playlist_text=str(settings.get("headline") or ""),
+            toggle_always_visible=bool(settings.get("headline_always_visible", False)),
+            bg_base_only=True, darken=float(settings.get("darken", 0)),
+            vignette=float(settings.get("vignette", 0)), quality=95,
+        )
+        produced = scratch / "サムネイル.jpg"
+        if not produced.is_file():
+            raise ValueError("サムネ候補の合成に失敗しました")
+        from PIL import Image
+        with Image.open(produced) as im:
+            im.load()
+            if im.size != (1920, 1080):
+                raise ValueError(f"サムネ候補の寸法が不正です: {im.size}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(produced, out_path)
+    return out_path

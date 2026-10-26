@@ -68,8 +68,11 @@ def stage_outputs(stage: str, folder: Path, vol: int) -> list[Path]:
         return _files(folder / "music", _AUDIO)
     if st == "bgimage":
         return _img_candidates(folder, vol, f"vol{vol}.png")
-    if st in ("composite", "thumbnail"):
+    if st == "composite":
         return _img_candidates(folder, vol, "サムネイル.jpg", f"vol{vol}.jpg")
+    if st == "thumbnail":
+        # 段階 5: 投稿用サムネは AI 選定の採用画像（記録は内容ハッシュ、画像はサイズ + mtime）
+        return [p for p in (folder / ".thumbnail_selection.json", folder / "thumbnail_selected.jpg") if p.is_file()]
     if st == "render":
         pat = re.compile(rf"vol{vol}(?!\d)")
         mine = [p for p in _mp4s(folder) if pat.search(p.name)]
@@ -131,6 +134,13 @@ def _fingerprint(path: Path, folder: Path) -> str:
     if path.name == ".music_review.json":
         try:
             return f"{rel}|selection:{_selection_essence(path)}"
+        except (OSError, ValueError, TypeError):
+            pass
+    if path.name == ".thumbnail_selection.json":
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+            essence = {"selected_id": d.get("selected_id"), "selected_hash": d.get("selected_hash"), "status": d.get("status")}
+            return f"{rel}|selection:{hashlib.sha256(json.dumps(essence, sort_keys=True).encode('utf-8')).hexdigest()}"
         except (OSError, ValueError, TypeError):
             pass
     if path.name == "qa_report.json":
@@ -224,7 +234,12 @@ def localization_done(folder: Path, vol: int) -> bool:
 
 
 def thumbnail_done(folder: Path, vol: int) -> bool:
-    return composite_done(folder, vol)
+    """段階 5: 選定が確定し、採用画像のハッシュが記録と一致する（画像が存在するだけでは done にしない）。"""
+    try:
+        import thumbnail_selection
+        return thumbnail_selection.verify(folder)[0]
+    except Exception:
+        return False
 
 
 def upload_done(folder: Path, vol: int) -> bool:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -470,6 +471,56 @@ def run_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_thumbnail_select(args: argparse.Namespace) -> int:
+    """thumbnail-select: 投稿用サムネの AI 選定（段階 5）。--adopt で直近 run の候補を人が採用。stdout は JSON 1 行。
+    終了コード: 0 採用済み / 79 品質待機 / 1 失敗 / 2 使い方。"""
+    import thumbnail_selection as _ts
+    from exit_codes import ExitCode
+    raw = args.vol or args.resolve_num
+    if not raw:
+        emit({"ok": False, "intent": "thumbnail-select", "error": "usage", "message": "--vol が必要です"})
+        return int(ExitCode.USAGE)
+    info = resolve_vol(str(raw), channel_id=(args.channel or ""))
+    folder = Path(info.get("folder") or "")
+    if not info.get("ok") or not folder.is_dir():
+        emit({"ok": False, "intent": "thumbnail-select", "error": "vol_not_found", "message": info.get("error") or "vol フォルダがありません"})
+        return int(ExitCode.USAGE)
+    if args.adopt:
+        if getattr(args, "dry_run", False):
+            rec = _ts.load(folder)
+            known = args.adopt in (rec.get("candidate_ids") or [])
+            emit({"ok": known, "intent": "thumbnail-select", "dry_run": True, "adopt": args.adopt})
+            return 0 if known else int(ExitCode.FAIL)
+        try:
+            res = _ts.adopt(folder, args.adopt)
+        except ValueError as exc:
+            emit({"ok": False, "intent": "thumbnail-select", "error": "adopt_rejected", "message": str(exc)})
+            return int(ExitCode.FAIL)
+        try:
+            import stage_state as _ss
+            # 人の採用を現在の入力で完了と記録する（入力変化後の品質待機でも、採用が再選定で上書きされないように）
+            _ss.mark_done("thumbnail", folder, int(info.get("vol") or raw))
+        except Exception as exc:
+            emit({"ok": False, "intent": "thumbnail-select", "error": "state_record_failed", "message": f"{type(exc).__name__}"})
+            return int(ExitCode.FAIL)
+        emit({"ok": True, "intent": "thumbnail-select", "status": res.status, "selected_id": res.selected_id, "selected_hash": res.selected_hash})
+        return 0
+    cmd = [sys.executable, str(PYTHON_DIR / "app_pipeline.py"), str(raw), "--only", "thumbnail"]
+    if info.get("channel_id"):
+        cmd += ["--channel-id", str(info["channel_id"])]
+    if getattr(args, "dry_run", False):
+        emit({"ok": True, "intent": "thumbnail-select", "dry_run": True, "cmd": cmd, "selection": _ts.load(folder).get("status")})
+        return 0
+    proc = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr, env={**os.environ, "APP_THUMBNAIL_EXPLICIT": "1"})
+    rec = _ts.load(folder)
+    ok, why = _ts.verify(folder)
+    emit({"ok": ok, "intent": "thumbnail-select", "status": rec.get("status"), "run_id": rec.get("run_id"),
+          "selected_id": rec.get("selected_id"), "candidate_ids": rec.get("candidate_ids"), "verify": why, "exit_code": proc.returncode})
+    if ok:
+        return 0
+    return proc.returncode if proc.returncode in (int(ExitCode.SELECTION_PENDING),) else int(ExitCode.FAIL)
+
+
 def run_preflight(args: argparse.Namespace) -> int:
     """ffmpeg 専用構成の実行環境検査。欠けている項目を JSON で返す。"""
     try:
@@ -723,6 +774,7 @@ def main() -> int:
     parser.add_argument("--request-id", help="run の冪等キー（省略時は自動生成）")
     parser.add_argument("--intent", dest="run_intent", default="pipeline", help="run が VPS に発行する intent（既定 pipeline）")
     parser.add_argument("--state", help="run-status の一覧フィルタ")
+    parser.add_argument("--adopt", help="thumbnail-select: 直近 run の候補 id を人が採用する（例: <run>/a2/a2_3.jpg）")
     parser.add_argument("--publish-time", help="schedule-put: 公開時刻 HH:MM（チャンネルの timezone）")
     parser.add_argument("--timezone", help="schedule-put: IANA タイムゾーン（既定 Asia/Tokyo）")
     parser.add_argument("--lead-days", type=int, help="schedule-put: 制作先行日数（既定 2）")
@@ -807,6 +859,9 @@ def main() -> int:
 
     if args.intent in ("schedule-status", "schedule-put"):
         return run_schedule(args)
+
+    if args.intent == "thumbnail-select":
+        return run_thumbnail_select(args)
 
     if args.intent == "notify-flush":
         import notify as _notify

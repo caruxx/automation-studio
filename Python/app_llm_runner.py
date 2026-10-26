@@ -112,6 +112,23 @@ def _short(s: str, n: int = 220) -> str:
     return s[:n]
 
 
+import threading as _threading
+
+_LOCAL = _threading.local()
+LAST_BACKEND = "unknown"  # 互換: 直近の run_llm で実際に答えた CLI（claude / codex）。スレッドごとの値は last_backend()
+
+
+def last_backend() -> str:
+    """このスレッドで直近に答えた CLI（claude / codex / unknown）。選定記録の judge_backend に使う。"""
+    return getattr(_LOCAL, "backend", "unknown")
+
+
+def _set_backend(name: str) -> None:
+    global LAST_BACKEND
+    _LOCAL.backend = name
+    LAST_BACKEND = name
+
+
 def run_llm(prompt: str, *, cli_cmd: str | None = None, timeout: int = 300,
             add_dirs=None, allow_read: bool = False, image_paths=None,
             label: str = "") -> str:
@@ -120,6 +137,7 @@ def run_llm(prompt: str, *, cli_cmd: str | None = None, timeout: int = 300,
     add_dirs/allow_read/image_paths は Claude/Codex 双方の入力（ディレクトリ許可・画像）に使う。
     Vision は run_llm_vision() を推奨。
     """
+    _set_backend("unknown")
     claude_cli, codex_cli = _resolve_clis(cli_cmd)
     paths = [Path(p) for p in (image_paths or [])]
     # Vision 時は画像の親ディレクトリを Claude に許可
@@ -137,6 +155,7 @@ def run_llm(prompt: str, *, cli_cmd: str | None = None, timeout: int = 300,
         rc, out, err = _run_claude_cli(claude_cli, prompt, timeout,
                                        add_dirs=eff_add_dirs, allow_read=allow_read)
         if rc == 0 and out.strip():
+            _set_backend("claude")
             return out
         claude_reason = f"rc={rc}: {_short(err or out)}"
     except subprocess.TimeoutExpired:
@@ -157,6 +176,7 @@ def run_llm(prompt: str, *, cli_cmd: str | None = None, timeout: int = 300,
         rc, out, err = _run_codex_cli(codex_cli, prompt, timeout, image_paths=paths)
         if rc == 0 and out.strip():
             print(f"  ✓ Codex フォールバック成功{tag}")
+            _set_backend("codex")
             return out
         codex_reason = f"rc={rc}: {_short(err or out)}"
     except subprocess.TimeoutExpired:

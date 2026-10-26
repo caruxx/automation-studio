@@ -75,7 +75,7 @@ flowchart TD
   QA["qa<br/>step_qa()<br/>ffprobe で解像度・尺・codec、任意 loudness<br/>resource: ffprobe/ffmpeg<br/>skip: APP_QA_DISABLE=1, mp4 無し, ffprobe 無し"]
   Meta["meta<br/>step_meta()<br/>claude_proposer gather_context -> titles/description/tags<br/>resource: Claude/Codex LLM<br/>writes: youtube_title/description/tags.txt"]
   Loc["localization<br/>step_localization()<br/>translate_metadata -> youtube_localizations.json<br/>resource: Claude/Codex LLM<br/>skip: localization_languages 未設定、title/description 不在"]
-  Thumb["thumbnail<br/>step_thumbnail()<br/>_build_thumbnail_prompt() -> codex_imagegen.py -> thumbnail.png<br/>resource: gpt-image-2/Codex CLI<br/>skip: APP_THUMBNAIL_DISABLE=1, thumbnail.png/vol*.jpg/サムネイル.jpg 既存。Flow 指定は codex fallback"]
+  Thumb["thumbnail<br/>step_thumbnail() -> thumbnail_selection.run_selection()<br/>codex_imagegen 背景 -> compose_candidate -> score_thumbnails<br/>out: thumbnail_selected.jpg + .thumbnail_selection.json<br/>all rejected: quality wait exit 79"]
   Upload["upload<br/>step_upload()<br/>app_youtube.py / API<br/>resource: YouTube Data API<br/>skip: youtube_upload.json marker が現タイトル一致または72h以内。APP_FORCE_REUPLOAD=1 で無効"]
 
   Plan --> SunoStep --> Rename --> Bg --> Psd --> Prem --> Export --> QA --> Meta --> Loc --> Thumb --> Upload

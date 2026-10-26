@@ -804,18 +804,19 @@ def find_video_file(folder):
 
 
 def find_thumbnail(folder):
-    """サムネイル画像を解決。優先順位:
-      1. サムネイル.jpg / サムネイル.png （日本語名の明示指定）
-      2. プロジェクトフォルダ直下の thumbnail.jpg / thumbnail.png
-      3. vol*.jpg / vol*.png （旧仕様の vol-prefix 命名）
-    """
+    """投稿するサムネ。段階 5: AI 選定の記録があれば採用画像（thumbnail_selected.jpg）だけを返す（ハッシュ不一致は None）。
+    記録が無い旧 vol は サムネイル.* / thumbnail.* のみ（vol*.jpg 等の背景画像へのフォールバックはしない）。"""
     folder = Path(folder)
+    try:
+        import thumbnail_selection as _ts
+        if (folder / _ts.SELECTION_FILE).exists():
+            ok, _why = _ts.verify(folder)
+            return (folder / _ts.SELECTED_FILE) if ok else None
+    except Exception:
+        return None
     for name in ("サムネイル.jpg", "サムネイル.jpeg", "サムネイル.png", "thumbnail.jpg", "thumbnail.jpeg", "thumbnail.png"):
-        p = folder / name
-        if p.exists():
-            return p
-    for pattern in ("vol*.jpg", "vol*.jpeg", "vol*.png"):
-        for f in folder.glob(pattern):
+        f = folder / name
+        if f.exists():
             return f
     return None
 
@@ -877,6 +878,22 @@ def _write_marker(folder, video_id, title, privacy, schedule, settings, localiza
         sys.stdout.flush()
 
 
+def _snapshot_selected_thumbnail(folder, _ts):
+    """thumbnail_selected.jpg を一時ディレクトリへ写し、選定記録のハッシュと一致することを確かめて返す。"""
+    import atexit
+    import shutil
+    import tempfile
+    rec = _ts.load(folder)
+    snap_dir = Path(tempfile.mkdtemp(prefix="studio-thumb-upload-"))
+    atexit.register(shutil.rmtree, str(snap_dir), True)
+    snap = snap_dir / _ts.SELECTED_FILE
+    shutil.copyfile(Path(folder) / _ts.SELECTED_FILE, snap)
+    if _ts.sha256_file(snap) != rec.get("selected_hash"):
+        print("エラー: 投稿用サムネが照合後に変わりました。studio.py thumbnail-select で確定し直してください")
+        sys.exit(1)
+    return snap
+
+
 def upload_video(folder, title=None, schedule=None, privacy="private", tags=None,
                  video_path=None,
                  # 新規: 詳細設定（None ならデフォルト→override→組み込み既定の順で解決）
@@ -905,6 +922,31 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         sys.exit(1)
 
     thumbnail = find_thumbnail(folder)
+    thumb_confirmed = False
+    try:
+        import thumbnail_selection as _ts
+        import vps_ledger_sync as _vls_check
+        sel_exists = (Path(folder) / _ts.SELECTION_FILE).exists()
+        ok_sel, why_sel = _ts.verify(folder)
+        try:
+            _mk = json.loads((Path(folder) / "youtube_upload.json").read_text(encoding="utf-8"))
+            already_posted = bool(isinstance(_mk, dict) and str(_mk.get("video_id") or "").strip())
+        except Exception:
+            already_posted = False
+        # 新規投稿は VPS の有無によらず確定サムネ必須。投稿済み（marker に video_id あり）の旧 vol は snippet 更新だけなので止めない
+        if (sel_exists or not already_posted) and not ok_sel:
+            # 段階 5: 投稿するサムネは AI 選定で採用した画像だけ（ハッシュ一致）。未選定・不一致なら投稿しない
+            print(f"エラー: 投稿用サムネが確定していません（{why_sel}）。studio.py thumbnail-select --vol {extract_vol_number(folder)} を実行してください")
+            sys.exit(1)
+        thumb_confirmed = bool(ok_sel)
+        if ok_sel:
+            # 照合した画像を投稿単位のスナップショットに固定し、入力ハッシュと送信に同じ実体を使う（照合後の差し替えを送らない）
+            thumbnail = _snapshot_selected_thumbnail(folder, _ts)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"エラー: サムネ選定の照合に失敗しました: {e}")
+        sys.exit(1)
     description = load_description(folder)
 
     # タイトル: 引数 > youtube_title.txt > 既定
@@ -1141,6 +1183,12 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                 # 誤検知より二重投稿防止を優先。読み取り失敗時は実アップロードを止める。
                 sys.exit(EXIT_RETRYABLE)
 
+        if not thumb_confirmed:
+            # 照合を免除したのは投稿済み marker の snippet 更新のためだけ。新規送信へ進むなら確定サムネ必須
+            print(f"エラー: 新規投稿には確定したサムネが必要です。studio.py thumbnail-select --vol {vol_num} を実行してください", flush=True)
+            if vps_mode:
+                _ledger.upload_failed(vol_num, input_hash, "thumbnail_not_confirmed")
+            sys.exit(1)
         req = full_req
         req.publish_at = schedule
         req.privacy = privacy

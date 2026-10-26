@@ -137,7 +137,7 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 | 「vol.78 を作って」 | `curl POST /api/videos/create {"publish_date":"…"}` |
 | 「楽曲を作って」 | `python3 suno_auto_create.py --workspace vol_vol78 …` |
 | 「背景画像を作って」 | `app_pipeline.py <vol> --only bgimage` |
-| 「サムネを作って」 | `app_pipeline.py <vol> --only psd_composite`（画像合成・正規）/ `--only thumbnail`（AI 直接） |
+| 「サムネを作って」 | `app_pipeline.py <vol> --only psd_composite`（画像合成）/ `studio.py thumbnail-select --vol <N>`（投稿用サムネの AI 選定） |
 | 「書き出して」 | `app_pipeline.py <vol> --only export`（FFmpeg） |
 | 「タイトルを提案して」 | `curl POST /api/videos/…/suggest {"mode":"titles"}` |
 | 「アップロードして」 | `curl POST /api/youtube/upload {"video_name":"…"}` |
@@ -182,11 +182,11 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 | 7 | qa | 書き出し直後に自動品質チェック | QA 4 軸 pass | app_pipeline step_qa | — |
 | 8 | meta | タイトル/説明文/タグを AI 生成 | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py | メタ生成 |
 | 9 | localization | メイン言語→他言語へ翻訳 | 多言語メタ | app_pipeline step_localization | 翻訳 |
-| 10 | thumbnail | AI サムネ生成（画像合成が使えない時の予備） | `thumbnail.png` / `vol*.jpg` | app_channel_thumbnail.py | 画像+Vision |
+| 10 | thumbnail | 投稿用サムネを AI が候補生成・採点して 1 枚に確定 | `thumbnail_selected.jpg` + `.thumbnail_selection.json` | thumbnail_selection.py | 画像+Vision |
 | 11 | upload | YouTube へ投稿（限定/公開/予約） | `youtube_upload.json` | app_youtube.py | — |
 
 - 自動運転（使い方③）のときだけ先頭に「作戦立て（plan）」が 1 段増えて 12 工程になります。
-- サムネは通常「背景画像 → 文字のせ」の順（正規フロー）で作り、うまくいかない時だけ工程 10 で AI が直接つくり直します。
+- 投稿に使うサムネは工程 10 で AI が候補を作って採点し、1 枚に確定します。全部が基準に届かない時は止まって人の確定を待ちます（`studio.py thumbnail-select --adopt`）。
 - 工程の真実源は `app_pipeline.py` の `STEPS`。工程を増減する時は `STEPS / STEP_LABELS / STEP_FUNCS / RETRY_POLICY` の 4 箇所を一貫更新する規約です。
 
 ### 書き出しエンジン：ffmpeg 方式（ffrender）

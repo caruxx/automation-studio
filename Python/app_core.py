@@ -334,6 +334,7 @@ PER_CHANNEL_KEYS = {
     "production_mode", "thumbnail_composition",  # 制作構成（常に ffmpeg_only）と画像合成設定
     "export_engine",  # 互換のため保持。段階 1a 以降は常に "ffmpeg" に正規化される
     "psd_image_subdir",  # 画像合成の差し替え画像フォルダ（名前は互換のため psd_ のまま）
+    "image_model",  # 段階 5: サムネ候補の画像モデル（既定 gpt-image-2。Codex CLI 経路では既定以外はエラー）
     "scene_text_enabled", "scene_text_case", "scene_text_punctuation",
     "scene_text_tone", "scene_text_examples",
     "scene_text_forbidden", "scene_text_structure",  # 文字入れ（シーンテキスト）設定（チャンネル別）

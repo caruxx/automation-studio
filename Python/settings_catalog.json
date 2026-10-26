@@ -2265,6 +2265,23 @@
         "max": 365
       },
       "category": "advanced"
+    },
+    {
+      "key": "channel.image_model",
+      "label_ja": "サムネ画像モデル",
+      "description_ja": "サムネ候補の生成に使う画像モデル。OpenAI API キーがあるときだけ指定モデルを強制できます。Codex CLI 経路では既定（gpt-image-2）以外はエラーになります",
+      "tier": "easy",
+      "scope": "channel",
+      "storage": {
+        "file": "channel_config",
+        "path": "image_model"
+      },
+      "type": "string",
+      "validation": {
+        "max_length": 64
+      },
+      "default": "gpt-image-2",
+      "category": "posting"
     }
   ]
 }
