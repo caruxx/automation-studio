@@ -1109,7 +1109,8 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
         except _pub.UploadResultUnknown as e:
             print(f"\n[UPLOAD_RESULT_UNKNOWN] {e}", flush=True)
             if vps_mode:
-                _ledger.upload_unknown(vol_num, input_hash, str(e))
+                # 例外文に upload URL（セッション URI）が混ざっても VPS の記録に平文を残さない
+                _ledger.upload_unknown(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", str(e)))
             sys.exit(1)
 
         video_id = result.video_id

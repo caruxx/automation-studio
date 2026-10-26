@@ -142,8 +142,8 @@ def admin_settings() -> dict[str, str]:
 
 
 def get_publish_schedule(channel_key: str, **kw) -> dict[str, Any]:
-    return request("GET", f"/api/schedules/publish/{channel_key}", settings=kw.pop("settings", None) or admin_settings(), **kw)
+    return request("GET", f"/api/schedules/publish/{urllib.parse.quote(channel_key, safe='')}", settings=kw.pop("settings", None) or admin_settings(), **kw)
 
 
 def put_publish_schedule(channel_key: str, body: dict[str, Any], **kw) -> dict[str, Any]:
-    return request("PUT", f"/api/schedules/publish/{channel_key}", payload=body, settings=kw.pop("settings", None) or admin_settings(), **kw)
+    return request("PUT", f"/api/schedules/publish/{urllib.parse.quote(channel_key, safe='')}", payload=body, settings=kw.pop("settings", None) or admin_settings(), **kw)

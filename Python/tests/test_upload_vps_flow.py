@@ -160,11 +160,12 @@ class UploadVpsFlowTest(unittest.TestCase):
 
         def fake_upload(youtube, req, **kw):
             self.assertEqual(kw["resume"], {"session_uri": "https://upload.example/old", "offset": 50})
-            raise pub.UploadResultUnknown("session expired")
+            raise pub.UploadResultUnknown("session expired at https://upload.example/old?upload_id=abc")
         with self.assertRaises(SystemExit) as cm:
             self._run(ledger, fake_upload)
         self.assertEqual(cm.exception.code, 1)
         self.assertEqual(ledger.calls[-1][0], "unknown")
+        self.assertNotIn("upload.example", ledger.calls[-1][1])  # セッション URI を VPS の記録に残さない
         self.assertFalse((self.folder / "youtube_upload.json").exists())
 
     def test_retryable_keeps_session_for_next_attempt(self):

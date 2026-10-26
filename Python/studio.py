@@ -447,7 +447,8 @@ def run_schedule(args: argparse.Namespace) -> int:
     if getattr(args, "dry_run", False):
         preview = {"ok": True, "intent": intent, "dry_run": True, "channel_key": channel_key}
         if intent == "schedule-put":
-            preview.update({"method": "PUT", "path": f"/api/schedules/publish/{channel_key}", "payload": body})
+            preview.update({"method": "PUT", "path": f"/api/schedules/publish/{channel_key}", "payload": body,
+                            "note": "dry-run は VPS を読まない。未指定の項目は実行時に現在値を引き継ぎ、revision も GET した値で照合する"})
         else:
             preview.update({"method": "GET", "path": "/api/runs/schedule-status", "query": {"channel_key": channel_key, "vol": vol_n}})
         emit(preview)
@@ -728,7 +729,7 @@ def main() -> int:
     parser.add_argument("--late-policy", choices=["next_free_slot", "same_day_15min"], help="schedule-put: 当日の時刻超過時の扱い")
     parser.add_argument("--enabled", dest="schedule_enabled", action="store_true", default=None, help="schedule-put: 定期起票を有効にする")
     parser.add_argument("--disabled", dest="schedule_enabled", action="store_false", help="schedule-put: 定期起票を無効にする")
-    parser.add_argument("--revision", type=int, help="schedule-put: 現在の revision（競合検出。省略時は照合しない）")
+    parser.add_argument("--revision", type=int, help="schedule-put: 期待する revision（省略時は実行時に GET した現在値で照合する）")
     parser.add_argument("--publish-date", default="YYYY-MM-DD")
     parser.add_argument("--prompt", default="lounge jazz BGM, elegant cafe atmosphere")
     parser.add_argument("--count", default="20")
