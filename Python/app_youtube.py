@@ -1048,6 +1048,9 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                     except _pub.RetryableUploadError as e:
                         print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会に失敗: {e}", flush=True)
                         sys.exit(EXIT_RETRYABLE)
+                    except RuntimeError as e:  # 想定外の 4xx（401 / 400 等）: セッションは保持したまま再試行に回す
+                        print(f"\n [RETRYABLE_UPLOAD_ERROR] 状態照会が想定外の応答: {re.sub(r'https?://\\S+', '<url>', str(e))}", flush=True)
+                        sys.exit(EXIT_RETRYABLE)
                     except _pub.UploadResultUnknown as e:
                         print(f"\n[UPLOAD_RESULT_UNKNOWN] {e}", flush=True)
                         _ledger.upload_unknown(vol_num, input_hash, re.sub(r"https?://\S+", "<url>", str(e)))
@@ -1057,13 +1060,18 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                         new_at = str(begin.get("publish_at") or "").replace("+00:00", "")
                         if new_at and not new_at.endswith("Z"):
                             new_at += "Z"
-                        # 旧 publishAt を過ぎて既に公開されていれば、非公開に戻さず published として記録する
-                        current = None
+                        # 旧 publishAt を過ぎて既に公開されていれば、非公開に戻さず published として記録する。
+                        # 読み戻せない / 見つからないときは予約更新を保留して再試行（公開済みを private に戻さない）
                         try:
                             current = _pub.verify_video(youtube, video_id)
                         except Exception as e:
-                            print(f"  警告: 状態の読み戻しに失敗: {e}", flush=True)
-                        if current and current.get("privacy_status") == "public":
+                            print(f"\n [RETRYABLE_UPLOAD_ERROR] 送信済み動画 {video_id} の状態を読み戻せません。予約更新を保留します: {re.sub(r'https?://\\S+', '<url>', str(e))}", flush=True)
+                            sys.exit(EXIT_RETRYABLE)
+                        if current is None:
+                            print(f"\n[UPLOAD_RESULT_UNKNOWN] 送信済みのはずの動画 {video_id} が見つかりません", flush=True)
+                            _ledger.upload_unknown(vol_num, input_hash, f"video {video_id} not found after resumed completion")
+                            sys.exit(1)
+                        if current.get("privacy_status") == "public":
                             print(f" 前回の送信は完了し、既に公開されています (video_id={video_id})", flush=True)
                             _ledger.upload_result(vol_num, input_hash, video_id, "public", current.get("publish_at"))
                             _write_marker(folder, video_id, title[:100], "public", current.get("publish_at"), s, localizations, note="resumed-published")

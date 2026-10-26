@@ -157,6 +157,16 @@ class UploadVpsFlowTest(unittest.TestCase):
              patch.object(pub, "update_publish_at", side_effect=AssertionError("must not re-private")):
             self.assertEqual(self._run(ledger, lambda *a, **k: self.fail("x")), "vidPub")
         self.assertEqual(ledger.calls[-1], ("result", "vidPub", "public", "2026-12-20T03:00:00Z"))
+        # 読み戻せない: 予約更新を保留して再試行（公開済みを private に戻さない）。見つからない: unknown
+        for verify, code, last in ((patch.object(pub, "verify_video", side_effect=RuntimeError("api down")), ay.EXIT_RETRYABLE, "begin"),
+                                   (patch.object(pub, "verify_video", return_value=None), 1, "unknown")):
+            ledger = FakeLedger(dict(base))
+            with patch.object(pub, "query_session", return_value=("complete", {"id": "vidX"})), verify, \
+                 patch.object(pub, "update_publish_at", side_effect=AssertionError("must not update")):
+                with self.assertRaises(SystemExit) as cm:
+                    self._run(ledger, lambda *a, **k: self.fail("x"))
+            self.assertEqual(cm.exception.code, code)
+            self.assertEqual(ledger.calls[-1][0], last)
         # 未完了: discard してから新規送信
         ledger = FakeLedger(dict(base))
         ledger.discard_response = {"mode": "insert", "upload_id": 3, "state": "pending", "publish_at": "2026-12-26T03:00:00", "begin_token": "t2"}
