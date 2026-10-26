@@ -79,6 +79,7 @@ YouTube の BGM チャンネル向けに、動画づくりのほぼ全工程を�
 - OpenAI（背景・AI サムネ画像生成）
 - YouTube Data API v3 + OAuth（投稿）
 - 任意：Gemini（プロンプト生成の選択肢）、Codex CLI（AI の控え・要 `codex login`）
+- 任意：VidIQ MCP の API キー（分析をタイトル・説明文に反映。`studio.py insights-refresh` で取り込み、1 回ごとにクレジットを消費）
 
 ### インストール
 
@@ -180,7 +181,7 @@ AI は Claude CLI を第一候補に使います（API キー不要・ローカ�
 | 5 | premiere | 配置は書き出しに統合（この工程は自動で通過） | — | app_pipeline step_premiere | — |
 | 6 | export | FFmpeg で MP4・SRT・タイムコードを一括生成 | `{prefix}_vol*.mp4` | app_ffrender.py | — |
 | 7 | qa | 書き出し直後に自動品質チェック | QA 4 軸 pass | app_pipeline step_qa | — |
-| 8 | meta | タイトル/説明文/タグを AI 生成 | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py | メタ生成 |
+| 8 | meta | タイトル/説明文/タグを AI 生成（VidIQ の分析があれば反映） | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py | メタ生成 |
 | 9 | localization | メイン言語→他言語へ翻訳 | 多言語メタ | app_pipeline step_localization | 翻訳 |
 | 10 | thumbnail | 投稿用サムネを AI が候補生成・採点して 1 枚に確定 | `thumbnail_selected.jpg` + `.thumbnail_selection.json` | thumbnail_selection.py | 画像+Vision |
 | 11 | upload | YouTube へ投稿（限定/公開/予約） | `youtube_upload.json` | app_youtube.py | — |

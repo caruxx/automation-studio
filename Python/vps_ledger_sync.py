@@ -188,18 +188,20 @@ def push_context(vol: int, folder: Path) -> None:
     _request("POST", f"/api/worker/vols/{vol_id}/context", payload=payload)
 
 
-def push_meta(vol: int, title: str, description: str, tags: list[str]) -> None:
+def push_meta(vol: int, title: str, description: str, tags: list[str], insights: Optional[dict[str, Any]] = None) -> bool:
+    """insights: 段階 6 の {evidence_ids, insights_degraded, degraded_reason}（旧 VPS は追加項目を無視する）。
+    戻り値: VPS がメタを受け取れたか（未設定・接続不能・拒否は False）。"""
     vol_id = ensure_vol(vol)
     if vol_id is None:
-        return
-    _request(
+        return False
+    meta: dict[str, Any] = {"title": title, "description": description, "tags": tags}
+    if insights:
+        meta.update({k: insights[k] for k in ("evidence_ids", "insights_degraded", "degraded_reason") if k in insights})
+    return _request(
         "POST",
         f"/api/worker/vols/{vol_id}/meta",
-        payload={
-            "meta": {"title": title, "description": description, "tags": tags},
-            "source": "mac",
-        },
-    )
+        payload={"meta": meta, "source": "mac"},
+    ) is not None
 
 
 def push_localizations(vol: int, localizations: dict) -> None:
@@ -390,6 +392,11 @@ def post_notify(events: list[dict[str, Any]]) -> dict[str, Any]:
         raise LedgerUnavailable("vps_not_configured")
     payload = [{k: v for k, v in e.items() if v is not None} for e in events]
     return _request_strict("POST", "/api/worker/notify", payload={"events": payload}, timeout=5)
+
+
+def push_vidiq_insights(payload: dict[str, Any]) -> dict[str, Any]:
+    """段階 6: VidIQ の取り込み結果を VPS の insights（source='vidiq'）へ送る。失敗は例外（呼び出し側が報告する）。"""
+    return _request_strict("POST", "/api/worker/insights/vidiq", payload=payload)
 
 
 def fetch_vol(vol: int) -> Optional[dict]:

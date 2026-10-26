@@ -205,6 +205,7 @@ bash Python/start.sh --replace
 | 「背景画像を作って」 | `curl POST /api/bgimage/run {"video_name":"..."}` または `python3 app_pipeline.py <vol> --only bgimage` |
 | 「サムネを合成して」「画像合成して」 | `python3 app_pipeline.py <vol> --only psd_composite`（bgimage 後。Pillow 合成。`<vol_folder>/vol{N}.jpg` + `サムネイル.jpg` を 2 枚出し） |
 | 「サムネを AI で作って」「サムネを自動生成して」「サムネを選んで」 | `python3 Python/studio.py thumbnail-select --vol <N>`（新しい背景で候補を生成・合成・採点し `thumbnail_selected.jpg` に確定。全不合格は品質待ち 79、`--adopt <候補ID>` で人が確定。投稿はこの確定画像だけを使う。詳細 [skills/app-thumbnail.md](skills/app-thumbnail.md)） |
+| 「VidIQ で分析して」「VidIQ を取り込んで」 | `python3 Python/studio.py insights-refresh --channel <id> --json`（VidIQ MCP から分析を取り直し、24 時間有効の insights として保存。期限内は再取得しない。`--force` で再取得、クレジットを消費。設定は `channel.vidiq_keywords` / `channel.vidiq_requests`。詳細 [skills/app-vidiq.md](skills/app-vidiq.md)） |
 | 「参照画像フォルダを変更して」 | `python3 Python/studio.py config set channel.reference_image_dir <path> --channel <id>`（`.app_channel_config.json` の `reference_image_dir`）。Web UI の設定タブからも変更可 |
 | 「タイトルを提案して」 | `curl POST /api/videos/.../suggest {"mode":"titles"}` |
 | 「書き出して」 | `python3 app_pipeline.py <vol> --only export`（FFmpeg。配置は自動） |

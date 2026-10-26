@@ -1826,6 +1826,89 @@ def step_render(vol: int, folder: Path, via_api: bool, **kw):
 
 
 
+META_RECORD_FILE = "youtube_meta.json"
+
+
+def _vidiq_meta_context(vol: int, remote_vol, cfg: dict, ledger_sync) -> dict:
+    """段階 6: メタ生成に渡す学び（insights_hint）と、記録する VidIQ の根拠・劣化。例外は外に出さない。
+    VPS 連携時は vol 応答の insights_hint / insights_vidiq、無効時はローカルキャッシュ（期限内だけ）を使う。"""
+    out = {"hint": "", "evidence_ids": [], "insights_degraded": True, "degraded_reason": "unavailable",
+           "channel_key": None}
+    configured = False
+    try:
+        import vidiq_adapter as _va
+        configured = _va.is_configured(cfg if isinstance(cfg, dict) else {})
+        channel_key = None
+        try:
+            channel_key = ledger_sync.resolve_channel_key() if ledger_sync is not None else None
+        except Exception:
+            channel_key = None
+        out["channel_key"] = channel_key
+        if isinstance(remote_vol, dict):
+            hint = remote_vol.get("insights_hint")
+            out["hint"] = hint if isinstance(hint, str) else ""
+            st = remote_vol.get("insights_vidiq")
+            if isinstance(st, dict) and st.get("fresh") is True:
+                ids = [e for e in (st.get("evidence_ids") or []) if isinstance(e, str) and e][:50]
+                out.update(evidence_ids=ids, insights_degraded=False, degraded_reason=None)
+                return out
+            reason = st.get("reason") if isinstance(st, dict) else "not_fetched"
+            reason = reason if reason in _va.DEGRADED_REASONS else "unavailable"
+        else:
+            cache = _va.load_cache(channel_key) if channel_key else {}
+            fresh, reason = _va.freshness(cache)
+            if fresh:
+                hint, used = _va.format_hint_with_evidence(cache.get("items") or [])
+                if used:
+                    out.update(hint=hint, evidence_ids=used[:50], insights_degraded=False, degraded_reason=None)
+                    return out
+                reason = "unavailable"
+        if not configured:
+            reason = "not_configured"
+        elif reason == "not_fetched":
+            reason = "unavailable"  # 設定済みなのに一度も取り込めていない: 通知の対象にする
+        out["degraded_reason"] = reason
+    except Exception as exc:
+        print(f"  VidIQ の分析を読めませんでした（{type(exc).__name__}）。分析なしで生成します")
+        out.update(hint="", evidence_ids=[], insights_degraded=True,
+                   degraded_reason="unavailable" if configured else "not_configured")
+    return out
+
+
+def _notify_vidiq_degraded(vol: int, ctx: dict, ledger_sync, vps_received: bool = False) -> None:
+    """VPS がメタを受け取れたときは VPS が通知を積むので Mac は出さない。VPS 無効時や、VPS にメタが
+    届かなかったときは Mac から info 通知する（届かなければローカルに退避される）。未設定・未取得は通知しない。"""
+    reason = ctx.get("degraded_reason")
+    if not ctx.get("insights_degraded") or reason in (None, "not_configured", "not_fetched"):
+        return
+    try:
+        if vps_received:
+            return
+        import re as _re
+        import notify as _notify
+        key = _re.sub(r"[^A-Za-z0-9._-]", "_", str(ctx.get("channel_key") or "local"))[:48]
+        _notify.notify(f"VidIQ の分析を使わずにメタを生成しました（vol {vol}、理由: {reason}）。"
+                       " studio.py insights-refresh で取り直せます",
+                       kind="info", vol=int(vol) if int(vol) > 0 else None,
+                       event_id=f"vidiq-degraded:{key}:{int(vol)}:{reason}")
+    except Exception as exc:
+        print(f"  VidIQ 劣化の通知に失敗しました（{type(exc).__name__}）")
+
+
+def _write_meta_record(folder: Path, title: str, description: str, tags: list, ctx: dict,
+                       generation_complete: bool = True) -> dict:
+    degraded = bool(ctx.get("insights_degraded"))
+    rec = {"title": title, "description": description, "tags": list(tags),
+           "evidence_ids": [] if degraded else list(ctx.get("evidence_ids") or []),
+           "insights_degraded": degraded, "degraded_reason": ctx.get("degraded_reason") if degraded else None,
+           "generation_complete": bool(generation_complete)}
+    try:
+        (folder / META_RECORD_FILE).write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError as e:
+        print(f"  メタ記録の保存に失敗: {e}")
+    return rec
+
+
 def step_meta(vol: int, folder: Path, via_api: bool, **kw):
     """タイトル・説明・タグを Claude CLI で提案して保存"""
     cli = _load_suno_config().get("claude_cli", "claude")
@@ -1853,6 +1936,15 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
             title_path.write_text(remote_title, encoding="utf-8")
             (folder / "youtube_description.txt").write_text(remote_description, encoding="utf-8")
             (folder / "youtube_tags.txt").write_text("\n".join(remote_tags), encoding="utf-8")
+            remote_ev = [e for e in (remote_meta.get("evidence_ids") or []) if isinstance(e, str) and e]
+            if remote_meta.get("insights_degraded") is True:
+                rec_ctx = {"insights_degraded": True, "degraded_reason": remote_meta.get("degraded_reason") or "unavailable"}
+            elif remote_ev:
+                rec_ctx = {"insights_degraded": False, "degraded_reason": None, "evidence_ids": remote_ev}
+            else:
+                # 段階 6 より前のメタ、または根拠の無いメタ: VidIQ を使った記録として扱わない
+                rec_ctx = {"insights_degraded": True, "degraded_reason": "not_fetched"}
+            _write_meta_record(folder, remote_title, remote_description, remote_tags, rec_ctx)
             print("  VPS 生成メタを採用")
             return True
 
@@ -1870,12 +1962,20 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
         source_lang, handle = _channel_meta_lang_handle(cfg)
         print(f" source_lang={source_lang} / channel={channel_name} / handle={handle or '-'}")
         ctx = gather_context(folder)
+        vidiq = _vidiq_meta_context(vol, remote_vol, cfg, ledger_sync)
+        ctx["insights_hint"] = vidiq["hint"]
+        generated: set[str] = set()
+        if vidiq["insights_degraded"]:
+            print(f"  VidIQ の分析なしで生成します（{vidiq['degraded_reason']}）")
+        else:
+            print(f"  VidIQ の分析を反映します（根拠 {len(vidiq['evidence_ids'])} 件）")
         _backup_existing_meta(folder)
         try:
             titles = propose_titles(cli_cmd=cli, persona=persona, channel_name=channel_name,
                                     source_lang=source_lang, count=5, **ctx)
             if titles:
                 (folder / "youtube_title.txt").write_text(titles[0], encoding="utf-8")
+                generated.add("title")
                 print(f"  ✓ タイトル: {titles[0]}")
         except Exception as e:
             print(f"  ⚠️ タイトル: {e}")
@@ -1884,6 +1984,7 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
                                        source_lang=source_lang, handle=handle, **ctx)
             if desc:
                 (folder / "youtube_description.txt").write_text(desc, encoding="utf-8")
+                generated.add("description")
                 print(f"  ✓ 説明文: {len(desc)} 文字")
         except Exception as e:
             print(f"  ⚠️ 説明文: {e}")
@@ -1892,23 +1993,37 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
                                 source_lang=source_lang, **ctx)
             if tags:
                 (folder / "youtube_tags.txt").write_text("\n".join(tags), encoding="utf-8")
+                generated.add("tags")
                 print(f"  ✓ タグ: {len(tags)} 件")
         except Exception as e:
             print(f"  ⚠️ タグ: {e}")
-        try:
-            local_title = (folder / "youtube_title.txt").read_text(encoding="utf-8").strip()
-            local_description = (folder / "youtube_description.txt").read_text(encoding="utf-8").strip()
-            local_tags = [
-                line.strip()
-                for line in (folder / "youtube_tags.txt").read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
+        def _read_meta_file(name: str) -> str:
+            try:
+                return (folder / name).read_text(encoding="utf-8")
+            except OSError as e:
+                print(f"[ledger-sync] ローカルメタ読込失敗: {e}")
+                return ""
+        if True:  # 読めない項目は空として扱い、記録と通知は必ず行う（送信は 3 項目そろったときだけ）
+            local_title = _read_meta_file("youtube_title.txt").strip()
+            local_description = _read_meta_file("youtube_description.txt").strip()
+            local_tags = [line.strip() for line in _read_meta_file("youtube_tags.txt").splitlines() if line.strip()]
+            complete = generated == {"title", "description", "tags"}
+            if not complete:
+                # 一部または全部が今回生成できず以前のファイルを使う: 今回の根拠を古い中身に付けない。
+                # VidIQ の状態（劣化かどうかと理由）はそのまま記録し、根拠だけを空にする
+                print(f"  今回生成できなかった項目があるため、VidIQ の根拠は記録しません（生成: {sorted(generated) or 'なし'}）")
+                record_ctx = {**vidiq, "evidence_ids": []}
+            else:
+                record_ctx = vidiq
+            rec = _write_meta_record(folder, local_title, local_description, local_tags, record_ctx,
+                                     generation_complete=complete)
+            delivered = False
             if local_title and local_description and local_tags:
-                _ledger_call(
-                    ledger_sync, "push_meta", vol, local_title, local_description, local_tags
-                )
-        except OSError as e:
-            print(f"[ledger-sync] ローカルメタ読込失敗: {e}")
+                delivered = bool(_ledger_call(
+                    ledger_sync, "push_meta", vol, local_title, local_description, local_tags,
+                    insights={k: rec[k] for k in ("evidence_ids", "insights_degraded", "degraded_reason")},
+                ))
+            _notify_vidiq_degraded(vol, vidiq, ledger_sync, vps_received=delivered)  # VidIQ が使えなかった通知は生成の成否と無関係
         print(f"\n {STEP_LABELS['meta']} 完了")
         return True
 

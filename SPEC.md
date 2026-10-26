@@ -177,7 +177,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 > **レンダーマニフェスト `.ffrender_manifest.json`（構成の正本）** — vol フォルダに保存。曲順・使用画像・尺・音声設定・焼き込み設定を固定する。`--swap '旧=新.mp3'` / `--remove '曲名'` で構成を差し替え、`--show-manifest` で表示、`--no-render` で manifest 操作だけ行う。
 >
 > **曲名焼き込み（`--burn-titles always`）** — 各曲の区間に曲名を**常時焼き込み**（drawtext、画像境界∪曲境界で分割→GOP→TS 連結）。書式は per-channel `.app_channel_config.json` の `burn_titles` ブロック（`font`/`fontsize`/`color`/`prefix`/`x`/`y`/`border`）で定義。mov_text ソフト字幕も併存。
-| 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt` | claude_proposer.py |
+| 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt`（記録 `youtube_meta.json`: 根拠 `evidence_ids` と VidIQ の劣化 `insights_degraded` / `degraded_reason`） | claude_proposer.py（insights と VidIQ の学びを注入。VidIQ が使えなくても完走） |
 | 9 | `localization` | （自動） | 多言語メタ（非 fatal） | app_pipeline.py `step_localization` |
 | 10 | `thumbnail` | 画像タブ | `.thumbnail_selection.json` + `thumbnail_selected.jpg`（`thumbnail_selection.verify` 合格） | thumbnail_selection.py（候補生成・採点・確定。全不合格は品質待ち 79） |
 | 11 | `upload` | アップロードタブ | `youtube_upload.json` | app_youtube.py |
@@ -498,6 +498,7 @@ bash Python/start.sh                          # http://localhost:8888/
 | Pillow | Python ライブラリ | 不在は preflight（exit 78）で停止 |
 | YouTube Data API v3 | google-api-python-client + OAuth | token 失効時は自動 refresh |
 | Chatwork（VPS outbox） | HTTP POST（VPS → Chatwork API） | VPS 未設定時はローカル退避（`studio.py notify-flush` で移管） |
+| VidIQ MCP | MCP（JSON-RPC over HTTP、`studio.py insights-refresh` の明示実行だけ） | 取得失敗・期限切れはメタを劣化として完走（`skills/app-vidiq.md`） |
 
 ---
 

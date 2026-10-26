@@ -499,6 +499,23 @@ def _format_benchmark_section(analysis: Optional[dict], for_japanese_output: boo
     return "\n".join(lines) if lines else "(benchmark cache present but empty)"
 
 
+def _with_insights(benchmark_section: str, insights_hint: str) -> str:
+    """段階 6: VPS / VidIQ の学び（insights）をベンチマーク節の後ろに足す（マスタープロンプトの書式は変えない）。"""
+    hint = (insights_hint or "").strip()
+    if not hint:
+        return benchmark_section
+    return (benchmark_section or "").rstrip() + "\n\nLearned insights (adapt, do not copy):\n" + hint
+
+
+def _ensure_insights(prompt: str, insights_hint: str) -> str:
+    """カスタムのマスタープロンプトに {benchmark_section} が無くても、学びをプロンプトの末尾に必ず入れる
+    （渡していない学びの根拠を記録しないため）。"""
+    hint = (insights_hint or "").strip()
+    if not hint or hint in prompt:
+        return prompt
+    return prompt.rstrip() + "\n\nLearned insights (adapt, do not copy):\n" + hint
+
+
 def _channel_master_prompts() -> dict:
     """アクティブチャンネルの master_prompts を返す。
 
@@ -570,6 +587,7 @@ def propose_titles(
     benchmark_analysis: Optional[dict] = None,
     thumbnail: Optional[Path] = None,
     source_lang: str = "en",
+    insights_hint: str = "",
     **_extra: Any,
 ) -> list[str]:
     is_ja = (source_lang or "en") == "ja"
@@ -578,6 +596,7 @@ def propose_titles(
         benchmark_analysis if benchmark_analysis is not None else _load_benchmark_analysis(),
         for_japanese_output=is_ja,
     )
+    benchmark_section = _with_insights(benchmark_section, insights_hint)
     thumbnail_section = _format_thumbnail_section(thumbnail)
     _key = "title_generation_ja" if is_ja else "title_generation"
     _fallback = _TITLES_PROMPT_JA if is_ja else _TITLES_PROMPT
@@ -593,6 +612,7 @@ def propose_titles(
         thumbnail_section=thumbnail_section,
     )
     # サムネがあれば Read ツールを許可してタイムアウトを延長
+    prompt = _ensure_insights(prompt, insights_hint)
     raw = _run_claude(cli_cmd, prompt,
                       timeout=240 if thumbnail else DEFAULT_TIMEOUT,
                       allow_read=bool(thumbnail),
@@ -619,6 +639,7 @@ def propose_description(
     tracklist_text: str = "",
     source_lang: str = "en",
     handle: str = "",
+    insights_hint: str = "",
     **_extra: Any,
 ) -> str:
     is_ja = (source_lang or "en") == "ja"
@@ -627,6 +648,7 @@ def propose_description(
         benchmark_analysis if benchmark_analysis is not None else _load_benchmark_analysis(),
         for_japanese_output=is_ja,
     )
+    benchmark_section = _with_insights(benchmark_section, insights_hint)
     thumbnail_section = _format_thumbnail_section(thumbnail)
     _key = "description_generation_ja" if is_ja else "description_generation"
     _fallback = _DESCRIPTION_PROMPT_JA if is_ja else _DESCRIPTION_PROMPT
@@ -642,6 +664,7 @@ def propose_description(
         thumbnail_section=thumbnail_section,
         handle_section=_handle_section(handle, source_lang),
     )
+    prompt = _ensure_insights(prompt, insights_hint)
     raw = _run_claude(cli_cmd, prompt,
                       timeout=300 if thumbnail else DEFAULT_TIMEOUT,
                       allow_read=bool(thumbnail),
@@ -720,6 +743,7 @@ def propose_tags(
     channel_name: str = "orzz.",
     benchmark_analysis: Optional[dict] = None,
     source_lang: str = "en",
+    insights_hint: str = "",
     **_extra: Any,  # gather_context() の publish_date / thumbnail を吸収
 ) -> list[str]:
     is_ja = (source_lang or "en") == "ja"
@@ -728,6 +752,7 @@ def propose_tags(
         benchmark_analysis if benchmark_analysis is not None else _load_benchmark_analysis(),
         for_japanese_output=is_ja,
     )
+    benchmark_section = _with_insights(benchmark_section, insights_hint)
     _key = "tags_generation_ja" if is_ja else "tags_generation"
     _fallback = _TAGS_PROMPT_JA if is_ja else _TAGS_PROMPT
     prompt = _load_master_prompt(_key, _fallback).format(
@@ -738,6 +763,7 @@ def propose_tags(
         songs=songs_text,
         benchmark_section=benchmark_section,
     )
+    prompt = _ensure_insights(prompt, insights_hint)
     raw = _run_claude(cli_cmd, prompt)
     obj = _extract_json_object(raw)
     if not obj or "tags" not in obj:
