@@ -1,3 +1,5 @@
+> **注記（2026-10-26 段階 3）**: 本文の vol_create の同時登録・auto_resume・公開ゲートの手順は、Mac 側の起票と公開ゲートを VPS に移す前の運用テスト。現行は VPS の `publish_schedules` と `uploads` が正本（`docs/SPEC_REVISION_DRAFT_2026-10-25.md` §3.4）。
+
 # 運用テスト — Operation Test Catalog
 
 最終更新: 2026-05-03

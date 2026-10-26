@@ -243,7 +243,7 @@ BGM 動画の映像は実質「静止画」なので、`app_ffrender.py` が静�
 | AI（文章・画像・画像理解） | Claude CLI（第一候補・API キー不要）→ Codex CLI（控え）。任意で Gemini・ChatGPT・OpenAI Image・Google Flow |
 | 状態の保存 | フォルダ内ファイル + SQLite（順番待ち・履歴）+ JSON（設定） |
 | 通知 | Discord Webhook |
-| 自動運転 | APScheduler（時刻・曜日の予約実行） |
+| 自動運転 | VPS の scheduler（起票・公開枠・publish_verify）。Mac の APScheduler は補助ジョブのみ（段階 3） |
 | 外部アクセス | Cloudflare Tunnel + 認証 + PWA |
 
 > 注意: サーバーは自動リロード無しで起動します。Python を変更したら `bash Python/start.sh --replace` で**再起動しないと反映されません**。

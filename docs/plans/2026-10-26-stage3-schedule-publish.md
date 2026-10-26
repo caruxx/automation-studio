@@ -8,6 +8,7 @@ base: Mac main 2a222a7 / VPS main e5fb995。統括: Claude Fable 5.1（本人指
 - §8-3（チャンネル別の公開時刻・制作開始時刻・same_day_15min）は未回答。既定値（Asia/Tokyo、12:00、先行 2 日、late_policy=next_free_slot）で実装し、チャンネル別の値は PUT API で後から設定する。same_day_15min は明示設定時のみ。
 - §8-6（description の照合 ID）は §9 のとおり不採用。結果不明は保留（unknown）とし、session_ref の照会と videos.list で解決できない vol は人に渡す。
 - Mac の APScheduler ジョブ（vol_create / autopilot tick / 公開ゲート / auto_resume）は本段階で **停止**（既定 OFF・公開ゲートと auto_resume は撤去）し、コードの完全除去は段階 7。
+- 投稿記録の begin は `begin_token` を返し、同じ hash の pending / uploading は 15 分間その token の送信元だけが再 begin / session 報告できる。Mac は送信中に on_session で offset を報告し続ける（60 秒間引き）。
 - 「meta の VPS 逆流」は「投稿記録のある vol の meta / localizations を Mac の再生成で上書きしない」と定義する（投稿後の変更は YouTube 更新経路でのみ行う）。
 - upload の共通パッケージは Mac repo の `Python/publish/`（`__version__` 固定）を正本にする。VPS worker の独立した upload job（`run_upload`）は非推奨とし、投稿は pipeline の upload 工程（Mac）に一本化する。
 
@@ -36,7 +37,7 @@ base: Mac main 2a222a7 / VPS main e5fb995。統括: Claude Fable 5.1（本人指
 
 ## Task 3（Mac）: 共通 upload パッケージ・VPS 正本の予約・Mac ゲート撤去
 - `Python/publish/__init__.py`（`__version__ = "2026-10-26.1"`）、`Python/publish/upload_video.py`: app_youtube から `upload_video` の本体を純関数化（`UploadRequest`/`UploadResult` dataclass、print / sys.exit / marker 書き込みを外す、resumable の session URI と offset を `on_session(session_uri, offset)` コールバックで通知、`resume_session(session_uri, offset)` で再開）、`verify_video(video_id)`、`publish_video_to_public`。app_youtube.py の CLI と既存関数はこのパッケージを呼ぶ薄い層にする（既存の戻り値・終了コードは維持）。
-- `Python/publish/input_hash.py`: 動画（サイズ + mtime 秒。sha256 は上限 64 MiB まで）、サムネ（内容）、公開メタ（title / description / tags / localizations の正規化 JSON）から sha256。予約時刻は含めない。
+- `Python/publish/input_hash.py`: 動画（サイズ + 先頭/末尾 4 MiB の sha256。mtime は使わない）、サムネ（内容）、公開メタ（title / description / tags / localizations の正規化 JSON）から sha256。予約時刻は含めない。
 - step_upload: VPS 設定があれば `vps_ledger_sync.upload_begin(vol, input_hash)` → update モードなら `update_video_snippet` のみ（再投稿しない）、insert モードなら VPS の publish_at で予約投稿（フォルダ名の日付は使わない。VPS 未設定時だけ従来の resolve_publish_at_iso）。セッション URI は `upload_session` で VPS に送り、途中失敗時は次回 begin の応答にある session_ref/offset で再開する（VPS が返す）。結果は `upload_result`（video_id 必須）、結果不明（insert 応答を失った等）は `upload_unknown` を送って `awaiting_human` 相当（exit 79 ではなく 1 + 通知）。youtube_upload.json はローカル互換のため従来どおり書く。
 - app.py: 公開ゲート（`_job_publish_now` / `_schedule_publish` / `_recover_scheduled_publishes` / `POST /api/youtube/schedule-publish`）を撤去（API は 410 と案内文）。auto_resume（`_schedule_resume` / `_job_auto_resume`）は撤去し、失敗時の案内は `studio.py run-resume` に。`_scheduler_reload` は schedule_jobs.json のジョブを登録しない（vol_create は VPS）。`orchestrator_tick` は `APP_ORCH_TICK_ENABLED` の既定を 0 に。全ジョブ消去の不具合は、残る固定ジョブ（digest 等）を消さないように修正。
 - `publish_schedule.py`: 復旧専用（plan_scheduled_publish_recovery / resolve_recover_max_stale_days / scheduler_run_at）を削除、テストも削除。`resolve_publish_at_iso` は VPS 未設定時のフォールバックとして残す。

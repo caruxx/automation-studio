@@ -358,6 +358,10 @@ YouTube Analytics API v2 (`reports.query`) をチャンネル別 OAuth トーク
 
 ダッシュボードはこのファイルの存在で「アップロード済」を判定。
 
+**段階 3（2026-10-26）**: このマーカーはローカル互換用の写しで、投稿状態の正本は VPS の投稿記録（`uploads`: 冪等キー
+`vol × input_hash`、state、video_id、publish_at、reservation_verified_at、published_at）。`schedule` は VPS の予約時刻
+（naive UTC に `Z`）で、フォルダ名の日付からは再予約しない。VPS に投稿記録がある vol は再投稿せず snippet 更新のみ。
+
 ### 6.4 `youtube_tags.txt`
 
 改行 or カンマ区切りテキスト。空白はトリム、空要素は除外。
@@ -398,6 +402,21 @@ OAuth 認証 → MP4/サムネ/説明/タグ/タイトルを**保存ファイル
 成功後 `youtube_upload.json` を書き出し → Web 側で即ステータス反映。
 
 ---
+
+### 7.5 投稿の正本と公開スケジュール（段階 3、[Python/publish/](Python/publish/)）
+
+- 投稿本体は `Python/publish/upload_video.py`（純関数。resumable upload のセッション URI と offset を VPS に保存し、
+  途中失敗は次回 `resume`、再開セッションの失効だけを「結果不明」として人に渡す）。`app_youtube.py` はその薄い層。
+- 冪等キーは `(channel_key, vol, input_hash)`。`input_hash` は動画（サイズ + 先頭/末尾 4 MiB）、サムネ、公開メタから作り、
+  予約時刻は含めない（`Python/publish/input_hash.py`）。
+- VPS の API: `POST /api/worker/vols/{id}/upload/begin | session | result | unknown`、
+  `GET /api/runs/schedule-status`、`GET/PUT /api/schedules/publish/{channel_key}`（管理者）。
+- 公開枠は **1 日 1 枠 / チャンネル**。VPS の `publish_schedules`（timezone / publish_time / produce_lead_days /
+  late_policy / enabled / revision）で決め、`publish_verify`（VPS の tick）が `private + 未来の publishAt` と、
+  到来後の `public` を YouTube から読み戻して記録する。期限超過は alert（配送は段階 3a の Chatwork）。
+- Mac の APScheduler は補助ジョブ（digest / token_health 等）だけを持つ。`vol_create` / `spot_create` は登録せず、
+  公開ゲートと auto_resume は撤去。CLI: `studio.py schedule-status [--vol N]`、`schedule-put`（管理者 JWT を
+  環境変数 `APP_VPS_ADMIN_TOKEN` で）。
 
 ## 8. ワークフロー例: vol.77 の新規制作
 
@@ -507,6 +526,9 @@ bash Python/start.sh                          # http://localhost:8888/
 ---
 
 ## 13. 変更履歴
+
+- **2026-10-26 段階 3**: スケジュール正本化と投稿。投稿記録（VPS `uploads`）と `publish_verify`、1 日 1 枠の公開枠、
+  共通 upload パッケージ `Python/publish/`、Mac の公開ゲート / auto_resume / 起票の停止。
 
 - **2026-10-25（段階 1a）**: Adobe（Premiere / Media Encoder / Photoshop）経路を削除し、`production_mode` を `ffmpeg_only` のみに統一。`/api/premiere/*`、`/api/photoshop/*`、`/api/render-queue*`、`/api/export/queue*`、`/api/templates/list` を廃止。scene-text API は `/api/scene-text/generate` へ移動。`studio.py preflight` を追加。
 
