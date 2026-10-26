@@ -126,6 +126,8 @@ def _note_error(event_ids: list[str], error: str) -> None:
         for eid in event_ids:
             conn.execute("UPDATE events SET last_error=? WHERE event_id=? AND migrated_at IS NULL", (error[:500], eid))
         conn.commit()
+    except Exception:
+        pass  # 理由の記録に失敗しても notify() から例外を出さない
     finally:
         conn.close()
 
