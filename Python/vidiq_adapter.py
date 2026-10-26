@@ -112,7 +112,11 @@ def _urllib_transport(url: str, headers: dict[str, str], body: bytes, timeout: f
         with _OPENER.open(req, timeout=timeout) as resp:
             return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
     except urllib.error.HTTPError as exc:
-        return exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b""
+        try:
+            body = exc.read() or b""
+        except Exception:  # 本文を読めなくても状態コードで判断する
+            body = b""
+        return exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, body
     except Exception as exc:  # 接続不能・タイムアウト
         raise VidiqError("network", type(exc).__name__) from None
 
@@ -312,14 +316,32 @@ def _content_text(result: dict) -> str:
     return "\n".join(parts)
 
 
-def _structured(result: dict, text: str) -> Any:
-    sc = result.get("structuredContent")
-    if sc is not None:
-        return sc
+_NOT_JSON = object()
+
+
+def _parse_text_json(text: str) -> Any:
+    """本文全体が JSON なら値（文字列・数値も含む）、そうでなければ _NOT_JSON。"""
+    if not text.strip():
+        return _NOT_JSON
     try:
-        return json.loads(text) if text.strip()[:1] in ("{", "[") else None
+        return json.loads(text)
     except ValueError:
-        return None
+        return _NOT_JSON
+
+
+_EMPTY = object()
+
+
+def _structured(result: dict, text: str) -> Any:
+    """構造化結果。structuredContent に中身があればそれ、無ければ本文の JSON（文字列・数値も含む）。
+    本文が JSON でなければ None（本文は文章として扱う）。どれにも中身が無ければ _EMPTY。"""
+    sc = result.get("structuredContent")
+    if sc is not None and _has_content(sc):
+        return sc
+    parsed = _parse_text_json(text)
+    if parsed is not _NOT_JSON:
+        return parsed if _has_content(parsed) else _EMPTY
+    return None if text.strip() else _EMPTY
 
 
 def _has_content(obj: Any) -> bool:
@@ -358,10 +380,8 @@ def normalize(call: dict, result: dict) -> Optional[dict]:
         return None
     text = _content_text(result)
     data = _structured(result, text)
-    if not text.strip() and data is None:
-        return None
-    if data is not None and not _has_content(data):
-        return None  # {} や [] など中身の無い結果は分析として採用しない（根拠も作らない）
+    if data is _EMPTY:
+        return None  # {}・[]・""・null など中身の無い結果は分析として採用しない（根拠も作らない）
     ids: list[str] = list(dict.fromkeys(_VIDEO_ID_RE.findall(text)))
     walked: list[str] = []
     _walk_video_ids(data, walked)
@@ -383,7 +403,7 @@ def normalize(call: dict, result: dict) -> Optional[dict]:
         metrics["result_count"] = len(data)
     label = ", ".join(f"{v}" for v in call.get("arguments", {}).values() if isinstance(v, (str, int, float)))[:60]
     head = f"VidIQ {call['tool']}" + (f"（{label}）" if label else "") + ": "
-    body_src = text if text.strip() and data is None else json.dumps(data, ensure_ascii=False)
+    body_src = text if data is None else (data if isinstance(data, str) else json.dumps(data, ensure_ascii=False))
     body = " ".join(_CTRL_RE.sub(" ", body_src).split())
     insight = (_CTRL_RE.sub("", head) + body)[:INSIGHT_MAX]
     return {"category": call.get("category") or "other", "insight": insight, "video_ids": ids[:50],

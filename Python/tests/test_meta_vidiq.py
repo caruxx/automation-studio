@@ -228,7 +228,30 @@ class MetaVidiqEdgeTest(MetaVidiqTest):
             ap.step_meta(5, self.folder, False)
         rec = json.loads((self.folder / ap.META_RECORD_FILE).read_text(encoding="utf-8"))
         self.assertEqual((rec["title"], rec["evidence_ids"], rec["generation_complete"]), ("Old", [], False))
+        self.assertFalse(rec["insights_degraded"])  # VidIQ は使えた（根拠だけ記録しない）
         n.assert_not_called()
+
+    def test_partial_generation_still_reports_real_vidiq_problem(self):
+        self._write_cache(datetime.now(timezone.utc) - timedelta(hours=30))  # 期限切れ
+        (self.folder / "youtube_title.txt").write_text("Old", encoding="utf-8")
+
+        def failing(_cli, prompt, **_kw):
+            if '"titles"' in prompt:
+                raise RuntimeError("llm down")
+            return self._fake_run(_cli, prompt)
+        notes = []
+        with patch.object(ap, "_load_ledger_sync", return_value=FakeLedger(enabled=False)), \
+                patch.object(ap, "_load_dashboard_config", return_value=self.cfg), \
+                patch.object(ap, "_load_suno_config", return_value={}), \
+                patch.object(ap, "_vps_result_is_newer", return_value=False), \
+                patch.object(cp, "gather_context", return_value={"songs": ["A"], "song_count": 1}), \
+                patch.object(cp, "_run_claude", side_effect=failing), \
+                patch.object(cp, "_load_benchmark_analysis", return_value=None), \
+                patch("notify.notify", side_effect=lambda body, **kw: notes.append(kw)):
+            ap.step_meta(5, self.folder, False)
+        rec = json.loads((self.folder / ap.META_RECORD_FILE).read_text(encoding="utf-8"))
+        self.assertEqual((rec["insights_degraded"], rec["degraded_reason"], rec["generation_complete"]), (True, "expired", False))
+        self.assertEqual(len(notes), 1)
 
     def test_push_meta_payload_shape(self):
         import vps_ledger_sync as vls

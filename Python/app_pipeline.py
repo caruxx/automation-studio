@@ -2008,9 +2008,9 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
             complete = generated == {"title", "description", "tags"}
             if not complete:
                 # 一部または全部が今回生成できず以前のファイルを使う: 今回の根拠を古い中身に付けない。
-                # VidIQ が原因ではないので劣化としても通知しない（根拠なしのメタとして記録する）
+                # VidIQ の状態（劣化かどうかと理由）はそのまま記録し、根拠だけを空にする
                 print(f"  今回生成できなかった項目があるため、VidIQ の根拠は記録しません（生成: {sorted(generated) or 'なし'}）")
-                record_ctx = {"insights_degraded": False, "degraded_reason": None, "evidence_ids": []}
+                record_ctx = {**vidiq, "evidence_ids": []}
             else:
                 record_ctx = vidiq
             rec = _write_meta_record(folder, local_title, local_description, local_tags, record_ctx,
@@ -2021,8 +2021,7 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
                     ledger_sync, "push_meta", vol, local_title, local_description, local_tags,
                     insights={k: rec[k] for k in ("evidence_ids", "insights_degraded", "degraded_reason")},
                 ))
-            if complete:
-                _notify_vidiq_degraded(vol, vidiq, ledger_sync, vps_received=delivered)
+            _notify_vidiq_degraded(vol, vidiq, ledger_sync, vps_received=delivered)  # VidIQ が使えなかった通知は生成の成否と無関係
         except OSError as e:
             print(f"[ledger-sync] ローカルメタ読込失敗: {e}")
         print(f"\n {STEP_LABELS['meta']} 完了")
