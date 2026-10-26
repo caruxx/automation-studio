@@ -26,7 +26,7 @@ AI が生成した BGM を編集・投稿する YouTube チャンネル運営を
 | サムネ合成 | Pillow（`app_image_composite.py`） |
 | YouTube アップロード | YouTube Data API v3 + OAuth |
 | AI | Claude CLI（第一候補、API 未使用）/ Gemini / ChatGPT |
-| 通知 | Discord Webhook |
+| 通知 | Chatwork（VPS の outbox 経由。段階 3a。Mac は `notify.py` が VPS に送り、届かなければローカル退避） |
 
 ---
 
@@ -95,7 +95,7 @@ _claude/                         # プロジェクトルート
 │   ├── claude_proposer.py       # Claude CLI 提案ヘルパー（タイトル/説明/タグ）
 │   ├── app_ffrender.py         # FFmpeg 書き出し（唯一の書き出し経路。静止画ループ + 音声 + SRT + TC）
 │   ├── app_youtube.py   # YouTube 投稿
-│   ├── app_notify.sh      # Discord 通知
+│   ├── app_notify.sh      # 通知の互換ラッパー（notify.py を呼ぶ。Discord は廃止）
 ├── web/static/
 │   └── index.html               # ダッシュボード UI（全 JS 同梱）
 └── skills/                      # 個別スキル解説 (Claude Code 用)
@@ -125,7 +125,7 @@ auth_token.txt           # v2: リモートアクセス用トークン（600 per
 prompts.json             # SUNO プロンプトライブラリ
 youtube_client_secret.json   # Google OAuth クライアントシークレット
 youtube_token.json       # OAuth 認証トークン（自動更新）
-discord_config.json         # Discord Webhook
+discord_config.json         # 旧 Discord Webhook（段階 3a で送信経路は廃止。設定 UI の残骸は段階 7 で整理）
 task_history.json        # タスクログ永続化（サーバー再起動で復元）
 competitor_analysis_cache.json  # Claude 分析結果キャッシュ
 chromium_profile/        # Playwright 永続プロファイル（SUNO ログイン情報）
@@ -497,7 +497,7 @@ bash Python/start.sh                          # http://localhost:8888/
 | ffmpeg / ffprobe | 子プロセス | 不在は preflight（exit 78）で停止 |
 | Pillow | Python ライブラリ | 不在は preflight（exit 78）で停止 |
 | YouTube Data API v3 | google-api-python-client + OAuth | token 失効時は自動 refresh |
-| Discord Webhook | HTTP POST | 未設定時はボタン無効 |
+| Chatwork（VPS outbox） | HTTP POST（VPS → Chatwork API） | VPS 未設定時はローカル退避（`studio.py notify-flush` で移管） |
 
 ---
 
@@ -517,7 +517,7 @@ bash Python/start.sh                          # http://localhost:8888/
 | [app-youtube-desc.md](skills/app-youtube-desc.md) | 説明文生成 |
 | [app-youtube-upload.md](skills/app-youtube-upload.md) | YouTube 投稿 |
 | [app-competitor-spreadsheet.md](skills/app-competitor-spreadsheet.md) | スプシ競合分析（195ch + 成長 → Claude → 提案）|
-| [app-notify.md](skills/app-notify.md) | Discord 通知 |
+| [app-notify.md](skills/app-notify.md) | 通知（Chatwork、VPS outbox） |
 | [app-master-config.md](skills/app-master-config.md) | マスター設定タブ（プロンプト上書き / SUNO / ベンチマーク / 書き出し / リモート / 入出力。Flow・メタ・master_settings は D8/D12 で撤去） |
 | [app-schedule.md](skills/app-schedule.md) | **v2** APScheduler 統合（vol_create / benchmark_refresh / export_window / spot_create） |
 | [app-remote-access.md](skills/app-remote-access.md) | **v2** 外出先スマホ操作（Cloudflare Tunnel + 認証ミドルウェア + PWA） |

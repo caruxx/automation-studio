@@ -28,7 +28,7 @@ base: Mac main 11157ab / VPS main 3970d43。統括: Claude Fable 5.1（本人指
 
 ## Task 2（Mac）: notify.py と Discord の置換
 - `Python/notify.py`: `notify(body, *, kind=None, run_id=None, vol=None, event_id=None) -> dict`（VPS → 失敗時ローカル退避。例外を投げない）、`infer_kind(body)`、`flush_local(limit)`、CLI（`python3 notify.py "本文" [--kind]`、`--flush`、`--status`）。ローカル退避は SQLite（events: event_id, kind, body, run_id, vol, channel_key, created_at, migrated_at）。
-- `vps_ledger_sync.post_notify(events)`（`_request_strict`、未設定なら None）。
+- `vps_ledger_sync.post_notify(events)`（`_request_strict`、未設定なら LedgerUnavailable。呼び出し側は enabled() を先に見る）。
 - `app_notify.sh`: Webhook を廃止し `python3 notify.py "$1"` を呼ぶ。`app_pipeline._notify_discord` / `app.py _send_discord_notify` / `app_reconcile.notify_duplicate_skip` は `notify.notify()` を呼ぶ（error_humanizer の整形は維持）。
 - `studio.py notify-flush`（intent、routes.json）。
 - 受入: VPS 到達不能でも notify() が例外を出さず SQLite に残る → flush で同じ event_id で VPS に届く → 2 回目の flush は duplicate 扱いで消える。call site の grep で `webhook_url` を使う送信経路が無い。run_tests.py 全件合格。
