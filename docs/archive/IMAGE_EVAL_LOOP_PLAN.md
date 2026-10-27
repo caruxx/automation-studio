@@ -1,3 +1,5 @@
+> **archive（段階 7、2026-10-27）**: この文書は現行の正本ではない。現行は `SPEC.md`・`OVERVIEW.md`・`docs/SPEC_REVISION_DRAFT_2026-10-25.md`・`skills/`。文中の相対リンクは移動前の場所を指す。
+
 # 自己評価付き反復画像生成ループ 実装計画（IMAGE_EVAL_LOOP_PLAN）
 
 > **注記（2026-10-25）**: 本文中の Premiere / Photoshop / Media Encoder / AME / PSD / JSX / render queue に関する記述は、段階 1a（ffmpeg 専用化）で廃止済みの構成を指す。現行は `SPEC.md`（正本）と `skills/app-export.md`、計画は `docs/SPEC_REVISION_DRAFT_2026-10-25.md` を参照。本文書は履歴として保持する。

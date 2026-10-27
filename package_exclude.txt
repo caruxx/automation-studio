@@ -52,6 +52,3 @@ node_modules/
 .venv/
 venv/
 
-# 段階 7: archive（動かす前提のコードではない・現行の正本ではない文書）
-archive/
-docs/archive/

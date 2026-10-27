@@ -169,7 +169,7 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 | 2 | `rename` | 楽曲タブ | `music/*.mp3`（処理済み） | app_process_tracks.py |
 | 3 | `bgimage` | 画像タブ | `vol{N}.png` or `vol{N}.jpg` | app_image_prompt.py / codex_imagegen.py |
 | 4 | `composite`（旧名 `psd_composite`） | 画像タブ（Image2 Layout Studio） | `vol{N}.jpg` + `サムネイル.jpg` | app_image_composite.py（Pillow） |
-| 5 | （廃止: 旧 `premiere`） | — | — | 段階 1a で書き出しに統合。旧名の指定は無視される |
+| 5 | （廃止: 旧 `premiere`） | — | — | 段階 1a で書き出しに統合。旧名を指定すると `render` に読み替える |
 | 6 | `render`（旧名 `export`） | 編集タブ | `{prefix}_vol*.mp4` + `subtitles_*.srt` | app_ffrender.py |
 | 7 | `qa` | （書き出し直後・自動） | QA 全 4 軸 pass | app_pipeline.py `step_qa` |
 | 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt`（記録 `youtube_meta.json`: 根拠 `evidence_ids` と VidIQ の劣化 `insights_degraded` / `degraded_reason`） | claude_proposer.py（insights と VidIQ の学びを注入。VidIQ が使えなくても完走） |
