@@ -181,3 +181,44 @@ class GarbledMetaFileTest(MetaVidiqTest):
             self.assertIs(ap.step_meta(5, self.folder, False), True)
         rec = json.loads((self.folder / ap.META_RECORD_FILE).read_text(encoding="utf-8"))
         self.assertEqual((rec["title"], rec["generation_complete"]), ("", False))
+
+
+class PublishKeepsStatusTest(unittest.TestCase):
+    def test_publish_to_public_keeps_other_status_fields(self):
+        import app_youtube as ay
+        folder = Path(tempfile.mkdtemp(prefix="s7pub_"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        (folder / "youtube_upload.json").write_text(json.dumps({"video_id": "vid123"}), encoding="utf-8")
+        sent = []
+
+        class Req:
+            def __init__(self, kind, body=None):
+                self.kind, self.body = kind, body
+
+        class Videos:
+            def list(self, part, id):
+                return Req("list")
+
+            def update(self, part, body):
+                sent.append((part, body))
+                return Req("update", body)
+
+        class YT:
+            def videos(self):
+                return Videos()
+
+        def execute(req, label):
+            if req.kind == "list":
+                return {"items": [{"status": {"privacyStatus": "private", "publishAt": "2026-12-01T00:00:00Z", "license": "creativeCommon",
+                                              "embeddable": False, "publicStatsViewable": False, "selfDeclaredMadeForKids": False,
+                                              "containsSyntheticMedia": True, "uploadStatus": "processed"}}]}
+            return {"status": {"privacyStatus": "public"}}
+        with patch.object(ay, "get_credentials", return_value=object()), patch.object(ay, "build", return_value=YT()), \
+                patch.object(ay, "execute_youtube", side_effect=execute):
+            res = ay.publish_video_to_public(folder)
+        self.assertEqual(res.get("status"), "ok")
+        part, body = sent[0]
+        self.assertEqual(part, "status")
+        self.assertEqual(body["status"], {"privacyStatus": "public", "license": "creativeCommon", "embeddable": False,
+                                          "publicStatsViewable": False, "selfDeclaredMadeForKids": False,
+                                          "containsSyntheticMedia": True})  # publishAt と読み取り専用の項目は送らない

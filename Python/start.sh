@@ -91,7 +91,11 @@ if [[ "${1:-}" == "--replace" ]]; then
         for pid in $PIDS; do
             cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
             if [[ "$cmd" != *"$SCRIPT_DIR/app.py"* ]]; then
-                echo "ポート $PORT を使っているのは Automation Studio ではありません（PID $pid: ${cmd:-不明}）。止めずに終了します" >&2
+                if [[ "$cmd" == *"/Python/app.py"* ]]; then
+                    echo "ポート $PORT では別のフォルダの Automation Studio が動いています（PID $pid: $cmd）。そちらの start.sh --replace を使ってください" >&2
+                else
+                    echo "ポート $PORT を使っているのは Automation Studio ではありません（PID $pid: ${cmd:-不明}）。止めずに終了します" >&2
+                fi
                 exit 1
             fi
         done

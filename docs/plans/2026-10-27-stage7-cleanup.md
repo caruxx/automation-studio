@@ -58,6 +58,7 @@
 - 投稿: resume-complete 分岐の `set_thumbnail` も確定サムネのときだけ。表示用のサムネ探索（`claude_proposer._find_thumbnail`、`routers/youtube.py`、`app.py`）も、検証済みの `thumbnail_selected.jpg` を優先する。
 - 起動: `start.sh --replace` は、待ち受けているのが app.py のときだけ止める。
 - 履歴: 終了コード 79（待機）を error として記録しない。
+- 公開: `publish_video_to_public` は status 全体を置き換えるので、今の値（ライセンス・埋め込み・申告など）を引き継いで privacyStatus だけを変える（段階 3 の繰り越し）。
 - サムネ選定: `--adopt` の記録に採点（`predicted_ctr` など）を履歴から写す。`routes.json` の `thumbnail-select` に `--channel` を渡す。
 - routes.json: studio の置換に無い `{channel}` を使っていた箇所（comment-mining の body、onboarding の path、段階 6 の insights-refresh）を `{channel_id}` に直す（置換されずに文字列のまま送られていた）。
 
@@ -75,11 +76,20 @@
 |---|---|
 | PostgreSQL での SAVEPOINT・ON CONFLICT・CAST・alembic 往復の実機確認 | 本番 DB での確認が要る。コンテナでの確認は段階 6 で実施済み。本番反映の手順に含める |
 | 複数 worker・レプリカでの二重送信（通知・行ロック） | 単一 uvicorn worker 前提を DEPLOY に明記済み |
-| exactly-once の端のケース（応答喪失時の二重通知、allocate の非冪等など） | 「二重より保留」の方針どおり。照合と通知で気づける |
+| exactly-once の端のケース（allocate の非冪等など） | 投稿は「二重より保留」の方針どおり。照合と通知で気づける |
 | Drive 上の `.stage_state.lock` の効き、同一秒・同サイズの差し替え検出 | 実フォルダでの確認が要る |
 | VidIQ のセッション失効時の再 initialize・DELETE | 実接続での挙動確認が先（未接続） |
 | 段階 2〜3 の UI 死にコード・表示の古い文言の大半 | index.html の分割後に段階的に扱う（今回は振る舞いを変えない） |
 | `safe_fetch` の NAT64/6to4、IPv6 の Host 角括弧 | 外向きの取得先は固定で、影響が限定的 |
+| `_allocate_next_vol` が一時的に `APP_CHANNEL_FOLDER`（プロセス共通の環境変数）を書き換える | vol 採番は scheduler の逐次実行からだけ呼ばれ、並行しない。`push_context` に channel_key を渡す形への変更は複数モジュールにまたがるため、次の整理で扱う |
+| bgimage の失効で AI 画像を作り直す費用（rename の再実行で mp3 サイズが変わるだけでも起きる） | 依存定義どおりの挙動。費用は画像生成の上限で抑えている。入力の指紋を内容ハッシュへ変えるかは運用で頻度を見てから決める |
+| 通知の重複（応答だけ失われたときの Mac と VPS の二重、publish_verify の A→B→A） | 通知は「欠落より重複を許容」の方針（投稿は「二重より保留」）。event_id で大半は 1 件にまとまる |
+| `/static` 配下は認証なしで取れる（主スクリプトも） | 分割前から `/static/index.html` 経由で同じ内容が取れており、新しい露出ではない。秘密情報は含まない |
+| `/static/index.html` を直接開くと資産の版付けが無い | 入口は `/`（版付けあり）。manifest の start_url も `/` |
+| `app-main.js` だけが 404 になる失敗の形 | 配布物と静的配信は同じフォルダで、片方だけ欠ける運用は無い |
+| 新しい router 8 本の import ヘッダの重複 | 逐字移動のため。必要な import に絞るのは振る舞いを変えない次の整理で行う |
+| ベンチマーク節（競合のタイトル文言）をデータとして囲んでいない | insights と同じ理由で囲む対象。次の段階の候補 |
+| 一部失敗した VidIQ 取得を取り直すと、成功分も呼び直す | 取得は手動の CLI だけで、上限（既定 3 回）がある。手順書に費用の注意を書いた |
 
 ## 検証
 

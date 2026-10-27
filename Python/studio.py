@@ -546,6 +546,7 @@ def run_insights_refresh(args: argparse.Namespace) -> int:
         fresh, why = _va.freshness(cache)
         emit({"ok": True, "intent": "insights-refresh", "dry_run": True, "channel": key, "configured": _va.is_configured(cfg),
               "fresh": fresh, "reason": why, "expires_at": cache.get("expires_at"), "max_calls": max_calls,
+              "partial": bool(cache.get("partial")), "retry_after": cache.get("retry_after"),
               "endpoint": _va.display_endpoint()})
         return 0
     data = _va.refresh(key, cfg, max_calls=max_calls, force=bool(args.force))

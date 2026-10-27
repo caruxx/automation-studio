@@ -2319,11 +2319,15 @@ def api_runs_active():
             concept_file = d / "concept.txt"
             concept = concept_file.read_text(encoding="utf-8").strip() if concept_file.exists() else ""
             num = info["num_text"]
-            has_thumb = any((d / filename).exists() for filename in (
-                "thumbnail_selected.jpg",  # 段階 5 の確定サムネ（表示上の有無。検証は投稿時に行う）
-                "サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png",
-                f"vol{num}.jpg", f"vol{num}.png",
-            ))
+            if (d / ".thumbnail_selection.json").exists():
+                # 段階 5 以降の vol: 投稿に使えるのは検証に通った確定サムネだけなので、表示もそれに合わせる
+                import thumbnail_selection as _ts_disp
+                has_thumb = _ts_disp.verified_selected(d) is not None
+            else:
+                has_thumb = any((d / filename).exists() for filename in (
+                    "サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png",
+                    f"vol{num}.jpg", f"vol{num}.png",
+                ))
             up_marker = d / "youtube_upload.json"
             video_id = ""
             scheduled_publish_at = ""
