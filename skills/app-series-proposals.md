@@ -69,7 +69,7 @@
 |---------|------|
 | [Python/app_series.py](../Python/app_series.py) | `propose_series()` / キャッシュ読み書き / `staging_dir()` |
 | [Python/routers/images.py](../Python/routers/images.py) | API endpoints (`/api/series/*`)、codex を直列で起動するバックグラウンドタスク |
-| [web/static/index.html](../web/static/index.html) | コンテンツページ上部の `<details id="seriesPanel">` カード + JS（`loadSeriesProposals` / `generateSeriesProposals` / `generateSeriesImages`） |
+| [web/static/index.html](../web/static/index.html) / [web/static/js/app-main.js](../web/static/js/app-main.js) | コンテンツページ上部の `<details id="seriesPanel">` カード（index.html）+ JS（app-main.js の `loadSeriesProposals` / `generateSeriesProposals` / `generateSeriesImages`） |
 
 ## 直列実行の理由
 

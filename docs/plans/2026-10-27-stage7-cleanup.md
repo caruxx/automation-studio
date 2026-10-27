@@ -27,13 +27,18 @@
 
 ## Task 1（Mac）: app.py の分割
 
-- 新設 router（元の区画名）:
-  - `routers/meta_tools.py`: タグ、コンセプト、多言語 localizations、動画 mp4 の情報、メタ充足チェック、動画の非表示 / 復元、Claude 提案、混成ドラフト
-  - `routers/setup_tools.py`: 環境セットアップ、Finder 操作、フォルダピッカー
-  - `routers/ops.py`: run ledger、token health、YouTube 公開ゲート
-  - `routers/misc_config.py`: SUNO プロンプト雛形提案、画像選択、Sheets URL 取り込み、チャンネルアイコン、プロンプト
+- 新設 router（元の区画名）。区画ごとに元の位置で include するため、連続した区画を 1 本にまとめた:
+  - `routers/local_tools.py`: SUNO プロンプト雛形提案、Finder 操作、フォルダピッカー
+  - `routers/meta_tools.py`: タグ、コンセプト、多言語 localizations、動画 mp4 の情報、メタ充足チェック、動画の非表示 / 復元
+  - `routers/proposals.py`: 画像選択、Claude 提案（タイトル・説明・タグ）
+  - `routers/drafts.py`: 混成（複数 Style）ドラフト生成
+  - `routers/prompts.py`: チャンネルアイコン、プロンプト
+  - `routers/setup_tools.py`: 環境セットアップ
+  - `routers/run_ledger.py`: run ledger（P3-1）
+  - `routers/publish_gate.py`: YouTube 公開ゲート（P2-7）
+- token health（P3-5）は auto_resume の区画の名前を参照しているため app.py に残した（前提 1 の「相互参照の無い区画だけ」）。
 - 各 router は app.py と同じ土台の import（`from app_core import *` ほか）を持ち、`@app.` を `@router.` に変える。app.py では元の位置に `include_router` を置く。
-- テスト `tests/test_route_table.py`: 分割前のルート表を JSON で固定し、分割後と完全一致することを確かめる。テストが `app.<関数名>` を差し替えている箇所は、移した先の module を差し替えるよう直す。
+- テスト `tests/test_route_table.py`: 分割前のルート表（メソッド・パス・関数名・定義モジュール）を JSON で固定し、分割後と完全一致することを確かめる。新しい router の GET を TestClient で呼ぶ smoke テストも足す。テストが `app.<関数名>` を差し替えている箇所は、移した先の module を差し替えるよう直す。
 
 ## Task 2（Mac）: index.html の分割
 
