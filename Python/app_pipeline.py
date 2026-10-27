@@ -2000,10 +2000,11 @@ def step_meta(vol: int, folder: Path, via_api: bool, **kw):
         def _read_meta_file(name: str) -> str:
             try:
                 return (folder / name).read_text(encoding="utf-8")
-            except OSError as e:
-                print(f"[ledger-sync] ローカルメタ読込失敗: {e}")
+            except (OSError, UnicodeError) as e:  # 文字化けしたファイルでも記録と通知へ進む
+                print(f"[ledger-sync] ローカルメタ読込失敗: {type(e).__name__}: {e}")
                 return ""
-        if True:  # 読めない項目は空として扱い、記録と通知は必ず行う（送信は 3 項目そろったときだけ）
+        # 読めない項目は空として扱い、記録と通知は必ず行う（送信は 3 項目そろったときだけ）
+        if True:
             local_title = _read_meta_file("youtube_title.txt").strip()
             local_description = _read_meta_file("youtube_description.txt").strip()
             local_tags = [line.strip() for line in _read_meta_file("youtube_tags.txt").splitlines() if line.strip()]

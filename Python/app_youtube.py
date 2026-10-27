@@ -1122,7 +1122,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                         _pub.update_publish_at(youtube, video_id, new_at or None, full_req)
                         _ledger.upload_result(vol_num, input_hash, video_id, "private", new_at or None)
                         _write_marker(folder, video_id, title[:100], "private", new_at or None, s, localizations, note="resumed-complete")
-                        if thumbnail:
+                        if thumbnail and thumb_confirmed:  # 照合を通ったスナップショットだけを送る（段階 7）
                             try:
                                 _pub.set_thumbnail(youtube, video_id, thumbnail, execute=execute_youtube)
                             except Exception as e:

@@ -11,7 +11,7 @@
 
 1. **振る舞いを変えない分割**: `app.py` から、他の区画と相互参照の無い区画だけを `routers/` へ移す（AST で区画間の参照を数えて選んだ）。各 router は元の区画があった位置で `include_router` し、ルートの登録順を変えない。移す前後でルート表（メソッド・パス・関数名の順序付き一覧）が一致することをテストで固定する。
 2. **index.html の分割**: 大きなインライン `<script>`（3121〜14697 行）と `<style>`（20〜1243 行）を、そのままの順序で `web/static/js/app-main.js` と `web/static/css/app-main.css` へ移す。classic script のままにして、グローバル関数・変数の見え方を変えない。小さいインライン部分（テーマの先読みなど）は残す。資産の版付けは既存の `_index_html_with_asset_versions` が行う。
-3. **archive の方針**: 消さずに `archive/` へ `git mv` する。参照の無いことを AST・文字列検索で確認したものだけを対象にする（`app_photos_picker`、`app_vlog_plan`、`save_auth`、`suno_queue`、`flow_userscript.js`、`app_pipeline._run_thumbnail_eval_loop`、VPS の `job_type=upload`）。`parallel_guard.py` は AGENTS と skills から使われているので残す。古い設計文書は `docs/archive/` へ移し、冒頭に「現行の正本ではない」と書く。
+3. **archive の方針**: 消さずに `archive/` へ `git mv` する。参照の無いことを AST・文字列検索で確認したものだけを対象にする（`app_photos_picker`、`app_vlog_plan`、`save_auth`、`flow_userscript.js`、`app_pipeline._run_thumbnail_eval_loop`、VPS の `job_type=upload`）。`parallel_guard.py` は AGENTS と skills から使われているので残す。`suno_queue.py` はコードからの参照は無いが手で CLI として使う運用があったため残す（Task 3 のレビューで判明）。古い設計文書は `docs/archive/` へ移し、冒頭に「現行の正本ではない」と書く。
 4. **繰り越し Minor の選別**: 全段階の台帳（各 worktree の `.codex-cdd/*/progress.md`）を棚卸しし、次の基準で分ける。
    - 直す: 秘密情報・外部送信・費用・誤った記録や通知に関わるもの、1 か所で直せる正しさの問題、文書の誤り。
    - 直さない（裁定を下表に記録）: 本番環境での実機確認が要るもの、単一プロセス前提を文書化済みのもの、外部 API の仕様待ちのもの、影響がほぼ無いと複数レビューが判定したもの。
@@ -59,6 +59,7 @@
 - 起動: `start.sh --replace` は、待ち受けているのが app.py のときだけ止める。
 - 履歴: 終了コード 79（待機）を error として記録しない。
 - サムネ選定: `--adopt` の記録に採点（`predicted_ctr` など）を履歴から写す。`routes.json` の `thumbnail-select` に `--channel` を渡す。
+- routes.json: studio の置換に無い `{channel}` を使っていた箇所（comment-mining の body、onboarding の path、段階 6 の insights-refresh）を `{channel_id}` に直す（置換されずに文字列のまま送られていた）。
 
 ## Task 5（VPS）: 繰り越し Minor の対応
 

@@ -2320,6 +2320,7 @@ def api_runs_active():
             concept = concept_file.read_text(encoding="utf-8").strip() if concept_file.exists() else ""
             num = info["num_text"]
             has_thumb = any((d / filename).exists() for filename in (
+                "thumbnail_selected.jpg",  # 段階 5 の確定サムネ（表示上の有無。検証は投稿時に行う）
                 "サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png",
                 f"vol{num}.jpg", f"vol{num}.png",
             ))
@@ -6166,7 +6167,8 @@ async def _job_vol_create(job: dict):
                     print(f"[ledger] finish_run 失敗: {e}")
         else:
             tail = stdout_str[-500:]
-            _record_history(job_id, "error", tail)
+            # 待機（79 など blocked）は失敗として記録しない（段階 7）
+            _record_history(job_id, "blocked" if _exit_codes.is_blocked(proc.returncode) else "error", tail)
             # P2-6: auto_resume が有効なら失敗 stage を解析して N 分後に再投入
             failed_stage = _parse_failed_stage(stdout_str)
             resume_payload = {
@@ -6288,7 +6290,8 @@ async def _job_spot_create(job: dict):
                     print(f"[ledger] finish_run 失敗: {e}")
         else:
             tail = stdout_str[-300:]
-            _record_history(job_id, "error", tail)
+            # 待機（79 など blocked）は失敗として記録しない（段階 7）
+            _record_history(job_id, "blocked" if _exit_codes.is_blocked(proc.returncode) else "error", tail)
             # P2-6: auto_resume
             failed_stage = _parse_failed_stage(stdout_str)
             resume_payload = {**job, "_resolved_vol": vol, "_parent_run_id": run_id}

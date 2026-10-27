@@ -27,6 +27,7 @@ DEFAULT_ENDPOINT = "https://mcp.vidiq.com/mcp"
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
 TTL_HOURS = 24
+PARTIAL_TTL_HOURS = 1
 DEFAULT_MAX_CALLS = 3
 INSIGHT_MAX = 300
 MAX_ITEMS = 30
@@ -68,21 +69,32 @@ def load_api_key() -> Optional[str]:
         return env
     path = Path(os.environ.get("APP_VIDIQ_KEY_FILE") or (config_dir().parent / "vidiq.json")).expanduser()
     try:
-        mode = path.stat().st_mode
+        st = path.stat()
     except OSError:
         return None
-    if mode & (stat.S_IRWXG | stat.S_IRWXO):
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
         raise VidiqError("key_file_permissions", "vidiq.json は所有者だけが読める権限（chmod 600）にしてください")
+    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        raise VidiqError("key_file_owner", "vidiq.json の所有者が実行ユーザーと違います")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        raise VidiqError("key_file_invalid", "vidiq.json を読めません（JSON の {\"api_key\": \"...\"} にしてください）") from None
     key = str(data.get("api_key") or "").strip() if isinstance(data, dict) else ""
     return key or None
 
 
 def endpoint() -> str:
     return (os.environ.get("VIDIQ_MCP_ENDPOINT") or DEFAULT_ENDPOINT).strip()
+
+
+def display_endpoint(url: Optional[str] = None) -> str:
+    """表示用の接続先（scheme・host・port・path だけ。URL に埋めた認証情報や query は出さない）。"""
+    from urllib.parse import urlparse
+    u = urlparse(url or endpoint())
+    host = u.hostname or ""
+    port = f":{u.port}" if u.port else ""
+    return f"{u.scheme}://{host}{port}{u.path}"
 
 
 def check_endpoint(url: str) -> None:
@@ -106,11 +118,48 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
+SSE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _read_sse_until_response(resp, want_id: Any) -> bytes:
+    """SSE を 1 行ずつ読み、要求 id の応答イベントが届いたらそこで読むのをやめる（接続を保ったままのサーバでも止まらない）。"""
+    chunks: list[bytes] = []
+    data_lines: list[str] = []
+    total = 0
+    while True:
+        line = resp.readline()
+        if not line:
+            break
+        chunks.append(line)
+        total += len(line)
+        if total > SSE_MAX_BYTES:
+            raise VidiqError("protocol", "SSE response too large")
+        text = line.decode("utf-8", "replace").rstrip("\r\n")
+        if text.startswith("data:"):
+            data_lines.append(text[5:][1:] if text[5:6] == " " else text[5:])
+        elif text == "" and data_lines:
+            try:
+                msg = json.loads("\n".join(data_lines))
+            except ValueError:
+                msg = None
+            data_lines = []
+            if isinstance(msg, dict) and msg.get("id") == want_id:
+                break
+    return b"".join(chunks)
+
+
 def _urllib_transport(url: str, headers: dict[str, str], body: bytes, timeout: float) -> tuple[int, dict[str, str], bytes]:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+            hdrs = {k.lower(): v for k, v in resp.headers.items()}
+            if "text/event-stream" in hdrs.get("content-type", ""):
+                try:
+                    want_id = json.loads(body.decode("utf-8")).get("id")
+                except (ValueError, AttributeError):
+                    want_id = None
+                return resp.status, hdrs, _read_sse_until_response(resp, want_id)
+            return resp.status, hdrs, resp.read()
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read() or b""
@@ -126,7 +175,7 @@ def _parse_sse(body: bytes, want_id: int) -> Optional[dict]:
     found = None
     for raw in body.decode("utf-8", "replace").splitlines() + [""]:
         if raw.startswith("data:"):
-            data_lines.append(raw[5:].lstrip())
+            data_lines.append(raw[5:][1:] if raw[5:6] == " " else raw[5:])  # 仕様どおり先頭の空白 1 個だけ除く
         elif raw == "":
             if data_lines:
                 try:
@@ -457,7 +506,11 @@ def load_cache(channel_key: str) -> dict:
 
 def _write_cache(channel_key: str, data: dict) -> None:
     path = cache_path(channel_key)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path.parent, 0o700)  # 既存のフォルダも所有者だけにする（原文を含むため）
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".vidiq-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -586,9 +639,13 @@ def refresh(channel_key: str, channel_cfg: dict, *, client_factory: Optional[Cal
     for it in items:
         video_ids.extend(v for v in it["video_ids"] if v not in video_ids)
         evidence.extend(e for e in it["evidence_ids"] if e not in evidence)
+    executed = [c for c in calls if c.get("arguments") is not None]  # 飛ばした呼び出しは数えない
+    partial = any(not c.get("ok") for c in executed)
+    ttl = PARTIAL_TTL_HOURS if partial else TTL_HOURS  # 一部の呼び出しが失敗したときは早めに取り直せるよう短くする
     data = {"source": SOURCE, "channel_key": channel_key, "fetched_at": _iso(now),
-            "expires_at": _iso(now + timedelta(hours=TTL_HOURS)), "ttl_hours": TTL_HOURS,
-            "items": items, "video_ids": video_ids[:200], "evidence_ids": evidence, "metrics": {"calls": len(calls)},
+            "expires_at": _iso(now + timedelta(hours=ttl)), "ttl_hours": ttl, "partial": partial,
+            "items": items, "video_ids": video_ids[:200], "evidence_ids": evidence,
+            "metrics": {"calls": len(executed), "failed_calls": sum(1 for c in executed if not c.get("ok"))},
             "calls": calls, "raw": raw}
     _write_cache(channel_key, data)
     return {**data, "ok": True, "cached": False}

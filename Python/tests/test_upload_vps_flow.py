@@ -90,6 +90,21 @@ class UploadVpsFlowTest(unittest.TestCase):
         self.assertEqual(marker["video_id"], "vidOLD")
         self.assertEqual(marker["note"], "update")
 
+    def test_resume_complete_does_not_send_unconfirmed_thumbnail(self):
+        """段階 7: 照合を免除された（投稿済み marker・選定記録なし）vol で、resume が完了済みだったときもサムネを送らない。"""
+        import thumbnail_selection
+        (self.folder / "youtube_upload.json").write_text(json.dumps({"video_id": "vidOld"}), encoding="utf-8")
+        base = {"mode": "resume", "upload_id": 3, "state": "uploading", "publish_at": "2026-12-26T03:00:00", "publish_at_changed": True,
+                "session_ref": "https://upload.example/old", "offset": 50, "begin_token": "t"}
+        ledger = FakeLedger(dict(base))
+        with patch.object(thumbnail_selection, "verify", return_value=(False, "no_selection")), \
+             patch.object(pub, "query_session", return_value=("complete", {"id": "vidDone"})), \
+             patch.object(pub, "verify_video", return_value={"privacy_status": "private", "publish_at": "2026-12-20T03:00:00Z"}), \
+             patch.object(pub, "update_publish_at", lambda *a, **k: None), \
+             patch.object(pub, "set_thumbnail", side_effect=AssertionError("must not send unconfirmed thumbnail")):
+            vid = self._run(ledger, lambda *a, **k: self.fail("must not upload"))
+        self.assertEqual(vid, "vidDone")
+
     def test_insert_uses_vps_publish_at_not_folder_date(self):
         ledger = FakeLedger({"mode": "insert", "upload_id": 2, "state": "pending", "publish_at": "2026-12-24T03:00:00", "begin_token": "t"})
         seen = {}
