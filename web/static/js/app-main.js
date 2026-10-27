@@ -1,0 +1,11576 @@
+// index.html の主スクリプト（段階 7 で外部ファイルへ移した。classic script のまま、内容は変えていない）
+// テーマ適用（起動時に localStorage から読み込み、即反映）
+(function(){
+  const saved=localStorage.getItem('orzz_theme')||'dark';
+  if(saved!=='dark')document.documentElement.setAttribute('data-theme',saved);
+})();
+
+// PWA: Service Worker 登録（updateViaCache:'none' で sw.js 自体もキャッシュしない）
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'}).then(reg=>{
+      reg.update().catch(()=>{});
+      // 古いバージョンを検知したら即座に置き換え
+      reg.addEventListener('updatefound',()=>{
+        const nw=reg.installing;if(!nw)return;
+        nw.addEventListener('statechange',()=>{
+          if(nw.state==='activated' && navigator.serviceWorker.controller){
+            console.log('[SW] 新バージョンに更新されました');
+          }
+        });
+      });
+    }).catch(()=>{});
+    // コントローラー変更時にページを一度だけリロード（古い HTML を破棄）
+    let _reloaded=false;
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      if(_reloaded)return;_reloaded=true;location.reload();
+    });
+  });
+}
+// 認証トークン: Bearer ヘッダーを自動付与（外出先 PWA 用）
+(function(){
+  const _origFetch=window.fetch;
+  window.fetch=function(input,init){
+    const tok=localStorage.getItem('orzz_token');
+    if(tok){
+      init=init||{};
+      const headers=new Headers(init.headers||(typeof input==='object'&&input.headers)||{});
+      if(!headers.has('Authorization'))headers.set('Authorization','Bearer '+tok);
+      init.headers=headers;
+    }
+    return _origFetch(input,init);
+  };
+})();
+const MODELS={
+  chatgpt:[{id:"gpt-4o",l:"gpt-4o [標準]"},{id:"gpt-4o-mini",l:"gpt-4o-mini [高速]"},{id:"o3-mini",l:"o3-mini [推論]"}],
+  claude:[{id:"cli-default",l:"claude CLI [既定モデル]"}],
+  codex:[{id:"cli-default",l:"codex CLI [既定モデル]"}]
+};
+const PAGE_TITLES={dashboard:'ホーム',videos:'制作',channels:'チャンネル',benchmark:'分析',automation:'ホーム',updates:'アップデート',export:'書き出し',ledger:'実行履歴',health:'接続状態',autopilot:'ホーム',suno:'SUNO',premiere:'Premiere Pro',youtube:'YouTube',live:'ライブ配信（VPS）',notify:'Discord 通知',settings:'設定'};
+
+// 動画詳細タブ定義
+const DETAIL_TABS=[
+  {key:'edit',label:'編集'},
+  {key:'meta',label:'公開準備'},
+  {key:'suno',label:'楽曲'},
+  {key:'images',label:'画像'},
+  {key:'export',label:'書き出し'},
+];
+
+// 詳細APIの readiness をパイプライン工程へ正規化する内部定義
+const WORKFLOW_STEPS=[
+  {key:'suno',short:'楽曲',label:'SUNO生成',test:v=>v.has_music},
+  {key:'bgimage',short:'背景',label:'背景画像',test:v=>v.has_bg_image || v.has_images_selected || v.has_thumb},
+  {key:'psd_composite',short:'合成',label:'画像合成',test:v=>v.has_thumb},
+  {key:'images',short:'画像',label:'画像選択',test:v=>v.has_images_selected || v.has_thumb},
+  {key:'jsx',short:'配置',label:'動画構成',test:v=>v.has_srt},
+  {key:'export',short:'書出',label:'書き出し',test:v=>v.has_mp4},
+  {key:'meta',short:'メタ',label:'動画メタ',test:v=>v.has_desc && v.has_tags},
+  {key:'upload',short:'公開',label:'アップロード',test:v=>v.has_upload}
+];
+const PROGRESS_SIX_GROUPS=[
+  {key:'music',label:'楽曲',stages:['suno','rename']},
+  {key:'image',label:'画像',stages:['bgimage','psd_composite']},
+  {key:'video',label:'動画',stages:['premiere','export']},
+  {key:'qa',label:'検査',stages:['qa']},
+  {key:'meta',label:'メタ',stages:['meta','localization','thumbnail']},
+  {key:'publish',label:'公開',stages:['upload']},
+];
+// 段階 2c: サーバーの新工程名（select / composite / render）を 6 区分の旧キーへ写す（表示キーの改名は段階 7）。
+const STAGE_NAME_TO_DISPLAY={select:['rename'],composite:['psd_composite'],render:['premiere','export']};
+function displayStageNames(stage){return STAGE_NAME_TO_DISPLAY[stage]||[stage];}
+function aggregateProgressSix(completedStages,currentStage){
+  const raw=completedStages instanceof Set?[...completedStages]:(completedStages||[]);
+  const done=new Set(raw.flatMap(displayStageNames));
+  currentStage=displayStageNames(currentStage||'')[0]||'';
+  return PROGRESS_SIX_GROUPS.map(group=>({
+    ...group,
+    complete:group.stages.every(stage=>done.has(stage)),
+    current:group.stages.includes(currentStage),
+  }));
+}
+function progressSixLabelForStage(stage){
+  // 段階 2c: サーバーは新工程名（select / composite / render）を返す。表示グループは旧キーのまま（段階 7 で UI 側も改名）。
+  const normalized={plan:'suno',download:'suno',process_tracks:'rename',images:'bgimage',jsx:'premiere',select:'rename',composite:'psd_composite',render:'export'}[stage]||stage||'';
+  return PROGRESS_SIX_GROUPS.find(group=>group.stages.includes(normalized))?.label||normalized||'未定';
+}
+function renderProgressSix(segments,opts){
+  const compact=!!(opts&&opts.compact);
+  return `<div class="progress-six${compact?' compact':''}" aria-label="6工程の進捗">${segments.map(segment=>{
+    const status=segment.complete?'完了':segment.current?'進行中':'未着手';
+    return `<div class="progress-six-seg${segment.complete?' done':segment.current?' current':''}" data-segment="${esc(segment.key)}" title="${esc(segment.label)}: ${status}"><div class="progress-six-bar"></div><span class="progress-six-label">${esc(segment.label)}</span></div>`;
+  }).join('')}</div>`;
+}
+function stepsStatus(v){
+  return WORKFLOW_STEPS.map((s,i,arr)=>{
+    const done=!!s.test(v);
+    // current = 未完了のうち最初のステップ
+    const prevDone=i===0?true:!!arr[i-1].test(v);
+    return {...s,done,current:!done && prevDone};
+  });
+}
+function progressSixForVideo(v){
+  const summary=v.progress||{};
+  if(Array.isArray(summary.done_stages)){
+    return aggregateProgressSix(summary.done_stages,summary.next_stage||'');
+  }
+  const internal=stepsStatus(v);
+  const internalDone=new Set(internal.filter(step=>step.done).map(step=>step.key));
+  const completed=[];
+  if(internalDone.has('suno'))completed.push('suno','rename');
+  if(internalDone.has('bgimage'))completed.push('bgimage');
+  if(internalDone.has('psd_composite'))completed.push('psd_composite');
+  if(internalDone.has('jsx'))completed.push('premiere');
+  if(internalDone.has('export'))completed.push('export');
+  if(internalDone.has('meta'))completed.push('meta','localization','thumbnail');
+  if(internalDone.has('upload'))completed.push('upload');
+  const currentKey=internal.find(step=>step.current)?.key||'';
+  const currentStage={suno:'suno',bgimage:'bgimage',psd_composite:'psd_composite',composite:'psd_composite',images:'bgimage',jsx:'premiere',export:'export',render:'export',meta:'meta',upload:'upload'}[currentKey]||'';
+  return aggregateProgressSix(completed,currentStage);
+}
+function workflowProgress(v){
+  const segments=progressSixForVideo(v);
+  const done=segments.filter(segment=>segment.complete).length;
+  return {done,total:segments.length,steps:segments.map(segment=>({...segment,done:segment.complete}))};
+}
+
+let _descRefs=[],_descVD=null,_channels=[],_curVideo=null,_curTab='meta';
+
+/* ==== Utility ==== */
+function esc(s){const d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML}
+function toast(m,t='i'){const map={s:'toast-success',e:'toast-error',i:'toast-info',w:'toast-warning'};const c=document.getElementById('toastC'),e=document.createElement('div');e.className=`toast ${map[t]||'toast-info'}`;e.textContent=m;c.appendChild(e);setTimeout(()=>{e.style.opacity='0';setTimeout(()=>e.remove(),300)},3000)}
+/* modal(h):
+   - 文字列: 従来互換。呼び出し側が esc() 済み HTML を渡す（信頼できる値のみ）。
+   - オブジェクト {title, body, html, footer}: title/body は内部で esc() される安全経路。
+     新規コードはオブジェクト形式を推奨（XSS 設計保証）。html は信頼済み HTML 用。 */
+function modal(h){
+  if(h && typeof h==='object' && !Array.isArray(h)){
+    const t=h.title!=null?`<div class="mo-title">${esc(String(h.title))}</div>`:'';
+    const b=h.html!=null?String(h.html):(h.body!=null?`<div style="font-size:var(--text-sm);color:var(--text-secondary);line-height:1.8;white-space:pre-wrap">${esc(String(h.body))}</div>`:'');
+    const f=h.footer!==undefined?String(h.footer||''):`<div class="btns" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" onclick="closeModal()">閉じる</button></div>`;
+    h=t+b+f;
+  }
+  document.getElementById('modalC').innerHTML=`<div class="mo" onclick="if(event.target===this)closeModal()"><div class="mo-box">${h}</div></div>`;
+}
+function closeModal(){document.getElementById('modalC').innerHTML=''}
+/* U6: API POST 共通ヘルパ — HTTP ステータス + detail を必ず surface し、エラーUXを統一 */
+async function apiGet(url){
+  const r = await fetch(url);
+  if(!r.ok){
+    let detail='';
+    try{ const j=await r.json(); detail=j.detail||j.message||''; }
+    catch(_){ try{ detail=await r.text(); }catch(__){} }
+    throw new Error(detail || ('HTTP '+r.status));
+  }
+  return r.json().catch(()=>({}));
+}
+async function apiPost(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: body!=null ? JSON.stringify(body) : undefined});
+  if(!r.ok){
+    let detail='';
+    try{ const j=await r.json(); detail=j.detail||j.message||''; }
+    catch(_){ try{ detail=await r.text(); }catch(__){} }
+    throw new Error(detail || ('HTTP '+r.status));
+  }
+  return r.json().catch(()=>({}));
+}
+/* U6: 失敗 toast に「再試行」リンク。t==='e' かつ onRetry 指定時は自動消去せずボタン表示 */
+function toastRetry(m, onRetry){
+  const c=document.getElementById('toastC'); if(!c){ toast(m,'e'); return; }
+  const e=document.createElement('div'); e.className='toast toast-error';
+  const span=document.createElement('span'); span.textContent=m; e.appendChild(span);
+  if(typeof onRetry==='function'){
+    const b=document.createElement('button');
+    b.textContent='再試行'; b.style.cssText='margin-left:10px;background:transparent;border:1px solid currentColor;border-radius:var(--radius-xs);color:inherit;cursor:pointer;padding:1px 8px;font-size:var(--text-xs)';
+    b.onclick=()=>{ e.remove(); onRetry(); };
+    e.appendChild(b);
+    const x=document.createElement('button');
+    x.textContent='×'; x.style.cssText='margin-left:6px;background:transparent;border:none;color:inherit;cursor:pointer;font-size:14px';
+    x.onclick=()=>e.remove(); e.appendChild(x);
+    c.appendChild(e);  // onRetry あり = 自動消去しない
+  }else{
+    e.appendChild(span); c.appendChild(e);
+    setTimeout(()=>{ e.style.opacity='0'; setTimeout(()=>e.remove(),300); },5000);
+  }
+}
+
+/* ==== Nav (History API 対応) ==== */
+/* 基本設定の目次: 表示中カードの sec-title からジャンプ chips を生成（開くたびに再構築） */
+function buildCfgToc(){
+  const toc=document.getElementById('cfgTocChips');if(!toc)return;
+  const seen=new Set();let html='';let i=0;
+  document.querySelectorAll('#p-settings .card').forEach(c=>{
+    i++;
+    if(c.offsetParent===null&&!c.id)return; // 非表示（上級者向け折りたたみ等）はスキップ
+    const t=c.querySelector('.sec-title');if(!t)return;
+    const label=t.textContent.trim().replace(/\s+/g,' ').slice(0,18);
+    if(!label||seen.has(label))return;seen.add(label);
+    if(!c.id)c.id='cfgCard_'+i;
+    html+=`<button type="button" class="ct-chip" onclick="document.getElementById('${c.id}')?.scrollIntoView({behavior:'smooth',block:'start'})">${esc(label)}</button>`;
+  });
+  toc.innerHTML=html;
+  const bar=document.getElementById('cfgTocBar');
+  if(bar)bar.style.display=html?'flex':'none';
+}
+
+let _pageAbortController = new AbortController();
+let _routeState = {page:'dashboard', video:'', settingsTab:'channel'};
+let _uiChannelId = localStorage.getItem('automationStudioChannelContext') || 'all';
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = function(input, init={}){
+  const method=String(init.method||'GET').toUpperCase();
+  if(method==='GET' && !init.signal) init={...init,signal:_pageAbortController.signal};
+  return _nativeFetch(input,init);
+};
+const FETCH_TIMEOUT_MS=15000;
+async function fetchWithTimeout(input,init={},timeoutMs=FETCH_TIMEOUT_MS){
+  const controller=new AbortController();
+  const method=String(init.method||'GET').toUpperCase();
+  const parentSignal=init.signal||(method==='GET'?_pageAbortController.signal:null);
+  const abortFromParent=()=>controller.abort();
+  if(parentSignal){
+    if(parentSignal.aborted)controller.abort();
+    else parentSignal.addEventListener('abort',abortFromParent,{once:true});
+  }
+  let timedOut=false;
+  const timer=setTimeout(()=>{timedOut=true;controller.abort()},timeoutMs);
+  try{return await _nativeFetch(input,{...init,signal:controller.signal})}
+  catch(e){
+    if(timedOut){const err=new Error('15秒以内に応答がありませんでした');err.name='TimeoutError';throw err}
+    throw e;
+  }finally{
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort',abortFromParent);
+  }
+}
+function fetchFallbackHtml(retryCall,isTimeout){
+  return `<div class="ct-error-recover">
+    <div class="ct-error-recover-title">取得できませんでした</div>
+    <div class="ct-error-recover-causes">${isTimeout?'通信が15秒以内に完了しませんでした。':'サーバーとの通信を確認してください。'}</div>
+    <div class="ct-error-recover-actions"><button class="btn btn-secondary btn-sm" onclick="${retryCall}">再試行</button></div>
+  </div>`;
+}
+function _canonicalPage(n){return ({home:'dashboard',analysis:'benchmark',health:'ledger',autopilot:'dashboard',automation:'dashboard',notify:'settings'})[n]||n}
+function _canonicalDetailTab(tab){return ({timeline:'edit',premiere:'edit'})[tab]||tab}
+function _routeUrl(s){
+  if(s.page==='dashboard')return '#home';
+  if(s.page==='benchmark')return '#analysis';
+  if(s.page==='videos'&&s.video){const tab=_canonicalDetailTab(s.detailTab);return '#videos/'+encodeURIComponent(s.video)+(tab?'/'+tab:'')}
+  if(s.page==='settings')return '#settings/'+(s.settingsTab||'channel');
+  return '#'+s.page;
+}
+function _stateFromHash(){
+  const parts=location.hash.replace(/^#/,'').split('/');
+  const page=_canonicalPage(parts[0]||'home');
+  const legacyTab=page==='videos'&&parts[2]?_canonicalDetailTab(parts[2]):'';
+  return {page,video:page==='videos'&&parts[1]?decodeURIComponent(parts[1]):'',detailTab:legacyTab,settingsTab:page==='settings'&&parts[1]?parts[1]:'channel'};
+}
+function navigate(next, opts={}){
+  const s={..._routeState,...next};s.page=_canonicalPage(s.page||'dashboard');
+  if(s.page!=='videos')s.video='';
+  else s.detailTab=_canonicalDetailTab(s.detailTab||'');
+  if(s.page!=='settings')s.settingsTab='channel';
+  _pageAbortController.abort();_pageAbortController=new AbortController();
+  _routeState=s;
+  renderRoute(s);
+  const method=opts.replace?'replaceState':'pushState';
+  if(!opts.fromHistory)history[method](s,'',_routeUrl(s));
+}
+window.AutomationStudioContext={get channelId(){return _uiChannelId},navigate};
+function renderRoute(s){
+  let n=s.page;
+  // ページ統合のエイリアス（旧 URL/リンクを統合先へ）: 接続ヘルス→実行履歴 / 自動運転→自動化 / 通知→基本設定
+  // 削除されたページへの遷移は dashboard にフォールバック
+  const pageEl=document.getElementById('p-'+n);
+  if(!pageEl){n='dashboard'}
+  document.querySelectorAll('.page').forEach(e=>e.classList.remove('on'));
+  document.querySelectorAll('.nav-btn').forEach(e=>e.classList.remove('on'));
+  const target=document.getElementById('p-'+n);
+  if(target)target.classList.add('on');
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('channel-required-empty'));
+  if((n==='benchmark'||n==='settings')&&_uiChannelId==='all'){
+    target?.classList.add('channel-required-empty');
+    let empty=target?.querySelector('.channel-required-message');
+    if(target&&!empty){empty=document.createElement('div');empty.className='card empty channel-required-message';empty.innerHTML='チャンネルを選択してください<div class="empty-sub">ヘッダーのチャンネル切替から対象を選べます。</div>';target.appendChild(empty)}
+  }
+  const b=document.querySelector(`.nav-btn[data-p="${n}"]`);if(b)b.classList.add('on');
+  document.getElementById('topTitle').textContent=PAGE_TITLES[n]||n;
+  if(n==='dashboard')loadDashboard();
+  if(n==='videos'){
+    if(s.video){
+      // Fresh deep links must wait until channel context and the videos list are ready.
+      // loadVideos establishes the same state used by the proven list -> detail path.
+      loadVideos().then(()=>showVideoDetail(s.video,true)).then(()=>{if(s.detailTab)setTab(s.detailTab)});
+    }else loadVideos();
+  }
+  if(n==='automation'){loadAutomationConfig();loadAutopilot();}
+  if(n==='benchmark'&&_uiChannelId!=='all')window.AnalysisJ2?.load?.();
+  if(n==='settings'&&_uiChannelId!=='all'){checkSetup();checkCredentials();loadBenchmarkConfig();loadCacheInfo();loadDiscordConfig();checkAppVersion();checkUpdateGuard();groupSettingsCards();refreshQuickSetup();buildCfgToc();setTimeout(checkOnboardingState,150);setTimeout(()=>E2UI?.switchSettingsTab?.(s.settingsTab||'channel',true),0)}
+  if(n==='benchmark')setTimeout(checkOnboardingState,150);
+  if(n==='youtube')loadYoutubeHistory();
+  if(n==='ledger'){loadLedger();loadTokenHealth();}
+  if(n==='live'){loadLivePage();startLivePoll();}else{stopLivePoll();}
+  // ページ遷移でない場合は詳細を閉じる
+  if(n!=='videos'&&_curVideo){_curVideo=null;document.getElementById('vDetail').style.display='none';document.getElementById('vList').style.display='block'}
+}
+function go(n){navigate({page:n,video:''})}
+
+/* ==== 設定アコーディオン化（C: 基本設定 / 詳細設定の整理） ====
+   既存のカード並びを data-cfg-group / data-master-group 属性で 4 グループに集約し、
+   <details> アコーディオンに再配置する。idempotent。 */
+function _groupCardsByAttr(wrapId, groupAttr, groupConfig){
+  const wrap=document.getElementById(wrapId);
+  if(!wrap||wrap.dataset.grouped==='1')return;
+  const allCards=Array.from(wrap.querySelectorAll(`.card[${groupAttr}]`));
+  const callouts=Array.from(wrap.children).filter(el=>el.classList?.contains('info-callout'));
+  const tailButtons=Array.from(wrap.children).filter(el=>el.classList?.contains('btns'));
+  const fragment=document.createDocumentFragment();
+  callouts.forEach(c=>fragment.appendChild(c));
+  groupConfig.forEach((g,idx)=>{
+    const cards=allCards.filter(c=>c.getAttribute(groupAttr)===g.key);
+    if(!cards.length)return;
+    const det=document.createElement('details');
+    det.className='settings-group';
+    if(g.open||idx===0)det.open=true;
+    det.dataset.groupKey=g.key;
+    const sum=document.createElement('summary');
+    sum.className='settings-group-summary';
+    sum.innerHTML=`<span class="settings-group-caret">▶</span><span class="settings-group-title">${esc(g.title)}</span><span class="settings-group-desc">${esc(g.desc)} ・ ${cards.length} 項目</span>`;
+    det.appendChild(sum);
+    const body=document.createElement('div');
+    body.className='settings-group-body';
+    cards.forEach(c=>body.appendChild(c));
+    det.appendChild(body);
+    fragment.appendChild(det);
+  });
+  tailButtons.forEach(b=>fragment.appendChild(b));
+  wrap.innerHTML='';
+  wrap.appendChild(fragment);
+  wrap.dataset.grouped='1';
+}
+
+function groupSettingsCards(){
+  relocateBenchmarkCardsToBenchmarkPage();
+  // benchmark グループはベンチマーク分析ページに統合済み（relocateBenchmarkCardsToBenchmarkPage で移動）
+  // 順序: 必須（チャンネル）→ 推奨（コンテンツ）→ 上級（接続・API）
+  _groupCardsByAttr('settingsCards','data-cfg-group',[
+    {key:'channel',  title:'チャンネル設定',                  desc:'必須・最初に設定するもの',           open:true,  priority:'required'},
+    {key:'content',  title:'コンテンツ生成（SUNO / YouTube）', desc:'生成既定値・アップロード設定',         priority:'recommended'},
+    {key:'notify',   title:'通知（Discord）',                 desc:'Webhook・テスト送信',                priority:'recommended'},
+    {key:'connect',  title:'接続・API（上級）',                desc:'API キー・OAuth・環境変数',           priority:'advanced'},
+  ]);
+  // priority を <details> に転写（CSS でアドバンス非表示が効くように）
+  document.querySelectorAll('#settingsCards .settings-group').forEach(el=>{
+    const k=el.dataset.groupKey;
+    const cfg=({channel:'required',content:'recommended',notify:'recommended',connect:'advanced'})[k];
+    if(cfg)el.dataset.priority=cfg;
+  });
+  refreshQuickSetup();
+}
+
+/* ==== クイックセットアップ: 必須項目のチェックリスト ==== */
+async function refreshQuickSetup(){
+  const list=document.getElementById('quickSetupList');
+  if(!list)return;
+  // /api/config と /api/credentials/status を読んで必須項目の充足状況を判定
+  let cfg={}, cred={};
+  try{
+    const [cR,credR]=await Promise.all([
+      fetch('/api/config').catch(()=>null),
+      fetch('/api/credentials/status').catch(()=>null),
+    ]);
+    if(cR){const j=await cR.json(); cfg=j.dashboard||{};}
+    if(credR){cred=await credR.json();}
+  }catch(_){}
+  const yt=cred.youtube||{};
+  const items=[
+    {
+      label:'チャンネル名',
+      ok:!!(cfg.channel_name||'').trim(),
+      target:'settingsCatalogField_dashboard_channel_name',
+      hint:'例: W WORKSPACE',
+    },
+    {
+      label:'チャンネルフォルダ',
+      ok:!!(cfg.channel_folder||'').trim(),
+      target:'settingsCatalogField_dashboard_channel_folder',
+      hint:'動画フォルダの親パス',
+    },
+    {
+      label:'動画フォルダ prefix',
+      ok:!!(cfg.file_prefix||'').trim(),
+      target:'settingsCatalogField_dashboard_file_prefix',
+      hint:'例: WW （動画フォルダ名 N_<prefix>_YYMMDD で使う）',
+    },
+    {
+      label:'YouTube OAuth クライアント',
+      ok:!!yt.client_secret_exists,
+      target:'settingsToolDiagnostics',
+      hint:'~/.config/{app}/youtube_client_secret.json',
+    },
+    {
+      label:'YouTube アカウント認証',
+      ok:(!!yt.token_valid || !!yt.has_refresh_token) && yt.channel_verification?.matched!==false,
+      target:'settingsToolDiagnostics',
+      hint:'ブランドチャンネル選択まで一致している必要あり',
+    },
+  ];
+  const total=items.length;
+  const okCount=items.filter(i=>i.ok).length;
+  list.innerHTML=items.map(i=>{
+    const cls=i.ok?'ok':'warn';
+    const icon=i.ok?'✓':'!';
+    const status=i.ok?'設定済み':'未設定';
+    return `<div class="qs-item ${cls}" onclick="_qsScrollTo('${esc(i.target)}')">
+      <span class="qs-icon">${icon}</span>
+      <span class="qs-label">${esc(i.label)}<span style="color:var(--text-tertiary);font-weight:normal;margin-left:var(--space-2);font-size:var(--text-xs)">${esc(i.hint)}</span></span>
+      <span class="qs-status">${status}</span>
+    </div>`;
+  }).join('');
+  const titleEl=document.querySelector('#quickSetupCard .qs-title');
+  if(titleEl)titleEl.textContent=`クイックセットアップ (${okCount}/${total})`;
+  const ring=document.getElementById('quickSetupRing');
+  if(ring){
+    ring.dataset.label=`${okCount}/${total}`;
+    ring.style.setProperty('--qs-pct',String(Math.round(okCount/Math.max(1,total)*100)));
+  }
+}
+function _qsScrollTo(targetId){
+  const el=document.getElementById(targetId);
+  if(el){
+    const tab=el.dataset?.category;
+    if(tab && window.E2UI?.switchSettingsTab) window.E2UI.switchSettingsTab(tab);
+    // 親 details を開いてからスクロール
+    const det=el.closest('details.settings-group');
+    if(det)det.open=true;
+    setTimeout(()=>el.scrollIntoView({behavior:'smooth',block:'center'}),50);
+    el.focus?.();
+  }else{
+    // 該当 input が無いケース（OAuth など）はリンク的扱い
+    if(targetId==='apiYouTubeClient' || targetId==='apiYouTubeReauth'){
+      const card=document.querySelector('[data-cfg-card="cred-status"]');
+      const det=card?.closest('details.settings-group');
+      if(det)det.open=true;
+      setTimeout(()=>card?.scrollIntoView({behavior:'smooth',block:'center'}),50);
+    }
+  }
+}
+function toggleSettingsAdvanced(show){
+  document.getElementById('settingsCards')?.classList.toggle('hide-advanced',!show);
+}
+/* ベンチマーク関連カードを基本設定からベンチマーク分析ページへ DOM 移動（idempotent） */
+function relocateBenchmarkCardsToBenchmarkPage(){
+  const target=document.getElementById('bmPane-ingest');
+  if(!target||target.dataset.bmRelocated==='1')return;
+  const ids=['bm-source','bm-pinned','bm-thumb-analysis','bm-cache'];
+  // 既存「データソース」カード（bmSheetA/B 入力）の直前に挿入する案
+  // → 自チャンネルの分析軸の直後を選ぶ
+  const anchor=target.querySelector('#bmOverviewGrid');
+  for(const id of ids){
+    const card=document.querySelector(`[data-cfg-card="${id}"]`);
+    if(!card)continue;
+    if(card.closest('#bmPane-ingest'))continue; // 既に移動済み
+    // benchmark グループ属性を外す（再 group 時に弾かれないように）
+    card.removeAttribute('data-cfg-group');
+    if(anchor)target.insertBefore(card,anchor);
+    else target.appendChild(card);
+  }
+  target.dataset.bmRelocated='1';
+}
+
+/* ==== Channel Switcher ==== */
+function toggleChDropdown(e){
+  e&&e.stopPropagation();
+  const dd=document.getElementById('chDropdown');
+  const open=dd.classList.toggle('open');
+  document.getElementById('chSwitcher')?.setAttribute('aria-expanded',String(open));
+}
+document.addEventListener('click',e=>{
+  if(!e.target.closest('#chSwitcher')){
+    document.getElementById('chDropdown').classList.remove('open');
+    document.getElementById('chSwitcher')?.setAttribute('aria-expanded','false');
+  }
+});
+async function loadChannelSwitcher(){
+  try{
+    // 全画面で必要なチャンネル状態はページ遷移で中断しない。
+    const[cr,cfgr]=await Promise.all([_nativeFetch('/api/channels'),_nativeFetch('/api/config')]);
+    const cd=await cr.json(),cfg=await cfgr.json();_channels=cd.channels||[];
+    const active=cfg.dashboard;
+    if(_uiChannelId!=='all'&&!_channels.some(c=>c.id===_uiChannelId))_uiChannelId='all';
+    const activeCh=_channels.find(c=>c.folder===active.channel_folder);
+    // トップバー右のアイコン
+    const iw=document.getElementById('chIconWrap');
+    const iconUrl=activeCh?.icon_url||'';
+    const init=(active.channel_name||'A')[0].toUpperCase();
+    if(iconUrl){
+      iw.innerHTML=`<img class="channel-icon" src="${esc(iconUrl)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'channel-icon-placeholder',textContent:'${init}'}))">`;
+    }else{
+      // 旧 /api/channel-icon フォールバック
+      try{const r=await fetch('/api/channel-icon');if(r.ok){const url=URL.createObjectURL(await r.blob());iw.innerHTML=`<img class="channel-icon" src="${url}">`}else throw 0}
+      catch(e){iw.innerHTML=`<div class="channel-icon-placeholder">${init}</div>`}
+    }
+    const contextCh=_channels.find(c=>c.id===_uiChannelId);
+    document.getElementById('chName').textContent=_uiChannelId==='all'?'全チャンネル':(contextCh?.name||active.channel_name||'orzz.');
+    // サイドバー上部のチャンネルプロフィール（大アバター）も同期
+    const sideIcon=document.getElementById('sidebarChIcon');
+    const sideName=document.getElementById('sidebarChName');
+    if(sideIcon){
+      if(iconUrl){
+        sideIcon.innerHTML=`<img src="${esc(iconUrl)}" referrerpolicy="no-referrer" onerror="this.parentNode.textContent='${init}'">`;
+      }else{
+        sideIcon.textContent=init;
+      }
+    }
+    if(sideName)sideName.textContent=_uiChannelId==='all'?'全チャンネル':(contextCh?.name||active.channel_name||'orzz.');
+    // ドロップダウン (YouTube Studio 風)
+    const dd=document.getElementById('chDropdown');
+    const brandLabel=(_lastConfig?.dashboard?.brand_short)||'Automation Studio';
+    let html=`<div class="ch-dd-header"><div class="ch-dd-name">${esc(active.channel_name||'')}</div><div class="ch-dd-email">${esc(brandLabel)}</div></div>`;
+    html+=`<div class="ch-dd-list">`;
+    html+=`<div class="channel-dropdown-item" role="button" tabindex="0" aria-label="全チャンネル" onclick="switchCh('all');event.stopPropagation()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchCh('all');event.stopPropagation()}"><div class="ch-item-icon-placeholder">全</div><div class="ch-item-info"><div class="ch-item-name">全チャンネル</div><div class="ch-item-sub">ホーム・制作の横断表示</div></div>${_uiChannelId==='all'?'<span class="ch-item-check" style="font-size:var(--text-xs)">選択中</span>':''}</div>`;
+    if(_channels.length===0){
+      html+=`<div style="padding:var(--space-3);color:var(--text-tertiary);font-size:var(--text-sm)">チャンネル未登録。下のボタンから追加できます。</div>`;
+    }
+    _channels.forEach(c=>{
+      const isA=c.id===_uiChannelId;
+      const init=(c.name||'?')[0].toUpperCase();
+      const iconHtml=c.icon_url
+        ? `<img class="ch-item-icon" src="${esc(c.icon_url)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ch-item-icon-placeholder',textContent:'${init}'}))">`
+        : `<div class="ch-item-icon-placeholder">${init}</div>`;
+      html+=`<div class="channel-dropdown-item" role="button" tabindex="0" aria-label="${esc(c.name)}" onclick="switchCh('${c.id}');event.stopPropagation()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchCh('${c.id}');event.stopPropagation()}">
+        ${iconHtml}
+        <div class="ch-item-info">
+          <div class="ch-item-name">${esc(c.name)}</div>
+          <div class="ch-item-sub">${esc(c.handle||(c.folder?c.folder.split('/').pop():''))}</div>
+        </div>
+        ${isA?'<span class="ch-item-check" style="font-size:var(--text-xs)">選択中</span>':''}
+      </div>`;
+    });
+    html+=`</div>`;
+    html+=`<div class="channel-dropdown-footer" onclick="openAddChannelFlow();closeChDD();event.stopPropagation()" style="border-top:1px solid var(--border-default)"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg> 新しいチャンネルを追加</div>`;
+    html+=`<div class="channel-dropdown-footer" onclick="openChannelMgmt();closeChDD();event.stopPropagation()"><svg viewBox="0 0 24 24"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg> 全チャンネルを管理</div>`;
+    dd.innerHTML=html;
+    // 設定タブの一覧も同期
+    renderChannelsAdminList(_channels,active.channel_folder);
+    updateNamingPreview();
+  }catch(e){console.error('loadChannelSwitcher:',e)}
+}
+function renderChannelsAdminList(channels,activeFolder){
+  const el=document.getElementById('cfgChannelsList');if(!el)return;
+  if(!channels.length){el.innerHTML='<div class="fh">未登録</div>';return}
+  el.innerHTML=channels.map(c=>{
+    const isA=c.folder===activeFolder;
+    const init=(c.name||'?')[0].toUpperCase();
+    const iconHtml=c.icon_url
+      ? `<img src="${esc(c.icon_url)}" referrerpolicy="no-referrer" style="width:40px;height:40px;border-radius:var(--radius-full);object-fit:cover;flex-shrink:0" onerror="this.replaceWith(Object.assign(document.createElement('div'),{style:'width:40px;height:40px;border-radius:var(--radius-full);background:var(--bg-overlay);display:flex;align-items:center;justify-content:center;color:var(--text-secondary);flex-shrink:0',textContent:'${init}'}))">`
+      : `<div style="width:40px;height:40px;border-radius:var(--radius-full);background:var(--bg-overlay);display:flex;align-items:center;justify-content:center;color:var(--text-secondary);flex-shrink:0">${init}</div>`;
+    const ytUrl=c.youtube_url||'';
+    const subText=c.handle||ytUrl||c.folder;
+    const hasYtUrl=!!ytUrl;
+    return `<div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3);background:var(--bg-surface);border:1px solid ${isA?'var(--accent-primary)':'var(--border-default)'};border-radius:var(--radius-md);margin-bottom:var(--space-2)">
+      ${iconHtml}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+          <span style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(c.name)}</span>
+          ${isA?'<span class="badge badge-success" style="font-size:var(--text-xs)">アクティブ</span>':''}
+          ${c.prefix?`<span class="badge badge-neutral" style="font-size:var(--text-xs)">prefix: ${esc(c.prefix)}</span>`:''}
+          ${!hasYtUrl?'<span class="badge" style="font-size:var(--text-xs);background:rgba(245,158,11,.18);color:var(--accent-warning);border:1px solid var(--accent-warning)">URL 未設定</span>':''}
+        </div>
+        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(subText)}</div>
+      </div>
+      <div class="btns" style="margin:0">
+        <button class="btn btn-ghost btn-sm" onclick="editChannelUrl('${c.id}')" title="${hasYtUrl?'YouTube URL を変更':'YouTube URL を入力'}">${hasYtUrl?'URL 編集':'+ URL 入力'}</button>
+        <button class="btn btn-secondary btn-sm" onclick="reauthChannelYouTube('${c.id}','${esc(c.name)}')" title="このチャンネルの .youtube_token.json を再認証">このチャンネルで再認証</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--accent-warning)" onclick="disconnectYouTube('${c.id}','${esc(c.name)}')">YouTube連携解除</button>
+        ${!isA?`<button class="btn btn-secondary btn-sm" onclick="switchCh('${c.id}')">切替</button>`:''}
+        <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="deleteChannel('${c.id}','${esc(c.name)}')">削除</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+/* 既存チャンネルの YouTube URL を後から入力・変更 */
+function editChannelUrl(channelId){
+  const ch=(_channels||[]).find(c=>c.id===channelId);
+  if(!ch){toast('チャンネルが見つかりません','e');return}
+  const current=ch.youtube_url||'';
+  modal(`<div class="mo-title">YouTube URL を ${current?'変更':'入力'}</div>
+    <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-2)">
+      <strong style="color:var(--text-primary)">${esc(ch.name||'')}</strong> の YouTube チャンネル URL を入力してください。<br>
+      保存するとアイコン・ハンドル・channel ID を自動取得します。
+    </div>
+    <div class="ff">
+      <label class="fl">YouTube URL（チャンネル / @ハンドル / UC...）</label>
+      <input type="text" class="fi" id="editChUrl" value="${esc(current)}" placeholder="https://www.youtube.com/@channel">
+    </div>
+    <div class="btns" style="margin:0">
+      <button class="btn btn-primary" onclick="saveChannelUrl('${esc(channelId)}')">保存</button>
+      <button class="btn btn-secondary" onclick="closeModal()">キャンセル</button>
+      ${current?`<button class="btn btn-ghost" style="color:var(--accent-danger);margin-left:auto" onclick="saveChannelUrl('${esc(channelId)}',true)">URL をクリア</button>`:''}
+    </div>`);
+  setTimeout(()=>document.getElementById('editChUrl')?.focus(),100);
+}
+
+async function saveChannelUrl(channelId,clear){
+  const url=clear?'':(document.getElementById('editChUrl')?.value||'').trim();
+  if(!clear && !url){toast('URL を入力してください','w');return}
+  try{
+    const r=await fetch('/api/channels/'+encodeURIComponent(channelId),{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({youtube_url:url})
+    });
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('保存失敗: '+(e.detail||r.status),'e');return}
+    const d=await r.json();
+    closeModal();
+    toast(clear?'URL をクリアしました':`保存しました: ${d.channel?.handle||d.channel?.name||''}`,'s');
+    await loadChannelSwitcher();
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function resolveNewChannel(){
+  const url=document.getElementById('newChYoutubeUrl')?.value?.trim();
+  const out=document.getElementById('newChResolved');
+  if(!url){if(out)out.textContent='';return}
+  if(out)out.textContent='取得中...';
+  try{
+    const r=await fetch('/api/channels/resolve-url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));if(out)out.textContent='注意: '+(e.detail||'解決失敗');return}
+    const d=await r.json();
+    if(out)out.innerHTML=`<img src="${esc(d.icon_url)}" referrerpolicy="no-referrer" style="width:20px;height:20px;border-radius:var(--radius-full);vertical-align:middle;margin-right:var(--space-2)">${esc(d.name)} <span style="color:var(--text-tertiary)">${esc(d.handle||'')} ・ ${(d.subscribers||0).toLocaleString()} 登録</span>`;
+    const nameInput=document.getElementById('newChName');
+    if(nameInput && !nameInput.value.trim())nameInput.value=d.name||'';
+  }catch(e){if(out)out.textContent='注意: 接続エラー'}
+}
+async function suggestNewChFolder(){
+  const name=document.getElementById('newChName')?.value?.trim()||'';
+  if(!name){toast('先にチャンネル名を入力','w');return}
+  try{
+    const r=await fetch('/api/channels/suggest-folder?name='+encodeURIComponent(name));
+    const d=await r.json();
+    if(d.suggestion){document.getElementById('newChFolder').value=d.suggestion;toast('フォルダ候補を入力','s')}
+  }catch(e){toast('提案失敗','e')}
+}
+async function addChannel(){
+  const url=document.getElementById('newChYoutubeUrl')?.value?.trim()||'';
+  const name=document.getElementById('newChName')?.value?.trim()||'';
+  const folder=document.getElementById('newChFolder')?.value?.trim()||'';
+  const prefix=(document.getElementById('newChPrefix')?.value?.trim()||'').replace(/[^A-Za-z0-9_-]/g,'');
+  if(!folder){toast('フォルダを指定してください','w');return}
+  if(!name && !url){toast('チャンネル名 or YouTube URL のいずれかを入力','w');return}
+  try{
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name||'New Channel',folder,prefix,production_mode:document.getElementById('newChProductionMode')?.value||'ffmpeg_only',youtube_url:url,create_folder:true,open_in_finder:false})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('追加失敗: '+(e.detail||r.status),'e');return}
+    document.getElementById('newChYoutubeUrl').value='';
+    document.getElementById('newChName').value='';
+    document.getElementById('newChFolder').value='';
+    document.getElementById('newChPrefix').value='';
+    document.getElementById('newChResolved').textContent='';
+    await loadChannelSwitcher();
+    toast('チャンネルを追加しました','s');
+  }catch(e){toast('接続エラー','e')}
+}
+
+const ONBOARDING_STEPS=[
+  ['register','チャンネル登録'],
+  ['oauth','OAuth'],
+  ['benchmark_set','ベンチ指定'],
+  ['benchmark_fetch','データ取得'],
+  ['analyze','分析'],
+  ['concept_apply','設定反映'],
+  ['first_vol','vol.1'],
+  ['verify_loop','検証ループ']
+];
+let _onboardingWizardChannelId='';
+
+function _onboardingStepHtml(data){
+  const ob=data?.onboarding||{},steps=ob.steps||{};
+  return `<div id="channelOnboardingSteps" style="display:grid;gap:8px;margin:var(--space-3) 0">
+    ${ONBOARDING_STEPS.map(([k,label])=>{
+      const done=!!steps[k]?.done;
+      return `<div id="onboardingStep_${k}" style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid ${done?'var(--accent-success)':'var(--border-default)'};border-radius:var(--radius-md);background:var(--bg-surface)">
+        <span class="badge ${done?'badge-success':'badge-neutral'}" style="min-width:42px;text-align:center">${done?'done':'todo'}</span>
+        <div style="min-width:0">
+          <div style="font-weight:var(--font-semibold);color:var(--text-primary)">${esc(label)}</div>
+          <div style="font-size:var(--text-xs);color:var(--text-tertiary)">${esc(steps[k]?.desc||'')}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+async function openChannelOnboardingWizard(){
+  modal(`<div class="mo-title">新規チャンネル かんたん作成</div>
+    <div class="fh" style="margin-bottom:var(--space-3)">登録からベンチ分析、初回vol、投稿後検証までをチェックリストで進めます。</div>
+    <div class="ff">
+      <label class="fl">YouTube URL（任意）</label>
+      <input type="text" class="fi" id="onboardYoutubeUrl" placeholder="https://www.youtube.com/@channel">
+    </div>
+    <div class="fr">
+      <div class="ff"><label class="fl">チャンネル名</label><input type="text" class="fi" id="onboardName" placeholder="例: Night Jazz Room"></div>
+      <div class="ff"><label class="fl">動画フォルダ prefix</label><input type="text" class="fi" id="onboardPrefix" placeholder="例: NJ"></div>
+    </div>
+    <div class="ff"><label class="fl">制作構成</label><select class="fi" id="onboardProductionMode"><option value="ffmpeg_only">Adobeなし（FFmpeg＋画像エディタ）</option></select></div>
+    <div class="ff">
+      <label class="fl">チャンネルフォルダ</label>
+      <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
+        <input type="text" class="fi" id="onboardFolder" style="flex:1;min-width:220px" placeholder="YT配下のチャンネルフォルダ">
+        <button class="btn btn-secondary btn-sm" id="onboardSuggestFolderBtn" onclick="suggestOnboardFolder()">候補</button>
+        <button class="btn btn-ghost btn-sm" onclick="pickFolderInto('onboardFolder')">参照</button>
+      </div>
+    </div>
+    <div class="ff">
+      <label class="fl">ベンチマーク先URL（1行1件）</label>
+      <textarea class="ft" id="onboardBenchmarkUrls" rows="4" placeholder="https://www.youtube.com/@benchmark1&#10;https://www.youtube.com/@benchmark2"></textarea>
+    </div>
+    <div id="channelOnboardingStatus" class="fh" style="min-height:1.5em"></div>
+    <div class="btns" style="margin:0">
+      <button class="btn btn-primary" id="onboardCreateBtn" onclick="createChannelFromOnboardingWizard()">作成して開始</button>
+      <button class="btn btn-secondary" id="onboardRunNextBtn" onclick="runOnboardingNextStep()" style="display:none">次のステップを実行</button>
+      <button class="btn btn-secondary" onclick="closeModal()">閉じる</button>
+    </div>`);
+}
+
+async function checkInitialSetup(){
+  try{
+    const r=await fetch('/api/setup/initial');
+    const d=await r.json();
+    if(!d.needs_setup)return;
+    modal(`<div class="mo-title">Automation Studio 初回セットアップ</div>
+      <div class="fh" style="margin-bottom:var(--space-3)">この環境にはまだチャンネルが登録されていません。配布先ごとの設定とトークンを独立させるため、最初に新しいチャンネルを作成してください。</div>
+      <div class="ff">
+        <label class="fl">システム名</label>
+        <input type="text" class="fi" id="initialSystemName" value="${esc(d.system_name||'Automation Studio')}" placeholder="Automation Studio">
+      </div>
+      <div class="ff">
+        <label class="fl">Discord Webhook（任意）</label>
+        <input type="password" class="fi" id="initialDiscordWebhook" placeholder="https://discord.com/api/webhooks/...">
+      </div>
+      <div id="initialSetupStatus" class="fh" style="min-height:1.5em"></div>
+      <div class="btns" style="margin:0">
+        <button class="btn btn-primary" onclick="saveInitialSetupAndOpenWizard()">新規チャンネル(かんたん作成)へ進む</button>
+        <button class="btn btn-secondary" onclick="go('settings');closeModal()">設定を手で開く</button>
+      </div>`);
+  }catch(e){}
+}
+
+async function saveInitialSetupAndOpenWizard(){
+  const status=document.getElementById('initialSetupStatus');
+  const body={
+    system_name:(document.getElementById('initialSystemName')?.value||'Automation Studio').trim()||'Automation Studio',
+    discord_webhook_url:(document.getElementById('initialDiscordWebhook')?.value||'').trim(),
+    discord_username:'Automation Studio'
+  };
+  if(status)status.textContent='保存中...';
+  try{
+    const r=await fetch('/api/setup/initial',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.detail||'保存に失敗しました');
+    closeModal();
+    setTimeout(openChannelOnboardingWizard,120);
+  }catch(e){
+    if(status)status.textContent=e.message||'保存に失敗しました';
+    toast('初回セットアップ保存に失敗','e');
+  }
+}
+
+async function suggestOnboardFolder(){
+  const name=document.getElementById('onboardName')?.value?.trim()||'New Channel';
+  try{
+    const r=await fetch('/api/channels/suggest-folder?name='+encodeURIComponent(name));
+    const d=await r.json();
+    if(d.suggestion){document.getElementById('onboardFolder').value=d.suggestion;toast('フォルダ候補を入力','s')}
+  }catch(e){toast('候補取得に失敗','e')}
+}
+
+async function createChannelFromOnboardingWizard(){
+  const name=document.getElementById('onboardName')?.value?.trim()||'New Channel';
+  const folder=document.getElementById('onboardFolder')?.value?.trim()||'';
+  const prefix=(document.getElementById('onboardPrefix')?.value?.trim()||'').replace(/[^A-Za-z0-9_-]/g,'');
+  const youtube_url=document.getElementById('onboardYoutubeUrl')?.value?.trim()||'';
+  const urls=(document.getElementById('onboardBenchmarkUrls')?.value||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  const status=document.getElementById('channelOnboardingStatus');
+  if(!folder){toast('フォルダを指定してください','w');return}
+  if(status)status.textContent='チャンネル作成中...';
+  try{
+    const r=await fetch('/api/channels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,folder,prefix,production_mode:document.getElementById('onboardProductionMode')?.value||'ffmpeg_only',youtube_url,create_folder:true,open_in_finder:false})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||r.status)}
+    const d=await r.json();
+    _onboardingWizardChannelId=d.channel?.id||'';
+    if(urls.length){
+      await fetch('/api/channels/'+encodeURIComponent(_onboardingWizardChannelId)+'/onboarding/benchmark_set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({urls})});
+    }
+    await loadChannelSwitcher();
+    await refreshOnboardingWizardStatus();
+    document.getElementById('onboardCreateBtn').style.display='none';
+    document.getElementById('onboardRunNextBtn').style.display='';
+    toast('オンボーディングを開始しました','s');
+  }catch(e){if(status)status.textContent='作成失敗: '+e.message;toast('作成失敗: '+e.message,'e')}
+}
+
+async function refreshOnboardingWizardStatus(){
+  if(!_onboardingWizardChannelId)return;
+  const r=await fetch('/api/channels/'+encodeURIComponent(_onboardingWizardChannelId)+'/onboarding');
+  const d=await r.json();
+  const status=document.getElementById('channelOnboardingStatus');
+  if(status)status.innerHTML=`${_onboardingStepHtml(d)}<div class="fh">次: ${esc(d.next_step||'完了')}</div>`;
+}
+
+async function runOnboardingNextStep(){
+  if(!_onboardingWizardChannelId){toast('チャンネル未作成です','w');return}
+  const current=await fetch('/api/channels/'+encodeURIComponent(_onboardingWizardChannelId)+'/onboarding').then(r=>r.json());
+  const step=current.next_step;
+  if(!step){toast('オンボーディング完了','s');await refreshOnboardingWizardStatus();return}
+  const status=document.getElementById('channelOnboardingStatus');
+  if(status)status.insertAdjacentHTML('beforeend',`<div class="fh">実行中: ${esc(step)}</div>`);
+  try{
+    const r=await fetch('/api/channels/'+encodeURIComponent(_onboardingWizardChannelId)+'/onboarding/'+encodeURIComponent(step),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    const d=await r.json();
+    if(d.action==='needs_human'){
+      if(status)status.insertAdjacentHTML('beforeend',`<div class="fh" id="onboardingNextAction" style="color:var(--accent-warning);white-space:pre-wrap">${esc(d.next_action||'人間の操作が必要です')}</div>`);
+      toast('人間の操作が必要です','w');
+      return;
+    }
+    if(d.action==='started')toast('バックグラウンド分析を開始しました','i');
+    await refreshOnboardingWizardStatus();
+  }catch(e){toast('ステップ実行に失敗','e')}
+}
+async function deleteChannel(id,name){
+  if(!confirm(`「${name}」を一覧から削除しますか？（フォルダ自体は残ります）`))return;
+  try{
+    const r=await fetch('/api/channels/'+encodeURIComponent(id),{method:'DELETE'});
+    if(!r.ok){toast('削除失敗','e');return}
+    await loadChannelSwitcher();
+    toast('削除しました','s');
+  }catch(e){toast('接続エラー','e')}
+}
+async function disconnectYouTube(id,name){
+  if(!confirm(`「${name}」のYouTube連携を解除しますか？\n\nOAuthトークンを失効し、このチャンネルのAPI由来データを削除します。実チャンネルの動画やフォルダ本体は削除しません。`))return;
+  try{
+    const r=await fetch('/api/channels/'+encodeURIComponent(id)+'/youtube-disconnect',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({confirm:true,dry_run:false,revoke:true})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast('連携解除失敗: '+(d.detail||r.status),'e');return}
+    await loadChannelSwitcher();
+    toast(`YouTube連携を解除しました（削除 ${d.deleted?.length||0} 件）`,'s');
+  }catch(e){toast('連携解除エラー','e')}
+}
+async function reauthChannelYouTube(id,name){
+  if(!confirm(`「${name}」としてYouTube再認証を開始しますか？\n\nブラウザが開いたら、ブランドアカウントとして対象チャンネルを選択してください。`))return;
+  try{
+    const r=await fetch('/api/analytics/reauth/'+encodeURIComponent(id),{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok&&d.ok){
+      toast('チャンネル別再認証が完了しました','s');
+      await loadChannelSwitcher();
+      if(document.getElementById('dashMonetization'))loadMonetizationCards(true);
+      return;
+    }
+    toast('再認証失敗: '+(d.detail||d.error||r.status),'e');
+  }catch(e){toast('再認証エラー','e')}
+}
+function closeChDD(){document.getElementById('chDropdown').classList.remove('open');document.getElementById('chSwitcher')?.setAttribute('aria-expanded','false')}
+async function switchCh(id, skipNavigate=false){
+  if(id==='all'){
+    _uiChannelId='all';localStorage.setItem('automationStudioChannelContext','all');closeChDD();
+    await loadChannelSwitcher();navigate({..._routeState},{replace:true});return;
+  }
+  const r=await fetch(`/api/channels/active/${id}`,{method:'PUT'});
+  if(!r.ok){toast('チャンネル切替に失敗','e');return}
+  let d={}; try{d=await r.json()}catch(e){}
+  if(d.restart_required){
+    // app_id(プロファイル)が変わる切替 → サーバーが自己再起動。数秒後に自動再読込。
+    toast('プロファイル（'+(d.app_id||'')+'）に切替のためサーバー再起動中… 数秒後に自動で再読込します','i');
+    setTimeout(()=>location.reload(), 5500);
+    return;
+  }
+  await loadConfig();
+  _uiChannelId=id;localStorage.setItem('automationStudioChannelContext',id);
+  await loadChannelSwitcher();
+  await loadYtUploadDefaults();
+  if(document.getElementById('credStatus'))await checkCredentials();
+  if(document.getElementById('quickSetupList'))await refreshQuickSetup();
+  toast('チャンネルを切り替えました（認証情報も切替済み）','s');
+  if(!skipNavigate)navigate({..._routeState},{replace:true});
+}
+
+/* ドロップダウンから新規チャンネル作成画面を開く */
+function openAddChannelFlow(){
+  // 全チャンネル表示からも、既存チャンネルの選択なしで登録できる。
+  openChannelOnboardingWizard();
+}
+
+/* ドロップダウンから「全チャンネルを管理」→ 一元管理モーダル（横断ビュー） */
+async function openChannelMgmt(){
+  let data;
+  try{
+    const r=await fetch('/api/channels/overview');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    data=await r.json();
+  }catch(e){toast('チャンネル情報の取得に失敗: '+((e&&e.message)||e),'e');return;}
+  const chans=data.channels||[];
+  const activeFolder=data.active_folder||'';
+  const rows=chans.map(c=>{
+    const isA=c.folder===activeFolder;
+    const init=esc((c.name||'?')[0].toUpperCase());
+    const icon=c.icon_url
+      ? `<img class="chmg-icon" src="${esc(c.icon_url)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'chmg-icon ph',textContent:'${init}'}))">`
+      : `<div class="chmg-icon ph">${init}</div>`;
+    const personaTxt=(c.persona||'').trim();
+    const persona=personaTxt
+      ? esc(personaTxt.slice(0,56))+(personaTxt.length>56?'…':'')
+      : '<span style="color:var(--accent-warning)">未設定</span>';
+    return `<div class="chmg-row${isA?' active':''}">
+      <div class="chmg-main">
+        ${icon}
+        <div class="chmg-info">
+          <div class="chmg-name">${esc(c.name)}${isA?' <span class="badge badge-success" style="font-size:var(--text-xs)">アクティブ</span>':''}${c.prefix?` <span class="badge badge-neutral" style="font-size:var(--text-xs)">${esc(c.prefix)}</span>`:''}</div>
+          <div class="chmg-persona" title="${esc(personaTxt)}">ペルソナ: ${persona}　/　ベンチマーク先: ${c.rivals_count}件</div>
+        </div>
+      </div>
+      <div class="chmg-controls">
+        <label class="ap-toggle chmg-ctl" title="自動運転 (autopilot)。ON で次の tick から無人実行されます">
+          <input type="checkbox" ${c.autopilot_enabled?'checked':''} onchange="toggleAutopilot('${esc(c.channel_id)}',this.checked)"> 自動運転
+        </label>
+        <label class="chmg-ctl" title="優先度（大きいほど優先・quota残×優先度で配分）">優先度
+          <input type="number" class="fi chmg-prio" value="${c.priority}" min="0" onchange="saveChannelPriority('${esc(c.channel_id)}',this.value)">
+        </label>
+      </div>
+      <div class="chmg-actions">
+        <button class="btn btn-secondary btn-sm" onclick="editChannelPersona('${esc(c.channel_id)}')" title="このチャンネルに切り替えてペルソナ／ベンチマーク先を編集">ペルソナ／ベンチ編集</button>
+        ${!isA?`<button class="btn btn-ghost btn-sm" onclick="switchCh('${esc(c.channel_id)}');closeModal()">切替</button>`:''}
+        <button class="btn btn-ghost btn-sm" onclick="editChannelUrl('${esc(c.channel_id)}')" title="YouTube URL を編集">URL</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="deleteChannel('${esc(c.channel_id)}','${esc(c.name)}')">削除</button>
+      </div>
+    </div>`;
+  }).join('');
+  const h=`<div class="mo-head"><div class="mo-title">チャンネル一元管理 <span style="font-size:var(--text-sm);color:var(--text-tertiary);font-weight:normal">（${chans.length}件・自動運転／優先度は即保存）</span></div><button class="mo-x" onclick="closeModal()">×</button></div>
+  <div class="mo-body">
+    <div class="chmg-list">${rows||'<div class="fh">チャンネル未登録。下のボタンから追加できます。</div>'}</div>
+    <div class="btns" style="margin-top:var(--space-4);justify-content:space-between;flex-wrap:wrap;gap:var(--space-2)">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();openAddChannelFlow()">＋ チャンネルを追加</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal();go('automation');setTimeout(()=>document.getElementById('autopilotBody')?.scrollIntoView({behavior:'smooth',block:'start'}),200)">自動化ページの自動運転へ</button>
+    </div>
+  </div>`;
+  modal(h);
+}
+
+/* 一元管理 → 対象 ch に切り替えてベンチマークページのペルソナ／ライバル編集へ */
+async function editChannelPersona(id){
+  closeModal();
+  await switchCh(id);
+  go('benchmark');
+  setTimeout(()=>document.getElementById('cfgPersona')?.scrollIntoView({behavior:'smooth',block:'center'}),350);
+}
+
+/* ==== Config ==== */
+let _lastConfig=null;
+function isAdobeFree(){return _lastConfig?.dashboard?.production_mode==='ffmpeg_only'}
+function syncProductionModeUi(){
+  const free=true;  // 段階 1a: 制作構成は ffmpeg_only のみ
+  document.querySelectorAll('[data-adobe-only]').forEach(el=>el.style.display=free?'none':'');
+}
+
+/* ブランド表記は「Automation Studio」固定（チャンネル別ブランド名は廃止） */
+function applyBrand(_dc){
+  if(document.title!=='Automation Studio')document.title='Automation Studio';
+  const bt=document.querySelector('.topbar-brand .brand-text');
+  if(bt && bt.textContent!=='Automation Studio')bt.textContent='Automation Studio';
+}
+async function loadConfig(){try{
+  const r=await _nativeFetch('/api/config'),d=await r.json(),s=d.suno||{},dc=d.dashboard||{};
+  _lastConfig=d;
+  if(document.getElementById("cfgProductionMode"))document.getElementById("cfgProductionMode").value="ffmpeg_only";
+  applyBrand(dc);
+  // SUNO 設定（設定タブ）
+  const $=id=>document.getElementById(id);
+  // ブランド設定（v2 配布化）
+  if($('cfgFilePrefix'))$('cfgFilePrefix').value=dc.file_prefix||'';
+  updateNamingPreview();
+  if($('cfgAppId'))$('cfgAppId').value=dc.app_id||'orzz';
+  if($('cfgSunoProvider')){
+    const savedProvider=s.provider||'claude';
+    $('cfgSunoProvider').value=(savedProvider==='gemini')?'claude':savedProvider;
+    const warn=document.getElementById('cfgSunoProviderWarning');
+    if(warn)warn.style.display=(savedProvider==='gemini')?'block':'none';
+    onCfgProviderChange((savedProvider==='gemini')?'cli-default':s.model);
+    $('cfgSunoMode').value=s.generation_mode||'styles_title_only';
+    onCfgSunoModeChange();
+    $('cfgSunoPrompt').value=s.prompt||'';
+    $('cfgSunoCount').value=s.loop_count||5;
+    $('cfgSunoInterval').value=s.loop_interval_sec||180;
+    if($('cfgSunoBatch'))$('cfgSunoBatch').checked=!!s.loop_batch;
+  }
+  // チャンネル基本
+  if($('cfgName'))$('cfgName').value=dc.channel_name||'';
+  if($('cfgFolder'))$('cfgFolder').value=dc.channel_folder||'';
+  if($('cfgExport'))$('cfgExport').value=dc.export_path||'';
+  // 書き出しエンジン（チャンネル別）。未設定/不正値は ame（既定）にフォールバック
+  syncProductionModeUi();
+  if($('cfgApiKey'))$('cfgApiKey').value=s.api_key||'';
+  if($('cfgClaudeCli'))$('cfgClaudeCli').value=s.claude_cli||'claude';
+  if($('cfgCodexCli'))$('cfgCodexCli').value=s.codex_cli||'codex';
+  if($('cfgPersona'))$('cfgPersona').value=dc.persona||'';
+  if($('cfgPublishDelayHours')){
+    const v=dc.publish_delay_hours;
+    $('cfgPublishDelayHours').value=(v==null||v==='')?'':v;
+  }
+  if($('cfgPublishMode')){
+    // 後方互換: publish_mode 未設定なら publish_delay_hours>0 → delayed、それ以外 unlisted
+    let mode=(dc.publish_mode||'').trim().toLowerCase();
+    if(!['unlisted','public','delayed'].includes(mode)){
+      const dh=parseFloat(dc.publish_delay_hours);
+      mode=(!isNaN(dh)&&dh>0)?'delayed':'unlisted';
+    }
+    $('cfgPublishMode').value=mode;
+    if(typeof onPublishModeChange==='function')onPublishModeChange();
+  }
+  if($('cfgSheetDetail'))$('cfgSheetDetail').value=dc.spreadsheet_channel_detail_url||'';
+  if($('cfgSheetGrowth'))$('cfgSheetGrowth').value=dc.spreadsheet_growth_tracking_url||'';
+  if($('cfgRivals'))$('cfgRivals').value=(dc.rival_channels||[]).join('\n');
+  if($('cfgYtApiKey'))$('cfgYtApiKey').value=dc.youtube_api_key||'';
+  if($('cfgSheetsApiKey'))$('cfgSheetsApiKey').value=dc.sheets_api_key||'';
+  // 画像合成の差し替え画像フォルダ（チャンネル別）
+  if($('cfgPsdImageSubdir'))$('cfgPsdImageSubdir').value=dc.psd_image_subdir||'image';
+  // Premiere 自動配置の規定尺（秒・チャンネル別）。未設定/0 以下なら空欄（フォールバック 10800）
+  if($('cfgDefaultDurationSec')){
+    const dds=dc.default_duration_sec;
+    $('cfgDefaultDurationSec').value=(dds!=null && Number(dds)>0)?Number(dds):'';
+  }
+  // step_bgimage: 参照画像フォルダ（チャンネル別）
+  if($('cfgReferenceImage'))$('cfgReferenceImage').value=dc.reference_image||'';
+  if($('cfgReferenceImageDir')){
+    $('cfgReferenceImageDir').value=dc.reference_image_dir||'';
+    // 値があれば自動で枚数/サムネを取りに行く（非ブロッキング）
+    if((dc.reference_image_dir||'').trim()) loadReferenceImageDirPreview().catch(()=>{});
+    else { const m=$('cfgReferenceImageDirMeta'); if(m) m.textContent=''; const t=$('cfgReferenceImageDirThumbs'); if(t) t.innerHTML=''; }
+  }
+  // 文字入れ（シーンテキスト）設定
+  if($('cfgSceneTextEnabled')) $('cfgSceneTextEnabled').checked=(dc.scene_text_enabled!==false);
+  if($('cfgSceneTextTone')) $('cfgSceneTextTone').value=dc.scene_text_tone||'';
+  if($('cfgSceneTextExamples')) $('cfgSceneTextExamples').value=(dc.scene_text_examples||[]).join('\n');
+  if($('cfgSceneTextForbidden')) $('cfgSceneTextForbidden').value=(dc.scene_text_forbidden||[]).join('\n');
+  if($('cfgSceneTextStructure')) $('cfgSceneTextStructure').value=dc.scene_text_structure||'';
+  onSceneTextEnabledChange();
+  // APIキー欄のステータスバッジを初期化（保存済み → 「保存済」）
+  if(typeof _setApiStatus==='function'){
+    _setApiStatus('stLlm', s.api_key?'ok':'idle', s.api_key?'保存済':'未入力');
+    _setApiStatus('stYt', dc.youtube_api_key?'ok':'idle', dc.youtube_api_key?'保存済':'未入力');
+    _setApiStatus('stSheets', dc.sheets_api_key?'ok':'idle', dc.sheets_api_key?'保存済':'未設定（任意）');
+    _setApiStatus('stClaude','idle','未確認');
+    _setApiStatus('stCodex','idle','未確認');
+  }
+  // SUNO タブのサマリ更新
+  renderSunoSummary(s);
+  setEasySettingsFromConfig(dc,s);
+}catch(e){console.error('loadConfig:',e)}}
+
+function onEasyPublishModeChange(){
+  const mode=document.getElementById('easyPublishMode')?.value||'unlisted';
+  const wrap=document.getElementById('easyPublishDelayWrap');
+  if(wrap)wrap.style.display=(mode==='delayed')?'block':'none';
+}
+
+async function _getActiveChannelId(){
+  try{
+    const [cr,cfgr]=await Promise.all([fetch('/api/channels'),fetch('/api/config')]);
+    const cd=await cr.json(),cfg=await cfgr.json();
+    const active=cfg.dashboard||{};
+    const hit=(cd.channels||[]).find(c=>c.folder===active.channel_folder);
+    return hit?.id||'';
+  }catch(e){return ''}
+}
+
+async function _loadEasyAutopilot(){
+  const cb=document.getElementById('easyAutopilot');
+  const hint=document.getElementById('easyAutopilotHint');
+  if(!cb)return;
+  const channelId=await _getActiveChannelId();
+  cb.dataset.channelId=channelId;
+  if(!channelId){
+    cb.checked=false;
+    cb.disabled=true;
+    if(hint)hint.textContent='チャンネルIDを取得できませんでした。';
+    return;
+  }
+  cb.disabled=false;
+  try{
+    const r=await fetch('/api/workers/autopilot');
+    const d=await r.json();
+    const row=(d.channels||[]).find(c=>c.channel_id===channelId);
+    cb.checked=!!row?.autopilot_enabled;
+    if(hint)hint.textContent=d.scheduler_registered?'自動運転は利用できます。':'ON/OFF は保存されます。定期実行が未配線なら自動実行は始まりません。';
+  }catch(e){
+    if(hint)hint.textContent='自動運転の状態を取得できませんでした。';
+  }
+}
+
+async function _loadEasyAutoApplyUpdate(){
+  const cb=document.getElementById('easyAutoApplyUpdate');if(!cb)return;
+  try{
+    const r=await fetch('/api/settings-catalog/value?key=update.auto_apply');
+    const d=await r.json();
+    cb.checked=(d.current?.value!==false);
+  }catch(e){
+    cb.checked=true;
+  }
+}
+
+function setEasySettingsFromConfig(dc,s){
+  const $=id=>document.getElementById(id);
+  if(!$('easySettingsCard'))return;
+  if($('easyChannelName'))$('easyChannelName').value=dc.channel_name||'';
+  if($('easySunoPrompt'))$('easySunoPrompt').value=s.prompt||'';
+  if($('easyRivals'))$('easyRivals').value=(dc.rival_channels||[]).join('\n');
+  if($('easyPublishMode')){
+    let mode=(dc.publish_mode||'').trim().toLowerCase();
+    if(!['unlisted','public','delayed'].includes(mode)){
+      const dh=parseFloat(dc.publish_delay_hours);
+      mode=(!isNaN(dh)&&dh>0)?'delayed':'unlisted';
+    }
+    $('easyPublishMode').value=mode;
+  }
+  if($('easyPublishDelayHours')){
+    const v=dc.publish_delay_hours;
+    $('easyPublishDelayHours').value=(v==null||v===''||Number(v)<=0)?'':v;
+  }
+  onEasyPublishModeChange();
+  _loadEasyAutopilot();
+  _loadEasyAutoApplyUpdate();
+}
+
+
+
+async function checkAppVersion(){
+  const status=document.getElementById('versionStatus');
+  const result=document.getElementById('updateResult');
+  const apply=document.getElementById('btnUpdateApply');
+  if(!status)return;
+  status.textContent='確認中...';
+  if(result)result.textContent='';
+  if(apply)apply.style.display='none';
+  try{
+    const r=await fetch('/api/version');
+    const d=await r.json();
+    const cur=d.version||d.current_version||'';
+    status.textContent=`現行バージョン: ${cur}`;
+    if(result){
+      result.innerHTML=`${esc(d.message||'')}${d.source?`<br><span style="color:var(--text-tertiary)">source: ${esc(d.source)}</span>`:''}`;
+    }
+    if(apply)apply.style.display=d.update_available?'inline-flex':'none';
+  }catch(e){
+    status.textContent='バージョン確認に失敗';
+    if(result)result.textContent=e.message||String(e);
+  }
+}
+
+async function applyAppUpdate(){
+  if(!confirm('アップデートを適用します。適用後は手動で再起動してください。よろしいですか？'))return;
+  const result=document.getElementById('updateResult');
+  if(result)result.textContent='適用中...';
+  try{
+    const r=await fetch('/api/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    const d=await r.json();
+    if(!r.ok||!d.ok){throw new Error(d.detail||d.message||'更新に失敗しました')}
+    if(result)result.innerHTML=`${esc(d.message||'更新しました')}<br><strong>bash Python/start.sh --replace で再起動してください。</strong>`;
+  }catch(e){
+    if(result)result.textContent='更新失敗: '+(e.message||e);
+  }
+}
+function onCfgProviderChange(sel){
+  const p=document.getElementById('cfgSunoProvider')?.value||'claude';
+  const s=document.getElementById('cfgSunoModel');if(!s)return;
+  s.innerHTML='';(MODELS[p]||[]).forEach(m=>{const o=document.createElement('option');o.value=m.id;o.textContent=m.l;s.appendChild(o)});
+  if(sel)s.value=sel;
+  const hint=document.getElementById('cfgClaudeCliHint');if(hint)hint.style.display=p==='claude'?'block':'none';
+  const codexHint=document.getElementById('cfgCodexCliHint');if(codexHint)codexHint.style.display=p==='codex'?'block':'none';
+}
+
+function _safePrefixValue(v){
+  return (v||'').trim().replace(/[^A-Za-z0-9_-]/g,'');
+}
+function updateNamingPreview(){
+  const el=document.getElementById('cfgNamingPreview');if(!el)return;
+  const prefix=_safePrefixValue(document.getElementById('cfgFilePrefix')?.value)||'WW';
+  const now=new Date();
+  const yy=String(now.getFullYear()).slice(-2);
+  const mm=String(now.getMonth()+1).padStart(2,'0');
+  const dd=String(now.getDate()).padStart(2,'0');
+  el.innerHTML=`新規動画は <code>1_${esc(prefix)}_${yy}${mm}${dd}</code>、プロジェクトは <code>${esc(prefix)}_vol01.prproj</code> の形式で作成します。`;
+}
+async function inferNamingFromFolder(folderInputId,prefixInputId,previewId,opts){
+  const folder=document.getElementById(folderInputId)?.value?.trim()||'';
+  const preview=document.getElementById(previewId);
+  if(!folder){
+    if(!opts?.silent)toast('先にチャンネルフォルダを入力してください','w');
+    return;
+  }
+  if(preview)preview.textContent='既存フォルダを確認中...';
+  try{
+    const r=await fetch('/api/config/infer-naming?folder='+encodeURIComponent(folder));
+    const d=await r.json();
+    if(!r.ok){throw new Error(d.detail||'推定できませんでした')}
+    if(d.prefix){
+      const input=document.getElementById(prefixInputId);
+      if(input)input.value=d.prefix;
+      if(preview){
+        const counts=Object.entries(d.counts||{}).map(([k,v])=>`${esc(k)}: ${v}`).join(' / ');
+        preview.innerHTML=`<code>${esc(d.prefix)}</code> を推定しました。既存 ${d.matched||0} 件（${counts||'一致なし'}）。次は <code>${d.next_num}_${esc(d.prefix)}_${new Date().toISOString().slice(2,10).replace(/-/g,'')}</code> 形式です。`;
+      }
+      if(!opts?.silent)toast(`prefix を ${d.prefix} に設定しました`,'s');
+    }else{
+      if(preview)preview.innerHTML='既存の <code>番号_prefix_日付</code> 形式フォルダが見つかりませんでした。手入力してください。';
+      if(!opts?.silent)toast('推定できる既存フォルダがありません','w');
+    }
+  }catch(e){
+    if(preview)preview.textContent='';
+    if(!opts?.silent)toast(e.message||'推定に失敗しました','e');
+  }
+}
+
+/* ==== Instrumental Filler モード連動（チェックボックス ⇄ select） ==== */
+function _syncInstrumentalUI(modeSelectId, checkboxId, hintId){
+  const sel=document.getElementById(modeSelectId);
+  const cb=document.getElementById(checkboxId);
+  const isFiller=(sel?.value==='instrumental_filler');
+  if(cb)cb.checked=isFiller;
+  if(hintId){
+    const h=document.getElementById(hintId);
+    if(h)h.textContent=isFiller?'Lyrics 欄を [instrumental] x 5000文字 で固定充填します（歌詞は AI に生成させない）':'';
+  }
+}
+function onCfgSunoModeChange(){
+  _syncInstrumentalUI('cfgSunoMode','cfgSunoInstrumentalFill','cfgSunoModeHint');
+}
+function onMiniModeChange(){
+  _syncInstrumentalUI('miniMode','miniInstrumentalFill',null);
+}
+function onInstrumentalFillToggle(checkboxId, modeSelectId){
+  const cb=document.getElementById(checkboxId);
+  const sel=document.getElementById(modeSelectId);
+  if(!cb||!sel)return;
+  if(cb.checked){
+    // チェック ON → mode を instrumental_filler に
+    sel.value='instrumental_filler';
+  }else{
+    // OFF → instrumental_filler を外して既定（Style + Title）に戻す
+    if(sel.value==='instrumental_filler')sel.value='styles_title_only';
+  }
+  if(modeSelectId==='cfgSunoMode')onCfgSunoModeChange();
+  else if(modeSelectId==='miniMode')onMiniModeChange();
+}
+function renderSunoSummary(s){
+  const el=document.getElementById('sunoConfigSummary');if(!el)return;
+  s=s||{};
+  const promptPreview=(s.prompt||'').slice(0,140)+((s.prompt||'').length>140?'...':'');
+  const provLabel=({chatgpt:'ChatGPT',claude:'Claude (CLI)',codex:'Codex (CLI)'})[(s.provider==='gemini'?'claude':s.provider)||'claude']||s.provider;
+  const rawMode=s.generation_mode||'styles_title_only';
+  const modeLabel=({styles_title_only:'スタイルとタイトル（インスト）',lyrics_styles:'歌詞・スタイル・タイトル（歌あり）',lyrics:'歌詞のみ（歌あり）',instrumental_filler:'インストゥルメンタル一括'})[rawMode]||'カスタム設定';
+  const rawModel=s.model||'';
+  const modelLabel=rawModel==='cli-default'?'既定モデル':(rawModel||'未設定');
+  el.innerHTML=`
+    <div style="display:grid;grid-template-columns:90px 1fr;gap:var(--space-2) var(--space-3)">
+      <div style="color:var(--text-tertiary)">プロバイダー</div><div>${esc(provLabel)} / ${esc(modelLabel)}${rawModel?` <small style="color:var(--text-tertiary)">${esc(rawModel)}</small>`:''}</div>
+      <div style="color:var(--text-tertiary)">生成モード</div><div>${esc(modeLabel)} <small style="color:var(--text-tertiary)">${esc(rawMode)}</small></div>
+      <div style="color:var(--text-tertiary)">回数 / 間隔</div><div>${s.loop_count||5} 回 / ${s.loop_interval_sec||180} 秒 ${s.loop_batch?'<span style="color:var(--accent-info)">[一括]</span>':''}</div>
+      <div style="color:var(--text-tertiary)">プロンプト</div><div style="font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">${esc(promptPreview)||'<span style="color:var(--accent-warning)">未設定</span>'}</div>
+    </div>`;
+}
+async function suggestSunoFromPersona(){
+  const persona=document.getElementById('cfgPersona')?.value||'';
+  if(!persona.trim()){toast('ペルソナを入力してから実行してください','w');return}
+  const ta=document.getElementById('cfgSunoPrompt');
+  const rEl=document.getElementById('cfgSunoSuggestRationale');
+  if(rEl)rEl.textContent='Claude にプロンプト雛形を生成中...';
+  try{
+    const r=await fetch('/api/suno/suggest-prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({persona})});
+    if(!r.ok){const t=await r.text();throw new Error(t)}
+    const d=await r.json();
+    if(ta)ta.value=d.prompt||'';
+    if(rEl)rEl.textContent=d.rationale||'';
+    toast('プロンプト雛形を生成しました（保存ボタンで確定）','s');
+  }catch(e){
+    if(rEl)rEl.textContent='';
+    toast('生成失敗: '+(e.message||e),'e');
+  }
+}
+/* 自動保存: フィールド変更で 600ms デバウンス → /api/config/dashboard と /api/config/suno を更新 */
+let _autoSaveTimer=null;
+function _setAutoSaveIndicator(text,color){
+  const el=document.getElementById('autoSaveIndicator');
+  if(!el)return;
+  el.textContent=text;
+  el.style.color=color||'var(--text-tertiary)';
+}
+async function _autoSaveSettingsNow(){
+  const $=id=>document.getElementById(id);
+  if(!$('cfgPersona'))return; // 設定ページ未ロード
+  _setAutoSaveIndicator('保存中...','var(--accent-warning)');
+  try{
+    // ダッシュボード関連
+    const persona=$('cfgPersona')?.value||'';
+    const rivals=($('cfgRivals')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+    const filePrefix=($('cfgFilePrefix')?.value||'').trim().replace(/[^A-Za-z0-9_-]/g,'');
+    // app_id は自動保存しない（変更時は手動で「全保存」ボタンを使う）
+    const body={
+      channel_name:$('cfgName')?.value||'',
+      channel_folder:$('cfgFolder')?.value||'',
+      export_path:$('cfgExport')?.value||'',
+      production_mode:$('cfgProductionMode')?.value||'ffmpeg_only',
+      persona,
+      rival_channels:rivals,
+      spreadsheet_channel_detail_url:($('cfgSheetDetail')?.value||'').trim(),
+      spreadsheet_growth_tracking_url:($('cfgSheetGrowth')?.value||'').trim(),
+      youtube_api_key:($('cfgYtApiKey')?.value||'').trim(),
+      sheets_api_key:($('cfgSheetsApiKey')?.value||'').trim(),
+      reference_image:($('cfgReferenceImage')?.value||'').trim(),
+      reference_image_dir:($('cfgReferenceImageDir')?.value||'').trim(),
+      scene_text_enabled: $('cfgSceneTextEnabled') ? !!$('cfgSceneTextEnabled').checked : true,
+      scene_text_tone:($('cfgSceneTextTone')?.value||'').trim(),
+      scene_text_examples:($('cfgSceneTextExamples')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean),
+      scene_text_forbidden:($('cfgSceneTextForbidden')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean),
+      scene_text_structure:($('cfgSceneTextStructure')?.value||'').trim(),
+    };
+    // Premiere 規定尺（チャンネル別）。空欄/0/負数なら 0 を送信して per-channel から削除（フォールバック 10800 復帰）
+    {
+      const raw=$('cfgDefaultDurationSec')?.value;
+      if(raw==null||String(raw).trim()===''){
+        body.default_duration_sec=0;
+      }else{
+        const iv=parseInt(raw,10);
+        body.default_duration_sec=(!isNaN(iv) && iv>0)?iv:0;
+      }
+    }
+    if(filePrefix)body.file_prefix=filePrefix;
+    const r=await fetch('/api/config/dashboard',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){_setAutoSaveIndicator('注意: 保存失敗 (HTTP '+r.status+')','var(--accent-danger)');return}
+    // SUNO
+    const k=$('cfgApiKey')?.value||'',cli=$('cfgClaudeCli')?.value||'',codexCli=$('cfgCodexCli')?.value||'';
+    const sunoPatch={
+      provider:$('cfgSunoProvider')?.value||'claude',
+      model:$('cfgSunoModel')?.value||'',
+      generation_mode:$('cfgSunoMode')?.value||'styles_title_only',
+      prompt:$('cfgSunoPrompt')?.value||'',
+      loop_count:parseInt($('cfgSunoCount')?.value||'5'),
+      loop_interval_sec:parseInt($('cfgSunoInterval')?.value||'180'),
+      loop_batch:!!$('cfgSunoBatch')?.checked,
+    };
+    if(k)sunoPatch.api_key=k;
+    if(cli)sunoPatch.claude_cli=cli;
+    if(codexCli)sunoPatch.codex_cli=codexCli;
+    try{await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)})}catch(e){}
+    // 正規化されたスプシ URL を表示に反映
+    try{
+      const d=await r.json();
+      if(d?.config){
+        const a=d.config.spreadsheet_channel_detail_url||'';
+        const b=d.config.spreadsheet_growth_tracking_url||'';
+        if($('cfgSheetDetail') && $('cfgSheetDetail').value!==a)$('cfgSheetDetail').value=a;
+        if($('cfgSheetGrowth') && $('cfgSheetGrowth').value!==b)$('cfgSheetGrowth').value=b;
+      }
+    }catch(e){}
+    _setAutoSaveIndicator('✓ 自動保存しました ('+new Date().toLocaleTimeString('ja-JP')+')','var(--accent-success)');
+  }catch(e){_setAutoSaveIndicator('注意: '+e.message,'var(--accent-danger)')}
+}
+function _scheduleAutoSave(){
+  clearTimeout(_autoSaveTimer);
+  _setAutoSaveIndicator('入力中...','var(--text-tertiary)');
+  _autoSaveTimer=setTimeout(_autoSaveSettingsNow,600);
+}
+let _autoSaveWired=false;
+function wireSettingsAutoSave(){
+  if(_autoSaveWired)return;
+  // 自動保存対象のフィールド ID
+  const ids=[
+    'cfgPersona','cfgRivals',
+    'cfgFilePrefix',
+    'cfgName','cfgFolder','cfgExport',
+    'cfgSheetDetail','cfgSheetGrowth',
+    'cfgYtApiKey','cfgSheetsApiKey',
+    'cfgReferenceImage',
+    'cfgReferenceImageDir',
+    'cfgDefaultDurationSec',
+    // SUNO
+    'cfgSunoProvider','cfgSunoModel','cfgSunoMode','cfgSunoPrompt',
+    'cfgSunoCount','cfgSunoInterval','cfgSunoBatch','cfgSunoInstrumentalFill',
+    'cfgApiKey','cfgClaudeCli',
+  ];
+  ids.forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el)return;
+    const ev=el.tagName==='SELECT'||el.type==='checkbox'?'change':'input';
+    el.addEventListener(ev,_scheduleAutoSave);
+    if(ev==='input')el.addEventListener('blur',_autoSaveSettingsNow); // フォーカス離脱で即時保存
+  });
+  // YouTube アップロード詳細設定（テンプレート）も自動保存
+  // ytdLocLanguagesGrid（チェックリスト）は renderLangChecklist の onChange で saveYtUploadDefaults を直接呼ぶ
+  const ytdIds=['ytdCategory','ytdLicense','ytdDefaultLanguage','ytdDefaultAudioLanguage',
+    'ytdSyntheticMedia','ytdMadeForKids','ytdEmbeddable','ytdPublicStatsViewable',
+    'ytdNotifySubscribers'];
+  ytdIds.forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el)return;
+    const ev=el.type==='checkbox'||el.tagName==='SELECT'?'change':'input';
+    el.addEventListener(ev,()=>{
+      clearTimeout(_autoSaveTimer);
+      _setAutoSaveIndicator('入力中...','var(--text-tertiary)');
+      _autoSaveTimer=setTimeout(async()=>{
+        await saveYtUploadDefaults(true).catch(()=>{});
+        _setAutoSaveIndicator('✓ 自動保存しました ('+new Date().toLocaleTimeString('ja-JP')+')','var(--accent-success)');
+      },600);
+    });
+  });
+  _autoSaveWired=true;
+}
+
+// P3-3: 公開方式 select の変更で遅延時間欄の表示を切替（delayed のときだけ表示）
+function onPublishModeChange(){
+  const sel=document.getElementById('cfgPublishMode');
+  const wrap=document.getElementById('cfgPublishDelayWrap');
+  if(!sel||!wrap)return;
+  wrap.style.display=(sel.value==='delayed')?'block':'none';
+}
+
+function onSceneTextEnabledChange(){
+  const cb=document.getElementById('cfgSceneTextEnabled');
+  const fields=document.getElementById('cfgSceneTextFields');
+  if(fields)fields.style.display=(!cb||cb.checked)?'block':'none';
+}
+
+// 文字入れ（シーンテキスト）設定: ベンチマーク（ライバル）から提案を取り込む
+async function suggestSceneText(mode){
+  const meta=$('cfgSceneTextSuggestMeta');
+  const label = mode==='vision' ? 'サムネ画像(Vision)' : 'タイトル語彙';
+  if(meta){meta.style.color='var(--text-tertiary)';meta.textContent=`${label}から提案を生成中…（${mode==='vision'?'数十秒〜数分':'数十秒'}）`;}
+  try{
+    const r=await fetch('/api/scene-text/suggest-from-benchmark',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mode,count:6})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||!d.ok){
+      const msg=d.detail||'提案に失敗しました';
+      if(meta){meta.style.color='var(--accent-danger)';meta.textContent='✕ '+msg;}
+      toast(msg,'e');return;
+    }
+    if(d.tone && $('cfgSceneTextTone')) $('cfgSceneTextTone').value=d.tone;
+    if(Array.isArray(d.examples) && d.examples.length && $('cfgSceneTextExamples')) $('cfgSceneTextExamples').value=d.examples.join('\n');
+    if(Array.isArray(d.forbidden) && d.forbidden.length && $('cfgSceneTextForbidden')) $('cfgSceneTextForbidden').value=d.forbidden.join('\n');
+    if(d.structure && $('cfgSceneTextStructure')) $('cfgSceneTextStructure').value=d.structure;
+    if(meta){meta.style.color='var(--accent-success)';meta.textContent=`✓ ${label}から提案を反映（ライバル ${d.source_count||0} 件参照）。内容を確認して「保存」してください。`;}
+    toast('提案を反映しました。確認して保存してください','s');
+  }catch(e){
+    if(meta){meta.style.color='var(--accent-danger)';meta.textContent='✕ '+(e.message||e);}
+    toast('通信エラー','e');
+  }
+}
+
+async function saveSettings(){
+  const persona=document.getElementById('cfgPersona')?.value||'';
+  const rivals=(document.getElementById('cfgRivals')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  // ブランド設定（v2 配布化）
+  const filePrefix=(document.getElementById('cfgFilePrefix')?.value||'').trim().replace(/[^A-Za-z0-9_-]/g,'');
+  const appId=(document.getElementById('cfgAppId')?.value||'').trim().toLowerCase().replace(/[^a-z0-9_-]/g,'');
+  const prevAppId=(_lastConfig?.dashboard?.app_id)||'orzz';
+  if(appId && appId!==prevAppId){
+    const ok=confirm(`注意: アプリID を「${prevAppId}」→「${appId}」へ変更します。\n\n保存後、サーバーを再起動すると:\n・~/.config/${prevAppId}/ にある全設定が ~/.config/${appId}/ へ自動コピーされます\n・旧ディレクトリ（~/.config/${prevAppId}/）は残ります（ロールバック可能）\n・既存ファイルがある場合は上書きしません\n\n続行しますか？`);
+    if(!ok){
+      // 変更を取り消して保存中止
+      if(document.getElementById('cfgAppId'))document.getElementById('cfgAppId').value=prevAppId;
+      toast('アプリID 変更をキャンセルしました','i');
+      return;
+    }
+  }
+  const psdImageSubdir=(document.getElementById('cfgPsdImageSubdir')?.value || '').trim();
+  // step_bgimage: 参照画像フォルダ（空文字でフォールバックに戻す）
+  const referenceImage=(document.getElementById('cfgReferenceImage')?.value || '').trim();
+  const referenceImageDir=(document.getElementById('cfgReferenceImageDir')?.value || '').trim();
+  const body={
+    channel_name:document.getElementById('cfgName').value,
+    channel_folder:document.getElementById('cfgFolder').value,
+    export_path:document.getElementById('cfgExport').value,
+    production_mode:document.getElementById('cfgProductionMode')?.value||'ffmpeg_only',
+    persona:persona,
+    rival_channels:rivals,
+    spreadsheet_channel_detail_url:document.getElementById('cfgSheetDetail').value.trim(),
+    spreadsheet_growth_tracking_url:document.getElementById('cfgSheetGrowth').value.trim(),
+    youtube_api_key:document.getElementById('cfgYtApiKey').value.trim(),
+    sheets_api_key:document.getElementById('cfgSheetsApiKey').value.trim(),
+    psd_image_subdir:psdImageSubdir,
+    reference_image:referenceImage,
+    reference_image_dir:referenceImageDir,
+  };
+  // Premiere 規定尺（チャンネル別）。空欄/0/負数なら 0 を送信してクリア
+  {
+    const raw=document.getElementById('cfgDefaultDurationSec')?.value;
+    if(raw==null||String(raw).trim()===''){
+      body.default_duration_sec=0;
+    }else{
+      const iv=parseInt(raw,10);
+      body.default_duration_sec=(!isNaN(iv) && iv>0)?iv:0;
+    }
+  }
+  if(filePrefix)body.file_prefix=filePrefix;
+  if(appId)body.app_id=appId;
+  // P3-3: 公開方式（per-channel・予約投稿イメージ）
+  const publishMode=document.getElementById('cfgPublishMode')?.value;
+  if(publishMode && ['unlisted','public','delayed'].includes(publishMode)){
+    body.publish_mode=publishMode;
+    // delayed のときだけ遅延時間を送る。delayed 以外は 0 にして公開ゲートを無効化。
+    if(publishMode==='delayed'){
+      const publishDelayRaw=document.getElementById('cfgPublishDelayHours')?.value;
+      const v=parseFloat(publishDelayRaw);
+      body.publish_delay_hours=(!isNaN(v)&&v>0)?v:24;  // 未入力なら推奨値 24h
+    }else{
+      body.publish_delay_hours=0;
+    }
+  }
+  try{
+    const r=await fetch('/api/config/dashboard',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){toast('ダッシュボード設定の保存に失敗: HTTP '+r.status,'e');return}
+    const d=await r.json();
+    // 保存結果を確認
+    const savedPersona=d.config?.persona||'';
+    const savedRivals=d.config?.rival_channels||[];
+    if(persona && !savedPersona){toast('注意: ペルソナが保存されていません','e');return}
+    // app_id 変更時はサーバー再起動を促す
+    if(appId && appId!==prevAppId){
+      setTimeout(()=>{
+        modal(`<div class="mo-title">アプリID を「${esc(appId)}」に変更しました</div>
+          <div style="font-size:var(--text-sm);color:var(--text-secondary);line-height:1.8;margin-bottom:var(--space-3)">
+            変更を有効にするには<strong style="color:var(--accent-warning)">サーバー再起動が必要</strong>です。ターミナルで:
+            <pre style="margin-top:var(--space-2);padding:var(--space-3);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">bash Python/start.sh --replace</pre>
+            再起動後、<code>~/.config/${esc(prevAppId)}/</code> → <code>~/.config/${esc(appId)}/</code> への自動コピーが走り、バナー通知が出ます。
+          </div>
+          <div class="btns" style="justify-content:flex-end;margin:0"><button class="btn btn-primary btn-sm" onclick="closeModal()">了解</button></div>`);
+      },300);
+    }
+  }catch(e){toast('設定保存エラー: '+e.message,'e');return}
+
+  // SUNO セクション（プロバイダー / モデル / モード / プロンプト / 回数 / 間隔 / Batch / API Key / CLI）
+  const $=id=>document.getElementById(id);
+  const k=$('cfgApiKey')?.value||'',cli=$('cfgClaudeCli')?.value||'',codexCli=$('cfgCodexCli')?.value||'';
+  const sunoPatch={
+    provider:$('cfgSunoProvider')?.value||'claude',
+    model:$('cfgSunoModel')?.value||'',
+    generation_mode:$('cfgSunoMode')?.value||'styles_title_only',
+    prompt:$('cfgSunoPrompt')?.value||'',
+    loop_count:parseInt($('cfgSunoCount')?.value||'5'),
+    loop_interval_sec:parseInt($('cfgSunoInterval')?.value||'180'),
+    loop_batch:!!$('cfgSunoBatch')?.checked,
+  };
+  if(k)sunoPatch.api_key=k;
+  if(cli)sunoPatch.claude_cli=cli;
+  if(codexCli)sunoPatch.codex_cli=codexCli;
+  try{await fetch('/api/config/suno',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(sunoPatch)})}catch(e){}
+  await loadChannelSwitcher();
+  await loadConfig();
+  refreshQuickSetup();
+  toast(`保存しました (ペルソナ: ${persona?persona.slice(0,20)+'...':'空'}, ライバル: ${rivals.length}件)`,'s');
+}
+
+/* ==== 参照画像フォルダ（step_bgimage 用 / per-channel） ==== */
+async function loadReferenceImageDirPreview(){
+  const meta=document.getElementById('cfgReferenceImageDirMeta');
+  const thumbs=document.getElementById('cfgReferenceImageDirThumbs');
+  if(!meta || !thumbs)return;
+  // 入力欄が空ならクリアして終了
+  const v=(document.getElementById('cfgReferenceImageDir')?.value||'').trim();
+  if(!v){meta.textContent='';thumbs.innerHTML='';return}
+  meta.textContent='読み込み中...';
+  thumbs.innerHTML='';
+  try{
+    const r=await fetch('/api/bgimage/reference-dir/list?limit=6');
+    const d=await r.json();
+    if(!d?.ok){meta.textContent='取得失敗';return}
+    if(!d.configured){meta.textContent='未設定';return}
+    if(!d.exists){meta.innerHTML=`<span style="color:var(--accent-warning)">⚠ ディレクトリ不在: <code>${esc(d.path||'')}</code></span>`;return}
+    meta.innerHTML=`画像 <strong>${d.count}</strong> 枚 <span style="color:var(--text-tertiary)">(${esc(d.path||'')})</span>`;
+    if(!d.count){thumbs.innerHTML='<div class="fh" style="grid-column:1/-1;color:var(--text-tertiary)">画像ファイル（jpg/jpeg/png/webp）がありません</div>';return}
+    const parts=[];
+    for(const name of (d.files||[])){
+      const url='/api/bgimage/reference-dir/thumb/'+encodeURIComponent(name);
+      parts.push(`<div style="aspect-ratio:16/9;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-sm);overflow:hidden;display:flex;align-items:center;justify-content:center">
+        <img src="${url}" alt="${esc(name)}" title="${esc(name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover">
+      </div>`);
+    }
+    thumbs.innerHTML=parts.join('');
+  }catch(e){
+    meta.textContent='エラー: '+(e.message||e);
+  }
+}
+async function testReferenceImageDirDryRun(){
+  const meta=document.getElementById('cfgReferenceImageDirMeta');
+  if(!meta)return;
+  // 未保存の入力値があるなら先に自動保存ロジックを通す
+  try{await _autoSaveSettingsNow()}catch(e){}
+  meta.textContent='dry-run 実行中...';
+  try{
+    const r=await fetch('/api/bgimage/reference-dir/dry-run?count=3',{method:'POST'});
+    const d=await r.json();
+    if(!d?.ok){meta.textContent='dry-run 失敗';return}
+    const lines=[];
+    if(d.source==='reference_image_dir'){
+      lines.push(`<div style="color:var(--accent-success)">✓ ソース: <strong>reference_image_dir</strong>（最優先）</div>`);
+      lines.push(`<div>参照プール ${d.pool_size} 枚 → ランダム ${d.selected.length} 枚選択:</div>`);
+      lines.push('<ul style="margin:4px 0 0 1.4em;padding:0">'+(d.selected||[]).map(x=>`<li><code>${esc(x.name)}</code></li>`).join('')+'</ul>');
+    }else{
+      lines.push(`<div style="color:var(--accent-warning)">⚠ ${esc(d.note||'reference_image_dir 未使用')}</div>`);
+      const fb=d.fallback||{};
+      lines.push(`<div>→ Picked: ${fb.picked_available?`<strong>${fb.picked_count||0}</strong> 枚利用可`:'<span style="color:var(--text-tertiary)">なし</span>'}</div>`);
+      lines.push(`<div>→ rival thumbs プール: <strong>${fb.rival_pool_size||0}</strong> 枚</div>`);
+    }
+    meta.innerHTML=lines.join('');
+  }catch(e){
+    meta.textContent='dry-run エラー: '+(e.message||e);
+  }
+}
+
+/* ==== Dashboard ==== */
+/* ==== Render Queue（P2-1） ==== */
+function _fmtSec(sec){
+  if(!sec || sec<=0) return '-';
+  const m=Math.floor(sec/60), s=sec%60;
+  return m>0?`${m}m${String(s).padStart(2,'0')}s`:`${s}s`;
+}
+
+
+/* P0-A: サムネ一括生成UI（右パネル+7段ステッパー+詳細ワークフロー）の表示トグル。
+   既定は非表示（動画一覧を主役に）。状態は localStorage に保持。 */
+function ctBulkUiToggle(force){
+  const ws=document.querySelector('.ct-workspace');if(!ws)return;
+  const open=(force!==undefined)?!!force:ws.classList.contains('bulk-closed');
+  ws.classList.toggle('bulk-closed',!open);
+  const btn=document.getElementById('ctBulkUiBtn');
+  if(btn)btn.textContent=open?'サムネ一括生成を隠す':'サムネ一括生成を表示';
+  localStorage.setItem('ctBulkUiOpen',open?'1':'0');
+}
+document.addEventListener('DOMContentLoaded',()=>{
+  ctBulkUiToggle(localStorage.getItem('ctBulkUiOpen')==='1');
+});
+
+/* P2-7: 公開ゲートを今すぐ実行 */
+async function publishNow(videoName){
+  if(!confirm(`vol "${videoName}" を **いま** public に公開します。よろしいですか？`)) return;
+  try{
+    const r=await fetch(`/api/youtube/publish-now/${encodeURIComponent(videoName)}`,{method:'POST'});
+    if(!r.ok){
+      const e=await r.json().catch(()=>({}));
+      toast('公開失敗: '+(e.detail||r.statusText),'e');
+      return;
+    }
+    const d=await r.json();
+    toast(`${videoName} を public に公開しました`,'s');
+    setTimeout(loadRunsActive, 1000);
+  }catch(e){toast('接続エラー: '+e.message,'e')}
+}
+
+/* ==== 自動運転パネル（orchestrator / U3） ==== */
+let _apQuota={},_apStock={},_apMonet={},_apRegistry={};
+
+async function loadAutopilot(){
+  const body=document.getElementById('autopilotBody');
+  if(!body) return;
+  body.innerHTML='<div class="fh">読み込み中...</div>';
+  const note=document.getElementById('autopilotWiredNote');
+  if(note)note.textContent='自動運転の状態を確認中...';
+  try{
+    const [wsR,qsR,stockR,monetR,channelsR]=await Promise.all([
+      fetchWithTimeout('/api/workers/status'),
+      fetchWithTimeout('/api/quota/status'),
+      fetchWithTimeout('/api/stock'),
+      fetchWithTimeout('/api/monetization'),
+      fetchWithTimeout('/api/channels')
+    ]);
+    const failed=[wsR,qsR,stockR,monetR,channelsR].find(r=>!r.ok);
+    if(failed)throw new Error(`HTTP ${failed.status}`);
+    const ws=wsR.ok?await wsR.json():null;
+    const qs=qsR.ok?await qsR.json():null;
+    _apQuota={};
+    if(qs&&qs.channels){ qs.channels.forEach(c=>{ _apQuota[c.channel_id]=c; }); }
+    _apStock={};_apMonet={};_apRegistry={};
+    if(stockR.ok){const d=await stockR.json();(d.channels||[]).forEach(c=>{_apStock[c.channel_id]=c})}
+    if(monetR.ok){const d=await monetR.json();(d.channels||[]).forEach(c=>{_apMonet[c.channel_id]=c})}
+    if(channelsR.ok){const d=await channelsR.json();(d.channels||[]).forEach(c=>{_apRegistry[c.id]=c})}
+    _updateAutopilotWiredNote(ws);
+    renderUpdateGuardBanner(ws&&ws.update_guard);
+    body.innerHTML=renderAutopilot(ws);
+  }catch(e){
+    if(e?.name==='AbortError')return;
+    if(note)note.textContent='自動運転の状態を取得できませんでした';
+    body.innerHTML=fetchFallbackHtml('loadAutopilot()',e?.name==='TimeoutError');
+  }
+}
+
+// 自動化ページ冒頭の配線状態カードを実態（scheduler_registered）に合わせて更新する。
+// かつて「未配線」の固定文言を出していて実態と矛盾していたため、必ずサーバーの状態から描画する。
+function _updateAutopilotWiredNote(ws){
+  const card=document.getElementById('autopilotWiredCard');
+  const note=document.getElementById('autopilotWiredNote');
+  if(!card||!note)return;
+  if(!ws){
+    card.style.borderLeftColor='var(--accent-warning)';
+    note.textContent='配線状態を取得できませんでした（サーバー接続を確認）';
+    return;
+  }
+  if(ws.scheduler_registered){
+    card.style.borderLeftColor='var(--accent-success)';
+    note.textContent='自動運転をONにしたチャンネルは、5分ごとに進められる工程を自動で実行します。検査に合格した動画は、設定した公開時刻で予約投稿されます。問題が続いた場合は自動で停止します。';
+  }else{
+    card.style.borderLeftColor='var(--accent-warning)';
+    note.innerHTML='注意: <strong>自動運転を有効にしても設定が保存されるだけ</strong>で、実際の無人実行はまだ起動しません（定期実行が未配線）。本番の無人稼働は別途有効化が必要です。';
+  }
+}
+
+function renderAutopilot(ws){
+  if(!ws) return '<div class="fh">取得失敗</div>';
+  const cands=ws.candidates||[];
+  // W WORKSPACE は制作用ワークスペースで YouTube チャンネルではないため、
+  // ホームのチャンネル一覧からは除外する。
+  const chs=(ws.channels||[]).filter(c=>c.channel_id!=='w_workspace');
+  const byCh={};
+  cands.forEach(c=>{ (byCh[c.channel_id]=byCh[c.channel_id]||[]).push(c); });
+  let h='';
+  if(!ws.scheduler_registered){
+    h+='<div class="ledger-hint" style="margin-bottom:var(--space-3)">注: 定期実行は未配線（<code>scheduler_registered: false</code>）。下の自動運転スイッチは設定保存のみで、実際の無人実行は行われません。</div>';
+  }
+  if(ws.update_guard&&ws.update_guard.suspended_count){
+    h+=`<div class="ledger-hint" style="margin-bottom:var(--space-3);border-left:3px solid var(--accent-warning)"><strong>更新完了。自動運転を再開してください</strong> 一時停止中 ${esc(String(ws.update_guard.suspended_count))} 件 <button class="btn btn-primary btn-sm" onclick="resumeAutopilotAfterUpdate()">自動運転を再開</button></div>`;
+  }
+  h+='<div class="home-channel-table" role="table">';
+  h+='<div class="home-channel-row home-channel-head" role="row"><span></span><span>チャンネル</span><span>自動運転</span><span>状態</span><span>在庫</span><span>収益化</span><span></span></div>';
+  if(!chs.length){ h+='<div class="fh">チャンネルがありません</div>'; }
+  chs.forEach(c=>{
+    const q=_apQuota[c.channel_id]||{}, stock=_apStock[c.channel_id]||{}, monet=_apMonet[c.channel_id]||{}, reg=_apRegistry[c.channel_id]||{};
+    const qtxt=(q.remaining!=null)?(`quota 残 ${esc(String(q.remaining))}/${esc(String(q.cap))}`):'quota -';
+    const myCands=byCh[c.channel_id]||[];
+    const status = c.autopilot_suspended_by_update
+      ? '<span class="badge badge-warning">更新後一時停止</span>'
+      : (c.tripped
+        ? `<span class="badge badge-danger">停止中</span>`
+        : (c.autopilot_enabled ? '<span class="badge badge-success">稼働中</span>' : '<span class="badge badge-neutral">停止中</span>'));
+    const candChips=myCands.length
+      ? `<div class="ap-cand-grid">${myCands.map(x=>`<span class="ap-cand" title="vol.${esc(String(x.vol))} ${esc(x.domain)}">${esc(x.domain)}<br>v${esc(String(x.vol))}</span>`).join('')}</div>`
+      : '<div class="fh" style="margin-top:4px">着手可能な候補なし</div>';
+    const days=Number(stock.stock_days||0), warn=Number(stock.warn_days||7);
+    const stockClass=days===0?'badge-danger':days<warn?'badge-warning':'badge-success';
+    const needsReauth=monet.status==='unauthorized'||!!monet.analytics?.needs_reauth;
+    const subs=Number(monet.latest?.subscriber_count||0), goal=Number(monet.subscriber_goal||1000), pct=Math.max(0,Math.min(100,Number(monet.subscriber_progress_pct||0)));
+    let actionLabel='→', actionClass='btn-secondary', action=`go('videos')`;
+    if(c.tripped||Number(c.consecutive_failures||0)>0){actionLabel='詳細を確認';actionClass='btn-warning';action=`go('ledger')`}
+    else if(needsReauth){actionLabel='再認証';actionClass='btn-primary';action=`go('settings')`}
+    else if(days<warn){actionLabel='次のvolを作る';actionClass='btn-primary';action=`showCreateVideoModal()`}
+    else if(c.autopilot_suspended_by_update){actionLabel='自動運転を再開';actionClass='btn-primary';action=`resumeAutopilotAfterUpdate()`}
+    h+=`<div class="home-channel-row" role="row">
+      <span class="home-channel-icon">${reg.icon_url?`<img src="${esc(reg.icon_url)}" alt="">`:esc((c.channel_name||c.channel_id||'?').slice(0,1))}</span>
+      <span class="ap-ch-name">${esc(c.channel_name||c.channel_id)}</span>
+      <label class="ap-toggle" title="自動運転のON/OFF">
+        <input type="checkbox" ${c.autopilot_enabled?'checked':''} onchange="toggleAutopilot('${esc(c.channel_id)}',this.checked)">
+      </label>
+      ${status}
+      <span class="badge ${stockClass}">${days}日分</span>
+      <span class="home-monet"><span>${subs.toLocaleString()}/${goal.toLocaleString()}</span><span class="home-monet-bar"><i style="width:${pct}%"></i></span></span>
+      <button class="btn ${actionClass} btn-sm home-next-action" onclick="${action}">${actionLabel}</button>
+      <details class="home-channel-detail">
+        <summary class="fh" style="cursor:pointer;margin:0">詳細</summary>
+        <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;margin-top:var(--space-2)">
+          <span class="fh" style="margin:0">${qtxt}</span>
+          <span class="fh" style="margin:0">優先度</span>
+          <input type="number" class="fi ap-prio-input" value="${esc(String(c.priority!=null?c.priority:100))}" min="0" max="9999" onchange="saveChannelPriority('${esc(c.channel_id)}',this.value)">
+          ${c.tripped?`<button class="btn btn-ghost btn-sm" onclick="resetBreaker('${esc(c.channel_id)}')" title="直近の連続 failed run を cancelled に降格し、自動投入を再開可能にします">ブレーカー解除</button>`:''}
+        </div>
+        ${candChips}
+      </details>
+    </div>`;
+  });
+  h+='</div>';
+  return h;
+}
+
+async function resetBreaker(channelId){
+  if(!confirm('ブレーカーを解除しますか？\n直近の連続 failed run を cancelled に降格し、自動投入を再開可能にします。\n（失敗の原因が未解消の場合は再びブレーカーが発動します）'))return;
+  try{
+    const d=await apiPost('/api/workers/breaker/reset',{channel_id:channelId});
+    toast('ブレーカーを解除しました（'+(d.cancelled_runs||0)+' 件を cancelled に降格）','s');
+    loadAutopilot();
+  }catch(e){toastRetry('ブレーカー解除失敗: '+((e&&e.message)||e),()=>resetBreaker(channelId));}
+}
+
+async function toggleAutopilot(channelId, enabled){
+  try{
+    const r=await fetch('/api/workers/autopilot',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({channel_id:channelId,enabled:enabled})});
+    if(!r.ok){toast('保存失敗 (HTTP '+r.status+')','e');return;}
+    toast(enabled?'自動運転を ON にしました（次の tick から無人実行されます）':'自動運転を OFF にしました','s');
+  }catch(e){toast('保存失敗: '+((e&&e.message)||e),'e');}
+}
+
+async function checkUpdateGuard(){
+  try{
+    const r=await fetch('/api/autopilot/update-guard');
+    if(!r.ok)return;
+    renderUpdateGuardBanner(await r.json());
+  }catch(e){}
+}
+
+function renderUpdateGuardBanner(g){
+  const b=document.getElementById('updateGuardBanner');
+  if(!b)return;
+  const n=g&&g.suspended_count?Number(g.suspended_count):0;
+  b.style.display=n?'block':'none';
+  const d=document.getElementById('updateGuardDetail');
+  if(d)d.textContent=n?`（一時停止中 ${n} 件 / version ${g.version||''}）`:'';
+}
+
+async function resumeAutopilotAfterUpdate(){
+  try{
+    const r=await fetch('/api/autopilot/resume-all',{method:'POST'});
+    if(!r.ok){toast('再開に失敗しました (HTTP '+r.status+')','e');return;}
+    const d=await r.json();
+    toast('自動運転の一時停止を解除しました（'+(d.count||0)+'件）','s');
+    checkUpdateGuard();
+    loadAutopilot();
+  }catch(e){toast('再開に失敗しました: '+((e&&e.message)||e),'e');}
+}
+
+async function saveChannelPriority(channelId, value){
+  const p=parseInt(value,10);
+  if(isNaN(p)){toast('優先度は数値で','e');return;}
+  try{
+    const r=await fetch('/api/config/priority',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({channel_id:channelId,priority:p})});
+    if(!r.ok){toast('優先度の保存失敗 (HTTP '+r.status+')','e');return;}
+    toast('優先度を保存しました ('+p+')','s');
+  }catch(e){toast('優先度の保存失敗: '+((e&&e.message)||e),'e');}
+}
+
+/* ==== 接続ヘルス（token health / U2） ==== */
+const _HEALTH_BADGE={ok:'badge-success',warn:'badge-warning',expired:'badge-danger',missing:'badge-danger',no_refresh:'badge-warning'};
+const _HEALTH_OVERALL={ok:{t:'正常',c:'var(--accent-success)',i:'●'},warn:{t:'要注意',c:'var(--accent-warning)',i:'●'},expired:{t:'要対応',c:'var(--accent-danger)',i:'●'}};
+
+async function loadTokenHealth(){
+  const body=document.getElementById('healthBody');
+  if(!body) return;
+  body.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const r=await fetch('/api/token-health');
+    if(!r.ok){body.innerHTML='<div class="fh">取得失敗 (HTTP '+r.status+')</div>';return;}
+    const d=await r.json();
+    body.innerHTML=renderHealth(d);
+    updateHealthNavDot(d.overall);
+  }catch(e){
+    body.innerHTML='<div class="fh">接続ヘルスの取得に失敗しました（'+esc((e&&e.message)||e)+'）</div>';
+  }
+}
+
+function _healthBadge(st){
+  const cls=_HEALTH_BADGE[st]||'badge-neutral';
+  return `<span class="badge ${cls}">${esc(st||'?')}</span>`;
+}
+
+function renderHealth(d){
+  const ov=_HEALTH_OVERALL[d.overall]||_HEALTH_OVERALL.ok;
+  const checked=String(d.checked_at||'').replace('T',' ').replace(/(\.\d+)?Z?$/,'');
+  let h=`<div class="health-hero" style="border-left:4px solid ${ov.c}">
+    <span class="health-hero-icon">${ov.i}</span>
+    <div><div class="health-hero-title" style="color:${ov.c}">接続ヘルス: ${ov.t}</div>
+    <div class="fh" style="margin:0">要対応 ${esc(String((d.warnings||[]).length))} 件 ／ 点検 ${esc(checked)}</div></div>
+    <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="loadTokenHealth()">再点検</button>
+  </div>`;
+  const w=d.warnings||[];
+  if(w.length){
+    h+='<div class="card" style="margin-bottom:var(--space-3);border-left:3px solid var(--accent-danger)"><div class="sec-title" style="margin:0 0 var(--space-2)">要対応</div>';
+    w.forEach(x=>{ h+=`<div class="health-warn-row">${_healthBadge(x.status)} <strong>${esc(x.channel_name||x.kind||'')}</strong> <span class="fh">${esc(x.message||'')}</span></div>`; });
+    h+='<div class="ledger-hint" style="margin-top:var(--space-2)">YouTube 再認証: <code>python3 app_youtube.py --auth-only</code> ／ SUNO・Flow は各サービスへブラウザで手動ログイン</div></div>';
+  }
+  const ch=d.channels||[];
+  let rows='';
+  ch.forEach(c=>{
+    const dl=(c.days_left!=null)?(esc(String(c.days_left))+'日'):'-';
+    rows+=`<tr><td>${esc(c.channel_name||c.channel_id||'-')}</td><td>${_healthBadge(c.status)}</td><td>${dl}</td><td class="ledger-sum">${esc(c.message||'')}</td></tr>`;
+  });
+  h+=`<div class="card" style="margin-bottom:var(--space-3)"><div class="sec-title" style="margin:0 0 var(--space-2)">YouTube OAuth トークン（チャンネル別）</div>
+    <div class="ledger-table-wrap"><table class="ledger-table"><thead><tr><th>チャンネル</th><th>状態</th><th>残</th><th>詳細</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="fh">チャンネルなし</td></tr>'}</tbody></table></div></div>`;
+  const pw=d.playwright||{};
+  const pwdl=(pw.days_left!=null)?('（残 '+esc(String(pw.days_left))+'日）'):'';
+  h+=`<div class="card"><div class="sec-title" style="margin:0 0 var(--space-2)">SUNO ブラウザ Cookie</div>
+    <div class="health-warn-row">${_healthBadge(pw.status)} <span class="fh">${esc(pw.message||'')} ${pwdl}</span></div></div>`;
+  return h;
+}
+
+function updateHealthNavDot(overall){
+  // 接続ヘルスは実行履歴ページに統合 → 状態ドットは実行履歴のナビに表示
+  const btn=document.querySelector('.nav-btn[data-p="ledger"]');
+  if(!btn) return;
+  let dot=btn.querySelector('.nav-health-dot');
+  if(!dot){ dot=document.createElement('span'); dot.className='nav-health-dot'; btn.appendChild(dot); }
+  const col=overall==='expired'?'var(--accent-danger)':overall==='warn'?'var(--accent-warning)':'var(--accent-success)';
+  dot.style.cssText='display:inline-block;width:8px;height:8px;border-radius:50%;margin-left:6px;vertical-align:middle;background:'+col;
+}
+
+/* ==== 実行履歴（台帳 runs.db / U1） ==== */
+const _LEDGER_BADGE={done:'badge-success',failed:'badge-danger',in_progress:'badge-info',cancelled:'badge-warning',reconstructed:'badge-neutral'};
+let _ledgerFilter={status:'',limit:50};
+
+async function loadLedger(){
+  const body=document.getElementById('ledgerBody');
+  if(!body) return;
+  body.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const qs='/api/runs/ledger?limit='+encodeURIComponent(_ledgerFilter.limit)
+            +(_ledgerFilter.status?'&status='+encodeURIComponent(_ledgerFilter.status):'');
+    const [statsR,runsR]=await Promise.all([
+      fetch('/api/runs/ledger/stats?days=7'),
+      fetch(qs)
+    ]);
+    const stats=statsR.ok?await statsR.json():null;
+    const data=runsR.ok?await runsR.json():null;
+    const runs=(data&&data.runs)||[];
+    body.innerHTML=renderLedgerStats(stats)+renderLedgerControls()+renderLedgerTable(runs);
+  }catch(e){
+    body.innerHTML='<div class="fh">台帳の読み込みに失敗しました（'+esc((e&&e.message)||e)+'）</div>';
+  }
+}
+
+function renderLedgerStats(s){
+  if(!s) return '';
+  const rate=s.total?Math.round((s.done/s.total)*100):0;
+  const avg=s.avg_duration_sec?Math.round(s.avg_duration_sec/60):0;
+  return `<div class="ledger-stats">
+    <div class="lstat"><div class="lstat-num">${s.total||0}</div><div class="lstat-lbl">直近${s.window_days||7}日</div></div>
+    <div class="lstat"><div class="lstat-num" style="color:var(--accent-success)">${s.done||0}</div><div class="lstat-lbl">成功</div></div>
+    <div class="lstat"><div class="lstat-num" style="color:var(--accent-danger)">${s.failed||0}</div><div class="lstat-lbl">失敗</div></div>
+    <div class="lstat"><div class="lstat-num" style="color:var(--accent-info)">${s.in_progress||0}</div><div class="lstat-lbl">実行中</div></div>
+    <div class="lstat"><div class="lstat-num">${rate}%</div><div class="lstat-lbl">成功率</div></div>
+    <div class="lstat"><div class="lstat-num">${avg}分</div><div class="lstat-lbl">平均所要</div></div>
+    <div class="lstat"><div class="lstat-num">${s.auto_resume_chains||0}</div><div class="lstat-lbl">自動再開</div></div>
+  </div>`;
+}
+
+function renderLedgerControls(){
+  const opts=['','in_progress','done','failed','cancelled','reconstructed'];
+  const labels={'':'すべて',in_progress:'実行中',done:'成功',failed:'失敗',cancelled:'取消',reconstructed:'復元'};
+  let sel='<select id="ledgerStatusSel" class="fi" style="max-width:140px" onchange="onLedgerFilterChange()">';
+  opts.forEach(o=>{sel+=`<option value="${o}"${o===_ledgerFilter.status?' selected':''}>${labels[o]}</option>`;});
+  sel+='</select>';
+  return `<div class="ledger-controls">
+    <label class="fl" style="margin:0">状態</label> ${sel}
+    <button class="btn btn-ghost btn-sm" onclick="loadLedger()">更新</button>
+    <button class="btn btn-ghost btn-sm" onclick="reapStaleRuns()" title="6時間以上 in_progress のまま放置された run を失敗に降格">stale 整理</button>
+  </div>`;
+}
+
+function _ledgerBadge(st){
+  const cls=_LEDGER_BADGE[st]||'badge-neutral';
+  return `<span class="badge ${cls}">${esc(st||'?')}</span>`;
+}
+
+function renderLedgerTable(runs){
+  if(!runs.length){return '<div class="fh" style="padding:var(--space-4)">まだ実行履歴がありません</div>';}
+  let rows='';
+  runs.forEach(r=>{
+    const dur=r.duration_sec!=null
+      ?(r.duration_sec>=60?Math.round(r.duration_sec/60)+'分':r.duration_sec+'秒'):'-';
+    const exit=r.exit_code!=null?r.exit_code:'';
+    const fail=r.failed_stage?` <span class="badge badge-danger">${esc(r.failed_stage)}</span>`:'';
+    const resumeCommand=`python3 app_pipeline.py ${String(r.vol||'')} --from ${r.failed_stage||''}`;
+    const resumeHint=(r.status==='failed'&&r.failed_stage)
+      ?`<div class="ledger-hint"><button class="btn btn-ghost btn-sm" onclick="copyUiText(decodeURIComponent('${encodeURIComponent(resumeCommand)}'),'再現コマンドをコピーしました')">コマンドをコピー</button></div>`:'';
+    const rawSummary=String(r.summary||'');
+    const summaryText=/reaped as stale\s*>\s*21600s/i.test(rawSummary)?'6時間応答なしのため打ち切り':rawSummary;
+    const summary=r.summary?`<div class="ledger-sum" title="${esc(rawSummary)}">${esc(summaryText)}</div>`:'';
+    const chainBtn=r.parent_run_id?`<button class="btn btn-ghost btn-sm" onclick="showRunChain('${esc(r.run_id)}')">連鎖</button>`:'';
+    const started=r.started_at?String(r.started_at).replace('T',' ').replace(/(\.\d+)?Z?$/,''):'';
+    rows+=`<tr>
+      <td title="台帳に記録されたチャンネル名">${esc((r.channel_name&&r.channel_name!=='(unknown)'&&r.channel_name!=='unknown')?r.channel_name:(r.channel_id&&r.channel_id!=='unknown'?r.channel_id:'-'))}</td>
+      <td>vol.${esc(String(r.vol||''))}</td>
+      <td><span class="badge badge-neutral">${esc(r.kind||'')}</span></td>
+      <td>${_ledgerBadge(r.status)}${fail}</td>
+      <td>${esc(r.from_stage||'')}</td>
+      <td>${esc(started)}</td>
+      <td>${dur}</td>
+      <td>${esc(String(exit))}</td>
+      <td>${chainBtn}${summary}${resumeHint}</td>
+    </tr>`;
+  });
+  return `<div class="ledger-table-wrap"><table class="ledger-table">
+    <thead><tr><th>チャンネル</th><th>vol</th><th>種別</th><th>状態</th><th>from</th><th>開始</th><th>所要</th><th>exit</th><th>詳細</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function onLedgerFilterChange(){
+  const sel=document.getElementById('ledgerStatusSel');
+  if(sel)_ledgerFilter.status=sel.value;
+  loadLedger();
+}
+
+async function reapStaleRuns(){
+  if(!confirm('6時間以上 in_progress のまま放置された run を「失敗」に降格します。よろしいですか？')) return;
+  try{
+    const r=await fetch('/api/runs/ledger/reap',{method:'POST'});
+    const d=await r.json();
+    const n=(d&&d.reaped!=null)?d.reaped:0;
+    toast(n+' 件を失敗に降格しました','s');
+    loadLedger();
+  }catch(e){toast('stale 整理に失敗: '+((e&&e.message)||e),'e');}
+}
+
+async function showRunChain(runId){
+  try{
+    const r=await fetch('/api/runs/ledger/'+encodeURIComponent(runId)+'/chain');
+    if(!r.ok){toast('連鎖の取得に失敗','e');return;}
+    const d=await r.json();
+    const chain=(d&&d.chain)||[];
+    let h='<div class="mo-head"><div class="mo-title">実行連鎖（auto_resume 親子）</div><button class="mo-x" onclick="closeModal()" aria-label="閉じる">閉じる</button></div><div class="mo-body"><table class="ledger-table"><thead><tr><th>#</th><th>vol</th><th>状態</th><th>from</th><th>失敗工程</th><th>開始</th></tr></thead><tbody>';
+    chain.forEach((c,i)=>{
+      const st=c.started_at?String(c.started_at).replace('T',' ').replace(/(\.\d+)?Z?$/,''):'';
+      h+=`<tr><td>${i+1}</td><td>vol.${esc(String(c.vol||''))}</td><td>${_ledgerBadge(c.status)}</td><td>${esc(c.from_stage||'')}</td><td>${esc(c.failed_stage||'')}</td><td>${esc(st)}</td></tr>`;
+    });
+    h+='</tbody></table></div>';
+    modal(h);
+  }catch(e){toast('連鎖の取得に失敗: '+((e&&e.message)||e),'e');}
+}
+
+/* ==== 全チャンネル稼働状況（P1-7） ==== */
+async function loadRunsActive(){
+  const body=document.getElementById('runsActiveBody');
+  const sum=document.getElementById('runsActiveSummary');
+  if(!body) return;
+  try{
+    const r=await fetch('/api/runs/active');
+    if(!r.ok){body.innerHTML='<div class="fh">読込失敗</div>';return}
+    const d=await r.json();
+    renderRunsActive(d);
+    const chN=(d.channels||[]).length;
+    const upN=(d.channels||[]).reduce((acc,c)=>acc+(c.vols||[]).filter(v=>v.is_uploaded).length, 0);
+    const inProgN=(d.channels||[]).reduce((acc,c)=>acc+(c.vols||[]).filter(v=>!v.is_done&&!v.is_uploaded&&v.current).length, 0);
+    if(sum) sum.textContent=`${chN} チャンネル / 進行中 ${inProgN} / 公開済 ${upN}（直近 5 vol）`;
+  }catch(e){body.innerHTML='<div class="fh">読込エラー: '+esc(e.message||e)+'</div>'}
+}
+
+function renderRunsActive(d){
+  const body=document.getElementById('runsActiveBody');
+  if(!body) return;
+  const chs=d.channels||[];
+  if(chs.length===0){
+    body.innerHTML='<div class="fh">チャンネルが未登録です。基本設定 > チャンネル管理から追加してください。</div>';
+    return;
+  }
+  let chHtml=`<div class="runs-grid">`;
+  chs.forEach(ch=>{
+    const q=ch.quota||{};
+    const used=q.used||0, cap=q.cap||0;
+    const pct=cap>0 ? Math.min(100, Math.round(used*100/cap)) : 0;
+    const qLevel = pct>=90 ? 'danger' : pct>=70 ? 'warn' : '';
+    const qText = cap>0 ? `API使用量 ${used}/${cap} (${pct}%)` : '';
+    const icon = ch.icon_url
+      ? `<img class="runs-ch-icon" src="${esc(ch.icon_url)}" loading="lazy" onerror="this.style.opacity=.3">`
+      : `<div class="runs-ch-icon" style="display:flex;align-items:center;justify-content:center;font-size:var(--text-3xs);color:var(--text-tertiary)">CH</div>`;
+    let volsHtml=(ch.vols||[]).map(v=>{
+      const completed=new Set(v.completed||[]);
+      if(v.has_thumb)completed.add('bgimage').add('psd_composite').add('thumbnail');
+      const segments=aggregateProgressSix(completed,v.current||'');
+      // P2-7: 公開ゲート表示
+      let gateInfo='';
+      let gateBtn='';
+      const isPub = v.published_at || v.privacy==='public';
+      if(v.is_uploaded && !isPub){
+        if(v.scheduled_publish_at){
+          const at=new Date(v.scheduled_publish_at);
+          const diffH=(at - new Date())/3600000;
+          if(diffH > 0){
+            const human = diffH<1?`${Math.round(diffH*60)}分後`:`${diffH.toFixed(1)}h 後`;
+            gateInfo = ` • <span style="color:var(--accent-warning)" title="公開予定: ${esc(v.scheduled_publish_at)}">${human} 公開</span>`;
+          }else{
+            gateInfo = ` • <span style="color:var(--accent-info)">公開待ち（過去日付）</span>`;
+          }
+          gateBtn=`<button class="btn btn-ghost btn-sm" style="font-size:var(--text-2xs);padding:2px 6px;margin-left:4px" onclick="event.stopPropagation();publishNow('${esc(v.name)}')" title="今すぐ公開">公開</button>`;
+        }else if((v.privacy||'')==='private'){
+          gateInfo = ` • <span style="color:var(--text-tertiary)">private</span>`;
+          gateBtn=`<button class="btn btn-ghost btn-sm" style="font-size:var(--text-2xs);padding:2px 6px;margin-left:4px" onclick="event.stopPropagation();publishNow('${esc(v.name)}')" title="今すぐ公開">公開</button>`;
+        }
+      }
+      const stageText=v.is_done?(isPub?'公開済':(v.is_uploaded?'公開済':'完了')): v.current?`次: ${esc(progressSixLabelForStage(v.current))}`:'-';
+      const conceptHtml=v.concept?esc(v.concept):`<span class="fh">${esc(v.name||'')}</span>`;
+      return `<div class="runs-vol-row${v.is_done?' is-done':''}" onclick="showVideoDetail('${esc(v.name)}');go('videos')" style="cursor:pointer">
+        <div class="runs-vol-num">vol.${esc(v.vol||'?')}</div>
+        <div class="runs-vol-info">
+          <div class="runs-vol-concept" title="${esc(v.concept||v.name||'')}">${conceptHtml}</div>
+          <div class="runs-vol-stage">${stageText}${v.video_id?' • <a href="https://youtu.be/'+esc(v.video_id)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">YT</a>':''}${gateInfo}${gateBtn}</div>
+        </div>
+        ${renderProgressSix(segments,{compact:true})}
+      </div>`;
+    }).join('');
+    if(!volsHtml) volsHtml=`<div class="fh" style="font-size:var(--text-xs);padding:6px 0">vol 無し</div>`;
+    chHtml+=`<div class="runs-ch-card">
+      <div class="runs-ch-head">
+        ${icon}
+        <div class="runs-ch-name" title="${esc(ch.channel_folder)}">${esc(ch.channel_name||'(no name)')}</div>
+        <div class="runs-ch-quota ${qLevel}" title="直近 ${q.window_h||24}h, 1 upload=${q.per_upload||100}u">${qText}</div>
+      </div>
+      ${cap>0?`<div class="runs-quota-bar"><span class="${qLevel}" style="width:${pct}%"></span></div>`:''}
+      ${volsHtml}
+    </div>`;
+  });
+  chHtml+=`</div>`;
+  // 履歴（直近 10 件）。生ログ（enabled=2 eval=0 ...）は日本語に要約し、既定は折りたたみ
+  const hist=(d.history_recent||[]).slice(0,10);
+  let histHtml='';
+  if(hist.length){
+    const human=s=>{
+      const m=String(s||'').match(/enabled=(\d+) eval=(\d+) dispatched=(\d+) skipped_quota=(\d+)/);
+      if(!m)return s||'';
+      return `自動運転ON ${m[1]}ch・候補評価 ${m[2]}・投入 ${m[3]}・quota見送り ${m[4]}`;
+    };
+    const last=hist[0]||{};
+    const lastT=(last.at||'').replace('T',' ').slice(11,16);
+    histHtml=`<details class="runs-history"><summary style="cursor:pointer;font-weight:600;font-size:var(--text-sm)">直近のジョブ実行（最終 ${esc(lastT)} ${last.status==='ok'?'正常':esc(last.status||'')}・${esc(human(last.detail))}）</summary>`;
+    hist.forEach(h=>{
+      const t=(h.at||'').replace('T',' ').slice(11,19);
+      histHtml+=`<div class="runs-history-item"><span class="h-time">${esc(t)}</span><span class="h-status ${esc(h.status||'')}">${esc(h.status||'')}</span><span class="h-detail" title="${esc(h.detail||'')}">${esc(human(h.detail))||esc(h.job_id||'')}</span></div>`;
+    });
+    histHtml+='</details>';
+  }
+  body.innerHTML=chHtml+histHtml;
+}
+
+let _dashQuotaOpen=false;
+
+function formatQuotaSummary(label, quota){
+  const used=Number(quota?.used||0);
+  const cap=Number(quota?.cap||10000);
+  const pct=(quota?.pct!=null)?quota.pct:(cap?((used/cap)*100).toFixed(2):0);
+  return `${label} ${used.toLocaleString()}/${cap.toLocaleString()} (${pct}%)`;
+}
+
+function renderQuotaOpenState(){
+  const card=document.getElementById('dashQuotaCard');
+  const detail=document.getElementById('dashQuotaDetail');
+  if(card){
+    card.dataset.open=String(_dashQuotaOpen);
+    const head=card.querySelector('.dash-quota-head');
+    if(head)head.setAttribute('aria-expanded',String(_dashQuotaOpen));
+  }
+  if(detail)detail.hidden=!_dashQuotaOpen;
+}
+
+function toggleDashQuota(){
+  _dashQuotaOpen=!_dashQuotaOpen;
+  renderQuotaOpenState();
+}
+
+async function loadMonetizationCards(force){
+  const el=document.getElementById('dashMonetization');
+  if(!el)return;
+  el.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const r=await fetchWithTimeout('/api/monetization'+(force?'?force=true':''));
+    const d=await r.json();
+    if(!r.ok){el.innerHTML='<div class="fh">未取得（更新で取得）</div>';return}
+    const chs=d.channels||[];
+    if(!chs.length){el.innerHTML='<div class="fh">チャンネルがありません</div>';return}
+    el.innerHTML=`<div class="dash-monetization-grid">${chs.map(ch=>{
+      const latest=ch.latest||{};
+      const hasLatest=latest.subscriber_count!=null;
+      if(!hasLatest)return `<div class="stat dash-monetization-card">
+        <div class="stat-l" title="${esc(ch.name||'')}">${esc(ch.name||'-')}</div>
+        <div class="fh" style="margin:0">未取得（更新で取得）</div>
+        ${ch.error?`<div class="fh" style="color:var(--accent-danger);margin-top:var(--space-1)">${esc(ch.error)}</div>`:''}
+      </div>`;
+      const subs=Number(latest.subscriber_count||0);
+      const pct=Number(ch.subscriber_progress_pct||0);
+      const pred=ch.subscriber_prediction||{};
+      const analytics=ch.analytics||{};
+      const predText=pred.date||({achieved:'達成済',no_growth:'予測不可',insufficient_data:'履歴不足'}[pred.status]||'-');
+      const watch=analytics.needs_reauth
+        ? `<a href="#settings" onclick="go('settings');setTimeout(()=>document.getElementById('cfgChannelsList')?.scrollIntoView({behavior:'smooth',block:'start'}),200);return false">再認証で有効化</a>`
+        : esc((analytics.watch_hours_28d!=null?analytics.watch_hours_28d:'-')+'h / 28d');
+      const err=ch.status==='ok'?'':`<div class="fh" style="color:var(--accent-danger);margin-top:var(--space-1)">${esc(ch.error||ch.status||'取得失敗')}</div>`;
+      return `<div class="stat dash-monetization-card">
+        <div class="stat-l" title="${esc(ch.name||'')}">${esc(ch.name||'-')}</div>
+        <div class="stat-v">${subs.toLocaleString()}</div>
+        <div class="stat-sub">登録者 / 1,000人まで ${Math.max(0,1000-subs).toLocaleString()}</div>
+        <div class="dash-progress"><span style="width:${Math.min(100,pct)}%"></span></div>
+        <div class="fh" style="margin:0">予測: ${esc(predText)} / 総再生時間: ${watch}</div>
+        ${err}
+      </div>`;
+    }).join('')}</div>`;
+  }catch(e){if(e?.name!=='AbortError')el.innerHTML='<div class="fh">未取得（更新で取得）</div>'}
+}
+
+async function loadQuotaCard(){
+  const el=document.getElementById('dashQuota');
+  if(!el)return;
+  el.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const r=await fetch('/api/quota');
+    const d=await r.json();
+    if(!r.ok){el.innerHTML='<div class="fh">取得失敗</div>';return}
+    const std=d.standard||{},bat=d.batchGetStats||{};
+    const methodRows=(d.methods||[]).slice(0,6).map(m=>`<tr><td>${esc(m.method)}</td><td style="text-align:right">${Number(m.calls||0).toLocaleString()}</td><td style="text-align:right">${Number(m.cost||0).toLocaleString()}</td></tr>`).join('');
+    el.innerHTML=`<div class="dash-quota-summary">${esc(formatQuotaSummary('標準枠',std))}</div>
+    <div id="dashQuotaDetail" class="dash-quota-detail" hidden>
+      <div class="dash-quota-stat-grid">
+        <div class="stat dash-quota-stat"><div class="stat-l">標準枠</div><div class="stat-v">${Number(std.used||0).toLocaleString()}</div><div class="stat-sub">${Number(std.cap||10000).toLocaleString()} unit 中 ${std.pct||0}%</div></div>
+        <div class="stat dash-quota-stat"><div class="stat-l">batchGetStats 専用枠</div><div class="stat-v">${Number(bat.used||0).toLocaleString()}</div><div class="stat-sub">${Number(bat.cap||10000).toLocaleString()} unit 中 ${bat.pct||0}%</div></div>
+      </div>
+      <table class="ledger-table"><thead><tr><th>method</th><th style="text-align:right">calls</th><th style="text-align:right">cost</th></tr></thead><tbody>${methodRows||'<tr><td colspan="3" class="fh">本日の記録なし</td></tr>'}</tbody></table>
+      <div class="fh dash-quota-log">log: <code>${esc(d.log_path||'')}</code></div>
+    </div>`;
+    renderQuotaOpenState();
+  }catch(e){el.innerHTML='<div class="fh">取得失敗: '+esc(e.message||e)+'</div>'}
+}
+
+async function loadDashboard(){
+  try{
+    loadAutopilot();
+    loadWeeklyTasks();
+    loadPdcaReport();
+    loadMonetizationCards(false);
+    loadQuotaCard();
+    loadRunsActive();
+    refreshAutoApprovalHint();
+    checkOnboardingState();
+    const today=new Date();
+    const future=new Date(today.getTime()+14*86400000);
+    const dp=document.getElementById('dashBmPublishDate');
+    if(dp && !dp.value)dp.value=future.toISOString().slice(0,10);
+    let vs=[];
+    if(_uiChannelId==='all'){
+      const d=await (await fetch('/api/runs/active')).json();
+      vs=(d.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{
+        const done=new Set(v.completed||[]);
+        if(v.has_thumb)done.add('bgimage').add('psd_composite').add('thumbnail');
+        return {name:v.name,num:v.vol,title:'',publish_date:v.publish_date,channel_id:ch.channel_id,has_music:done.has('rename'),has_mp4:(done.has('export')||done.has('render')),has_upload:!!v.is_uploaded,progress:{done_stages:[...done],next_stage:v.current||''}};
+      }));
+    }else{
+      const d=await (await fetch('/api/videos')).json();vs=d.videos||[];
+    }
+    const total=vs.length;
+    const pending=vs.filter(v=>!v.has_music).length;
+    const readyToExport=vs.filter(v=>v.has_music && !v.has_mp4).length;
+    const uploaded=vs.filter(v=>v.has_upload).length;
+    const unUploaded=vs.filter(v=>v.has_mp4 && !v.has_upload).length;
+    const st=document.getElementById('dashStats');
+    st.innerHTML=`
+      <div class="stat"><div class="stat-l">総動画数</div><div class="stat-v">${total}</div><div class="stat-sub">動画一覧</div></div>
+      <div class="stat"><div class="stat-l">書き出し待ち</div><div class="stat-v" style="color:var(--accent-warning)">${readyToExport}</div><div class="stat-sub">楽曲あり・MP4なし</div></div>
+      <div class="stat"><div class="stat-l">アップロード待ち</div><div class="stat-v" style="color:var(--accent-info)">${unUploaded}</div><div class="stat-sub">MP4あり・未公開</div></div>
+      <div class="stat"><div class="stat-l">アップロード済</div><div class="stat-v" style="color:var(--accent-success)">${uploaded}</div><div class="stat-sub">YouTube 登録済</div></div>`;
+
+    // 次にやること: 未完のうち最も進んでいる動画3件を抽出
+    const candidates=vs.map(v=>({v,prog:workflowProgress(v)})).filter(x=>x.prog.done<x.prog.total);
+    candidates.sort((a,b)=>b.prog.done-a.prog.done);
+    const next=candidates.slice(0,5);
+    const nextEl=document.getElementById('dashNext');
+    if(next.length===0){
+      nextEl.innerHTML='<div class="empty">全ての動画が完了しています </div>';
+    }else{
+      nextEl.innerHTML=next.map(({v,prog})=>{
+        const cur=prog.steps.find(s=>s.current);
+        const t=v.title||v.name;
+        return `<div class="video-row dash-progress-row" onclick="${_uiChannelId==='all'?`openCrossChannelVideo('${esc(v.channel_id)}','${esc(v.name)}')`:`goToVideoDetail('${esc(v.name)}')`}" style="grid-template-columns:44px minmax(0,1fr) minmax(240px,320px);padding:var(--space-3)">
+          <div class="vr-num">vol.${v.num}</div>
+          <div style="min-width:0"><div class="vr-title">${esc(t)}</div><div class="vr-sub">${cur?'次: '+cur.label:'—'}</div></div>
+          ${renderProgressSix(prog.steps)}
+        </div>`;
+      }).join('');
+    }
+
+    // 最近の動画（上位5件）
+    const recent=vs.slice(0,5);
+    const recEl=document.getElementById('dashRecent');
+    if(recent.length===0){
+      recEl.innerHTML='<div class="empty">動画フォルダがありません<div class="empty-sub">「+ 新規動画」から作成してください</div></div>';
+    }else{
+      recEl.innerHTML=recent.map(v=>{
+        const p=workflowProgress(v);
+        const t=v.title||v.name;
+        return `<div class="video-row dash-progress-row" onclick="${_uiChannelId==='all'?`openCrossChannelVideo('${esc(v.channel_id)}','${esc(v.name)}')`:`goToVideoDetail('${esc(v.name)}')`}" style="grid-template-columns:44px minmax(0,1fr) minmax(240px,320px);padding:var(--space-3)">
+          <div class="vr-num">vol.${v.num}</div>
+          <div style="min-width:0"><div class="vr-title">${esc(t)}</div><div class="vr-sub">${esc(v.publish_date||'公開日未設定')}</div></div>
+          ${renderProgressSix(p.steps)}
+        </div>`;
+      }).join('');
+    }
+  }catch(e){console.error(e)}
+}
+
+/* ==== Video Filter ==== */
+let _videoFilter='all';
+let _videosCache=[];  // loadVideos で保持
+function applyVideoFilter(){
+  const q=(document.getElementById('vSearchInput')?.value||'').toLowerCase();
+  document.querySelectorAll('.video-row[data-name]').forEach(row=>{
+    const name=(row.dataset.name||'').toLowerCase();
+    const title=(row.dataset.title||'').toLowerCase();
+    const done=row.dataset.done==='true';
+    const hid=row.dataset.hidden==='true';
+    let show=true;
+    if(_videoFilter==='all'&&hid)show=false;       // 通常は非表示を隠す
+    if(_videoFilter==='active'&&(done||hid))show=false;
+    if(_videoFilter==='done'&&(!done||hid))show=false;
+    if(_videoFilter==='hidden'&&!hid)show=false;    // 非表示のみ表示
+    if(q&&!name.includes(q)&&!title.includes(q))show=false;
+    row.classList.toggle('filter-hidden',!show);
+  });
+  // 件数バッジ更新（フィルタ UI 削除済みなので存在チェック）
+  const visible=document.querySelectorAll('.video-row[data-name]:not(.filter-hidden)').length;
+  const total=document.querySelectorAll('.video-row[data-name]').length;
+  const label={all:'全て',active:'進行中',done:'完了済み',hidden:'非表示'}[_videoFilter];
+  const onBtn=document.querySelector('#vFilterBtns .on');
+  if(onBtn)onBtn.textContent=`${label} (${visible})`;
+}
+
+/* ==== Videos List ==== */
+async function loadVideos(){
+  try{
+    let vs=[];
+    if(_uiChannelId==='all'){
+      const runs=await (await fetch('/api/runs/active')).json();
+      vs=(runs.channels||[]).flatMap(ch=>(ch.vols||[]).map(v=>{
+        const done=new Set(v.completed||[]);
+        if(v.has_thumb)done.add('bgimage').add('psd_composite').add('thumbnail');
+        return {num:v.vol,name:v.name,channel_id:ch.channel_id,channel_name:ch.channel_name,title:'',concept:v.concept||'',publish_date:v.publish_date||'',has_thumb:!!v.has_thumb,has_upload:!!v.is_uploaded,is_hidden:false,progress:{done_stages:[...done],is_complete:!!v.is_done,next_stage:v.current||'',action:{kind:'open',label:'詳細を見る',stage:''},publish:{scheduled:!!v.publish_date,is_past_due:false}}};
+      }));
+    }else{
+      const d=await (await fetch('/api/videos')).json();vs=d.videos||[];
+    }
+    _videosCache=vs;
+    const list=document.getElementById('vList');
+    document.getElementById('vDetail').style.display='none';list.style.display='block';
+
+    if(vs.length===0){
+      list.innerHTML='<div class="card empty">動画フォルダがありません<div class="empty-sub">右上「+ 新規動画」から公開日を指定して作成してください</div></div>';
+      return;
+    }
+
+    let html=`<div class="production-toolbar">
+      <input class="fi" id="vSearchInput" type="search" placeholder="vol番号またはタイトルで検索" aria-label="動画を検索" oninput="applyVideoFilter()">
+      <button class="btn btn-primary" onclick="showCreateVideoModal()">新規vol作成</button>
+    </div><div class="video-table">
+      <div class="video-table-head">
+        <div>動画</div>
+        <div>工程進捗</div>
+        <div>公開予定</div>
+        <div>状態</div>
+        <div style="text-align:right">次のアクション</div>
+      </div>`;
+    vs.forEach(v=>{
+      const summary=v.progress||{};
+      const segments=progressSixForVideo(v);
+      const thumbChannel=v.channel_id?`?channel_id=${encodeURIComponent(v.channel_id)}`:'';
+      const thumbUrl=v.has_thumb?`/api/youtube-desc/thumbnail/${encodeURIComponent(v.name)}${thumbChannel}`:null;
+      const displayTitle=v.title||v.name;
+      const subLine=`vol.${esc(v.num)}${v.channel_name?' ・ '+esc(v.channel_name):''}`;
+      const isDone=!!summary.is_complete;
+      const isHidden=!!v.is_hidden;
+      if(isHidden && _videoFilter!=='hidden') return; // forEach 内は return でスキップ
+      const hiddenBadge=isHidden?'<span class="badge badge-neutral" style="margin-left:var(--space-2)">非表示中</span>':'';
+      const pub=summary.publish||{};
+      const action=summary.action||{kind:'run',label:'続きを実行',stage:''};
+      const state=summary.failure?'エラー':isDone?'完了':(summary.next_stage?'制作中':'待機中');
+      const pubClass=pub.is_past_due?'past':pub.scheduled?'scheduled':'';
+      const pubPrefix=pub.is_past_due?'⚠ ':pub.scheduled?'● ':'';
+      const openAction=_uiChannelId==='all'?`openCrossChannelVideo('${esc(v.channel_id)}','${esc(v.name)}')`:`showVideoDetail('${esc(v.name)}')`;
+      html+=`<div class="video-row" data-name="${esc(v.name)}" data-title="${esc(displayTitle)}" data-done="${isDone}" data-hidden="${isHidden}" data-action="${esc(action.label)}" onclick="${openAction}" style="${isHidden?'opacity:.55':''}">
+        <div class="vr-main">
+          ${thumbUrl?`<img class="vr-thumb" src="${thumbUrl}" onerror="this.outerHTML='<div class=\\'vr-thumb-empty\\'>IMG</div>'">`:'<div class="vr-thumb-empty">IMG</div>'}
+          <div class="vr-info"><div class="vr-title">${esc(displayTitle)}${hiddenBadge}</div><div class="vr-sub">${subLine}</div></div>
+        </div>
+        ${renderProgressSix(segments)}
+        <div><span class="publish-chip ${pubClass}">${pubPrefix}${esc(v.publish_date||'未設定')}</span></div>
+        <div><span class="state-chip">${esc(state)}</span></div>
+        <div class="vr-actions">
+          <button class="btn ${action.kind==='run'||action.kind==='youtube'?'btn-primary':'btn-secondary'} btn-sm next-action" onclick="event.stopPropagation();${_uiChannelId==='all'?openAction:`handleVideoNextAction('${esc(v.name)}','${esc(action.kind)}','${esc(action.stage||'')}','${esc(action.video_id||'')}')`}">${esc(action.label)}</button>
+        </div>
+      </div>`;
+    });
+    html+='</div>';
+    list.innerHTML=html;
+    // フィルター再適用
+    applyVideoFilter();
+    // シリーズ提案パネルがあるなら、開いていれば自動で内容ロード
+    const sp=document.getElementById('seriesPanel');
+    if(sp&&sp.open) loadSeriesProposals();
+    else updateSeriesMeta();
+  }catch(e){console.error(e)}
+}
+
+async function openCrossChannelVideo(channelId,name){
+  await switchCh(channelId,true);
+  navigate({page:'videos',video:name});
+}
+
+async function handleVideoNextAction(name,kind,stage,videoId){
+  if(kind==='youtube'&&videoId){window.open(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,'_blank','noopener');return}
+  if(kind==='schedule'){showVideoDetail(name);setTimeout(()=>setTab('meta'),100);return}
+  if(kind==='error'){showVideoDetail(name);toast('詳細画面でエラー内容と実行履歴を確認してください','w');return}
+  if((kind==='run'||kind==='premiere')&&stage){  // premiere は段階 1a で ffmpeg 書き出しへ引き継ぐ工程（続きを実行と同じ）
+    try{
+      const r=await fetch(`/api/videos/${encodeURIComponent(name)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:[stage]})});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.detail||'起動できませんでした');
+      toast(`${stage} をバックグラウンドで開始しました`,'s');
+      setTimeout(loadVideos,1200);
+    }catch(e){toast(e.message||'起動できませんでした','e')}
+  }
+}
+
+/* ==== コンセプト（端的な日本語1行） ==== */
+function renderConceptCell(v){
+  const c=(v.concept||'').trim();
+  if(c){
+    const safe=esc(c);
+    return `<span class="vc-text" title="${safe}">${safe}</span>`+
+      `<button class="vc-btn vc-regen" title="再生成" onclick="genConcept('${esc(v.name)}', this)">↻</button>`;
+  }
+  return `<span class="vc-empty">未生成</span>`+
+    `<button class="vc-btn" title="ベンチマーク分析を元に Claude が生成" onclick="genConcept('${esc(v.name)}', this)">生成</button>`;
+}
+
+async function genConcept(name, btn){
+  if(!btn) return;
+  const cell=btn.closest('.vr-concept');
+  const orig=btn.textContent;
+  btn.disabled=true; btn.textContent='…';
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/generate-concept`, {method:'POST'});
+    if(!r.ok){
+      const t=await r.text().catch(()=>'');
+      throw new Error(t||r.statusText);
+    }
+    const d=await r.json();
+    const c=(d.concept||'').trim();
+    if(cell){
+      cell.innerHTML=renderConceptCell({name, concept:c});
+    }
+  }catch(e){
+    btn.disabled=false; btn.textContent=orig;
+    toast('コンセプト生成失敗: '+(e.message||e),'e');
+  }
+}
+
+/* ==== シリーズ画像案（v3：ベンチマーク分析駆動） ==== */
+let _seriesCache={proposals:[],generated_at:''};
+let _seriesSelected=new Set();
+
+async function updateSeriesMeta(){
+  // パネル閉じてる時のサマリ表示用
+  try{
+    const r=await fetch('/api/series/proposals');
+    if(!r.ok) return;
+    const d=await r.json();
+    const meta=document.getElementById('seriesMeta');
+    if(!meta) return;
+    const n=(d.proposals||[]).length;
+    if(n===0){meta.textContent='（未生成 — クリックで開いて生成）';return}
+    const at=d.generated_at?d.generated_at.slice(0,16).replace('T',' '):'';
+    const gen=(d.proposals||[]).filter(p=>p.generated).length;
+    meta.textContent=`（${n} 件 / 生成済み ${gen} 件 / ${at}）`;
+  }catch(_){}
+}
+
+async function loadSeriesProposals(){
+  const grid=document.getElementById('seriesGrid');
+  if(!grid) return;
+  try{
+    const r=await fetch('/api/series/proposals');
+    if(!r.ok){grid.innerHTML='<div class="fh">読込失敗</div>';return}
+    const d=await r.json();
+    _seriesCache=d;
+    renderSeriesProposals();
+    updateSeriesMeta();
+  }catch(e){grid.innerHTML='<div class="fh">読込エラー</div>'}
+}
+
+function renderSeriesProposals(){
+  const grid=document.getElementById('seriesGrid');
+  if(!grid) return;
+  const ps=_seriesCache.proposals||[];
+  if(ps.length===0){
+    grid.innerHTML='<div class="fh" style="grid-column:1/-1">まだ提案がありません。「提案を生成」を押してください（先にベンチマーク分析が必要）</div>';
+    updateSeriesSelN();
+    return;
+  }
+  grid.innerHTML=ps.map(p=>{
+    const sel=_seriesSelected.has(p.id);
+    const gen=!!p.generated;
+    return `<div class="series-card${sel?' is-selected':''}${gen?' is-generated':''}" data-id="${esc(p.id)}">
+      <div class="sc-head">
+        <input type="checkbox" ${sel?'checked':''} onchange="toggleSeriesSelect('${esc(p.id)}',this.checked)">
+        <div class="sc-title">${esc(p.scene_jp||p.scene_en||p.id)}</div>
+      </div>
+      ${p.scene_en?`<div class="sc-en">${esc(p.scene_en)}</div>`:''}
+      ${p.rationale_jp?`<div class="sc-rationale">${esc(p.rationale_jp)}</div>`:''}
+      ${p.tags_jp?.length?`<div class="sc-tags">${p.tags_jp.map(t=>'<span class="sc-tag">'+esc(t)+'</span>').join('')}</div>`:''}
+      ${p.image_prompt_en?`<details><summary class="fh" style="cursor:pointer">英語プロンプトを表示</summary><div class="sc-prompt">${esc(p.image_prompt_en)}</div></details>`:''}
+      <div class="sc-foot">
+        <span class="sc-status${gen?' ok':''}">${gen?'✓ 生成済 → '+esc(p.output_dir||''):'未生成'}</span>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-ghost btn-sm" onclick="generateOneSeries('${esc(p.id)}')" title="このシーンだけを生成">単独生成</button>
+          <button class="btn btn-ghost btn-sm" onclick="deleteSeriesProposal('${esc(p.id)}')" title="提案を削除">×</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  updateSeriesSelN();
+}
+
+function updateSeriesSelN(){
+  const n=_seriesSelected.size;
+  const el=document.getElementById('seriesSelN'); if(el) el.textContent=String(n);
+  const btn=document.getElementById('seriesGenBtn'); if(btn) btn.disabled=(n===0);
+}
+
+function toggleSeriesSelect(id, checked){
+  if(checked) _seriesSelected.add(id); else _seriesSelected.delete(id);
+  document.querySelectorAll('.series-card').forEach(c=>{
+    c.classList.toggle('is-selected', _seriesSelected.has(c.dataset.id));
+  });
+  updateSeriesSelN();
+}
+
+function selectAllSeries(on){
+  _seriesSelected.clear();
+  if(on) (_seriesCache.proposals||[]).forEach(p=>_seriesSelected.add(p.id));
+  renderSeriesProposals();
+}
+
+async function generateSeriesProposals(){
+  const btn=document.getElementById('seriesProposeBtn');
+  const count=parseInt(document.getElementById('seriesCount').value||'8',10);
+  btn.disabled=true; btn.textContent='Claude で生成中...';
+  const grid=document.getElementById('seriesGrid');
+  grid.innerHTML='<div class="fh" style="grid-column:1/-1">ベンチマーク分析と既存動画を読み込み中...（最大 4 分）</div>';
+  try{
+    const r=await fetch('/api/series/propose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({count})});
+    if(!r.ok){
+      const e=await r.json().catch(()=>({}));
+      toast(e.detail||'提案生成に失敗','e');
+      grid.innerHTML='<div class="fh" style="color:var(--accent-danger)">'+esc(e.detail||'提案生成に失敗')+'</div>';
+      return;
+    }
+    const d=await r.json();
+    _seriesCache={proposals:d.proposals||[],generated_at:d.generated_at||''};
+    _seriesSelected.clear();
+    renderSeriesProposals();
+    updateSeriesMeta();
+    toast(`シリーズ案 ${(d.proposals||[]).length} 件を生成`,'s');
+  }catch(e){toast('接続エラー','e')}
+  finally{btn.disabled=false; btn.textContent='提案を生成 / 再生成'}
+}
+
+async function deleteSeriesProposal(id){
+  if(!confirm('この提案を削除しますか？')) return;
+  try{
+    const r=await fetch(`/api/series/proposals/${encodeURIComponent(id)}`,{method:'DELETE'});
+    if(!r.ok){toast('削除失敗','e');return}
+    _seriesSelected.delete(id);
+    _seriesCache.proposals=(_seriesCache.proposals||[]).filter(p=>p.id!==id);
+    renderSeriesProposals();
+    updateSeriesMeta();
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function generateOneSeries(id){
+  _seriesSelected.clear();
+  _seriesSelected.add(id);
+  await generateSeriesImages();
+}
+
+async function generateSeriesImages(){
+  if(_seriesSelected.size===0){toast('選択された提案がありません','w');return}
+  const provider=document.getElementById('seriesProvider').value;
+  const perCount=parseInt(document.getElementById('seriesPerCount').value||'4',10);
+  const ids=Array.from(_seriesSelected);
+  const btn=document.getElementById('seriesGenBtn');
+  btn.disabled=true;
+  const prog=document.getElementById('seriesProgress');
+  prog.textContent=`${provider} 起動中...`;
+  try{
+    const usePicked=!!(document.getElementById('seriesUseBenchPicked')||{}).checked;
+    const r=await fetch('/api/series/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,provider,count_per_proposal:perCount,use_benchmark_picked:usePicked})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.detail||'生成開始失敗','e');btn.disabled=false;return}
+    const d=await r.json();
+    toast(`${provider} で ${d.total} 件を直列生成中`,'s');
+    // ポーリングで進捗を表示
+    const poll=async()=>{
+      const sr=await fetch('/api/series/status');
+      if(!sr.ok){btn.disabled=false;return}
+      const sd=await sr.json();
+      const m=sd.meta||{};
+      prog.innerHTML=`進捗: <strong>${m.done||0}/${m.total||0}</strong> ${m.current?'（処理中: '+esc(m.current)+'）':''}`+
+        (sd.logs&&sd.logs.length?'<details style="margin-top:4px"><summary class="fh" style="cursor:pointer">ログ表示</summary><pre style="white-space:pre-wrap;font-size:var(--text-2xs);max-height:200px;overflow-y:auto;background:var(--bg-elevated);padding:6px;border-radius:var(--radius-xs)">'+esc(sd.logs.slice(-40).join("\n"))+'</pre></details>':'');
+      if((m.done||0) >= (m.total||0) && m.total>0){
+        btn.disabled=false;
+        toast(`画像生成完了（成功 ${(m.total||0)-(m.errors||[]).length} / 失敗 ${(m.errors||[]).length}）`,'s');
+        loadSeriesProposals();  // generated フラグを反映
+        return;
+      }
+      setTimeout(poll, 3000);
+    };
+    setTimeout(poll, 2000);
+  }catch(e){toast('接続エラー','e');btn.disabled=false}
+}
+
+/* ==== Video Detail (タブ構成) ==== */
+async function showVideoDetail(name, fromRouter=false){
+  if(!fromRouter)return navigate({page:'videos',video:name});
+  try{
+    _curVideo=name;
+    const[dr,tr]=await Promise.all([
+      fetch(`/api/videos/${encodeURIComponent(name)}/detail`),
+      fetch(`/api/videos/${encodeURIComponent(name)}/title`)
+    ]);
+    const d=await dr.json(),td=await tr.json();
+    const cachedVideo=_videosCache.find(video=>video.name===name);
+    const v={
+      name:d.name,num:d.num,
+      has_music:d.readiness.music,has_srt:d.readiness.srt,
+      has_mp4:d.readiness.mp4,has_desc:d.readiness.description,
+      has_tags:d.readiness.tags,has_bg_image:d.readiness.bg_image,
+      has_thumb:d.readiness.thumbnail,has_upload:!!d.readiness.upload,
+      progress:cachedVideo?.progress,
+    };
+    const p=workflowProgress(v);
+    _curTab='edit';
+
+    const el=document.getElementById('vDetail');
+    el.style.display='block';
+    document.getElementById('vList').style.display='none';
+    // 動画詳細展開時: ワークスペースを全幅化（右パネル非表示）
+    document.querySelector('.ct-workspace')?.classList.add('detail-open');
+
+    const thumbHtml=d.thumbnail
+      ?`<img class="detail-thumb" src="/api/youtube-desc/thumbnail/${encodeURIComponent(name)}">`
+      :'<div class="detail-thumb-empty">IMG</div>';
+
+    const rd=d.readiness;
+
+    el.innerHTML=`
+      <div class="detail-toolbar">
+        <button class="detail-back" onclick="backToList()" style="margin:0">← 一覧に戻る</button>
+        <div class="detail-actions">
+          <button class="btn btn-secondary btn-sm" onclick="openF('${esc(d.path)}')" title="Finder でフォルダを開く">フォルダ</button>
+        </div>
+      </div>
+      <div class="detail-head">
+        ${thumbHtml}
+        <div class="detail-meta">
+          <div class="detail-title">vol.${d.num}</div>
+          <div class="detail-sub">公開予定: ${esc(d.publish_date||'未設定')} ・ 楽曲: ${d.music_count}曲${d.mp4_file?` ・ MP4: ${d.mp4_size_mb}MB`:''}</div>
+          ${renderProgressSix(p.steps)}
+        </div>
+      </div>
+      <!-- 自動実行バー（連結関係をグループで可視化） -->
+      <div class="auto-exec-bar" id="autoExecBar">
+        <span class="aeb-title">自動実行</span>
+        <div class="auto-exec-main">
+          <span class="aeb-group" title="生成工程">
+            <span class="aeb-group-title">生成</span>
+            <label title="SUNO で楽曲を生成し Workspace からダウンロードします"><input type="checkbox" data-step="suno" checked> 楽曲</label>
+            <label title="DL 済み MP3 にフェードアウト・ゲイン正規化を適用し music/ へ出力します"><input type="checkbox" data-step="rename" checked> 楽曲加工</label>
+            <label title="画像（サムネ）は手動で選択してください。自動化は今後対応予定です。" style="opacity:.55;cursor:not-allowed"><input type="checkbox" data-step="images" disabled> 画像</label>
+          </span>
+          <span class="aeb-group" title="制作・編集工程">
+            <span class="aeb-group-title">編集</span>
+            <label title="画像エディタ（Pillow）で vol{N}.jpg + サムネイル.jpg を 2 枚出し（1920×1080）"><input type="checkbox" data-step="psd_composite" checked> 画像合成</label>
+            <label title="配置は FFmpeg 書き出しに統合されています（この工程は自動で通過）"><input type="checkbox" data-step="premiere" checked> 配置</label>
+            <label title="FFmpeg で MP4 を書き出します（音声・映像・字幕・タイムコード）"><input type="checkbox" data-step="export" checked> 書き出し</label>
+            <label title="AI でタイトル候補・説明文・タグを生成します"><input type="checkbox" data-step="meta" checked> メタ</label>
+          </span>
+          <span class="aeb-group" title="公開工程">
+            <span class="aeb-group-title">公開</span>
+            <label title="YouTube に直接アップロードします（限定公開）"><input type="checkbox" data-step="upload"> アップロード</label>
+          </span>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="runAutoExec('${esc(name)}')">▶ 選択した工程を実行</button>
+      </div>
+      <!-- 実行ログは右上ステータスチップに集約 -->
+
+
+      <div>
+        <div class="tabs" id="detailTabs">
+          ${_buildDetailTabs()}
+        </div>
+
+          <div class="tab-panel on" data-t="edit">
+            <div id="assemblyTimeline" class="atl" role="region" aria-label="編集タイムライン"><div class="empty">タイムラインを読み込み中...</div></div>
+          </div>
+
+          <div class="tab-panel" data-t="meta">
+            <!-- 統合ヘッダ: タイトル + メタ充足チェック + 全言語生成（旧 publish-prep-head から移植）-->
+            <div class="publish-prep-head" style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-3)">
+              <div>
+                <div class="publish-prep-title">YouTube 公開設定</div>
+                <div class="publish-prep-sub">英語タイトル・説明文・タグを編集し、その下のフォームでアップロードまで一気通貫で実行します。字幕や多言語説明は英語ソースから自然な現地語へ翻訳。</div>
+              </div>
+              <div class="btns" style="flex-shrink:0">
+                <button class="btn btn-secondary btn-sm" onclick="loadMetaStatus('${esc(name)}')" title="title/description/tags/localizations/mp4 の充足チェック">メタ充足チェック</button>
+                <button class="btn btn-secondary btn-sm" onclick="runGenerateLocalizations('${esc(name)}')" title="youtube_title.txt + youtube_description.txt を Claude CLI で 10言語翻訳して youtube_localizations.json を生成">全言語生成</button>
+              </div>
+            </div>
+            <div class="meta-workspace">
+              <div class="card meta-editor">
+                <div class="ff">
+                  <label class="fl">YouTube タイトル</label>
+                  <input type="text" class="fi" id="vdTitle" value="${esc(td.title)}" onchange="saveVideoTitle('${esc(name)}')">
+                  <div id="sgTitleList" style="margin-top:var(--space-2)"></div>
+                </div>
+
+                <div class="ff">
+                  <label class="fl">説明文</label>
+                  <textarea class="ft" id="vdDesc" rows="12">${esc(d.description)}</textarea>
+                  <div id="sgDescPreview" style="margin-top:var(--space-2)"></div>
+                </div>
+
+                <div class="ff">
+                  <label class="fl">タグ（カンマ区切り or 改行区切り）</label>
+                  <textarea class="ft" id="vdTags" rows="4" placeholder="BGM, Lounge, Chill..."></textarea>
+                  <div id="sgTagList" style="margin-top:var(--space-2)"></div>
+                  <div class="fh">YouTube タグは合計500文字以内が目安です</div>
+                </div>
+
+                <div class="btns">
+                  <button class="btn btn-primary btn-sm" onclick="saveVideoTitle('${esc(name)}')">タイトルを保存</button>
+                  <button class="btn btn-primary btn-sm" onclick="saveVideoDesc('${esc(name)}')">説明文を保存</button>
+                  <button class="btn btn-primary btn-sm" onclick="saveVideoTags('${esc(name)}')">タグを保存</button>
+                </div>
+              </div>
+
+              <aside class="meta-aside">
+                <div class="assist-panel">
+                  <div class="sec-title">AI 提案（ベンチマーク連動）</div>
+                  <div class="fh" style="margin-bottom:var(--space-2)">
+                    分析情報は日本語、出力タイトル/説明/タグは英語。<br>
+                    まず「制作分析」を1回実行すると、以後すべての提案が分析結果を視聴者文脈として参照します。
+                  </div>
+                  <div class="assist-actions" style="margin-bottom:var(--space-2)">
+                    <button class="btn btn-secondary btn-sm" onclick="runCompetitorAnalysis()" id="sgAnalyzeBtn">制作分析を実行</button>
+                  </div>
+                  <div id="sgAnalysisResult" style="margin-top:6px;margin-bottom:var(--space-3)"></div>
+
+                  <div class="fh" style="margin-bottom:var(--space-1);font-weight:var(--font-semibold)">個別提案（分析を反映）</div>
+                  <div class="assist-actions" style="margin-bottom:var(--space-2)">
+                    <button class="btn btn-secondary btn-sm" onclick="suggestTitles('${esc(name)}')" id="sgTitleBtn">英語タイトル候補 ×5</button>
+                    <button class="btn btn-secondary btn-sm" onclick="suggestDescription('${esc(name)}')" id="sgDescBtn">英語説明文</button>
+                    <button class="btn btn-secondary btn-sm" onclick="suggestTags('${esc(name)}')" id="sgTagBtn">英語タグ</button>
+                  </div>
+
+                  <div class="fh" style="margin-bottom:var(--space-1);font-weight:var(--font-semibold)">一括/応用</div>
+                  <div class="assist-actions">
+                    <button class="btn btn-primary btn-sm" onclick="suggestAll('${esc(name)}')" id="sgSuggestAllBtn" title="楽曲プロンプト・Flow プロンプト・メタを 60-90 秒で一気通貫生成">一気通貫提案</button>
+                    <button class="btn btn-primary btn-sm" onclick="suggestImitateEvolve('${esc(name)}')" id="sgImitateBtn" title="ベンチマーク先動画 + ペルソナから ✓パクる/✗避ける/+進化 を提案">徹底パクリ進化</button>
+                  </div>
+                  <div id="sgImitateResult" style="margin-top:10px"></div>
+                  <div class="fh" style="margin-top:var(--space-2)">提案結果は左の編集欄に表示されます。採用後に保存してください。</div>
+                </div>
+
+                <div class="assist-panel">
+                  <details ontoggle="if(this.open){loadBenchmarkSidePanel('${esc(name)}')}">
+                    <summary style="cursor:pointer;font-weight:var(--font-semibold);color:var(--text-primary)">ベンチマーク参照</summary>
+                    <div id="benchSidePanel_${esc(name)}" style="margin-top:var(--space-3)">
+                      <div class="fh">展開すると読み込みます...</div>
+                    </div>
+                  </details>
+                </div>
+
+                <div class="assist-panel">
+                  <div class="sec-title">A/B ログ</div>
+                  <div class="fh" style="margin-bottom:var(--space-2)">投稿時の制作条件と7日後の成果を記録します。</div>
+                  <div id="abLogPanel_${esc(name)}" data-name="${esc(name)}"></div>
+                </div>
+              </aside>
+            </div>
+
+            <div class="tab-next">
+              <button class="btn btn-primary btn-sm" onclick="setTab('suno')">次へ（楽曲）→</button>
+            </div>
+          </div>
+
+          <div class="tab-panel" data-t="images">
+            <!-- ★ サムネ制作 一気通貫（正規フロー: pipeline bgimage→psd_composite）★ -->
+            <div class="card" id="mkThumbCard_${esc(name)}" style="margin-bottom:var(--space-3);border:1px solid var(--accent-primary)">
+              <div class="card-header">
+                <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+                  サムネを制作（背景 → ${isAdobeFree()?'画像エディタ':'文字入れ'}）
+                  <span class="badge badge-info" style="font-size:var(--text-2xs)">正規フロー・一気通貫</span>
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:var(--space-2)">
+                <span>① ベンチマーク参照</span><span style="opacity:.5">→</span><span>② 背景画像生成</span><span style="opacity:.5">→</span><span>③ 候補から自動採用</span><span style="opacity:.5">→</span><span>④ ${isAdobeFree()?'画像合成':'Photoshop文字入れ'}</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:var(--space-2);line-height:1.7">
+                ${isAdobeFree()?'背景を生成 → 画像エディタの合成処理で動画背景とサムネを作成します。':'ベンチマーク参照で背景を生成 → PSDテンプレで文字入れします。Photoshopを起動しておいてください。'} 既存の背景・サムネは再利用します。
+              </div>
+              <div class="btns" style="margin:0">
+                <button class="btn btn-primary" id="mkThumbBtn_${esc(name)}" onclick="makeThumbnail('${esc(name)}')">▶ サムネを制作（背景→${isAdobeFree()?'画像エディタ':'文字入れ'}）</button>
+                <button class="btn btn-secondary btn-sm" onclick="makeThumbnail('${esc(name)}','psd_composite')" title="背景はそのまま、画像合成だけ再実行">文字だけ再合成</button>
+              </div>
+              <div id="mkThumbLog_${esc(name)}" style="margin-top:var(--space-2);padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);max-height:220px;overflow-y:auto;display:none"></div>
+            </div>
+
+            <!-- 個別操作（上級者向け）: 手動の画像生成エンジン。通常は上の「サムネを制作」で完結します -->
+            <details class="mk-advanced" style="margin-bottom:var(--space-3)">
+              <summary style="cursor:pointer;font-size:var(--text-xs);color:var(--text-tertiary);user-select:none;padding:6px 0">▸ 手動で画像生成（gpt-image-2・上級者向け）</summary>
+            <!-- 画像自動生成パネル（プロバイダー切替対応） -->
+            <div class="card" style="margin-bottom:var(--space-3);margin-top:var(--space-2)">
+              <div class="card-header">
+                <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+                  画像を自動生成
+                  <span id="imgGenProviderBadge_${esc(name)}" class="badge" style="background:var(--brand-accent);color:var(--text-on-accent)">gpt-image-2</span>
+                </div>
+                <div class="btns" style="margin:0">
+                  <button class="btn btn-ghost btn-sm" onclick="imgGenStatusTick('${esc(name)}')">状態</button>
+                </div>
+              </div>
+
+              <div class="fh" style="margin-bottom:var(--space-3)">
+                OpenAI gpt-image-2（API）で 2K 画像を並列生成し <code>{動画フォルダ}/Image/</code> に保存します。
+              </div>
+
+              <!-- Codex / gpt-image-2 UI -->
+              <div id="imgGenCodex_${esc(name)}">
+                <div class="imggen-panel">
+                  <div class="imggen-summary">
+                    <div class="imggen-step"><strong>1. 参照</strong><span>picked画像をAPIで使用</span></div>
+                    <div class="imggen-step"><strong>2. 構成</strong><span>5要素プロンプトを作成</span></div>
+                    <div class="imggen-step"><strong>3. 生成</strong><span>Imageフォルダへ保存</span></div>
+                  </div>
+
+                  <div class="imggen-toolbar">
+                    <input class="fi" id="codex5eHint_${esc(name)}" placeholder="被写体ヒント（例: lounge jazz cafe / 夕暮れの海岸）">
+                    <label class="fl" style="display:flex;align-items:center;gap:6px;margin:0">件数
+                      <select class="fs" id="codex5eN_${esc(name)}">
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4" selected>4</option>
+                        <option value="6">6</option>
+                        <option value="8">8</option>
+                      </select>
+                    </label>
+                    <button class="btn btn-primary btn-sm" onclick="codexBuild5Element('${esc(name)}')">5要素を作る</button>
+                    <span id="codex5eRefBadge_${esc(name)}" class="badge badge-neutral" title="picked画像は画面UIではなくImage APIへ渡します">picked: -</span>
+                  </div>
+
+                  <textarea id="codexPrompts_${esc(name)}" class="imggen-prompt" placeholder="5要素を作るとここに入ります。手入力する場合は 1ブロック1件、空行で区切ります。"></textarea>
+
+                  <div class="imggen-options">
+                    <div class="ff">
+                      <label class="fl">アスペクト</label>
+                      <select class="fs" id="codexAspect_${esc(name)}">
+                        <option value="16:9" selected>16:9（1536×1024）</option>
+                        <option value="1:1">1:1（1024×1024）</option>
+                        <option value="9:16">9:16（1024×1536）</option>
+                        <option value="4:3">4:3</option>
+                        <option value="3:4">3:4</option>
+                      </select>
+                    </div>
+                    <div class="ff">
+                      <label class="fl">品質</label>
+                      <select class="fs" id="codexQuality_${esc(name)}">
+                        <option value="low">low（下書き）</option>
+                        <option value="medium" selected>medium（標準）</option>
+                        <option value="high">high（最終）</option>
+                        <option value="auto">auto</option>
+                      </select>
+                    </div>
+                    <div class="ff">
+                      <label class="fl">並列</label>
+                      <select class="fs" id="codexParallel_${esc(name)}">
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4" selected>4</option>
+                      </select>
+                    </div>
+                    <div class="ff">
+                      <label class="fl">タイムアウト</label>
+                      <select class="fs" id="codexTimeout_${esc(name)}">
+                        <option value="600">10 分</option>
+                        <option value="900" selected>15 分</option>
+                        <option value="1800">30 分</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <label class="imggen-advanced" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                    <input type="checkbox" id="codexUsePicked_${esc(name)}" style="width:14px;height:14px;accent-color:var(--accent-primary)" checked>
+                    <span style="color:var(--text-primary);font-size:var(--text-sm)">picked画像を参照に使う</span>
+                    <span style="color:var(--text-tertiary);font-size:var(--text-xs)">Image2は画面欄ではなくAPIに渡します</span>
+                  </label>
+
+                  <details class="imggen-advanced">
+                    <summary>詳細設定と手動参照画像</summary>
+                    <div class="imggen-options" style="margin-top:8px">
+                      <div class="ff">
+                        <label class="fl">背景</label>
+                        <select class="fs" id="codexBackground_${esc(name)}">
+                          <option value="auto" selected>auto</option>
+                          <option value="transparent">transparent</option>
+                          <option value="opaque">opaque</option>
+                        </select>
+                      </div>
+                      <div class="ff">
+                        <label class="fl">形式</label>
+                        <select class="fs" id="codexFormat_${esc(name)}">
+                          <option value="png" selected>PNG</option>
+                          <option value="webp">WEBP</option>
+                          <option value="jpeg">JPEG</option>
+                        </select>
+                      </div>
+                      <div class="ff">
+                        <label class="fl">n</label>
+                        <select class="fs" id="codexN_${esc(name)}">
+                          <option value="1" selected>1</option>
+                          <option value="2">2</option>
+                          <option value="3">3</option>
+                          <option value="4">4</option>
+                        </select>
+                      </div>
+                      <div class="ff">
+                        <label class="fl">参照忠実度</label>
+                        <select class="fs" id="codexFidelity_${esc(name)}">
+                          <option value="high" selected>high</option>
+                          <option value="low">low</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="imggen-ref-row">
+                      <span style="font-size:var(--text-xs);color:var(--text-secondary)">手動参照画像</span>
+                      <input type="file" id="codexRefImages_${esc(name)}" accept="image/*" multiple class="fi" onchange="codexRefImagesChanged('${esc(name)}')">
+                      <button class="btn btn-ghost btn-sm" onclick="codexClearRefImages('${esc(name)}')" title="クリア">クリア</button>
+                    </div>
+                    <div id="codexRefImagesInfo_${esc(name)}" style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:6px"></div>
+                    <div class="row" style="gap:var(--space-2);margin-top:8px;flex-wrap:wrap">
+                      <input class="fi" id="codexSuggestCtx_${esc(name)}" placeholder="自由提案用ヒント" style="flex:1;min-width:220px">
+                      <select class="fs" id="codexSuggestCount_${esc(name)}">
+                        <option value="2">2案</option>
+                        <option value="3">3案</option>
+                        <option value="4" selected>4案</option>
+                        <option value="6">6案</option>
+                        <option value="8">8案</option>
+                      </select>
+                      <button class="btn btn-secondary btn-sm" onclick="codexSuggestPrompts('${esc(name)}')">自由提案</button>
+                    </div>
+                  </details>
+
+                  <div class="imggen-actions">
+                    <button class="btn btn-primary btn-sm" onclick="codexImagegenGenerate('${esc(name)}')">gpt-image-2 で生成 → 保存</button>
+                    <button class="btn btn-destructive btn-sm" onclick="codexImagegenStop()">停止</button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="imgGenLog_${esc(name)}" style="margin-top:10px;padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);max-height:200px;overflow-y:auto;display:none"></div>
+            </div>
+            </details>
+
+            <!-- ② 背景画像（個別実行・パイプライン STEP 3）: ベンチマーク参照 + チャンネルコンセプトで vol{N}.png を生成。上の「サムネを制作」に内包 -->
+            <div class="card" id="bgImageCard_${esc(name)}" style="margin-bottom:var(--space-3)">
+              <div class="card-header">
+                <div class="sec-title" style="margin:0;display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+                  ② 背景画像を生成（個別実行）
+                  <span class="badge badge-info" style="font-size:var(--text-2xs)">ベンチマーク参照 + チャンネルコンセプト</span>
+                </div>
+                <div class="btns" style="margin:0">
+                  <button class="btn btn-ghost btn-sm" onclick="loadBgImagePreview('${esc(name)}')" title="プレビュー更新">更新</button>
+                </div>
+              </div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:var(--space-2);line-height:1.7">
+                ベンチマークの参照画像から背景（vol{N}.png）を AI 生成します。既にファイルがあればスキップされます（作り直しは「上書き再生成」を有効化）。
+                <details style="margin-top:2px"><summary style="cursor:pointer;color:var(--text-tertiary)">技術詳細</summary>
+                  Premiere 自動配置の直前に走る STEP 3。<code>~/.config/{app_id}/benchmark/thumbs/{ch_id}/</code> から
+                  N 枚ランダム選択（Picked がある場合は優先）→ <code>codex_imagegen.py</code> でフォルダ直下に <code>vol{N}.png</code> を生成。
+                </details>
+              </div>
+              <div class="row" style="gap:var(--space-2);margin-bottom:var(--space-2);flex-wrap:wrap;align-items:center">
+                <label style="font-size:var(--text-xs);color:var(--text-tertiary)">参照枚数
+                  <select class="fs" id="bgImageRefCount_${esc(name)}" style="margin-left:var(--space-1)">
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3" selected>3</option>
+                    <option value="4">4</option>
+                  </select>
+                </label>
+                <label style="font-size:var(--text-xs);color:var(--text-secondary);display:flex;align-items:center;gap:var(--space-1);cursor:pointer;padding:4px 8px;background:var(--bg-elevated);border-radius:var(--radius-sm);border:1px solid var(--border-default)" title="既存 vol{N}.png/.jpg を無視して再生成">
+                  <input type="checkbox" id="bgImageForce_${esc(name)}" style="width:14px;height:14px;accent-color:var(--accent-primary)">
+                  上書き再生成
+                </label>
+                <button class="btn btn-primary btn-sm" id="bgImageRunBtn_${esc(name)}" onclick="bgImageRun('${esc(name)}')" style="margin-left:auto">▶ 背景画像を生成（vol{N}.png）</button>
+                <button class="btn btn-destructive btn-sm" onclick="bgImageStop()">停止</button>
+              </div>
+              <div id="bgImagePreview_${esc(name)}" style="margin-top:var(--space-2);display:none">
+                <div class="fh" style="margin-bottom:6px">生成済み</div>
+                <div id="bgImagePreviewImgs_${esc(name)}" class="row" style="gap:var(--space-2);flex-wrap:wrap"></div>
+              </div>
+              <div id="bgImageLog_${esc(name)}" style="margin-top:var(--space-2);padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-secondary);max-height:200px;overflow-y:auto;display:none"></div>
+            </div>
+
+            <!-- Image2 Layout Studio（非Adobe合成 + レイヤー編集） -->
+            <div class="card image2-studio" id="ciThumbCard_${esc(name)}" style="margin-bottom:var(--space-3)">
+              <div class="image2-studio-head">
+                <div>
+                  <div class="image2-studio-title">
+                    <span class="product-icon service sm gpt-image"><span class="icon-fallback" style="display:inline">i2</span></span>
+                    Image2 Layout Studio
+                    <span class="badge badge-info" style="font-size:var(--text-2xs)">非Adobe / Canvas / Pillow</span>
+                  </div>
+                  <div class="image2-studio-sub">背景生成、文字入れ、画像重ね、レイヤー編集をひとつの制作画面にまとめています。</div>
+                </div>
+                <div class="btns" style="margin:0">
+                  <button class="btn btn-ghost btn-sm" id="ciSceneGenBtn_${esc(name)}" onclick="generateSceneTextFor('${esc(name)}')">シーンテキスト自動生成</button>
+                  <button class="btn btn-ghost btn-sm" onclick="initLayerEditor('${esc(name)}',true)">再読み込み</button>
+                  <button class="btn btn-secondary btn-sm" onclick="loadLayerTemplate('${esc(name)}',true)">テンプレ読込</button>
+                  <button class="btn btn-secondary btn-sm" onclick="saveLayerTemplate('${esc(name)}')">テンプレ保存</button>
+                  <button class="btn btn-secondary btn-sm" onclick="applyTemplateText('${esc(name)}')">文字反映</button>
+                  <button class="btn btn-secondary btn-sm" onclick="renderFromLayerTemplate('${esc(name)}')">テンプレで生成</button>
+                  <button class="btn btn-primary btn-sm" onclick="saveLayerEditorCanvas('${esc(name)}')">サムネイル.jpgへ保存</button>
+                </div>
+              </div>
+              <div class="image2-menu-bar">
+                <span>File</span><span>Edit</span><span>Image</span><span>Layer</span><span>Type</span><span>View</span><span>Export</span>
+              </div>
+              <div class="image2-options-bar">
+                <div class="image2-options-group">
+                  <span class="image2-stage-tab on">Move</span>
+                  <span class="image2-stage-tab">Auto Select Layer</span>
+                  <span class="image2-stage-tab">Show Transform Controls</span>
+                </div>
+                <div class="image2-options-group">
+                  <button class="btn btn-secondary btn-sm" onclick="applyTemplateText('${esc(name)}')">文字反映</button>
+                  <button class="btn btn-primary btn-sm" onclick="renderFromLayerTemplate('${esc(name)}')">テンプレで生成</button>
+                </div>
+              </div>
+              <div class="image2-body" id="layerEditorCard_${esc(name)}">
+                <nav class="image2-tools" aria-label="Image2 tools">
+                  <button class="image2-tool-icon on" type="button" title="移動">↕</button>
+                  <button class="image2-tool-icon" type="button" title="文字" onclick="addLayerText('${esc(name)}')">T</button>
+                  <label class="image2-tool-icon" title="画像を追加" style="cursor:pointer">
+                    +
+                    <input type="file" accept="image/*" style="display:none" onchange="addLayerImage('${esc(name)}',this.files&&this.files[0]);this.value=''">
+                  </label>
+                  <button class="image2-tool-icon" type="button" title="前面へ" onclick="moveLayerOrder('${esc(name)}',-1)">↑</button>
+                  <button class="image2-tool-icon" type="button" title="背面へ" onclick="moveLayerOrder('${esc(name)}',1)">↓</button>
+                </nav>
+                <aside class="image2-panel">
+                  <div class="image2-panel-section">
+                    <div class="image2-panel-title">Generate Layout</div>
+                    <div class="image2-fields">
+                      <div class="ff">
+                        <label class="fl">シーンテキスト</label>
+                        <input type="text" class="fi" id="ciSceneText_${esc(name)}" placeholder="空欄なら scene_en.txt / 自動生成">
+                      </div>
+                      <div class="ff">
+                        <label class="fl">日本語コピー</label>
+                        <input type="text" class="fi" id="ciSceneJa_${esc(name)}" placeholder="任意。空欄なら scene_ja.txt">
+                      </div>
+                      <div class="ff">
+                        <label class="fl">見出し文字</label>
+                        <input type="text" class="fi" id="ciPlaylistText_${esc(name)}" placeholder="PLAY LIST">
+                      </div>
+                      <div class="image2-slider-row"><span>暗さ</span><input type="range" min="0" max="45" value="18" id="ciDarken_${esc(name)}"></div>
+                      <div class="image2-slider-row"><span>周辺</span><input type="range" min="0" max="60" value="28" id="ciVignette_${esc(name)}"></div>
+                      <label style="font-size:var(--text-xs);color:var(--text-secondary);display:flex;align-items:center;gap:var(--space-1);cursor:pointer">
+                        <input type="checkbox" id="ciHeadlineAlways_${esc(name)}" style="width:14px;height:14px;accent-color:var(--accent-primary)">
+                        サムネにも見出し表示
+                      </label>
+                      <button class="btn btn-primary btn-sm" id="ciThumbBtn_${esc(name)}" onclick="runImageCompositorFor('${esc(name)}')">非Adobeで2枚生成</button>
+                    </div>
+                  </div>
+                  <div class="image2-panel-section">
+                    <div class="image2-panel-title">Assets</div>
+                    <div id="ciThumbResult_${esc(name)}" style="display:none"></div>
+                    <div id="ciThumbLog_${esc(name)}" class="image2-log" style="margin-top:var(--space-2);display:none"></div>
+                  </div>
+                </aside>
+                <section class="image2-stage">
+                  <div class="image2-stage-toolbar">
+                    <div class="image2-stage-tabs">
+                      <span class="image2-stage-tab on">Canvas 16:9</span>
+                      <span class="image2-stage-tab">1280 x 720</span>
+                      <span class="image2-stage-tab">YouTube Thumb</span>
+                    </div>
+                    <div class="btns" style="margin:0">
+                      <label class="btn btn-secondary btn-sm" style="cursor:pointer">
+                        画像を追加
+                        <input type="file" accept="image/*" style="display:none" onchange="addLayerImage('${esc(name)}',this.files&&this.files[0]);this.value=''">
+                      </label>
+                      <button class="btn btn-secondary btn-sm" onclick="addLayerText('${esc(name)}')">文字を追加</button>
+                    </div>
+                  </div>
+                  <div class="image2-canvas-wrap">
+                    <div class="image2-canvas-shell">
+                      <canvas id="layerCanvas_${esc(name)}" width="1280" height="720"></canvas>
+                    </div>
+                  </div>
+                  <div class="image2-stage-foot">
+                    <div id="layerEditorLog_${esc(name)}" class="image2-log" style="display:none"></div>
+                    <div class="fh" style="margin:0">ドラッグで移動。右のレイヤーを選んで透明度・拡大率を調整。</div>
+                  </div>
+                </section>
+                <aside class="image2-panel right">
+                  <div class="image2-inspector">
+                    <div class="image2-panel-section">
+                      <div class="image2-panel-title">Inspector</div>
+                      <div class="image2-fields">
+                        <div class="ff">
+                          <label class="fl">選択レイヤーの文字</label>
+                          <input class="fi" id="layerText_${esc(name)}" placeholder="文字レイヤー選択時" oninput="updateLayerText('${esc(name)}',this.value)">
+                        </div>
+                        <div class="ff">
+                          <label class="fl">フォント</label>
+                          <select class="fs" id="layerFont_${esc(name)}" onchange="updateLayerFont('${esc(name)}',this.value)">
+                            <option value="system">System Sans</option>
+                          </select>
+                        </div>
+                        <div class="image2-font-preview" id="layerFontPreview_${esc(name)}">Aa あいうえお</div>
+                        <div class="image2-slider-row"><span>透明度</span><input type="range" min="0" max="100" value="100" id="layerOpacity_${esc(name)}" oninput="updateLayerOpacity('${esc(name)}',this.value)"></div>
+                        <div class="image2-slider-row"><span>拡大率</span><input type="range" min="20" max="220" value="100" id="layerScale_${esc(name)}" oninput="updateLayerScale('${esc(name)}',this.value)"></div>
+                      </div>
+                    </div>
+                    <div class="image2-panel-section">
+                      <div class="image2-tool-grid">
+                        <button class="btn btn-ghost btn-sm" onclick="moveLayerOrder('${esc(name)}',-1)">前面へ</button>
+                        <button class="btn btn-ghost btn-sm" onclick="moveLayerOrder('${esc(name)}',1)">背面へ</button>
+                        <button class="btn btn-destructive btn-sm" onclick="deleteLayer('${esc(name)}')">削除</button>
+                        <button class="btn btn-secondary btn-sm" onclick="initLayerEditor('${esc(name)}',true)">リセット</button>
+                      </div>
+                    </div>
+                    <div class="image2-panel-section">
+                      <div class="image2-panel-title">Layers</div>
+                      <div id="layerList_${esc(name)}" class="image2-layer-list"></div>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="sec-title" style="margin:0">背景画像の選択（Premiere 連動）</div>
+                <div class="btns" style="margin:0">
+                  <button class="btn btn-primary btn-sm" onclick="saveSelectedImages('${esc(name)}')">選択を保存</button>
+                  <button class="btn btn-secondary btn-sm" onclick="clearSelectedImages('${esc(name)}')">リセット</button>
+                </div>
+              </div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:var(--space-2)">
+                画像をクリックで <span class="badge" style="background:var(--brand-accent);color:var(--text-on-accent)">M</span> メイン（0-5s）→ <span class="badge" style="background:var(--accent-primary);color:#0a0a0a">S</span> サブ（5s以降、N枚を均等配置）→ 未選択 の順にトグル。<br>
+                選択がない場合は従来通り <code>vol{N}.png</code>/<code>vol{N}-1.png</code> を自動使用。
+              </div>
+              <div id="imgGrid" class="img-grid"><div class="empty">読み込み中...</div></div>
+              <div class="tab-next">
+                <button class="btn btn-primary btn-sm" onclick="setTab('export')">次へ（書き出し）→</button>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="tab-panel" data-t="suno">
+            <div class="card">
+              <div class="card-header">
+                <div class="sec-title" style="margin:0">楽曲プレイヤー <span id="trackCount" style="color:var(--text-tertiary);font-weight:400">(読み込み中...)</span></div>
+                <div class="btns" style="margin:0">
+                  <button class="btn btn-ghost btn-sm" onclick="loadTrackList('${esc(name)}')">更新</button>
+                  <button class="btn btn-secondary btn-sm" onclick="renameTracksOnly('${esc(name)}')" title="サムネ or ペルソナから楽曲名を提案してリネームのみ（ffmpegスキップ）">タイトルのみリネーム</button>
+                </div>
+              </div>
+              <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-3)">
+                <span class="tr-location-badge tr-loc-root">ROOT</span> フォルダ直下（SUNO DL済み） ／
+                <span class="tr-location-badge tr-loc-music">MUSIC</span> 処理済み（Premiere で使用） ／
+                <span class="tr-location-badge tr-loc-original_music">ORIG</span> バックアップ<br>
+                「優先度アップ」でファイル名に <code>z</code> が付き、多いほど優先されます。「削除」は5秒以内なら元に戻せます。
+              </div>
+              <div class="mgmt-bar" id="trackMgmt">
+                <span style="color:var(--text-tertiary)">一括操作:</span>
+                <button class="btn btn-secondary btn-sm" onclick="downloadWorkspaceTracks('${esc(name)}')" title="SUNO Workspace から MP3 を一括ダウンロード">一括ダウンロード</button>
+                <button class="btn btn-success btn-sm" onclick="processTracks('${esc(name)}')" title="リネーム + フェードアウト + ゲイン正規化（-16 LUFS）">リネーム・ゲイン処理</button>
+                <span style="color:var(--text-tertiary);margin-left:6px">|</span>
+                <label style="display:flex;align-items:center;gap:var(--space-1)"><input type="number" class="fi" id="minDurInput" value="60" min="10" max="600" style="width:60px;padding:var(--space-1) 6px;font-size:var(--text-xs)">秒以下を削除</label>
+                <button class="btn btn-secondary btn-sm" onclick="bulkDeleteShort('${esc(name)}')">実行</button>
+                <span style="color:var(--text-tertiary);margin-left:6px">|</span>
+                <select class="fs" id="trackSort" onchange="loadTrackList('${esc(name)}')" style="width:110px;padding:var(--space-1);font-size:var(--text-xs)">
+                  <option value="name">名前順</option>
+                  <option value="duration">時間順</option>
+                  <option value="likes">優先度順</option>
+                </select>
+                <span id="trackTotalDur" style="margin-left:auto;color:var(--accent-info);font-family:var(--font-mono);font-size:var(--text-xs)"></span>
+              </div>
+              <div id="trackList"><div class="empty">読み込み中...</div></div>
+            </div>
+
+
+            <!-- SUNO 生成パネル（sunoタブ内） -->
+            <div class="card" style="margin-top:var(--space-3)">
+              <div class="card-header">
+                <div class="sec-title" style="margin:0">SUNO 生成</div>
+                <span class="badge badge-info" id="miniWsBadge">作業領域: 計算中...</span>
+              </div>
+              <div id="miniSunoProgPanel" style="margin-bottom:var(--space-3)"></div>
+              <div class="fr">
+                <div class="ff"><label class="fl">プロバイダー</label>
+                  <select class="fs" id="miniProvider">
+                    <option value="claude">Claude (CLI)</option>
+                    <option value="codex">Codex (CLI)</option>
+                    <option value="chatgpt">ChatGPT</option>
+                  </select>
+                </div>
+                <div class="ff"><label class="fl">生成モード</label>
+                  <select class="fs" id="miniMode" onchange="onMiniModeChange()">
+                    <option value="styles_title_only">Style + Title（インスト）</option>
+                    <option value="lyrics_styles">Lyrics + Style + Title（歌あり）</option>
+                    <option value="lyrics">Lyrics only（歌あり）</option>
+                    <option value="instrumental_filler">インストゥル一括（[instrumental] x 5000）</option>
+                  </select>
+                </div>
+                <div class="ff"><label class="fl">生成回数</label><input type="number" class="fi" id="miniCount" value="5" min="1" max="50"></div>
+                <div class="ff"><label class="fl">間隔（秒）</label><input type="number" class="fi" id="miniInterval" value="180" min="30"></div>
+              </div>
+              <div class="fr">
+                <div class="ff"><label class="fl" title="類似度がこの値以上だと「似すぎ」と判定し作り直す。1.00で実質無効">類似回避しきい値</label><input type="number" class="fi" id="miniDivThreshold" value="0.6" min="0" max="1" step="0.05"></div>
+                <div class="ff"><label class="fl" title="似すぎたときの最大再生成回数。0で再生成しない">再生成回数</label><input type="number" class="fi" id="miniDivRetry" value="2" min="0" max="5"></div>
+                <div class="ff"><label class="fl" title="チャンネル別に保持する曲履歴件数。0で履歴・類似回避を無効化">履歴件数</label><input type="number" class="fi" id="miniHistoryLimit" value="40" min="0" max="200"></div>
+              </div>
+              <div class="fh" style="margin-top:calc(-1 * var(--space-2));margin-bottom:var(--space-2)">多様性: しきい値↓・再生成↑・履歴↑ほど「似た曲」を避けます（チャンネル別に保存）。履歴0で無効。</div>
+              <div class="ff">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-1)">
+                  <label class="fl" style="margin:0">プロンプト</label>
+                  <button class="btn btn-ghost btn-sm" style="font-size:var(--text-xs);padding:2px 8px" onclick="showSavePromptModal('mini')">保存</button>
+                </div>
+                <div class="mp-picker" id="miniPromptPicker"></div>
+                <textarea class="ft" id="miniPrompt" rows="3" placeholder="BGMの雰囲気を入力（英語推奨）..."></textarea>
+              </div>
+              <div class="ff">
+                <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer">
+                  <input type="checkbox" id="miniBatch" style="width:16px;height:16px;accent-color:var(--accent-primary)"> 一括生成モード（Claude 1回で N曲分生成 → 高速）
+                </label>
+              </div>
+              <div class="ff">
+                <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer" title="Lyrics 欄を [instrumental] の繰り返しで 5000 文字埋める。歌詞は AI に生成させない（BGM・サウンドトラック向け）">
+                  <input type="checkbox" id="miniInstrumentalFill" style="width:16px;height:16px;accent-color:var(--accent-primary)" onchange="onInstrumentalFillToggle('miniInstrumentalFill','miniMode')">
+                  Lyrics を <code>[instrumental]</code> で 5000 文字埋める（歌詞生成なし）
+                </label>
+              </div>
+              <div class="fr">
+                <div class="ff"><label class="fl">生成完了後の待機（秒）</label><input type="number" class="fi" id="miniDlWait" value="30" min="0" max="900" title="最終曲の生成後、DL を開始するまでの余裕"></div>
+                <div class="ff">
+                  <label class="fl">ブラウザ表示</label>
+                  <select class="fs" id="miniHeadless">
+                    <option value="0" selected>表示（進捗が見える）</option>
+                    <option value="1">非表示（headless）</option>
+                  </select>
+                </div>
+              </div>
+              <div class="btns">
+                <button class="btn btn-success btn-sm" onclick="runSunoFullFlow('${esc(name)}')" title="生成・２テイクの取得は自動。ハートで選んでから採用曲だけ後処理">生成・取得 → ハートで選曲</button>
+                <button class="btn btn-secondary btn-sm" id="miniStartBtn" onclick="startSunoForVideo('${esc(name)}')" title="生成のみ（DL・後処理は手動）">生成のみ</button>
+                <button class="btn btn-primary btn-sm" id="miniDraftBtn" onclick="generateSunoDrafts('${esc(name)}')" title="SUNOを起動せずLLMだけで歌詞・Styleのドラフトを生成 → 確認・編集してから投入（Claude/Codex のみ）">ドラフト生成（確認してから投入）</button>
+                <button class="btn btn-destructive btn-sm hidden" id="miniStopBtn" onclick="stopSuno()">停止</button>
+              </div>
+              <div class="fh" style="margin-top:var(--space-2)">▶ 全自動: SUNO 生成完了を待機 → 楽曲取得 → Claude でタイトル提案 + リネーム → 8秒フェードアウト + -16 LUFS ゲイン正規化 → music/ 格納 まで無停止で実行します</div>
+              <!-- ドラフト確認・編集パネル（generate-drafts の結果をここに描画。vol(動画名)ごとに一意 id） -->
+              <div id="sunoDraftPanel-${sunoSafeId(name)}" data-suno-draft-panel="${esc(name)}" class="hidden" style="margin-top:var(--space-3);border-top:1px solid var(--border-default);padding-top:var(--space-3)">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-2)">
+                  <div class="sec-title" style="margin:0">ドラフト確認 <span id="sunoDraftCount-${sunoSafeId(name)}" class="badge badge-info"></span></div>
+                  <button class="btn btn-ghost btn-sm" onclick="clearSunoDrafts('${esc(name)}')">クリア</button>
+                </div>
+                <div class="fh" style="margin-bottom:var(--space-2)">各曲の Title / Style / Lyrics を確認・編集できます。問題なければ「このドラフトで投入」で確認済み内容をそのまま SUNO に投入します（LLM 再生成なし）。</div>
+                <div id="sunoDraftList-${sunoSafeId(name)}"></div>
+                <!-- 公開前整備タグ（process-tracks へ渡す ID3。既定はチャンネル config の suno.tag_defaults 由来） -->
+                <div class="card" style="margin-top:var(--space-3);padding:var(--space-2);background:var(--bg-elevated)">
+                  <div class="sec-title" style="margin:0 0 var(--space-2) 0;font-size:var(--text-sm)">整備タグ（投入後の後処理で付与）</div>
+                  <div class="fr">
+                    <div class="ff"><label class="fl">Artist</label><input type="text" class="fi" id="sunoTagArtist-${sunoSafeId(name)}" placeholder="SUKIMA"></div>
+                    <div class="ff"><label class="fl">Album</label><input type="text" class="fi" id="sunoTagAlbum-${sunoSafeId(name)}" placeholder="SUKIMA vol.{N}"></div>
+                  </div>
+                  <div class="ff">
+                    <label class="fl">Genre 方式</label>
+                    <select class="fs" id="sunoTagGenreMode-${sunoSafeId(name)}" onchange="onSunoGenreModeChange('${esc(name)}')">
+                      <option value="by_kind" selected>曲別（ドラフトの bossa / rnb から自動判定）</option>
+                      <option value="fixed">固定値（下に手入力）</option>
+                    </select>
+                  </div>
+                  <div class="ff" id="sunoTagGenreFixedWrap-${sunoSafeId(name)}" style="display:none">
+                    <label class="fl">Genre（固定値）</label>
+                    <input type="text" class="fi" id="sunoTagGenreFixed-${sunoSafeId(name)}" placeholder="Bossa Nova">
+                  </div>
+                  <div class="fh" id="sunoTagGenreHint-${sunoSafeId(name)}" style="margin-top:4px"></div>
+                </div>
+                <div class="btns" style="margin-top:var(--space-2)">
+                  <button class="btn btn-success btn-sm" onclick="submitSunoDrafts('${esc(name)}')" title="編集済みドラフトを --songs-file 経由でそのまま投入">このドラフトで投入</button>
+                  <button class="btn btn-secondary btn-sm" onclick="generateSunoDrafts('${esc(name)}')" title="もう一度 LLM でドラフトを作り直す">↻ 作り直す</button>
+                </div>
+              </div>
+            </div>
+            <div class="tab-next">
+              <button class="btn btn-primary btn-sm" onclick="setTab('images')">次へ（画像）→</button>
+            </div>
+          </div><!-- /suno tab -->
+          <div class="tab-panel" data-t="export">
+            <div class="card">
+              <div class="sec-title">書き出し</div>
+              <div class="export-summary">
+                <div class="summary-tile">
+                  <div class="summary-label">Premiere プロジェクト</div>
+                  <div class="summary-value">${d.readiness.premiere?'準備済み':'未作成'}</div>
+                </div>
+                <div class="summary-tile">
+                  <div class="summary-label">MP4</div>
+                  <div class="summary-value">${d.readiness.mp4?`${d.mp4_size_mb}MB`:'未書き出し'}</div>
+                </div>
+                <div class="summary-tile">
+                  <div class="summary-label">次の工程</div>
+                  <div class="summary-value">${d.readiness.mp4?'公開設定へ進めます':'書き出しが必要です'}</div>
+                </div>
+              </div>
+              <div class="btns">
+                <button class="btn btn-primary btn-sm" onclick="_confirmAndRunPipeline('${esc(name)}',['export'])">▶ 書き出しを実行</button>
+                ${isAdobeFree()?'':'<button class="btn btn-secondary btn-sm" onclick="go(\'premiere\')">Premiere ログを確認</button>'}
+                ${d.mp4_file?`<button class="btn btn-secondary btn-sm" onclick="openF('${esc(d.mp4_file)}')">MP4を開く</button>`:''}
+                <button class="btn btn-secondary btn-sm" onclick="loadMp4Info('${esc(name)}')" title="mp4 の場所・サイズ・解像度・尺・コーデックを表示">MP4 詳細</button>
+              </div>
+              <div class="ff" style="margin-top:var(--space-3)">
+                <label class="fl">書き出し済み MP4 を読み込み</label>
+                <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
+                  <input type="text" class="fi" id="mp4RefPath" value="${esc(d.mp4_file||'')}" placeholder="/Volumes/.../動画.mp4" style="flex:1;min-width:260px;font-family:var(--font-mono);font-size:var(--text-xs)">
+                  <button class="btn btn-secondary btn-sm" onclick="pickMp4Reference('${esc(name)}')">動画を参照</button>
+                  <button class="btn btn-secondary btn-sm" onclick="browseMp4Folder('${esc(name)}')">フォルダーから探す</button>
+                  <button class="btn btn-primary btn-sm" onclick="saveMp4Reference('${esc(name)}')">読み込む</button>
+                  ${d.mp4_source==='manual'?`<button class="btn btn-ghost btn-sm" onclick="clearMp4Reference('${esc(name)}')">手動参照を解除</button>`:''}
+                </div>
+                <div class="fh">書き出し済みなのに未認識のときは、MP4 を選んで読み込むと公開設定とアップロードで使えるようになります。</div>
+                <div id="mp4CandidateList" style="margin-top:var(--space-2)"></div>
+              </div>
+            </div>
+            <div class="tab-next">
+              <button class="btn btn-ghost btn-sm" onclick="setTab('images')">← 画像に戻る</button>
+              <button class="btn btn-primary btn-sm" onclick="setTab('meta')">公開準備へ →</button>
+            </div>
+          </div>
+
+          <div class="tab-panel on publish-prep-section" data-t="meta">
+            ${d.readiness.upload&&d.upload_info?`
+              <div class="card" style="border-color:var(--accent-success);margin-bottom:var(--space-3)">
+                <div class="sec-title" style="color:var(--accent-success)">✓ アップロード済</div>
+                <div style="font-size:var(--text-sm);color:var(--text-primary);line-height:1.8">
+                  <strong>URL:</strong> <a href="${esc(d.upload_info.url||'#')}" target="_blank">${esc(d.upload_info.url||'')}</a><br>
+                  <strong>公開設定:</strong> ${esc(d.upload_info.privacy||'')}<br>
+                  <strong>日時:</strong> ${esc(d.upload_info.uploaded_at||'')}${d.upload_info.schedule?'<br><strong>予約公開:</strong> '+esc(d.upload_info.schedule):''}
+                </div>
+                <div class="btns">
+                  <button class="btn btn-primary btn-sm" onclick="runUpdateSnippet('${esc(name)}')" title="既存動画のタイトル・説明・タグ・10言語ローカライズを YouTube videos.update で反映 (quota ~50 unit、動画ファイル再アップ無し)">メタを YouTube に反映</button>
+                  <button class="btn btn-secondary btn-sm" onclick="confirmReupload('${esc(name)}')">再アップロード</button>
+                </div>
+              </div>`:''}
+
+            <div class="card ${d.readiness.upload?'hidden':''}" id="uploadCard">
+              <div class="sec-title">YouTube アップロード</div>
+              <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-3)">公開準備で編集した英語タイトル・説明・タグを適用します</div>
+
+              <div class="upload-layout">
+                <div>
+                  <div class="fl">サムネイル</div>
+                  ${d.thumbnail?`<img src="/api/youtube-desc/thumbnail/${encodeURIComponent(name)}" style="width:100%;border-radius:var(--radius-sm);border:1px solid var(--border-default);margin-bottom:6px"><div class="fh">出典: <a href="https://www.youtube.com/" target="_blank" rel="noopener">YouTube</a></div>`:'<div class="detail-thumb-empty" style="width:100%;height:120px">IMG</div>'}
+                  <div class="fh">${d.thumbnail?esc(d.thumbnail):'サムネイル未設定（「画像」タブで選択）'}</div>
+                </div>
+                <div>
+                  <!-- UI/UX: 公開設定 (privacy + 公開予約) を先に決めてからタイトルを編集する流れに変更。
+                       投稿コミット範囲が決まった状態で文言を仕上げる方が自然。 -->
+                  <div class="fr">
+                    <div class="ff">
+                      <label class="fl">公開設定</label>
+                      <select class="fs" id="upPrivacy">
+                        <option value="private">非公開</option>
+                        <option value="unlisted" selected>限定公開</option>
+                        <option value="public">公開</option>
+                      </select>
+                    </div>
+                    <div class="ff">
+                      <label class="fl">公開予約（任意）</label>
+                      <input type="datetime-local" class="fi" id="upSchedule" value="${d.publish_date?d.publish_date+'T09:00':''}">
+                      <div class="fh">設定時は自動的に公開範囲=非公開+予約扱いになります</div>
+                    </div>
+                  </div>
+
+                  <!-- 旧 upTitle 入力欄は削除。上の編集エリアの vdTitle (YouTube タイトル) と統合。
+                       uploadFromDetailV2 は vdTitle.value を読むよう修正済み。 -->
+
+                  <div class="ff">
+                    <label class="fl">タグプレビュー</label>
+                    <div id="upTagPreview" style="display:flex;gap:var(--space-1);flex-wrap:wrap"></div>
+                  </div>
+
+                  <!-- アップロードテンプレートのサマリ表示（D-1） -->
+                  <div class="upload-extras-grid">
+                  <details style="margin-top:var(--space-3);background:var(--bg-elevated);padding:var(--space-3);border-radius:var(--radius-md)">
+                    <summary style="cursor:pointer;font-weight:var(--font-semibold);color:var(--text-primary)">アップロードテンプレート <span class="badge badge-neutral" id="upDefHint" style="margin-left:var(--space-2);font-weight:normal">読み込み中…</span></summary>
+                    <div id="upDefSummary" style="margin-top:var(--space-3);font-size:var(--text-xs);color:var(--text-secondary);line-height:1.7"></div>
+                    <div style="margin-top:var(--space-2)"><a href="#" onclick="go('settings');return false" style="color:var(--accent-info);text-decoration:underline;font-size:var(--text-xs)">基本設定で編集 →</a></div>
+                  </details>
+
+                  <!-- 動画別の上書き設定 -->
+                  <details style="margin-top:var(--space-2);background:var(--bg-elevated);padding:var(--space-3);border-radius:var(--radius-md)">
+                    <summary style="cursor:pointer;font-weight:var(--font-semibold);color:var(--text-primary)">この動画の上書き設定 <span id="upOvHint" class="badge badge-neutral" style="margin-left:var(--space-2);font-weight:normal"></span></summary>
+                    <div style="margin-top:var(--space-3)">
+                      <div class="fr">
+                        <div class="ff"><label class="fl">タイトル/説明の言語</label>
+                          <select class="fs" id="upDefaultLanguage">
+                            <option value="">— テンプレート使用 —</option>
+                            <option value="ja">日本語 (ja)</option><option value="en">英語 (en)</option>
+                            <option value="zh-Hans">中国語簡体字</option><option value="zh-Hant">中国語繁体字</option><option value="ko">韓国語 (ko)</option>
+                          </select>
+                        </div>
+                        <div class="ff"><label class="fl">音声言語</label>
+                          <select class="fs" id="upDefaultAudioLanguage">
+                            <option value="">— テンプレート使用 —</option>
+                            <option value="en">英語 (en)</option><option value="ja">日本語 (ja)</option><option value="zxx">音声なし (zxx)</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="ff">
+                        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm)">
+                          <select class="fs" id="upSyntheticMedia" style="width:140px">
+                            <option value="">— テンプレート —</option><option value="true">ON（AI 開示）</option><option value="false">OFF</option>
+                          </select>
+                          <span>AI 生成・改変コンテンツ開示</span>
+                        </label>
+                      </div>
+                      <div class="ff">
+                        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm)">
+                          <select class="fs" id="upMadeForKids" style="width:140px">
+                            <option value="">— テンプレート —</option><option value="true">ON（子供向け）</option><option value="false">OFF</option>
+                          </select>
+                          <span>子供向けコンテンツ</span>
+                        </label>
+                      </div>
+                      <div class="btns" style="margin-top:var(--space-2)">
+                        <button class="btn btn-secondary btn-sm" onclick="saveDetailVideoOverrides('${esc(name)}')">この動画に保存</button>
+                        <button class="btn btn-ghost btn-sm" onclick="clearDetailVideoOverrides('${esc(name)}')">テンプレートに戻す</button>
+                      </div>
+                    </div>
+                  </details>
+
+                  <!-- 多言語ローカライゼーション（Claude 翻訳）D-2/D-3 -->
+                  <details style="margin-top:var(--space-2);background:var(--bg-elevated);padding:var(--space-3);border-radius:var(--radius-md)">
+                    <summary style="cursor:pointer;font-weight:var(--font-semibold);color:var(--text-primary)">多言語タイトル・説明 <span id="upLocHint" class="badge badge-neutral" style="margin-left:var(--space-2);font-weight:normal"></span></summary>
+                    <div style="margin-top:var(--space-3)">
+                      <div class="fh" style="margin-bottom:var(--space-2)">英語タイトル/説明をソースにして、対象言語へ Claude で翻訳。アップロード時に YouTube の <code>localizations</code> として一括反映します。</div>
+                      <div class="ff">
+                        <label class="fl">対象言語</label>
+                        <div id="upLocLanguagesGrid"></div>
+                      </div>
+                      <div class="ff">
+                        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer">
+                          <input type="checkbox" id="upLocOverwrite" style="width:16px;height:16px;accent-color:var(--accent-primary)">
+                          既存の翻訳を上書きする（OFF なら未翻訳の言語だけ追加）
+                        </label>
+                      </div>
+                      <div class="btns" style="margin:0">
+                        <button class="btn btn-primary btn-sm" onclick="generateDetailLocalizations('${esc(name)}')" id="upLocGenBtn">▶ 翻訳を生成</button>
+                        <button class="btn btn-ghost btn-sm" onclick="loadDetailLocalizations('${esc(name)}')">再読み込み</button>
+                        <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="clearDetailLocalizations('${esc(name)}')">全削除</button>
+                      </div>
+                      <div id="upLocList" style="margin-top:var(--space-3);font-size:var(--text-xs);color:var(--text-secondary)"></div>
+                    </div>
+                  </details>
+                  </div>
+
+                  <div class="btns" style="margin-top:var(--space-3)">
+                    <button class="btn btn-destructive btn-sm" id="upBtn" onclick="uploadFromDetailV2('${esc(name)}')" ${d.readiness.mp4?'':'disabled'}>▶ アップロード実行</button>
+                    <button class="btn btn-secondary btn-sm" onclick="go('youtube');clrLog('ytLogs')">ログ画面へ</button>
+                  </div>
+                  ${!d.readiness.mp4?'<div class="fh" style="color:var(--accent-danger);margin-top:var(--space-2)">MP4が未認識です。書き出し済みの場合は「書き出し」タブで MP4 を読み込んでください。</div>':''}
+                </div>
+              </div>
+            </div>
+            <div class="tab-next">
+              <button class="btn btn-ghost btn-sm" onclick="setTab('export')">← 書き出しに戻る</button>
+            </div>
+          </div>
+
+        </div>
+
+      </div>`;  /* detail-layout 終了 */
+    // 既存のタグ・画像選択・楽曲を読み込む
+    loadVideoTags(name);
+    loadImageGrid(name);
+    loadUploadTagPreview(name);
+    initDetailUploadPanels(name);
+    setupMiniSunoPanel(name);
+    loadTrackList(name);
+    loadAbLogPanel(name);
+    // 競合分析キャッシュがあれば AI 提案パネル冒頭に自動表示（v3）
+    showCachedAnalysisIfAny();
+    // 現在 SUNO 実行中なら進捗を即表示
+    pollStatus();
+    // P0-C: タブパネルの表示を「次にやる工程」タブに同期（テンプレ既定は meta のため）
+    setTab(_curTab);
+    loadAssemblyTimeline(name);
+  }catch(e){console.error(e);toast('読み込みエラー','e')}
+}
+
+/* ==== 画像選択（フェーズC） ==== */
+let _imgState={main:'',sub:[]};
+async function loadImageGrid(name){
+  const grid=document.getElementById('imgGrid');if(!grid)return;
+  grid.innerHTML='<div class="empty">読み込み中...</div>';
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/images`);
+    const d=await r.json();
+    _imgState={main:d.selected?.main||'',sub:d.selected?.sub||[]};
+    const imgs=d.images||[];
+    if(imgs.length===0){
+      grid.innerHTML='<div class="empty">画像ファイルがありません<div class="empty-sub">フォルダに .jpg / .png を配置してください</div></div>';
+      return;
+    }
+    renderImageGrid(name,imgs);
+  }catch(e){console.error(e);grid.innerHTML='<div class="empty">読み込み失敗</div>'}
+}
+function renderImageGrid(name,imgs){
+  const grid=document.getElementById('imgGrid');
+  grid.innerHTML=imgs.map(im=>{
+    const fn=im.filename;
+    let kind='none';
+    if(_imgState.main===fn)kind='main';
+    else if(_imgState.sub.includes(fn))kind='sub';
+    const subIdx=kind==='sub'?_imgState.sub.indexOf(fn):-1;
+    const kb=kind==='main'?'<span class="img-tag main">MAIN</span>':(kind==='sub'?`<span class="img-tag sub">SUB${subIdx>=0?' '+(subIdx+1):''}</span>`:'');
+    const thumbTag=im.is_thumb?'<span class="img-tag thumb">サムネ</span>':'';
+    const sizeStr=(im.size/1024).toFixed(0)+'KB';
+    return `<div class="img-card ${kind}" onclick="toggleImage('${esc(name)}','${esc(fn).replace(/'/g,"\\'")}')">
+      <img src="/api/videos/${encodeURIComponent(name)}/image-file/${encodeURIComponent(fn)}" loading="lazy">
+      ${kb}${thumbTag}
+      <div class="img-meta"><span class="fn" title="${esc(fn)}">${esc(fn)}</span><span>${sizeStr}</span></div>
+    </div>`;
+  }).join('');
+}
+function toggleImage(name,fn){
+  // main → sub(末尾追加) → none の順でトグル
+  if(_imgState.main===fn){
+    _imgState.main='';
+    _imgState.sub.push(fn);
+  }else if(_imgState.sub.includes(fn)){
+    _imgState.sub=_imgState.sub.filter(x=>x!==fn);
+  }else{
+    // 何もない→メインに（既にメインがあればサブに追加）
+    if(!_imgState.main){_imgState.main=fn}
+    else{_imgState.sub.push(fn)}
+  }
+  // 再描画
+  loadImageGrid.__last=null;
+  // imgs を取り直さず、現在表示中のファイルをキャッシュしていないので、最少コストで再レンダリング
+  // 一覧を引き直す
+  refreshImageGrid(name);
+}
+async function refreshImageGrid(name){
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/images`);
+    const d=await r.json();
+    renderImageGrid(name,d.images||[]);
+  }catch(e){}
+}
+async function saveSelectedImages(name){
+  const r=await fetch(`/api/videos/${encodeURIComponent(name)}/selected-images`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(_imgState)});
+  if(r.ok){toast(`保存しました (main:${_imgState.main?1:0}, sub:${_imgState.sub.length})`,'s');refreshListsQuiet();refreshImageGrid(name)}
+  else toast('保存失敗','e');
+}
+async function clearSelectedImages(name){
+  await fetch(`/api/videos/${encodeURIComponent(name)}/selected-images`,{method:'DELETE'});
+  _imgState={main:'',sub:[]};
+  toast('リセットしました（初期値に戻ります）','i');
+  refreshListsQuiet();refreshImageGrid(name);
+}
+
+/* 既存タイムラインに画像のみ後から配置 */
+// ─── 画像生成 共通ログ表示 ───
+function _flowLogEl(name){return document.getElementById('imgGenLog_'+name)}
+function _flowAppend(name,line,cls){
+  const el=_flowLogEl(name);if(!el)return;
+  el.style.display='block';
+  const div=document.createElement('div');
+  if(cls)div.style.color=`var(--${cls})`;
+  div.textContent=line;
+  el.appendChild(div);
+  el.scrollTop=el.scrollHeight;
+}
+
+function _fileToBase64(file){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>res(r.result);
+    r.onerror=rej;
+    r.readAsDataURL(file);
+  });
+}
+
+/* ================= Codex (ChatGPT) 画像生成 ================= */
+
+let _codexPollTimer=null;
+function _stopCodexPoll(){if(_codexPollTimer){clearInterval(_codexPollTimer);_codexPollTimer=null}}
+
+/* gpt-image-2 ステータス確認 */
+async function imgGenStatusTick(name){
+  try{
+    const r=await fetch('/api/codex-imagegen/status');
+    const d=await r.json();
+    toast(d.running?'Codex 実行中':'停止中',d.running?'i':'s');
+  }catch{toast('接続エラー','e')}
+}
+
+/* Codex CLI で複数の画像プロンプト案を提案 */
+async function codexSuggestPrompts(name){
+  const ctxEl=document.getElementById('codexSuggestCtx_'+name);
+  const cntEl=document.getElementById('codexSuggestCount_'+name);
+  const taEl=document.getElementById('codexPrompts_'+name);
+  const ctx=(ctxEl?.value||'').trim();
+  const count=parseInt(cntEl?.value||'4',10)||4;
+  if(!ctx){toast('文脈ヒントを入力してください','e');return}
+  toast(`Codex CLI で ${count} 案を生成中…`,'i');
+  _flowAppend(name,`[Codex] ${count} 案生成中: ${ctx}`);
+  try{
+    const r=await fetch('/api/codex-imagegen/suggest-prompts',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({context:ctx,count,provider:'codex'})
+    });
+    const d=await r.json();
+    if(!r.ok||!d.ok){toast(d.detail||'生成失敗','e');_flowAppend(name,'[Codex] 失敗: '+(d.detail||'unknown'),'danger');return}
+    const lines=(d.prompts||[]);
+    if(taEl)taEl.value=lines.join('\n');
+    _flowAppend(name,`[Codex] ${lines.length} 案を生成`);
+    toast(`${lines.length} 案を生成`,'s');
+  }catch(e){toast('接続エラー','e')}
+}
+
+/* (legacy) Codex / gpt-image-2 並列生成キック - 個別動画詳細から呼ばれる */
+async function codexImagegenGenerate(name){
+  const taEl=document.getElementById('codexPrompts_'+name);
+  const prompts=(taEl?.value||'').trim();
+  if(!prompts){toast('プロンプト（1 ブロック 1 件・空行区切り）を入力してください','e');return}
+  // 空行（1 行以上）で分割してブロック数を数える
+  const blocks=prompts.split(/\n\s*\n+/).map(b=>b.trim()).filter(b=>b && !b.startsWith('#'));
+  if(!blocks.length){toast('有効なプロンプトがありません','e');return}
+  const par=Math.min(4,parseInt(document.getElementById('codexParallel_'+name)?.value||'4',10)||4);
+  const tmo=parseInt(document.getElementById('codexTimeout_'+name)?.value||'900',10)||900;
+  const aspect=(document.getElementById('codexAspect_'+name)?.value||'16:9').trim();
+  const quality=(document.getElementById('codexQuality_'+name)?.value||'medium').trim();
+  const nPer=Math.min(10,parseInt(document.getElementById('codexN_'+name)?.value||'1',10)||1);
+  const background=(document.getElementById('codexBackground_'+name)?.value||'auto').trim();
+  const fidelity=(document.getElementById('codexFidelity_'+name)?.value||'high').trim();
+  const fmt=(document.getElementById('codexFormat_'+name)?.value||'png').trim();
+  const usePicked=!!document.getElementById('codexUsePicked_'+name)?.checked;
+
+  // 直接アップロードされた参照画像を base64 で送る
+  let refImagesB64=[];
+  const refFileEl=document.getElementById('codexRefImages_'+name);
+  const refFiles=Array.from(refFileEl?.files||[]);
+  if(refFiles.length){
+    try{
+      for(const f of refFiles){
+        if(f.size>20*1024*1024){toast(`画像が大きすぎます: ${f.name}（20MB まで）`,'e');return}
+        const dataUrl=await _fileToBase64(f);
+        refImagesB64.push({filename:f.name,data_url:dataUrl});
+      }
+    }catch(e){toast('参照画像の読込に失敗','e');return}
+  }
+
+  const totalImages=blocks.length*nPer;
+  const refMsg = refImagesB64.length ? `アップロード ${refImagesB64.length} 枚` : (usePicked?'picked':'なし');
+  if(!confirm(`${blocks.length} プロンプト × n=${nPer} = ${totalImages} 枚を並列 ${par} で生成します。\nsize=${aspect}, quality=${quality}, format=${fmt}, 参照画像=${refMsg}\n\n保存先: {動画フォルダ}/${name}/Image/`))return;
+  const body={
+    video_name:name, prompts,
+    max_parallel:par, timeout_sec:tmo,
+    aspect_ratio:aspect, quality, n_per_prompt:nPer,
+    background, input_fidelity:fidelity, output_format:fmt,
+    use_benchmark_picked:usePicked,
+    reference_images_b64:refImagesB64,
+  };
+  try{
+    const r=await fetch('/api/codex-imagegen/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!r.ok){toast(d.detail||'失敗','e');return}
+    toast(`gpt-image-2 起動：${d.prompt_count} 件 × n=${nPer} 並列実行中`,'s');
+    _flowAppend(name,`[gpt-image-2 起動] count=${d.prompt_count}, n=${nPer}, parallel=${par}, size=${aspect}, q=${quality}, refs=${refMsg}, out=${d.output_dir}`);
+    _startCodexPoll(name);
+  }catch(e){toast('接続エラー','e')}
+}
+
+/* 参照画像アップロード: 選択枚数とサイズを表示 */
+function codexRefImagesChanged(name){
+  const el=document.getElementById('codexRefImages_'+name);
+  const info=document.getElementById('codexRefImagesInfo_'+name);
+  if(!el||!info)return;
+  const files=Array.from(el.files||[]);
+  if(!files.length){info.textContent='';return}
+  const totalKB=files.reduce((s,f)=>s+f.size,0)/1024;
+  info.textContent=`${files.length} 枚（合計 ${totalKB<1024 ? totalKB.toFixed(0)+'KB' : (totalKB/1024).toFixed(1)+'MB'}）`;
+  info.style.color = files.some(f=>f.size>20*1024*1024) ? 'var(--accent-danger)' : 'var(--text-tertiary)';
+}
+function codexClearRefImages(name){
+  const el=document.getElementById('codexRefImages_'+name);
+  const info=document.getElementById('codexRefImagesInfo_'+name);
+  if(el)el.value='';
+  if(info)info.textContent='';
+}
+
+/* 5要素プロンプト生成（参照画像があれば Claude Vision で実時間分析→5要素抽出） */
+async function codexBuild5Element(name){
+  const hintEl=document.getElementById('codex5eHint_'+name);
+  const nEl=document.getElementById('codex5eN_'+name);
+  const taEl=document.getElementById('codexPrompts_'+name);
+  const refBadge=document.getElementById('codex5eRefBadge_'+name);
+  const hint=(hintEl?.value||'').trim();
+  const n=parseInt(nEl?.value||'4',10)||4;
+  // アップロード参照画像 + picked フラグを取得
+  let refImagesB64=[];
+  const refFileEl=document.getElementById('codexRefImages_'+name);
+  const refFiles=Array.from(refFileEl?.files||[]);
+  if(refFiles.length){
+    try{
+      for(const f of refFiles){
+        if(f.size>20*1024*1024){toast(`画像が大きすぎます: ${f.name}（20MB まで）`,'e');return}
+        const dataUrl=await _fileToBase64(f);
+        refImagesB64.push({filename:f.name,data_url:dataUrl});
+      }
+    }catch(e){toast('参照画像の読込に失敗','e');return}
+  }
+  const usePicked=!!document.getElementById('codexUsePicked_'+name)?.checked;
+  const totalRefs=refImagesB64.length + (usePicked ? '+picked' : '');
+
+  toast(`Claude Vision で参照画像を分析中…（最大 5 分）`,'i');
+  _flowAppend(name,`[5要素] Vision 分析開始: hint="${hint||'(なし)'}", uploaded=${refImagesB64.length}, picked=${usePicked?'on':'off'}, n=${n}`);
+  try{
+    const r=await fetch('/api/codex-imagegen/build-5element',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        video_name:name, n, concept_hint:hint, filename_prefix:name,
+        use_benchmark_picked: usePicked,
+        reference_images_b64: refImagesB64,
+      })
+    });
+    const d=await r.json();
+    if(!r.ok||!d.ok){toast(d.detail||'5要素構築失敗','e');_flowAppend(name,'[5要素] 失敗: '+(d.detail||''),'danger');return}
+    const lines=(d.items||[]).map(it=>`${it.prompt}::${it.filename}`);
+    if(taEl){
+      const prev=(taEl.value||'').trim();
+      taEl.value=prev ? (prev + '\n\n' + lines.join('\n\n')) : lines.join('\n\n');
+    }
+    if(refBadge){
+      const c=d.reference_count||0;
+      refBadge.textContent=`参照画像: ${c}（${d.source||''}）`;
+      refBadge.style.background=c>0?'var(--accent-primary)':'var(--bg-elevated)';
+      refBadge.style.color=c>0?'#0a0a0a':'var(--text-tertiary)';
+      refBadge.title=c>0?('refs: '+(d.reference_images||[]).join(', ')):'参照画像がアップロードも picked も無い → キャッシュ aggregate にフォールバック';
+    }
+    if(d.vision_error){
+      _flowAppend(name,`[5要素] ⚠ Vision 失敗→キャッシュへフォールバック: ${d.vision_error}`,'accent-warning');
+    }
+    if(d.vision_extracted && Object.keys(d.vision_extracted).length){
+      const ve=d.vision_extracted;
+      _flowAppend(name,`[5要素] Vision 抽出: subject="${(ve.subject||'').slice(0,80)}" / lighting="${(ve.lighting||'').slice(0,80)}"`);
+    }
+    // 既存ファイル検出 → v 番号オフセットの可視化
+    if((d.existing_count||0) > 0){
+      const startV = d.start_index || 1;
+      const endV = startV + d.items.length - 1;
+      _flowAppend(name,`[5要素] 既存 ${d.existing_count} 枚を検出 → v${startV}〜v${endV} で生成（上書き回避）`,'accent-info');
+    } else if (d.start_index > 1) {
+      _flowAppend(name,`[5要素] v${d.start_index} から開始`);
+    }
+    _flowAppend(name,`[5要素] ${d.items.length} 件構築完了 (source: ${d.source||'?'})`);
+    const suffix = (d.existing_count||0) > 0 ? ` / 既存${d.existing_count}枚を検出してv${d.start_index}から` : '';
+    toast(`5要素プロンプト ${d.items.length} 件を生成${suffix}`,'s');
+  }catch(e){toast('接続エラー: '+e,'e')}
+}
+
+async function codexImagegenStop(){
+  try{
+    const r=await fetch('/api/codex-imagegen/stop',{method:'POST'});
+    const d=await r.json();
+    toast(d.status==='stopped'?'停止しました':'実行中のジョブはありません',d.status==='stopped'?'s':'i');
+  }catch{toast('接続エラー','e')}
+}
+
+/* ================= 背景画像（パイプライン STEP 3） ================= */
+let _bgImagePollTimer=null;
+function _bgImageLogEl(name){return document.getElementById('bgImageLog_'+name)}
+function _bgImageAppend(name,line,cls){
+  const el=_bgImageLogEl(name);if(!el)return;
+  el.style.display='block';
+  const div=document.createElement('div');
+  if(cls)div.style.color=`var(--${cls})`;
+  div.textContent=line;
+  el.appendChild(div);
+  el.scrollTop=el.scrollHeight;
+}
+function _stopBgImagePoll(){if(_bgImagePollTimer){clearInterval(_bgImagePollTimer);_bgImagePollTimer=null}}
+function _startBgImagePoll(name){
+  _stopBgImagePoll();
+  let seen=0;
+  _bgImagePollTimer=setInterval(async()=>{
+    try{
+      const r=await fetch('/api/bgimage/status');
+      const d=await r.json();
+      const logs=d.logs||[];
+      for(let i=seen;i<logs.length;i++)_bgImageAppend(name,logs[i]);
+      seen=logs.length;
+      if(!d.running){
+        _stopBgImagePoll();
+        const ok=logs.slice(-5).some(l=>l.includes('[完了] 終了コード: 0'));
+        _bgImageAppend(name, ok?'[背景画像 完了]':'[背景画像 終了（エラーあり）]', ok?'accent':'accent-warning');
+        loadBgImagePreview(name);
+      }
+    }catch{}
+  },2000);
+}
+
+async function bgImageRun(name){
+  const refCount=parseInt(document.getElementById('bgImageRefCount_'+name)?.value||'3',10)||3;
+  const force=!!document.getElementById('bgImageForce_'+name)?.checked;
+  const referenceImage=(document.getElementById('cfgReferenceImage')?.value||'').trim();
+  const btn=document.getElementById('bgImageRunBtn_'+name);
+  if(btn)btn.disabled=true;
+  try{
+    const r=await fetch('/api/bgimage/run',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_name:name, ref_count:refCount, force, reference_image:referenceImage})});
+    const d=await r.json();
+    if(!r.ok){toast(d.detail||'失敗','e');_bgImageAppend(name,'[起動失敗] '+(d.detail||''),'accent-danger');return}
+    if(d.status==='ok' && d.skipped){
+      toast(`既存 ${d.output} あり（スキップ）。上書き再生成は「上書き再生成」ON で実行`,'i');
+      _bgImageAppend(name,`[skip] 既存 ${d.output} あり、生成スキップ`,'accent-info');
+      loadBgImagePreview(name);
+      return;
+    }
+    const refLabel=referenceImage?`fixed=${referenceImage.split('/').pop()}`:`ref_count=${refCount}`;
+    toast(`背景画像生成 開始: ${d.output}（${referenceImage?'固定参照':'参照 '+refCount+' 枚'}, force=${force?'on':'off'}）`,'s');
+    _bgImageAppend(name,`[起動] output=${d.output}, ${refLabel}, force=${force?'on':'off'}`);
+    _startBgImagePoll(name);
+  }catch(e){toast('接続エラー: '+e,'e')}
+  finally{if(btn)btn.disabled=false}
+}
+
+async function bgImageStop(){
+  try{
+    const r=await fetch('/api/bgimage/stop',{method:'POST'});
+    const d=await r.json();
+    toast(d.status==='stopped'?'停止しました':'実行中のジョブはありません',d.status==='stopped'?'s':'i');
+    _stopBgImagePoll();
+  }catch{toast('接続エラー','e')}
+}
+
+async function loadBgImagePreview(name){
+  // vol 番号を抽出してフォルダ内の vol{N}.png/.jpg を探す
+  const m=(name||'').match(/^(\d+)_/);
+  if(!m)return;
+  const vol=m[1];
+  const wrap=document.getElementById('bgImagePreview_'+name);
+  const imgs=document.getElementById('bgImagePreviewImgs_'+name);
+  if(!wrap||!imgs)return;
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/images`);
+    if(!r.ok){wrap.style.display='none';return}
+    const d=await r.json();
+    const list=(d.images||[]).filter(it=>{
+      const n=(it.filename||'').toLowerCase();
+      return n===`vol${vol}.png` || n===`vol${vol}.jpg` || n===`vol${vol}-1.png` || n===`vol${vol}-1.jpg`;
+    });
+    if(!list.length){wrap.style.display='none';imgs.innerHTML='';return}
+    wrap.style.display='block';
+    imgs.innerHTML=list.map(it=>{
+      const fn=esc(it.filename||'');
+      return `<div style="text-align:center"><img src="/api/videos/${encodeURIComponent(name)}/image-file/${encodeURIComponent(it.filename)}" style="max-width:240px;max-height:135px;border:1px solid var(--border-default);border-radius:var(--radius-sm);object-fit:contain;background:#000"><div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px;font-family:var(--font-mono)">${fn}</div></div>`;
+    }).join('');
+  }catch{wrap.style.display='none'}
+}
+
+function _startCodexPoll(name){
+  _stopCodexPoll();
+  let seen=0;
+  _codexPollTimer=setInterval(async()=>{
+    try{
+      const r=await fetch('/api/codex-imagegen/status');
+      const d=await r.json();
+      const logs=d.logs||[];
+      for(let i=seen;i<logs.length;i++)_flowAppend(name,logs[i]);
+      seen=logs.length;
+      if(!d.running){
+        _stopCodexPoll();
+        _flowAppend(name,'[Codex 完了]','accent');
+        // 画像グリッドを再読み込み（保存先に出力されたファイルを反映）
+        try{loadImageGrid&&loadImageGrid(name)}catch{}
+      }
+    }catch{}
+  },2000);
+}
+
+
+function _buildDetailTabs(){
+  return DETAIL_TABS.map(tab=>`<button class="tab${tab.key==='edit'?' on':''}" data-t="${tab.key}" onclick="setTab('${tab.key}')">${tab.label}</button>`).join('');
+}
+function runAutoExec(name){
+  const checks=document.querySelectorAll('#autoExecBar input[type="checkbox"]:checked');
+  const steps=Array.from(checks).map(c=>c.dataset.step).filter(Boolean);
+  if(steps.length===0){toast('工程を1つ以上チェックしてください','e');return}
+  // 未推奨組み合わせを警告
+  const has=s=>steps.includes(s);
+  const warnings=[];
+  if(has('suno') && !has('rename'))warnings.push('「楽曲」ON / 「楽曲加工」OFF — フェード・ゲイン正規化が走らず music/ への配置もスキップされます');
+  if(has('premiere') && !has('rename') && !has('suno'))warnings.push('「自動配置」ON / 「楽曲加工」OFF — music/ に楽曲が無いと Premiere 配置に失敗します');
+  if(has('export') && !has('premiere'))warnings.push('「書き出し」ON / 「自動配置」OFF — Premiere プロジェクトが未準備だと書き出しが失敗します');
+  if(has('upload') && !has('export') && !has('meta'))warnings.push('「アップロード」のみ ON — 既に MP4 とメタが存在する場合のみ動作します');
+  if(warnings.length){
+    if(!confirm('注意: 未推奨の組み合わせが含まれます:\n\n'+warnings.map(w=>'・'+w).join('\n')+'\n\nこのまま実行しますか？'))return;
+  }
+  _confirmAndRunPipeline(name,steps);
+}
+// 今いるタブから最後まで（公開準備タブは meta+upload を連結）
+/* SUNO が含まれる時は現行フォームの値を確認モーダルで要約して送信 */
+function _confirmAndRunPipeline(name,steps){
+  const stepLabels={suno:'楽曲',rename:'楽曲加工',bgimage:'背景画像',psd_composite:'画像合成',images:'画像',premiere:'自動配置',export:'書き出し',meta:'公開準備',upload:'アップロード'};
+  const stepList=steps.map(s=>`・${stepLabels[s]||s}`).join('\n');
+  let sunoBlock='';
+  let sunoParams=null;
+  if(steps.includes('suno')){
+    const p=(typeof _collectMiniSunoParams==='function')?_collectMiniSunoParams():null;
+    if(!p || !p.prompt){
+      toast('楽曲タブでプロンプトを設定してください','e');
+      setTab('suno');
+      return;
+    }
+    sunoParams=p;
+    sunoBlock=`\n─── SUNO 設定 ───\nプロンプト: ${p.prompt.slice(0,80)}${p.prompt.length>80?'…':''}\n生成数: ${p.count}曲 / 間隔 ${p.interval}秒 / ${p.generation_mode}${p.batch?' + batch':''}\nDL: 完了後 ${p.dl_wait_sec}秒待機 → 自動DL → ${p.dl_min_duration>0?p.dl_min_duration+'秒以下削除':'フィルタなし'}\nブラウザ: ${p.headless?'非表示':'表示'}`;
+  }
+  if(!confirm(`以下の工程を自動実行します:\n\n${stepList}${sunoBlock}\n\n実行しますか？`))return;
+  _runPipeline(name,steps,sunoParams);
+}
+function _runPipeline(name,steps,sunoParams){
+  _setPlStatus(`実行中: ${steps.join(' → ')}`);
+  const body={steps};
+  if(sunoParams){
+    body.suno_prompt=sunoParams.prompt;
+    body.suno_count=sunoParams.count;
+    body.suno_interval=sunoParams.interval;
+    body.suno_provider=sunoParams.provider;
+    body.suno_mode=sunoParams.generation_mode;
+    body.suno_batch=sunoParams.batch;
+    body.dl_wait_sec=sunoParams.dl_wait_sec;
+    body.dl_min_duration=sunoParams.dl_min_duration;
+    body.suno_headless=sunoParams.headless;
+    if(sunoParams.diversity_threshold!==undefined)body.diversity_threshold=sunoParams.diversity_threshold;
+    if(sunoParams.diversity_retry!==undefined)body.diversity_retry=sunoParams.diversity_retry;
+    if(sunoParams.history_limit!==undefined)body.history_limit=sunoParams.history_limit;
+  }
+  fetch(`/api/videos/${encodeURIComponent(name)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.status==='started'){
+        toast(`自動実行開始: ${steps.length}工程`,'s');
+        _plAppend(`▶ pipeline 開始: ${steps.join(', ')}`);
+        if(steps.includes('suno')){_startSunoLogRelay()}
+        _startPipelineLogRelay();
+      }else{toast(d.detail||'失敗','e');_setPlStatus('失敗')}
+    })
+    .catch(e=>{toast('接続エラー','e');_setPlStatus('接続エラー')});
+}
+/* pipeline の tail-log を永続ログへ流す */
+let _pipelineLogTimer=null,_pipelineLogSeen=0;
+function _startPipelineLogRelay(){
+  if(_pipelineLogTimer)return;
+  _pipelineLogSeen=0;
+  _pipelineLogTimer=setInterval(async()=>{
+    try{
+      const r=await fetch('/api/pipeline/status'),d=await r.json();
+      const logs=d.logs||[];
+      if(logs.length>_pipelineLogSeen){
+        logs.slice(_pipelineLogSeen).forEach(line=>{
+          // 重要行のみ抜粋
+          if(/^=|OK|NG|TIME|\[|\/6|完了|失敗|開始/.test(line))_plAppend(line.replace(/\s+$/,''));
+        });
+        _pipelineLogSeen=logs.length;
+      }
+      if(!d.running){clearInterval(_pipelineLogTimer);_pipelineLogTimer=null;_plAppend('■ pipeline 終了');_setPlStatus('完了')}
+    }catch(e){}
+  },2000);
+}
+function setTab(t){
+  t=_canonicalDetailTab(t);
+  _curTab=t;
+  document.querySelectorAll('#p-videos .tab').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  document.querySelectorAll('#p-videos .tab-panel').forEach(p=>p.classList.toggle('on',p.dataset.t===t));
+  // images タブを開いたら背景プレビューと画像エディタを初期化
+  if(t==='images' && _curVideo){
+    setTimeout(()=>loadBgImagePreview(_curVideo),250);
+    setTimeout(()=>initLayerEditor(_curVideo,false),350);
+  }
+  if(t==='edit' && _curVideo){
+    loadAssemblyTimeline(_curVideo);
+  }
+}
+
+let _atlModel=null,_atlAudio=null,_atlPlayhead=0;
+const atlTime=s=>{s=Math.max(0,Math.round(Number(s)||0));return `${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor(s%3600/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`};
+const atlTooltipAttrs=(title,start,end)=>`data-atl-tooltip="${esc(title)}" data-atl-tooltip-range="${atlTime(start)} - ${atlTime(end)}" data-atl-tooltip-duration="${atlTime(Math.max(0,Number(end)-Number(start)))}"`;
+function atlBindClipTooltips(){if(document.body.dataset.atlTooltipsBound)return;document.body.dataset.atlTooltipsBound='1';let tip=null,timer=0,target=null;const hide=()=>{clearTimeout(timer);timer=0;target=null;if(tip)tip.hidden=true};const move=e=>{if(!tip||tip.hidden)return;const gap=14,w=tip.offsetWidth,h=tip.offsetHeight;tip.style.left=`${Math.min(innerWidth-w-8,e.clientX+gap)}px`;tip.style.top=`${Math.min(innerHeight-h-8,e.clientY+gap)}px`};document.addEventListener('pointerover',e=>{const hit=e.target.closest?.('[data-atl-tooltip]');if(!hit||hit===target)return;hide();target=hit;timer=setTimeout(()=>{if(target!==hit)return;if(!tip){tip=document.createElement('div');tip.className='atl-clip-tooltip';tip.hidden=true;document.body.append(tip)}tip.innerHTML=`<strong>${esc(hit.dataset.atlTooltip)}</strong><span>${esc(hit.dataset.atlTooltipRange)}</span><span>長さ ${esc(hit.dataset.atlTooltipDuration)}</span>`;tip.hidden=false;move(e)},150)},true);document.addEventListener('pointermove',move,true);document.addEventListener('pointerout',e=>{if(target&&(!e.relatedTarget||!target.contains(e.relatedTarget)))hide()},true);addEventListener('blur',hide)}
+const atlDisplayName=s=>String(s||'').replace(/\.[^.]+$/,'').replace(/^\s*(?:track\s*)?\d{1,3}\s*[-_. )]+\s*/i,'');
+const atlTransitionBadge=(kind,i,sec,curve,left)=>`<span class="atl-transition-marker" style="left:${left}"><button class="atl-transition atl-transition-${kind}" onclick="event.stopPropagation();atlOpenTransition('${kind}',${i})">${sec>0?(kind==='audio'?'クロスフェード ':'ディゾルブ ')+Number(sec).toFixed(1)+'s':'カット'}</button>${sec>0?`<i class="atl-overlap atl-overlap-${kind}" title="${esc(curve||'equal_power')}"></i>`:''}</span>`;
+async function loadAssemblyTimeline(name){const el=document.getElementById('assemblyTimeline');if(!el)return;atlStopExportPolling();const r=await fetch(`/api/timeline/${encodeURIComponent(name)}`);if(!r.ok){el.innerHTML='<div class="empty">タイムラインを読み込めませんでした</div>';return}_atlModel=await r.json();if(window._atlFilmora)window._atlFilmora.lastSaved=null;renderAssemblyTimeline(name);atlUpdatePreview(_atlPlayhead);atlRestoreExport(name)}
+function renderAssemblyTimelineBase(name){const m=_atlModel,el=document.getElementById('assemblyTimeline');if(!m||!el)return;const total=Math.max(.001,m.total_duration||0),target=Math.max(.001,m.target_duration||total),overflow=[...(m.visual_segments||[]).map(x=>Number(x.end)||0),...(m.text_tracks||[]).flatMap(t=>(t.clips||[]).map(x=>Number(x.end)||0))],extent=Math.max(total,target,...overflow),pct=Math.min(100,total/target*100),excluded=new Set(m.excluded||[]),width=x=>(Number(x)||0)/extent*100+'%',position=x=>(Number(x)||0)/extent*100+'%';
+ const active=(m.audio_clips||[]).filter(x=>!excluded.has(x.id));
+ let audioCursor=0;
+ const audio=active.map((c,i)=>{const start=audioCursor;audioCursor+=Number(c.duration)||0;const label=c.display_name||c.filename,badge=String(i+1).padStart(2,'0'),clipStart=Number(c.start??start),clipEnd=Number(c.end??(clipStart+Number(c.duration||0)));return `${i?atlTransitionBadge('audio',i,Number(c.crossfade_sec??m.audio_crossfade_sec??0),c.crossfade_curve,position(start)):''}<div class="atl-clip atl-audio-clip atl-tone-${i%2?'b':'a'}" data-id="${esc(c.id)}" data-audio-index="${i}" ${atlTooltipAttrs(label,clipStart,clipEnd)} style="width:${width(c.duration)}" onclick="atlPreview('${esc(name)}','${esc(c.id)}')"><img loading="lazy" src="/api/timeline/${encodeURIComponent(name)}/waveform/${encodeURIComponent(c.id)}"><b><span class="atl-clip-number">${badge}</span><span class="atl-clip-name">${esc(label)}</span></b><button type="button" class="atl-exclude" aria-label="${esc(label)}を除外" title="除外" onclick="event.stopPropagation();atlExclude('${esc(c.id)}')"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>`}).join('');
+ const visuals=(m.visual_segments||[]).map((s,i)=>{const label=String(s.image_path||'').split('/').pop()||'画像';return `${i?atlTransitionBadge('visual',i,Number(s.crossfade_sec??m.crossfade_sec??0),s.crossfade_curve,position(s.start)):''}<div class="atl-clip atl-visual" data-visual-index="${i}" ${atlTooltipAttrs(label,s.start,s.end)} style="width:${width(s.end-s.start)}" onclick="atlPickImage('${esc(name)}',${i})"><i class="atl-visual-resize start" title="開始位置をドラッグ" onpointerdown="atlResizeVisualStart(event,${i},'start')"></i><img src="/api/timeline/${encodeURIComponent(name)}/image?path=${encodeURIComponent(s.image_path)}"><b>${esc(label)}</b><i class="atl-visual-resize end" title="終了位置をドラッグ" onpointerdown="atlResizeVisualStart(event,${i},'end')"></i></div>`}).join('');
+ const np=m.now_playing||{},npDur=c=>np.mode==='always'?c.duration:Math.min(c.duration,Number(np.intro_seconds||8));
+ const texts=(m.text_lane||[]).map((x,i)=>`<div class="atl-clip atl-text" data-text-clip="T1:${i}" ${atlTooltipAttrs(String(x.text||'').slice(0,80)||x.label||'テキスト',x.start||0,x.end||total)} style="width:${width((x.end||total)-(x.start||0))}"><i class="atl-text-resize start" onpointerdown="atlResizeTextStart(event,'T1:${i}','start')"></i><b>${esc(x.label||'テキスト')}: ${esc(x.text)}</b><i class="atl-text-resize end" onpointerdown="atlResizeTextStart(event,'T1:${i}','end')"></i></div>`).join('')+(np.enabled?active.map((c,i)=>`<div class="atl-clip atl-text atl-now-playing-chip atl-tone-${i%2?'b':'a'}" data-now-playing-index="${i}" data-song-index="${i}" ${atlTooltipAttrs(c.display_name||atlDisplayName(c.filename),c.start,c.start+npDur(c))} style="width:${width(npDur(c))}" onclick="event.stopPropagation();atlOpenNowPlaying()"><b>${esc(c.display_name||atlDisplayName(c.filename))}</b></div>`).join(''):'');
+ const chapters=(m.audio_clips||[]).filter(x=>!excluded.has(x.id)).map(c=>`<div class="atl-chapter"><code>${atlTime(c.start)}</code><span>${esc(c.filename.replace(/\.[^.]+$/,''))}</span><button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('${atlTime(c.start)} ${esc(c.filename.replace(/'/g,"\\'").replace(/\.[^.]+$/,''))}')">コピー</button></div>`).join('');
+ el.innerHTML=`<div class="atl-head"><strong>アセンブリタイムライン</strong><div class="atl-meter ${total<target?'short':''}"><i style="width:${pct}%"></i></div><span class="atl-summary">合計 ${atlTime(total)} / 目標 ${atlTime(target)}</span></div><div class="atl-ruler" onclick="atlSeek(event)">${[0,.25,.5,.75,1].map(x=>`<span style="left:${x*100}%">${atlTime(extent*x)}</span>`).join('')}</div><div class="atl-stage" onclick="atlSeek(event)"><i class="atl-playhead" style="left:calc(100px + (100% - 100px)*${_atlPlayhead/extent})"></i><div class="atl-lane"><div class="atl-label">音声</div><div class="atl-track">${audio}</div></div><div class="atl-lane"><div class="atl-label">映像</div><div class="atl-track">${visuals}</div></div><div class="atl-lane"><div class="atl-label">文字</div><div class="atl-track">${texts}</div></div></div><div class="atl-bottom"><div class="atl-chapters"><div class="sec-title">チャプター</div>${chapters||'<div class="fh">曲がありません</div>'}</div><div class="atl-controls"><label class="fl">クロスフェード一括（秒）</label><input class="fi" type="number" min="0" max="10" step="0.1" value="${Number(m.crossfade_sec||0)}" onchange="atlSetFade(this.value)">${(m.visual_segments||[]).slice(1).map((x,i)=>`<label class="fl">境界 ${i+1}</label><input class="fi" type="number" min="0" max="10" step="0.1" value="${Number(x.crossfade_sec||0)}" onchange="atlSetSegmentFade(${i+1},this.value)">`).join('')}<div class="btns"><button class="btn btn-secondary btn-sm" onclick="atlCopyAll()">全チャプターをコピー</button><button class="btn btn-primary btn-sm" onclick="atlExport('${esc(name)}')">この構成で書き出し</button></div></div></div>`}
+function renderAssemblyTimeline(name){renderAssemblyTimelineBase(name);atlBindClipTooltips();atlEnsurePreview();window.aplApplyLayout?.(name);window.atlAttachFilmora?.(name);window.atlFinalizeToolbar?.(name)}
+async function atlSave(){const F=window._atlFilmora,base=(F?.lastSaved?.name===_curVideo&&F.lastSaved.at)||_atlModel.updated_at||null;const r=await fetch(`/api/timeline/${encodeURIComponent(_curVideo)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:_atlModel,base_updated_at:base})});if(r.status===409){if(F)F.lastSaved=null;toast('タイムラインが他の画面で更新されています。最新を読み込み直します','e');await loadAssemblyTimeline(_curVideo);return}if(r.ok){_atlModel=await r.json();if(F&&_atlModel.updated_at)F.lastSaved={name:_curVideo,at:_atlModel.updated_at};renderAssemblyTimeline(_curVideo)}else toast('タイムライン保存に失敗しました','e')}
+function atlExclude(id){if(!_atlModel.excluded.includes(id))_atlModel.excluded.push(id);atlSave()}
+function atlPreview(name,id){const c=_atlModel.audio_clips.find(x=>x.id===id);if(c)atlPlayAt(c.start||0)}
+function atlSeek(e){if(e.target.closest('button,input'))return;const r=e.currentTarget.getBoundingClientRect(),total=_atlModel.total_duration||0;_atlPlayhead=Math.max(0,Math.min(total,(e.clientX-r.left)/r.width*total));atlUpdatePlayhead();atlUpdatePreview(_atlPlayhead);atlPlayAt(_atlPlayhead)}function atlSetFade(v){_atlModel.crossfade_sec=Math.max(0,Number(v)||0);_atlModel.visual_segments.forEach((x,i)=>x.crossfade_sec=i?_atlModel.crossfade_sec:0);atlSave()}
+function atlSetSegmentFade(i,v){if(_atlModel.visual_segments[i])_atlModel.visual_segments[i].crossfade_sec=Math.max(0,Number(v)||0);atlSave()}
+function atlOpenTransition(kind,i){const row=kind==='audio'?_atlModel.audio_clips[i]:_atlModel.visual_segments[i],sec=Number(row.crossfade_sec||0),curve=row.crossfade_curve||'equal_power',modal=document.createElement('div');modal.className='atl-modal';modal.innerHTML=`<div class="atl-picker atl-transition-popover"><div class="sec-title">${kind==='audio'?'曲のつなぎ':'映像のつなぎ'}</div><label class="fl">秒数 <output>${sec.toFixed(1)}</output></label><input type="range" min="0" max="10" step="0.1" value="${sec}" oninput="this.previousElementSibling.querySelector('output').value=Number(this.value).toFixed(1)"><label class="fl">カーブ</label><select class="fs"><option value="equal_power" ${curve==='equal_power'?'selected':''}>等パワー</option><option value="linear" ${curve==='linear'?'selected':''}>リニア</option></select><div class="btns"><button class="btn btn-primary" data-save>保存</button><button class="btn btn-secondary" data-close>閉じる</button></div></div>`;modal.onclick=e=>{if(e.target.closest('[data-close]'))modal.remove();if(e.target.closest('[data-save]')){row.crossfade_sec=Number(modal.querySelector('input').value);row.crossfade_curve=modal.querySelector('select').value;modal.remove();atlSave()}};document.body.appendChild(modal)}
+async function atlOpenNowPlaying(){const n=_atlModel.now_playing||(_atlModel.now_playing={enabled:true}),fonts=await fetch('/api/fonts').then(r=>r.json()).catch(()=>({fonts:[]})),positions=['top-left','top-center','top-right','middle-left','center','middle-right','bottom-left','bottom-center','bottom-right'],modal=document.createElement('div');modal.className='atl-modal';modal.innerHTML=`<div class="atl-picker atl-now-playing-inspector"><div class="sec-title">楽曲名表示</div><label class="fl"><input type="checkbox" data-k="enabled" ${n.enabled?'checked':''}> 表示する</label><label class="fl">表示モード</label><select class="fs" data-k="mode"><option value="intro" ${n.mode!=='always'?'selected':''}>各曲の冒頭</option><option value="always" ${n.mode==='always'?'selected':''}>常時</option></select><label class="fl">冒頭秒数</label><input class="fi" type="number" data-k="intro_seconds" value="${Number(n.intro_seconds||8)}"><label class="fl">位置</label><div class="atl-position-grid">${positions.map(p=>`<button data-pos="${p}" class="${n.position===p?'active':''}" title="${p}"></button>`).join('')}</div><label class="fl">フォント</label><select class="fs" data-k="font_path">${(fonts.fonts||[]).map(f=>`<option value="${esc(f.path)}" ${n.font_path===f.path?'selected':''}>${esc(f.name)}</option>`).join('')}</select><label class="fl">任意フォントパス</label><input class="fi" data-k="font_path_custom" value="${esc(n.font_path||'')}"><label class="fl">サイズ</label><input class="fi" type="number" data-k="size" value="${Number(n.size||48)}"><div class="atl-style-row"><label>色<input type="color" data-k="color" value="${n.color||'#ffffff'}"></label><label>縁取り<input type="color" data-k="border_color" value="${n.border_color||'#000000'}"></label><label>太さ<input type="number" data-k="border_width" value="${Number(n.border_width||2)}"></label></div><div class="btns"><button class="btn btn-primary" data-save>保存</button><button class="btn btn-secondary" data-template>チャンネルのテンプレートとして保存</button><button class="btn btn-secondary" data-close>閉じる</button></div></div>`;let position=n.position||'bottom-center';modal.onclick=async e=>{const pb=e.target.closest('[data-pos]');if(pb){position=pb.dataset.pos;modal.querySelectorAll('[data-pos]').forEach(x=>x.classList.toggle('active',x===pb));return}if(e.target.closest('[data-close]'))modal.remove();if(e.target.closest('[data-save]')||e.target.closest('[data-template]')){modal.querySelectorAll('[data-k]').forEach(x=>{const k=x.dataset.k;if(k==='font_path_custom')return;n[k]=x.type==='checkbox'?x.checked:x.type==='number'?Number(x.value):x.value});n.position=position;const custom=modal.querySelector('[data-k="font_path_custom"]').value.trim();if(custom)n.font_path=custom;await atlSave();if(e.target.closest('[data-template]')){const r=await fetch(`/api/timeline/${encodeURIComponent(_curVideo)}/now-playing-template`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_id:_uiChannelId,now_playing:n})});toast(r.ok?'チャンネルテンプレートへ保存しました':'テンプレート保存に失敗しました',r.ok?'s':'e')}modal.remove()}};document.body.appendChild(modal)}
+function atlResizeStart(e,i){e.stopPropagation();const start=e.clientX,l=_atlModel.visual_segments[i],r=_atlModel.visual_segments[i+1],initial=l.end,total=_atlModel.total_duration;const move=ev=>{const d=(ev.clientX-start)/document.querySelector('.atl-track').clientWidth*total,b=Math.max(l.start+.1,Math.min(r.end-.1,initial+d));l.end=b;r.start=b;renderAssemblyTimeline(_curVideo)},up=()=>{removeEventListener('pointermove',move);removeEventListener('pointerup',up);atlSave()};addEventListener('pointermove',move);addEventListener('pointerup',up)}
+async function atlPickImage(name,index){const r=await fetch(`/api/timeline/${encodeURIComponent(name)}/image-candidates`),d=await r.json(),modal=document.createElement('div');modal.className='atl-modal';modal.innerHTML=`<div class="atl-picker"><div class="sec-title">差し替える画像を選択</div><div class="atl-grid">${(d.images||[]).map(x=>`<button data-path="${esc(x.path)}"><img src="${x.url}"><span>${esc(x.name)}</span></button>`).join('')}</div><button class="btn btn-secondary" data-close>閉じる</button></div>`;modal.onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.path){_atlModel.visual_segments[index].image_path=b.dataset.path;modal.remove();atlSave()}else if(b.hasAttribute('data-close'))modal.remove()};document.body.appendChild(modal)}
+function atlCopyAll(){const ex=new Set(_atlModel.excluded||[]),s=_atlModel.audio_clips.filter(x=>!ex.has(x.id)).map(x=>`${atlTime(x.start)} ${x.filename.replace(/\.[^.]+$/,'')}`).join('\n');navigator.clipboard.writeText(s);toast('チャプターをコピーしました','s')}
+let _atlExportPoll=null,_atlExportClock=null,_atlExportStarted=0,_atlExportLastSize=0,_atlExportLastAt=0,_atlExportDone=false;
+const atlExportDuration=s=>`${String(Math.floor(Math.max(0,s)/60)).padStart(2,'0')}:${String(Math.floor(Math.max(0,s)%60)).padStart(2,'0')}`;
+function atlStopExportPolling(){if(_atlExportPoll)clearInterval(_atlExportPoll);if(_atlExportClock)clearInterval(_atlExportClock);_atlExportPoll=_atlExportClock=null}
+function atlCloseExportPanel(){atlStopExportPolling();document.getElementById('atlExportProgress')?.remove()}
+function atlEnsureExportPanel(name){let p=document.getElementById('atlExportProgress');if(p)return p;p=document.createElement('section');p.id='atlExportProgress';p.className='atl-export-progress';p.innerHTML=`<div class="atl-export-head"><span class="atl-export-badge running"><i></i><b data-phase>起動中</b></span><span class="atl-export-elapsed" data-elapsed>00:00</span></div><button class="atl-export-path" data-path title="クリックしてコピー"></button><div class="atl-export-size"><b data-size>0.0MB</b><span data-rate></span></div><details data-logs><summary>ログ末尾（最新5行）</summary><pre></pre></details><div class="btns atl-export-actions"></div>`;document.querySelector('#assemblyTimeline .atl-bottom')?.before(p);p.querySelector('[data-path]').onclick=()=>{navigator.clipboard.writeText(p.querySelector('[data-path]').textContent);toast('書き出し先パスをコピーしました','s')};return p}
+function atlRenderExport(name,d){const p=atlEnsureExportPanel(name),failed=!d.running&&d.returncode!==null&&d.returncode!==0,done=!d.running&&d.returncode===0,b=p.querySelector('.atl-export-badge');b.className=`atl-export-badge ${d.running?'running':failed?'failed':'done'}`;b.querySelector('b').textContent=d.phase||'状態不明';p.querySelector('[data-path]').textContent=d.output_path||'書き出し先を確認中';const size=Number(d.mp4_size_bytes||0),now=Date.now(),rate=_atlExportLastAt&&size>=_atlExportLastSize?(size-_atlExportLastSize)/1048576/((now-_atlExportLastAt)/1000):0;p.querySelector('[data-size]').textContent=`${(size/1048576).toFixed(1)}MB`;p.querySelector('[data-rate]').textContent=d.running&&rate>0?`+${rate.toFixed(1)}MB/s`:'';_atlExportLastSize=size;_atlExportLastAt=now;p.querySelector('pre').textContent=(d.log_tail||[]).slice(-5).join('\n')||'ログ待機中…';if(failed)p.querySelector('[data-logs]').open=true;const actions=p.querySelector('.atl-export-actions');actions.innerHTML=done?`<button class="btn btn-primary btn-sm" onclick="openF(${JSON.stringify(d.output_path)})">MP4を開く</button><button class="btn btn-secondary btn-sm" onclick="atlCloseExportPanel()">閉じる</button>`:failed?`<button class="btn btn-secondary btn-sm" onclick="atlCloseExportPanel()">閉じる</button>`:'';if((done||failed)&&!_atlExportDone){_atlExportDone=true;atlStopExportPolling();if(done)toast(`書き出し完了（${(size/1048576).toFixed(1)}MB・所要 ${atlExportDuration(d.elapsed_sec)}）`,'s');else toast('書き出しに失敗しました','e')}}
+async function atlPollExport(name){try{const r=await fetch(`/api/timeline/${encodeURIComponent(name)}/export/status`);if(!r.ok)return;const d=await r.json();if(name!==_curVideo)return;if(d.started_at&&!_atlExportStarted)_atlExportStarted=Date.parse(d.started_at);atlRenderExport(name,d)}catch(e){}}
+function atlStartExportPolling(name){atlStopExportPolling();_atlExportDone=false;_atlExportLastSize=0;_atlExportLastAt=0;atlPollExport(name);_atlExportPoll=setInterval(()=>atlPollExport(name),2000);_atlExportClock=setInterval(()=>{const e=document.querySelector('#atlExportProgress [data-elapsed]');if(e&&_atlExportStarted)e.textContent=atlExportDuration((Date.now()-_atlExportStarted)/1000)},1000)}
+async function atlRestoreExport(name){try{const r=await fetch(`/api/timeline/${encodeURIComponent(name)}/export/status`),d=await r.json();if(d.running){_atlExportStarted=d.started_at?Date.parse(d.started_at):Date.now()-Number(d.elapsed_sec||0)*1000;atlStartExportPolling(name)}}catch(e){}}
+async function atlExport(name){const issues=window.atlValidateRange?.()||[],warning=issues.length?`\n\n次の問題があります:\n${issues.map(x=>'・'+x.message).join('\n')}\n\n問題があっても続行しますか？`:'';if(!confirm('保存したタイムライン構成で書き出しますか？'+warning))return;await atlSave();const r=await fetch(`/api/timeline/${encodeURIComponent(name)}/export`,{method:'POST'});if(r.status===409){toast('既に書き出し実行中です','e');atlStartExportPolling(name);return}if(!r.ok){toast('書き出し開始に失敗しました','e');return}const d=await r.json();_atlExportStarted=d.started_at?Date.parse(d.started_at):Date.now();toast('書き出しを開始しました','s');atlStartExportPolling(name)}
+function atlEnsurePreview(){const root=document.getElementById('assemblyTimeline');if(!root||document.getElementById('atlPreview'))return;const p=document.createElement('div');p.id='atlPreview';p.className='atl-preview';p.innerHTML='<div class="atl-preview-canvas"><img id="atlPreviewImage" alt="タイムライン背景プレビュー"><canvas id="atlVisualizerOverlay" class="atl-visualizer-overlay" width="640" height="180" aria-label="音声連動ビジュアライザーの近似プレビュー"></canvas><div id="atlNowPlayingOverlay" class="atl-now-playing-overlay"></div><div id="atlLayoutGuides" class="atl-layout-guides"></div></div><div class="atl-preview-meta"><strong id="atlPreviewTitle">プレビュー位置を選択</strong><span id="atlPreviewClock">00:00:00</span><button type="button" class="atl-layout-toggle active" aria-pressed="true" onclick="window.aplToggleLayoutGuides?.(this)">配置編集</button><button type="button" class="atl-preview-info" title="疑似プレビューのため、ビジュアライザーを含め実書き出しと微差があります" aria-label="プレビューについての説明">i</button></div>';root.prepend(p);const controls=root.querySelector('.atl-controls .btns');if(controls){const b=document.createElement('button');b.className='btn btn-secondary btn-sm';b.textContent='概要欄に挿入';b.onclick=()=>atlInsertChapters(_curVideo);controls.insertBefore(b,controls.lastElementChild)}}
+function atlResolveAt(sec){const intro=_atlModel.preview_intro?.enabled?Number(_atlModel.preview_intro.duration||0):0,musicSec=Math.max(0,sec-intro),ex=new Set(_atlModel.excluded||[]),clip=sec>=intro?(_atlModel.audio_clips||[]).find(x=>!ex.has(x.id)&&x.start<=musicSec&&musicSec<x.end):null,visual=(_atlModel.visual_segments||[]).find(x=>x.start<=sec&&sec<x.end);return{clip,visual,offset:clip?Math.max(0,musicSec-clip.start):0,intro,timelineOffset:intro}}
+function atlUpdatePreview(sec){atlEnsurePreview();const x=atlResolveAt(sec),img=document.getElementById('atlPreviewImage'),title=document.getElementById('atlPreviewTitle'),clock=document.getElementById('atlPreviewClock'),o=document.getElementById('atlNowPlayingOverlay'),n=_atlModel.now_playing||{},videoOn=window.aplTrackEnabled?.('V1')!==false,textOn=window.aplTrackEnabled?.('T1')!==false;if(img){img.style.visibility=videoOn?'visible':'hidden';if(videoOn&&x.visual)img.src=`/api/timeline/${encodeURIComponent(_curVideo)}/image?path=${encodeURIComponent(x.visual.image_path)}`}if(title)title.textContent=x.clip?x.clip.filename:'音声区間外';if(clock)clock.textContent=atlTime(sec);if(o){const visible=textOn&&n.enabled&&x.clip&&(n.mode==='always'||x.offset<=Number(n.intro_seconds||8));o.textContent=visible?(x.clip.display_name||atlDisplayName(x.clip.filename)):'';o.className=`atl-now-playing-overlay atl-pos-${n.position||'bottom-center'}`;o.style.cssText=`font-size:${Math.max(12,Number(n.size||48)/3)}px;color:${n.color||'#fff'};opacity:${n.opacity??1};-webkit-text-stroke:${Math.max(0,Number(n.border_width||2)/3)}px ${n.border_color||'#000'};font-family:${JSON.stringify(n.font_name||'Hiragino Sans')}`}}
+function atlUpdatePlayhead(){const extent=window.atlTimelineExtent?.()||Math.max(.001,_atlModel.total_duration||0),head=document.querySelector('.atl-playhead');if(head)head.style.left=`calc(100px + (100% - 100px)*${_atlPlayhead/extent})`;window.atlFollowPlayhead?.()}
+function atlPlayAt(sec){const x=atlResolveAt(sec),intro=_atlModel.preview_intro||{};if(_atlAudio)_atlAudio.pause();if(intro.enabled&&sec<Number(intro.duration||0)){_atlAudio=new Audio(intro.url);_atlAudio.muted=window.aplTrackEnabled?.('A1')===false;_atlAudio.currentTime=Math.max(0,sec);_atlAudio.ontimeupdate=()=>{_atlPlayhead=_atlAudio.currentTime;atlUpdatePlayhead();atlUpdatePreview(_atlPlayhead)};_atlAudio.onended=()=>atlPlayAt(Number(intro.duration||0));_atlAudio.play().catch(()=>toast('冒頭環境音を再生できませんでした','e'));return}if(!x.clip)return;_atlAudio=new Audio(`/api/timeline/${encodeURIComponent(_curVideo)}/audio/${encodeURIComponent(x.clip.id)}`);_atlAudio.muted=window.aplTrackEnabled?.('A1')===false;_atlAudio.currentTime=x.offset;_atlAudio.ontimeupdate=()=>{_atlPlayhead=x.timelineOffset+x.clip.start+_atlAudio.currentTime;atlUpdatePlayhead();atlUpdatePreview(_atlPlayhead)};_atlAudio.onended=()=>{const next=(_atlModel.audio_clips||[]).find(c=>c.start>=x.clip.end-.05&&!(_atlModel.excluded||[]).includes(c.id));if(next)atlPlayAt(x.timelineOffset+next.start)};_atlAudio.play().catch(()=>toast('再生を開始できませんでした','e'))}
+async function atlInsertChapters(name){const text=(_atlModel.audio_clips||[]).filter(x=>!(_atlModel.excluded||[]).includes(x.id)).map(x=>`${atlTime(x.start)} ${x.filename.replace(/\.[^.]+$/,'')}`).join('\n');if(!text)return;if(!confirm('現在の説明文の末尾へチャプターを追加しますか？'))return;const d=await fetch(`/api/videos/${encodeURIComponent(name)}/detail`).then(r=>r.json()),marker='チャプター';const base=String(d.description||'').replace(new RegExp(`\\n\\n${marker}\\n[\\s\\S]*$`),'').trimEnd(),next=`${base}\n\n${marker}\n${text}\n`;const r=await fetch('/api/youtube-desc/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name,text:next})});if(r.ok){const box=document.getElementById('vdDesc');if(box)box.value=next;toast('概要欄へチャプターを挿入しました','s')}else toast('概要欄への挿入に失敗しました','e')}
+
+function renderVideoEditParams(){
+  const op=document.getElementById('veOperation')?.value||'trim', el=document.getElementById('veParams');if(!el)return;
+  const num=(id,label,value,min='0',step='0.1')=>`<div class="ff"><label class="fl">${label}</label><input type="number" class="fi" id="${id}" value="${value}" min="${min}" step="${step}"></div>`;
+  const path=(id,label,ph)=>`<div class="ff"><label class="fl">${label}</label><input class="fi" id="${id}" placeholder="${ph}"></div>`;
+  const forms={
+    trim:num('veStart','開始秒',0)+num('veEnd','終了秒',30)+`<label class="fh"><input type="checkbox" id="veReencode"> キーフレーム単位の精密カット（再エンコード）</label>`,
+    concat:`<div class="ff"><label class="fl">結合するファイル（1行1パス、先頭は上の入力）</label><textarea class="ft" id="veInputPaths" rows="4" placeholder="/path/to/second.mp4"></textarea></div>`,
+    loop_to_duration:num('veDuration','完成尺（秒）',60)+num('veFadeOut','末尾フェード（秒）',3),
+    fade:num('veVideoIn','映像フェードイン',1)+num('veVideoOut','映像フェードアウト',1)+num('veAudioIn','音声フェードイン',1)+num('veAudioOut','音声フェードアウト',1),
+    replace_audio:path('veAudioPath','差し替え音声','/path/to/audio.mp3')+num('veVolumeDb','音量調整（dB）',0,'-60'),
+    burn_overlay:`<div class="ff"><label class="fl">種類</label><select class="fs" id="veOverlayType" onchange="renderVideoEditParams()"><option value="image">画像</option><option value="text">テキスト</option></select></div>`+path('veOverlayPath','画像パス','/path/to/overlay.png')+path('veText','テキスト','Title')+`<div class="fr">${num('veSize','サイズ',320,'1','1')}${num('veOpacity','不透明度',0.8,'0','0.05')}</div><div class="ff"><label class="fl">位置</label><select class="fs" id="vePosition"><option value="center">中央</option><option value="top-left">左上</option><option value="top-right">右上</option><option value="bottom-left">左下</option><option value="bottom-right">右下</option></select></div>`,
+    extract_frame:num('veTime','抽出時刻（秒）',0),
+    convert:path('veResolution','解像度','1920x1080')+num('veFps','fps',30,'1','1')+`<div class="ff"><label class="fl">形式</label><select class="fs" id="veFormat"><option>mp4</option><option>mov</option><option>mkv</option></select></div>`
+  };el.innerHTML=forms[op]||'';
+}
+async function loadVideoEditCandidates(name){
+  try{const d=await (await fetch(`/api/video-edit/candidates/${encodeURIComponent(name)}`)).json(),list=document.getElementById('veCandidates');if(list)list.innerHTML=(d.files||[]).map(p=>`<option value="${esc(p)}"></option>`).join('')}catch(e){}
+}
+async function pollVideoEdit(id,op){
+  try{const d=await (await fetch(`/api/video-edit/status?job_id=${encodeURIComponent(id)}`)).json(),pct=Number(d.progress||0);document.getElementById('veProgressBar').style.width=pct+'%';document.getElementById('veProgressText').textContent=d.status==='queued'?`待機中（${d.queue_position||1}番目）`:`${d.status} ${pct.toFixed(1)}%`;
+    if(d.status==='completed'){
+      const out=d.output_path,isImg=op==='extract_frame',result=document.getElementById('veResult');result.style.display='block';result.innerHTML=`<div class="fh">出力: <code>${esc(out)}</code></div>${isImg?`<img src="/api/video-edit/preview?video_name=${encodeURIComponent(_curVideo||'')}&path=${encodeURIComponent(out)}" style="max-width:100%;max-height:360px;margin-top:10px">`:`<video controls src="/api/video-edit/preview?video_name=${encodeURIComponent(_curVideo||'')}&path=${encodeURIComponent(out)}" style="width:100%;max-height:420px;margin-top:10px"></video>`}<div class="btns">${isImg?`<button class="btn btn-primary btn-sm" onclick="setTab('images')">サムネに使う →</button>`:`<button class="btn btn-primary btn-sm" onclick="document.getElementById('veInput').value='${esc(out)}'">この動画を続けて編集</button>`}<button class="btn btn-secondary btn-sm" onclick="openF('${esc(out)}')">Finderで表示</button></div>`;document.getElementById('veRunBtn').disabled=false;toast('編集が完了しました','s');return}
+    if(d.status==='failed'){throw Error(d.error||'編集失敗')}setTimeout(()=>pollVideoEdit(id,op),1000);
+  }catch(e){toast(e.message,'e');document.getElementById('veRunBtn').disabled=false}
+}
+/* ==== 永続ログバー ==== */
+function _setPlStatus(s){const el=document.getElementById('plStatus');if(el)el.textContent=s}
+function _plAppend(line){
+  const el=document.getElementById('plBody');if(!el)return;
+  const t=new Date().toLocaleTimeString();
+  if(el.textContent.startsWith('（'))el.textContent='';
+  el.textContent+=`[${t}] ${line}\n`;
+  el.scrollTop=el.scrollHeight;
+  const pl=document.getElementById('persistLog');if(pl && !pl.classList.contains('open')){pl.classList.add('open');const c=document.getElementById('plCaret');if(c)c.textContent='▾'}
+}
+function backToList(){
+  navigate({page:'videos',video:''});
+}
+
+/* ダッシュボード等からの動画詳細直接遷移（ページ切替 + 詳細展開） */
+/* 動画の非表示/復元 */
+
+/* 一覧の複数選択 → 一括で非表示/表示 */
+function onVideoSelectChange(){
+  const checks=document.querySelectorAll('.video-row .vr-check:not(#vrCheckAll)');
+  const sel=Array.from(checks).filter(c=>c.checked);
+  const bar=document.getElementById('vBulkBar');
+  const cnt=document.getElementById('vBulkCount');
+  if(sel.length===0){bar.style.display='none';return}
+  bar.style.display='flex';
+  cnt.textContent=sel.length;
+  // 選択中の行の hidden 状態に応じてアクションボタン表示を切替
+  const hiddenCount=sel.filter(c=>c.dataset.hidden==='true').length;
+  const visibleCount=sel.length-hiddenCount;
+  document.getElementById('vBulkHideBtn').style.display=visibleCount>0?'':'none';
+  document.getElementById('vBulkShowBtn').style.display=hiddenCount>0?'':'none';
+  // ヘッダチェックの indeterminate 状態
+  const head=document.getElementById('vrCheckAll');
+  if(head){
+    const visible=Array.from(checks).filter(c=>!c.closest('.filter-hidden'));
+    const allChecked=visible.length>0 && visible.every(c=>c.checked);
+    head.checked=allChecked;
+    head.indeterminate=!allChecked && sel.length>0;
+  }
+  // 動画別サムネ一括生成パネルの選択数同期
+  try{ctUpdateSelectionCount&&ctUpdateSelectionCount()}catch{}
+}
+function clearVideoSelection(){
+  document.querySelectorAll('.video-row .vr-check').forEach(c=>c.checked=false);
+  const head=document.getElementById('vrCheckAll');if(head){head.checked=false;head.indeterminate=false}
+  onVideoSelectChange();
+}
+async function bulkToggleHidden(toVisible){
+  const checks=document.querySelectorAll('.video-row .vr-check:not(#vrCheckAll)');
+  const targets=Array.from(checks).filter(c=>c.checked && (toVisible ? c.dataset.hidden==='true' : c.dataset.hidden!=='true'));
+  if(targets.length===0){toast('対象の動画がありません','w');return}
+  const verb=toVisible?'表示':'非表示';
+  if(!toVisible && !confirm(`${targets.length} 件を非表示にしますか？\nフォルダは削除されません。「非表示」フィルターから復元できます。`))return;
+  const action=toVisible?'unhide':'hide';
+  let ok=0,ng=0;
+  for(const c of targets){
+    try{
+      const r=await fetch(`/api/videos/${encodeURIComponent(c.dataset.name)}/${action}`,{method:'POST'});
+      r.ok?ok++:ng++;
+    }catch{ng++}
+  }
+  toast(`${verb}化: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
+  clearVideoSelection();
+  loadVideos();
+}
+
+/* ==== 一括運用：選択中のフォルダ名を取得 ==== */
+function _bulkSelectedNames(){
+  const checks=document.querySelectorAll('.video-row .vr-check:not(#vrCheckAll)');
+  return Array.from(checks).filter(c=>c.checked).map(c=>c.dataset.name);
+}
+
+/* ==== 動画別サムネ一括生成 (channel-thumbnail) ==== */
+let _ctPollTimer=null;
+function _ctStopPoll(){if(_ctPollTimer){clearInterval(_ctPollTimer);_ctPollTimer=null}}
+
+function ctUpdateSelectionCount(){
+  const n=_bulkSelectedNames().length;
+  const c=document.getElementById('ctSelCount'); if(c)c.textContent=`${n} 件選択中`;
+  const r=document.getElementById('ctReadyN'); if(r)r.textContent=n;
+  const btn=document.getElementById('ctStartBtn'); if(btn)btn.disabled=(n===0);
+  const planBtn=document.getElementById('ctPlanBtn'); if(planBtn)planBtn.disabled=(n===0);
+}
+
+async function ctCheckReadiness(){
+  try{
+    const r=await fetch('/api/channel-thumbnail/readiness');
+    return await r.json();
+  }catch{return null}
+}
+
+async function ctPlan(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('動画を選択してください','w');return}
+  const maxComp=Math.max(1,Math.min(10,parseInt(document.getElementById('ctMaxCompetitors')?.value||'4',10)||4));
+  const useStats=!!document.getElementById('ctUseSelfStats')?.checked;
+  const grid=document.getElementById('ctPlanGrid');
+  ctTab('plan');  // プランタブを自動で開く
+  if(grid)grid.innerHTML='<div class="ct-empty">プラン作成中…</div>';
+  toast(`${names.length} 動画のプランを作成中`,'i');
+  // ステッパー更新 + readiness 反映
+  const ready = await ctCheckReadiness();
+  ctApplyStepperState(ready);
+  try{
+    const r=await fetch('/api/channel-thumbnail/plan',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_names:names,max_competitors_per_video:maxComp,use_self_stats:useStats})
+    });
+    const d=await r.json();
+    if(!r.ok){
+      const detail = d.detail || '失敗';
+      toast(detail,'e');
+      if(grid)grid.innerHTML = `<div class="ct-error-recover">
+        <div class="ct-error-recover-title">プランを作成できませんでした</div>
+        <div class="ct-error-recover-causes">
+          考えられる原因:
+          <ul>
+            <li>${esc(detail)}</li>
+            <li>benchmark/thumbnail.json が未生成 — 先にベンチマーク取込みを実行してください</li>
+            <li>動画フォルダにタイトル/コンセプトが未設定</li>
+          </ul>
+        </div>
+        <div class="ct-error-recover-actions">
+          <button class="btn btn-secondary btn-sm" onclick="go('benchmark')">ベンチマーク画面へ</button>
+          <button class="btn btn-ghost btn-sm" onclick="ctPlan()">再試行</button>
+        </div>
+      </div>`;
+      return;
+    }
+    ctRenderPlanGrid(d.plan||[], ready);
+    // プラン直下 CTA の表示制御
+    const cta = document.getElementById('ctPlanCta');
+    const ctaSummary = document.getElementById('ctPlanCtaSummary');
+    if(cta && (d.plan||[]).length){
+      cta.style.display='block';
+      const okCount = (d.plan||[]).filter(p=>p.ok).length;
+      const totalImgs = okCount * (parseInt(document.getElementById('ctNPerVideo')?.value||'4',10)||4);
+      const minutes = Math.max(1, Math.ceil(okCount*2));
+      const provider = document.getElementById('ctProvider')?.value || 'codex';
+      if(ctaSummary) ctaSummary.textContent = `対象 ${okCount} 動画 × ${parseInt(document.getElementById('ctNPerVideo')?.value||'4',10)} 枚 = ${totalImgs} 枚 / 約 ${minutes} 分 / プロバイダー: ${provider}`;
+    } else if(cta){
+      cta.style.display='none';
+    }
+    // 競合分析タブのサマリーも更新
+    const compView = document.getElementById('ctCompetitorView');
+    if(compView){
+      const allMatched = (d.plan||[]).flatMap(p=>p.matched_competitors||[]);
+      const channels = [...new Set(allMatched.map(m=>m.channelName))].slice(0,8);
+      const fallback = (d.plan||[]).filter(p=>p.fallback_to_aggregate).length;
+      compView.className = '';
+      compView.innerHTML = `
+        <div style="margin-bottom:var(--space-2);font-size:var(--text-xs);color:var(--text-secondary)">
+          ${d.plan.length} 動画 × matched ${allMatched.length} 件 ${fallback>0?`(うち ${fallback} 動画は aggregate fallback)`:''}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:var(--space-2)">
+          ${channels.map(c=>`<span class="badge" style="background:var(--bg-elevated);color:var(--text-primary)">${esc(c)}</span>`).join('')}
+        </div>
+      `;
+    }
+    ctUpdateEstimates();
+    toast(`${d.total||0} 件のプランを表示`,'s');
+  }catch(e){toast('接続エラー','e')}
+}
+
+function ctApplyStepperState(ready){
+  // ステッパー (1.対象選択 → 2.シリーズ方針 → 3.競合分析 → 4.生成 → ...) の動的色付け
+  const steps = document.querySelectorAll('.ct-step');
+  steps.forEach(s=>{s.classList.remove('on','done')});
+  if(!ready) return;
+  const map = {
+    select: true,                                  // 動画選択は plan が呼ばれた時点で完了扱い
+    series: !!ready.benchmark_thumbnail,           // ベンチマーク・サムネ Vision 分析済み
+    competitor: !!ready.competitor_analysis,       // 競合分析キャッシュあり
+  };
+  document.querySelectorAll('.ct-step').forEach(s=>{
+    const k = s.dataset.step;
+    if(map[k]) s.classList.add('done');
+  });
+  // 次にやるべきステップを on
+  const order = ['select','series','competitor','generate','evaluate','approve','save'];
+  for(const k of order){ if(!map[k]){ document.querySelector(`.ct-step[data-step="${k}"]`)?.classList.add('on'); break; } }
+}
+
+function ctRenderPlanGrid(plan, ready){
+  const grid=document.getElementById('ctPlanGrid');
+  if(!grid)return;
+  if(!plan.length){grid.innerHTML='<div class="ct-empty">プランがありません</div>';return}
+  // タイトル未設定 / matched 0 件 の集計
+  const missingTitle = plan.filter(p=>p.ok && p.has_title===false);
+  const noMatch = plan.filter(p=>p.ok && p.matched_count===0 && p.has_title!==false);
+  let banner = '';
+
+  // ── 優先 1: ベンチマーク未取込み ──
+  if(ready && !ready.benchmark_thumbnail){
+    banner += `<div class="ct-error-recover" style="margin-bottom:var(--space-2)">
+      <div class="ct-error-recover-title">STEP 1/3 必須: ベンチマーク取込み + Vision 分析がまだです</div>
+      <div class="ct-error-recover-causes">
+        現状: <code>benchmark/thumbnail.json</code> の channels[] が空 or 未生成。<br>
+        この状態だとプロンプトが「業界横断 aggregate」の既定値しか使えず、各動画ごとの個別マッチも不可能です。<br>
+        次の手順を順番に実行してください:
+        <ul>
+          <li>ベンチマーク画面の詳細ツール「候補フィルタ」で競合チャンネル数件を選択</li>
+          <li>「Vision 分析を実行」→ サムネ DL + Claude が要素抽出</li>
+          <li>「コンセプト分析を実行」→ themes / emotional_jobs を抽出</li>
+        </ul>
+      </div>
+      <div class="ct-error-recover-actions">
+        <button class="btn btn-primary btn-sm" onclick="go('benchmark')">→ ベンチマーク画面を開く</button>
+        <button class="btn btn-ghost btn-sm" onclick="ctPlan()">完了したら再プラン</button>
+      </div>
+    </div>`;
+  }
+  // ── 優先 2: 競合分析キャッシュなし ──
+  else if(ready && !ready.competitor_analysis){
+    banner += `<div class="ct-error-recover" style="margin-bottom:var(--space-2);border-color:var(--accent-warning);background:linear-gradient(135deg,rgba(234,179,8,.08),rgba(234,179,8,.02))">
+      <div class="ct-error-recover-title" style="color:var(--accent-warning)">STEP 2/3: 競合分析キャッシュがまだありません</div>
+      <div class="ct-error-recover-causes">
+        <code>competitor_analysis_cache.json</code> 未生成。タイトル提案やメタ生成の精度が落ちます。<br>
+        ベンチマーク画面で「制作分析を実行」を押すと <strong>buzz_patterns / viewer_needs / underserved_niches</strong> が抽出されます。
+      </div>
+      <div class="ct-error-recover-actions">
+        <button class="btn btn-warning btn-sm" onclick="go('benchmark')">→ 制作分析を実行</button>
+      </div>
+    </div>`;
+  }
+
+  // ── 優先 3: タイトル未設定動画あり ──
+  if(missingTitle.length){
+    banner += `<div class="ct-error-recover" style="margin-bottom:var(--space-2)">
+      <div class="ct-error-recover-title">⚠ STEP 3/3 必須: タイトル/コンセプト未設定の動画 ${missingTitle.length} 件</div>
+      <div class="ct-error-recover-causes">
+        フォルダ名のみで生成すると、競合マッチング精度が大きく落ちます (日本語と英語間ではトークンが共通しません)。
+        <ul>
+          <li>${missingTitle.slice(0,5).map(p=>esc(p.video_name)).join(' / ')}${missingTitle.length>5?' …':''}</li>
+        </ul>
+        「ベンチマーク駆動で一括提案」を押すと、competitor_analysis_cache.json のデータから Claude が各動画の <strong>タイトル/説明/タグ</strong> を生成 → 自動保存 → プラン自動再作成まで一気に進みます (1 件 30秒)。
+      </div>
+      <div class="ct-error-recover-actions">
+        <button class="btn btn-primary btn-sm" onclick="ctBulkSuggestMetaThenReplan()">ベンチマーク駆動で一括提案 → 保存 → 再プラン</button>
+        <span class="fh">${missingTitle.length} 件、約 ${Math.ceil(missingTitle.length*30/60)} 分</span>
+      </div>
+    </div>`;
+  }
+  // ── 優先 4: matched 0 件 (タイトルあるけど英語マッチしない) ──
+  if(noMatch.length){
+    banner += `<div style="background:var(--bg-elevated);border-left:3px solid var(--accent-warning);border-radius:var(--radius-sm);padding:var(--space-2) var(--space-3);margin-bottom:var(--space-2);font-size:var(--text-xs);color:var(--text-secondary);line-height:1.6">
+      <strong style="color:var(--accent-warning)">${noMatch.length} 件は語彙マッチなし → 業界横断 aggregate にフォールバック</strong><br>
+      タイトルが英語の競合と語彙的に被らないと matched=0 になります。aggregate モードでも生成は可能です（5要素は thumbnail.json の業界横断キャッシュから構築）。
+    </div>`;
+  }
+  const rows=plan.map(p=>{
+    const titleMissing = p.has_title === false;
+    const statusBadges = [];
+    if(!p.ok) statusBadges.push(`<span style="color:var(--accent-danger);font-size:var(--text-xs)">${esc(p.error||'error')}</span>`);
+    if(titleMissing) statusBadges.push(`<span class="badge" style="background:var(--accent-danger);color:var(--text-on-accent);font-size:var(--text-2xs)">タイトル未設定</span>`);
+    if(p.fallback_to_aggregate && !titleMissing) statusBadges.push(`<span class="badge" style="background:rgba(234,179,8,.2);color:var(--accent-warning);font-size:var(--text-2xs)">aggregate fallback</span>`);
+    const statsLine = (p.self_stats && p.self_stats.viewCount) ?
+      `<span style="font-size:var(--text-xs);color:var(--text-tertiary)">views ${Number(p.self_stats.viewCount).toLocaleString()} / peer avg ${Number(p.peer_avg_views||0).toLocaleString()}</span>` : '';
+    const comps = (p.matched_competitors||[]).map(c=>{
+      // localPath をサーバー経由の画像 URL に変換
+      const localBase = (c.localPath||'').split('/').pop();
+      // benchmark/thumbs 配下なら API 経由でアクセス可能（フォールバック: ファイル名表示）
+      return `<div title="${esc(c.title||'')} (score ${c.match_score})" class="ct-plan-comp">
+        <div class="ct-plan-comp-thumb">${esc((localBase||'?').slice(0,12))}</div>
+        <span class="ct-plan-comp-meta">${esc((c.channelName||'').slice(0,14))} · ${c.match_score}</span>
+      </div>`;
+    }).join('');
+    const titleDisplay = titleMissing
+      ? `<div style="font-size:var(--text-xs);color:var(--accent-danger)">⚠ タイトル未設定（フォルダ名でマッチング: ${esc(p.title||'?')}）</div>`
+      : `<div style="font-size:var(--text-xs);color:var(--text-secondary)">${esc((p.title||'').slice(0,80))}</div>`;
+    return `<div class="card ct-plan-row" style="padding:var(--space-2);margin-bottom:var(--space-2)">
+      <div style="display:flex;justify-content:space-between;gap:var(--space-2);flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <div style="flex:1;min-width:200px">
+          <div style="font-weight:600;font-size:var(--text-sm)">${esc(p.video_name)}</div>
+          ${titleDisplay}
+        </div>
+        <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap">
+          ${statsLine}
+          <span class="badge" style="background:${p.matched_count>0?'var(--brand-accent)':'var(--bg-elevated)'};color:${p.matched_count>0?'#fff':'var(--text-tertiary)'};font-size:var(--text-2xs)">matched: ${p.matched_count||0}</span>
+          ${statusBadges.join('')}
+        </div>
+      </div>
+      <div class="ct-plan-comp-list">${comps||'<span style="font-size:var(--text-2xs);color:var(--text-tertiary)">マッチなし — aggregate fallback で続行可能</span>'}</div>
+    </div>`;
+  }).join('');
+  grid.innerHTML = banner + rows;
+}
+
+async function ctStart(retryFailedOnly){
+  const body = _ctBuildStartPayload(retryFailedOnly);
+  if(body.video_names.length===0 && !retryFailedOnly){toast('動画を選択してください','w');return}
+  const total = retryFailedOnly ? '前回失敗のみ' : body.video_names.length;
+  const minutes = retryFailedOnly ? 5 : Math.ceil(body.video_names.length * 2);
+  const modeLbl = ({manual:'手動承認',conditional:'条件付き自動承認',auto:'完全自動承認'})[body.approval_mode] || body.approval_mode;
+  if(!confirm(`${total} 件のサムネを生成します。\n\nプロバイダー: ${body.provider} / ${body.n_per_video}枚×動画 / matched TOP${body.max_competitors_per_video}\n品質: ${body.quality} / アスペクト: ${body.aspect}\n承認モード: ${modeLbl} (閾値 ${body.score_threshold}点, CTR ${body.ctr_threshold}%以上, 類似度 ${body.similarity_max}%以下)\n生成完了後の自動スコアリング: ${body.auto_score?'ON':'OFF'}\n\n所要時間目安: 約 ${minutes} 分\n保存先: {動画フォルダ}/Image/{video_name}-v{N}.{ext}\n\n既存サムネは v 番号オフセットで保護されます。`))return;
+  ctTab('log');  // ログタブを自動で開く
+  try{
+    const r=await fetch('/api/channel-thumbnail/start',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    const d=await r.json();
+    if(!r.ok){toast(d.detail||'起動失敗','e');return}
+    toast(`バッチ起動: ${d.total} 動画 (${d.provider})`,'s');
+    const prog=document.getElementById('ctProgress'); if(prog){prog.style.display='block';prog.textContent='[起動中…]\n'}
+    _ctStartPoll();
+  }catch(e){toast('接続エラー: '+e,'e')}
+}
+
+async function ctStop(){
+  try{
+    const r=await fetch('/api/channel-thumbnail/stop',{method:'POST'});
+    const d=await r.json();
+    toast(d.status==='stop_requested'?'停止要求を送信':'実行中のバッチはありません',d.status==='stop_requested'?'s':'i');
+  }catch{toast('接続エラー','e')}
+}
+
+function _ctStartPoll(){
+  _ctStopPoll();
+  let seen=0;
+  _ctPollTimer=setInterval(async()=>{
+    try{
+      const r=await fetch('/api/channel-thumbnail/status');
+      const d=await r.json();
+      const logs=d.logs||[];
+      const prog=document.getElementById('ctProgress');
+      if(prog){
+        // 追記のみ
+        for(let i=seen;i<logs.length;i++) prog.textContent += logs[i] + '\n';
+        prog.scrollTop = prog.scrollHeight;
+      }
+      seen = logs.length;
+      const meta=d.meta||{};
+      const rm=document.getElementById('ctRunningMeta');
+      if(rm){
+        const done=meta.done||0, total=meta.total||0;
+        const cur=meta.current||'';
+        const errs=(meta.errors||[]).length;
+        rm.textContent = `${done}/${total} 完了` + (cur?` · 処理中: ${cur}`:'') + (errs?` · 失敗 ${errs}`:'');
+      }
+      // 完了時の retry ボタン制御
+      const rb=document.getElementById('ctRetryBtn');
+      if(rb)rb.disabled = !( (meta.errors||[]).length > 0 && !d.running );
+      if(!d.running){
+        _ctStopPoll();
+        const ok=(meta.succeeded||[]).length, ng=(meta.errors||[]).length;
+        toast(`バッチ完了 (成功 ${ok} / 失敗 ${ng})`,ng?'w':'s');
+        if(rm)rm.textContent = `完了: 成功 ${ok} / 失敗 ${ng}`;
+        try{loadVideos&&loadVideos()}catch{}
+      }
+    }catch(e){/* keep polling */}
+  },2000);
+}
+
+/* ベンチマーク駆動でメタ一括提案 → 完了後に ctPlan を自動再実行 (ctRenderPlanGrid バナーから呼ばれる) */
+async function ctBulkSuggestMetaThenReplan(){
+  // タイトル未設定の動画を plan grid から抽出
+  const planVids = Array.from(document.querySelectorAll('#ctPlanGrid .ct-plan-row'));
+  const names = [];
+  for(const row of planVids){
+    const vnEl = row.querySelector('div[style*="font-weight:600"]');
+    const warn = row.querySelector('div[style*="color:var(--accent-danger)"]');
+    if(vnEl && warn) names.push(vnEl.textContent.trim());
+  }
+  // フォールバック: vBulkBar 選択中の全動画
+  const target = names.length ? names : _bulkSelectedNames();
+  if(!target.length){toast('対象動画がありません','w');return}
+  if(!confirm(`${target.length} 件のメタ情報をベンチマーク駆動で生成 → 自動保存します。\n\n各動画につき タイトル/説明/タグ を Claude が提案し、competitor_analysis_cache.json のデータを自動注入。\nファイル保存後、自動でプランを再作成します。\n\n1件あたり約30秒 (合計 約 ${Math.ceil(target.length*30/60)} 分)。`))return;
+  bulkProgressModal(`ベンチマーク駆動メタ提案 (${target.length}件)`, target);
+  let ok=0,ng=0;
+  for(const n of target){
+    _bpUpdate(n,'⟳','タイトル提案中...','var(--accent-warning)');
+    try{
+      const rt=await fetch(`/api/videos/${encodeURIComponent(n)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'titles',count:1})});
+      const dt=await rt.json();
+      if(dt.titles&&dt.titles[0]){
+        await fetch(`/api/videos/${encodeURIComponent(n)}/title`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:n,new_title:dt.titles[0]})});
+      }
+      _bpUpdate(n,'⟳','説明提案中...','var(--accent-warning)');
+      const rd=await fetch(`/api/videos/${encodeURIComponent(n)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'description'})});
+      const dd=await rd.json();
+      if(dd.description){
+        await fetch(`/api/youtube-desc/save`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:n,text:dd.description})});
+      }
+      _bpUpdate(n,'⟳','タグ提案中...','var(--accent-warning)');
+      const rg=await fetch(`/api/videos/${encodeURIComponent(n)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'tags'})});
+      const dg=await rg.json();
+      if(dg.tags){
+        await fetch(`/api/videos/${encodeURIComponent(n)}/tags`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:dg.tags})});
+      }
+      _bpUpdate(n,'✓','完了','var(--accent-success)');ok++;
+    }catch(e){_bpUpdate(n,'✕','失敗: '+String(e).slice(0,40),'var(--accent-danger)');ng++}
+  }
+  toast(`メタ提案: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
+  // 動画一覧再読込 + 自動 plan 再実行
+  try{loadVideos&&loadVideos()}catch{}
+  setTimeout(()=>{closeModal();ctPlan();},800);
+}
+
+/* ==== 下部タブ切替 (.md §14) ==== */
+function ctTab(name){
+  document.querySelectorAll('.ct-tab').forEach(b=>{
+    b.classList.toggle('on', b.dataset.tab===name);
+  });
+  document.querySelectorAll('.ct-tab-panel').forEach(p=>{
+    p.classList.toggle('on', p.id==='ctTab'+name.charAt(0).toUpperCase()+name.slice(1));
+  });
+  // 結果タブを開いた時に動画選択肢を更新
+  if(name==='result'){ctPopulateResultVideoOptions()}
+  if(name==='approval'){ctRefreshApprovalStats()}
+  if(name==='log'){ctRefreshLog()}
+  // U4: details.ct-bottom が閉じているとタブ内容が見えないので開く
+  const _ctb=document.querySelector('details.ct-bottom'); if(_ctb)_ctb.open=true;
+}
+
+/* ログタブの内容を最新化 (タブ切替 + 手動更新) */
+async function ctRefreshLog(){
+  const progEl = document.getElementById('ctProgress');
+  const histEl = document.getElementById('ctRunHistory');
+  const dot = document.getElementById('ctLogDot');
+  const statusText = document.getElementById('ctLogStatusText');
+  // 1) 現セッションのログ (in-memory)
+  try{
+    const r = await fetch('/api/channel-thumbnail/status');
+    if(r.ok){
+      const d = await r.json();
+      const logs = d.logs || [];
+      const meta = d.meta || {};
+      if(progEl){
+        if(logs.length){
+          progEl.textContent = logs.join('\n');
+          if(document.getElementById('ctLogAutoScroll')?.checked) progEl.scrollTop = progEl.scrollHeight;
+        }else{
+          progEl.textContent = '';   // :empty::before が出る
+        }
+      }
+      // ステータスドット
+      if(dot && statusText){
+        if(d.running){
+          dot.className = 'ct-log-dot running';
+          statusText.textContent = `実行中 — ${meta.done||0}/${meta.total||0} 完了`+ (meta.current?` · ${meta.current}`:'');
+        } else if((meta.errors||[]).length){
+          dot.className = 'ct-log-dot error';
+          statusText.textContent = `直近 run: 失敗 ${meta.errors.length} 件 / 成功 ${(meta.succeeded||[]).length} 件`;
+        } else if((meta.succeeded||[]).length){
+          dot.className = 'ct-log-dot idle';
+          statusText.textContent = `直近 run: 完了 (成功 ${meta.succeeded.length} 件)`;
+        } else {
+          dot.className = 'ct-log-dot';
+          statusText.textContent = '— 待機中 (バッチ未実行) —';
+        }
+      }
+    }
+  }catch(e){ if(statusText) statusText.textContent = '接続エラー'; }
+
+  // 2) 各動画の run_history (永続化されたサーバー再起動越しのログ)
+  if(histEl){
+    histEl.textContent = '読み込み中…';
+    try{
+      const vr = await fetch('/api/videos');
+      const vd = await vr.json();
+      const vids = vd.videos || [];
+      const allRuns = [];
+      for(const v of vids){
+        try{
+          const sr = await fetch(`/api/thumbnail-state/${encodeURIComponent(v.name)}`);
+          if(!sr.ok) continue;
+          const sd = await sr.json();
+          for(const run of (sd.state?.run_history || [])){
+            allRuns.push({...run, video_name: v.name});
+          }
+        }catch{}
+      }
+      // 新しい順
+      allRuns.sort((a,b)=>(b.started_at||'').localeCompare(a.started_at||''));
+      if(!allRuns.length){
+        histEl.textContent = '';
+      }else{
+        histEl.innerHTML = allRuns.slice(0,30).map(r=>{
+          const ok = (r.generated||[]).length > 0 && !(r.errors||[]).length;
+          const cls = ok ? 'ok' : ((r.errors||[]).length ? 'err' : '');
+          const genCount = (r.generated||[]).length;
+          const apprCount = (r.approved||[]).length;
+          const errs = (r.errors||[]);
+          const subTail = r.sub_tail || '';
+          return `<div class="ct-log-run-item ${cls}">
+            <div class="ct-log-run-head">
+              <span class="ct-log-run-vid">${esc(r.video_name)}</span>
+              <span class="ct-log-run-id">${esc(r.run_id||'-')}</span>
+            </div>
+            <div class="ct-log-run-detail">
+              ${r.started_at?'開始 '+esc(r.started_at.slice(11,19)):''}${r.finished_at?' → '+esc(r.finished_at.slice(11,19)):''}
+              · <code>${esc(r.provider||'?')}</code>
+              · 生成 ${genCount} 枚 / 採用 ${apprCount} ${errs.length?' / <span style="color:var(--accent-danger)">失敗 '+errs.length+' 件</span>':''}
+              ${errs.length?`<div style="margin-top:4px;color:var(--accent-danger);font-size:var(--text-2xs)">${errs.slice(0,2).map(e=>esc(String(e).slice(0,200))).join('<br>')}</div>`:''}
+              ${subTail?`<details style="margin-top:4px"><summary style="cursor:pointer;font-size:var(--text-2xs);color:var(--text-tertiary)">サブプロセス末尾ログ</summary><pre style="font-size:var(--text-2xs);background:var(--bg-elevated);padding:6px;border-radius:var(--radius-xs);margin-top:4px;white-space:pre-wrap;color:var(--text-secondary)">${esc(subTail)}</pre></details>`:''}
+            </div>
+          </div>`;
+        }).join('');
+      }
+    }catch(e){ histEl.textContent = '取得失敗'; }
+  }
+}
+
+function ctClearLog(){
+  const p = document.getElementById('ctProgress'); if(p) p.textContent = '';
+  const h = document.getElementById('ctRunHistory'); if(h) h.innerHTML = '';
+}
+
+/* ==== クイックフィルター (.md §4.2) ==== */
+let _vqfCurrent='all';
+function vqfApply(key){
+  _vqfCurrent=key;
+  document.querySelectorAll('.ct-chip').forEach(b=>b.classList.toggle('on', b.dataset.vqf===key));
+  // 動画一覧の filter-hidden / vqf 適用
+  document.querySelectorAll('.video-row').forEach(r=>{
+    r.classList.remove('vqf-hidden');
+    if(key==='all')return;
+    const stat = r.dataset.stat || '';   // loadVideos が dataset.stat に stage を入れる前提
+    const adoption = r.dataset.adoption || '';
+    let hide = false;
+    if(key==='ungen' && stat && stat!=='ungen') hide=true;
+    else if(key==='running' && stat!=='running') hide=true;
+    else if(key==='generated' && stat!=='generated' && stat!=='done') hide=true;
+    else if(key==='review' && adoption!=='needs_review') hide=true;
+    else if(key==='approved' && adoption!=='auto_approved' && adoption!=='adopted') hide=true;
+    else if(key==='failed' && stat!=='failed') hide=true;
+    if(hide) r.classList.add('vqf-hidden');
+  });
+  // 全行非表示なら empty メッセージ
+  ctUpdateEmptyMessage();
+}
+
+function ctUpdateEmptyMessage(){
+  const vList = document.getElementById('vList'); if(!vList)return;
+  const visible = vList.querySelectorAll('.video-row:not(.vqf-hidden):not(.filter-hidden)').length;
+  let empty = vList.querySelector('.ct-vqf-empty');
+  if(visible===0){
+    if(!empty){
+      empty = document.createElement('div');
+      empty.className='ct-vqf-empty ct-error-recover';
+      empty.innerHTML = `
+        <div class="ct-error-recover-title">⚠ フィルター条件に合致する動画がありません</div>
+        <div class="ct-error-recover-causes">
+          考えられる原因:
+          <ul>
+            <li>選択中のフィルターが厳しい (現在: ${esc(_vqfCurrent)})</li>
+            <li>該当ステータスの動画がまだ無い</li>
+          </ul>
+        </div>
+        <div class="ct-error-recover-actions">
+          <button class="btn btn-secondary btn-sm" onclick="vqfApply('all')">すべて表示</button>
+          <button class="btn btn-ghost btn-sm" onclick="vqfRefresh()">再集計</button>
+        </div>`;
+      vList.appendChild(empty);
+    }
+  } else if (empty) {
+    empty.remove();
+  }
+}
+
+async function vqfRefresh(){
+  try{
+    const r = await fetch('/api/videos'); if(!r.ok) return;
+    const d = await r.json();
+    const vs = d.videos || [];
+    // 各動画について thumbnail_state.json から adoption status を取得
+    let cntAll=vs.length, cntUngen=0, cntRunning=0, cntGenerated=0, cntReview=0, cntApproved=0, cntFailed=0;
+    const stateCache = {};
+    for(const v of vs){
+      const stat = v.stage || (v.has_thumb?'generated':'ungen');
+      if(stat==='ungen') cntUngen++;
+      else if(stat==='running') cntRunning++;
+      else if(stat==='failed') cntFailed++;
+      else cntGenerated++;
+      // thumbnail_state.json から承認カウント
+      try{
+        const sr = await fetch(`/api/thumbnail-state/${encodeURIComponent(v.name)}`);
+        if(sr.ok){
+          const sd = await sr.json();
+          const counts = sd.summary?.counts_by_status || {};
+          if(counts.needs_review) cntReview += counts.needs_review;
+          if(counts.auto_approved || counts.adopted) cntApproved += (counts.auto_approved||0)+(counts.adopted||0);
+          stateCache[v.name] = sd;
+        }
+      }catch{}
+    }
+    document.getElementById('vqfCntAll').textContent = cntAll;
+    document.getElementById('vqfCntUngen').textContent = cntUngen;
+    document.getElementById('vqfCntRunning').textContent = cntRunning;
+    document.getElementById('vqfCntGenerated').textContent = cntGenerated;
+    document.getElementById('vqfCntReview').textContent = cntReview;
+    document.getElementById('vqfCntApproved').textContent = cntApproved;
+    document.getElementById('vqfCntFailed').textContent = cntFailed;
+    // プロジェクト + 認証情報
+    try{
+      const cfg = await fetch('/api/config'); const cd = (await cfg.json()).dashboard || {};
+      const proj = document.getElementById('vqfProject');
+      if(proj) proj.textContent = cd.channel_name || cd.brand_full || '-';
+    }catch{}
+    window._ctStateCache = stateCache;
+  }catch(e){}
+}
+
+/* ==== 生成結果タブ: 動画選択 → state を表示 (.md §17) ==== */
+async function ctPopulateResultVideoOptions(){
+  const sel = document.getElementById('ctResultVideo'); if(!sel) return;
+  const cur = sel.value;
+  try{
+    const r = await fetch('/api/videos'); if(!r.ok) return;
+    const d = await r.json();
+    const vs = d.videos || [];
+    sel.innerHTML = '<option value="">— 動画を選択 —</option>' + vs.map(v=>`<option value="${esc(v.name)}">${esc(v.name)}${v.title?' — '+esc(v.title.slice(0,50)):''}</option>`).join('');
+    if(cur) sel.value = cur;
+  }catch{}
+}
+
+async function ctLoadStateView(){
+  const sel = document.getElementById('ctResultVideo'); if(!sel) return;
+  const vn = sel.value;
+  const grid = document.getElementById('ctResultGrid');
+  if(!grid) return;
+  if(!vn){
+    grid.innerHTML = '<div class="ct-empty">— 動画を選択してください —</div>';
+    return;
+  }
+  grid.innerHTML = '<div class="ct-empty">読み込み中…</div>';
+  try{
+    const r = await fetch(`/api/thumbnail-state/${encodeURIComponent(vn)}`);
+    if(!r.ok){
+      const ed = await r.json().catch(()=>({}));
+      grid.innerHTML = `<div class="ct-error-recover">
+        <div class="ct-error-recover-title">⚠ サムネ状態が取得できませんでした</div>
+        <div class="ct-error-recover-causes">
+          考えられる原因:
+          <ul>
+            <li>動画フォルダが見つからない (${esc(ed.detail||'不明')})</li>
+            <li>まだ生成されていない</li>
+          </ul>
+        </div>
+        <div class="ct-error-recover-actions">
+          <button class="btn btn-secondary btn-sm" onclick="ctLoadStateView()">↻ 再読込</button>
+        </div>
+      </div>`;
+      return;
+    }
+    const d = await r.json();
+    const state = d.state || {};
+    const thumbs = state.thumbnails || {};
+    const keys = Object.keys(thumbs);
+    if(!keys.length){
+      grid.innerHTML = `<div class="ct-error-recover">
+        <div class="ct-error-recover-title">この動画にはまだ生成済みサムネがありません</div>
+        <div class="ct-error-recover-causes">
+          次の操作:
+          <ul>
+            <li>動画一覧でこの動画をチェック → 「一括生成を開始」</li>
+            <li>または個別動画詳細から手動生成</li>
+          </ul>
+        </div>
+      </div>`;
+      return;
+    }
+    grid.innerHTML = keys.map(fn=>ctRenderResultCard(vn, fn, thumbs[fn])).join('');
+  }catch(e){
+    grid.innerHTML = `<div class="ct-error-recover"><div class="ct-error-recover-title">⚠ 接続エラー</div></div>`;
+  }
+}
+
+function ctRenderResultCard(videoName, filename, t){
+  const score = t.score_total || 0;
+  const scoreCls = score>=80?'high':(score>=60?'mid':'low');
+  const sb = t.score_breakdown || {};
+  const status = t.status || 'pending';
+  const isAdopted = t.is_adopted;
+  const imgUrl = `/api/videos/${encodeURIComponent(videoName)}/images/${encodeURIComponent(filename)}`;
+  const breakdown = `
+    <div class="ct-result-bd-row"><span>コンセプト適合度</span><strong>${sb.concept_fit||0}/30</strong></div>
+    <div class="ct-result-bd-row"><span>トレンド適合度</span><strong>${sb.trend_fit||0}/20</strong></div>
+    <div class="ct-result-bd-row"><span>競合差別化</span><strong>${sb.competitor_diff||0}/25</strong></div>
+    <div class="ct-result-bd-row"><span>シリーズ一貫性</span><strong>${sb.past_perf||0}/25</strong></div>
+  `;
+  const ctr = t.ctr_predict;
+  const sim = t.similarity_to_competitors;
+  const comment = t.evaluation_comment ? `<div class="ct-result-comment">${esc(t.evaluation_comment.slice(0,200))}</div>` : '';
+  const reason = t.approval_reason ? `<div class="ct-result-reason">${esc(t.approval_reason.slice(0,160))}</div>` : '';
+  const cardCls = isAdopted ? 'ct-result-card adopted' : (status==='rejected' ? 'ct-result-card rejected' : 'ct-result-card');
+  return `<div class="${cardCls}">
+    <div class="ct-result-thumb">
+      <img src="${imgUrl}" alt="${esc(filename)}" onerror="this.style.display='none'">
+      <span class="ct-result-thumb-status ${status}">${ctStatusLabel(status)}</span>
+    </div>
+    <div class="ct-result-body">
+      <div class="ct-result-fn">${esc(filename)}</div>
+      <div class="ct-result-score">
+        <span class="ct-result-score-total ${scoreCls}">${score}</span>
+        <span style="font-size:var(--text-xs);color:var(--text-tertiary)">/ 100</span>
+        ${ctr?`<span class="ct-score-badge ${ctr>=7?'high':'mid'}">CTR ${parseFloat(ctr).toFixed(1)}%</span>`:''}
+        ${sim?`<span class="ct-score-badge ${sim<=25?'high':'low'}">類似 ${sim}%</span>`:''}
+      </div>
+      <div class="ct-result-score-breakdown">${breakdown}</div>
+      ${comment}
+      ${reason}
+      <div class="ct-result-actions">
+        <button class="btn btn-primary btn-sm" onclick="ctApproveOne('${esc(videoName)}','${esc(filename)}','adopted')" ${isAdopted?'disabled':''}>採用</button>
+        <button class="btn btn-secondary btn-sm" onclick="ctApproveOne('${esc(videoName)}','${esc(filename)}','needs_review')">差替え</button>
+        <button class="btn btn-destructive btn-sm" onclick="ctApproveOne('${esc(videoName)}','${esc(filename)}','rejected')">却下</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function ctStatusLabel(status){
+  return ({
+    auto_approved:'自動承認済み',
+    needs_review:'要確認',
+    rejected:'不採用',
+    adopted:'採用済み',
+    pending:'未評価',
+    failed:'失敗',
+  })[status] || status;
+}
+
+async function ctApproveOne(videoName, filename, status){
+  const reason = status==='adopted' ? '手動採用' : (status==='rejected' ? '手動却下' : '差替え保留');
+  try{
+    const r = await fetch('/api/thumbnail-state/approve',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_name:videoName,filename,status,reason})
+    });
+    const d = await r.json();
+    if(!r.ok||!d.ok){toast(d.detail||'更新失敗','e');return}
+    toast(`${ctStatusLabel(status)} に更新しました`,'s');
+    ctLoadStateView();
+    ctRefreshApprovalStats();
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function ctRescore(){
+  const sel = document.getElementById('ctResultVideo'); if(!sel||!sel.value){toast('動画を選択してください','w');return}
+  const vn = sel.value;
+  // 右パネルの設定を読む
+  const approval_mode = document.getElementById('ctApprovalMode')?.value || 'conditional';
+  const score_threshold = parseInt(document.getElementById('ctScoreThreshold')?.value||'80',10);
+  const ctr_threshold = parseFloat(document.getElementById('ctCtrThreshold')?.value||'7.0');
+  const similarity_max = parseInt(document.getElementById('ctSimilarityMax')?.value||'25',10);
+  if(!confirm(`${vn} の全サムネを再スコアリングします (Vision 分析、約 30-60s)。\n設定: モード=${approval_mode}, 閾値=${score_threshold}点, CTR=${ctr_threshold}%, 類似度上限=${similarity_max}%`))return;
+  toast('再スコアリング中…','i');
+  try{
+    const r = await fetch('/api/thumbnail-state/rescore',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_name:vn,approval_mode,score_threshold,ctr_threshold,similarity_max})
+    });
+    const d = await r.json();
+    if(!r.ok||!d.ok){toast(d.detail||d.error||'再スコアリング失敗','e');return}
+    toast(`${d.rescored} 件を再評価しました`,'s');
+    ctLoadStateView();
+  }catch(e){toast('接続エラー','e')}
+}
+
+function ctExportCsv(){
+  const sel = document.getElementById('ctResultVideo'); if(!sel||!sel.value){toast('動画を選択してください','w');return}
+  window.open(`/api/thumbnail-state/export-csv/${encodeURIComponent(sel.value)}`,'_blank');
+}
+
+async function ctRefreshApprovalStats(){
+  try{
+    const r = await fetch('/api/videos'); if(!r.ok) return;
+    const d = await r.json();
+    let approved=0, review=0, adopted=0, failed=0;
+    const items = [];
+    for(const v of (d.videos||[])){
+      try{
+        const sr = await fetch(`/api/thumbnail-state/${encodeURIComponent(v.name)}`);
+        if(!sr.ok) continue;
+        const sd = await sr.json();
+        const counts = sd.summary?.counts_by_status || {};
+        approved += counts.auto_approved || 0;
+        review += counts.needs_review || 0;
+        adopted += counts.adopted || 0;
+        failed += counts.failed || 0;
+        // 各動画ごとに 1 行
+        if(sd.summary?.total){
+          const best = sd.summary;
+          items.push({
+            video_name: v.name,
+            total: best.total,
+            avg_score: best.average_score,
+            approved: counts.auto_approved || 0,
+            adopted: counts.adopted || 0,
+            review: counts.needs_review || 0,
+          });
+        }
+      }catch{}
+    }
+    document.getElementById('ctAppStatApproved').textContent = approved;
+    document.getElementById('ctAppStatReview').textContent = review;
+    document.getElementById('ctAppStatAdopted').textContent = adopted;
+    document.getElementById('ctAppStatFailed').textContent = failed;
+    const list = document.getElementById('ctApprovalList');
+    if(list){
+      list.innerHTML = items.length ? items.map(it=>{
+        const stateBadge = it.adopted>0 ? 'high' : (it.review>0 ? 'mid' : 'low');
+        return `<div class="card" style="padding:var(--space-2);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:var(--space-2)">
+          <div>
+            <div style="font-weight:var(--font-semibold)">${esc(it.video_name)}</div>
+            <div style="font-size:var(--text-xs);color:var(--text-tertiary)">候補 ${it.total} / 採用 ${it.adopted} / 要確認 ${it.review} / 平均 ${it.avg_score}/100</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="ctOpenResult('${esc(it.video_name)}')">結果を開く</button>
+        </div>`;
+      }).join('') : '<div class="ct-empty">— 承認データなし —</div>';
+    }
+  }catch{}
+}
+
+function ctOpenResult(videoName){
+  ctTab('result');
+  const sel = document.getElementById('ctResultVideo');
+  if(sel){
+    sel.value = videoName;
+    ctLoadStateView();
+  }
+}
+
+/* ==== 設定セクションの値を Start ペイロードに反映 (拡張) ==== */
+function _ctBuildStartPayload(retryFailedOnly){
+  const names = _bulkSelectedNames();
+  const provider = document.getElementById('ctProvider')?.value || 'codex';
+  const nPer = Math.max(1,Math.min(8,parseInt(document.getElementById('ctNPerVideo')?.value||'4',10)||4));
+  const maxComp = Math.max(1,Math.min(10,parseInt(document.getElementById('ctMaxCompetitors')?.value||'4',10)||4));
+  const aspect = document.getElementById('ctAspect')?.value || '16:9';
+  const quality = document.getElementById('ctQuality')?.value || 'medium';
+  const useStats = !!document.getElementById('ctUseSelfStats')?.checked;
+  const approvalMode = document.getElementById('ctApprovalMode')?.value || 'conditional';
+  const scoreThreshold = parseInt(document.getElementById('ctScoreThreshold')?.value||'80',10);
+  const ctrThreshold = parseFloat(document.getElementById('ctCtrThreshold')?.value||'7.0');
+  const similarityMax = parseInt(document.getElementById('ctSimilarityMax')?.value||'25',10);
+  const autoScore = !!document.getElementById('ctAutoScore')?.checked;
+  return {
+    video_names: names, provider, n_per_video: nPer, max_competitors_per_video: maxComp,
+    use_self_stats: useStats, aspect, quality, retry_failed_only: !!retryFailedOnly,
+    approval_mode: approvalMode,
+    score_threshold: scoreThreshold,
+    ctr_threshold: ctrThreshold,
+    similarity_max: similarityMax,
+    auto_score: autoScore,
+  };
+}
+
+/* ==== 推定時間 / クレジット表示 (.md §13.2) ==== */
+function ctUpdateEstimates(){
+  const n = _bulkSelectedNames().length;
+  const nPer = Math.max(1,Math.min(8,parseInt(document.getElementById('ctNPerVideo')?.value||'4',10)||4));
+  const total = n * nPer;
+  // 推定: 1動画あたり 60s + Vision 60s = 約 2 分
+  const minutes = Math.max(1, Math.ceil(n * 2));
+  const credits = total;
+  const eta = document.getElementById('ctEstimateTime'); if(eta) eta.textContent = `約 ${minutes} 分`;
+  const cr = document.getElementById('ctEstimateCredit'); if(cr) cr.textContent = `${credits}`;
+  const planVids = document.getElementById('ctPlanVids'); if(planVids) planVids.textContent = n;
+  const planImgs = document.getElementById('ctPlanImages'); if(planImgs) planImgs.textContent = total;
+  const planEta = document.getElementById('ctPlanEta'); if(planEta) planEta.textContent = `約 ${minutes} 分`;
+  const planCr = document.getElementById('ctPlanCredit'); if(planCr) planCr.textContent = `${credits}`;
+  const planProv = document.getElementById('ctPlanProvider'); if(planProv) planProv.textContent = document.getElementById('ctProvider')?.value || 'codex';
+}
+
+/* ctUpdateSelectionCount を新 UI 用に拡張 (既存版を上書き) */
+function ctUpdateSelectionCount(){
+  const n = _bulkSelectedNames().length;
+  const c = document.getElementById('ctSelCount'); if(c) c.textContent = `${n} 件選択中`;
+  const r = document.getElementById('ctReadyN'); if(r) r.textContent = n;
+  const btn = document.getElementById('ctStartBtn'); if(btn) btn.disabled = (n===0);
+  const planBtn = document.getElementById('ctPlanBtn'); if(planBtn) planBtn.disabled = (n===0);
+  ctUpdateEstimates();
+}
+
+/* ==== 入力変更で推定値を更新 ==== */
+window.addEventListener('DOMContentLoaded', () => {
+  ['ctNPerVideo','ctProvider','ctMaxCompetitors','ctQuality','ctApprovalMode',
+   'ctScoreThreshold','ctCtrThreshold','ctSimilarityMax'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('change', () => ctUpdateEstimates());
+  });
+  // 初期表示で count バッジを取得
+  setTimeout(()=>{ try{ vqfRefresh() }catch{} }, 1000);
+});
+
+/* ==== 進捗モーダル ==== */
+function bulkProgressModal(title, names){
+  const rows=names.map(n=>`<div class="bp-row" data-name="${esc(n)}" style="display:grid;grid-template-columns:24px 1fr auto;gap:var(--space-2);align-items:center;padding:6px 8px;border-bottom:1px solid var(--border-default);font-size:var(--text-sm)"><div class="bp-icon" style="color:var(--text-tertiary)">○</div><div>${esc(n)}</div><div class="bp-stat" style="font-size:var(--text-xs);color:var(--text-tertiary)">待機中</div></div>`).join('');
+  modal(`<div class="mo-title">${title}</div>
+    <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:var(--space-3)">全 ${names.length} 件を順次実行します。途中で閉じても実行は継続します。</div>
+    <div id="bpList" style="max-height:360px;overflow:auto;border:1px solid var(--border-default);border-radius:var(--radius-md);margin-bottom:var(--space-3)">${rows}</div>
+    <div class="btns"><button class="btn btn-ghost btn-sm" onclick="closeModal()">閉じる</button></div>`);
+}
+function _bpUpdate(name,icon,text,color){
+  const row=document.querySelector(`.bp-row[data-name="${CSS.escape(name)}"]`);
+  if(!row)return;
+  const ic=row.querySelector('.bp-icon'); const st=row.querySelector('.bp-stat');
+  if(ic){ic.textContent=icon;ic.style.color=color||'var(--text-tertiary)'}
+  if(st){st.textContent=text;st.style.color=color||'var(--text-tertiary)'}
+}
+
+/* ==== メタ一括提案（titles + description + tags を順次生成→保存） ==== */
+async function bulkSuggestMeta(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('フォルダを選択してください','w');return}
+  if(!confirm(`${names.length} 件のメタ情報（タイトル/説明/タグ）をAI提案＋自動保存します。\n時間がかかります（1件あたり約30秒）。`))return;
+  bulkProgressModal(`メタ一括提案 (${names.length}件)`,names);
+  let ok=0,ng=0;
+  for(const n of names){
+    _bpUpdate(n,'⟳','提案中...','var(--accent-warning)');
+    try{
+      // タイトル
+      const rt=await fetch(`/api/videos/${encodeURIComponent(n)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'titles',count:1})});
+      const dt=await rt.json();
+      if(dt.titles&&dt.titles[0]){
+        await fetch(`/api/videos/${encodeURIComponent(n)}/title`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:n,new_title:dt.titles[0]})});
+      }
+      // 説明
+      const rd=await fetch(`/api/videos/${encodeURIComponent(n)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'description'})});
+      const dd=await rd.json();
+      if(dd.description){
+        await fetch(`/api/youtube-desc/save`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:n,text:dd.description})});
+      }
+      // タグ
+      const rg=await fetch(`/api/videos/${encodeURIComponent(n)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'tags'})});
+      const dg=await rg.json();
+      if(dg.tags){
+        await fetch(`/api/videos/${encodeURIComponent(n)}/tags`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:dg.tags})});
+      }
+      _bpUpdate(n,'✓','完了','var(--accent-success)');ok++;
+    }catch(e){_bpUpdate(n,'✕','失敗','var(--accent-danger)');ng++}
+  }
+  toast(`メタ一括提案: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
+  loadVideos();
+}
+
+/* ==== 一気通貫提案（競合分析→楽曲/サムネ/メタ） ==== */
+async function bulkSuggestAll(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('フォルダを選択してください','w');return}
+  if(!confirm(`${names.length} 件に対して競合分析から楽曲/サムネ/メタを一括提案します。\n1件あたり 60-90秒、合計 ${Math.ceil(names.length*75/60)} 分程度を見込みます。`))return;
+  bulkProgressModal(`一気通貫提案 (${names.length}件)`,names);
+  let ok=0,ng=0;
+  for(const n of names){
+    _bpUpdate(n,'⟳','分析中...','var(--accent-warning)');
+    try{
+      const r=await fetch(`/api/videos/${encodeURIComponent(n)}/suggest-all`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+      if(r.ok){_bpUpdate(n,'✓','完了','var(--accent-success)');ok++}
+      else{_bpUpdate(n,'✕','失敗','var(--accent-danger)');ng++}
+    }catch{_bpUpdate(n,'✕','失敗','var(--accent-danger)');ng++}
+  }
+  toast(`一気通貫提案: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
+}
+
+/* ==== パイプライン一括実行（承認設定） ==== */
+/* 一括アップロード (動画一覧 bulk action から呼ばれる)。改修#4 batch-upload API ラッパー */
+async function bulkBatchUpload(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('フォルダを選択してください','w');return}
+  await runBatchUpload(names,'unlisted');
+}
+
+async function bulkRunPipeline(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('フォルダを選択してください','w');return}
+  if(!confirm(`${names.length} 件を順次パイプライン実行します（全工程・自動承認）。\n各フォルダ30分〜2時間、合計で数時間〜半日を見込みます。`))return;
+  bulkProgressModal(`全工程一括実行 (${names.length}件)`,names);
+  let ok=0,ng=0;
+  for(const n of names){
+    _bpUpdate(n,'⟳','実行中...','var(--accent-warning)');
+    try{
+      // パイプライン起動
+      const r=await fetch(`/api/videos/${encodeURIComponent(n)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:['suno','rename','bgimage','psd_composite','premiere','export','meta','upload']})});
+      if(!r.ok){_bpUpdate(n,'✕','起動失敗','var(--accent-danger)');ng++;continue}
+      // 完了までポーリング
+      while(true){
+        await new Promise(res=>setTimeout(res,5000));
+        const s=await fetch('/api/pipeline/status').then(x=>x.ok?x.json():{running:false});
+        if(!s.running)break;
+      }
+      _bpUpdate(n,'✓','完了','var(--accent-success)');ok++;
+    }catch{_bpUpdate(n,'✕','失敗','var(--accent-danger)');ng++}
+  }
+  toast(`全工程一括実行: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
+  loadVideos();
+}
+
+// サムネだけ一括制作（背景生成→Photoshop文字入れ = 正規パイプライン bgimage→psd_composite を選択分にN本）
+async function bulkMakeThumbnails(){
+  const names=_bulkSelectedNames();
+  if(names.length===0){toast('フォルダを選択してください','w');return}
+  if(!confirm(`${names.length} 件のサムネを順次制作します（背景生成 → 画像合成）。${isAdobeFree()?'':'\nPhotoshop を起動しておいてください。'}\n各フォルダ数分かかります。`))return;
+  bulkProgressModal(`サムネ一括制作 (${names.length}件)`,names);
+  let ok=0,ng=0;
+  for(const n of names){
+    _bpUpdate(n,'⟳','制作中...','var(--accent-warning)');
+    try{
+      const r=await fetch(`/api/videos/${encodeURIComponent(n)}/run-pipeline`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({steps:['bgimage','psd_composite']})});
+      if(!r.ok){_bpUpdate(n,'✕','起動失敗','var(--accent-danger)');ng++;continue}
+      while(true){
+        await new Promise(res=>setTimeout(res,4000));
+        const s=await fetch('/api/pipeline/status').then(x=>x.ok?x.json():{running:false});
+        if(!s.running)break;
+      }
+      _bpUpdate(n,'✓','完了','var(--accent-success)');ok++;
+    }catch{_bpUpdate(n,'✕','失敗','var(--accent-danger)');ng++}
+  }
+  toast(`サムネ一括制作: 成功 ${ok} 件${ng?' / 失敗 '+ng+' 件':''}`,ng?'w':'s');
+  loadVideos();
+}
+
+/* ==== ベンチマーク完成パイプライン（p-benchmark 専用） ==== */
+/* ==== 新作ウォッチ（S1/S2: 動画単位の競合インテリジェンス） ==== */
+async function viLoad(){
+  const badge=document.getElementById('viPendingBadge');
+  const recEl=document.getElementById('viRecords');
+  const dnaEl=document.getElementById('viDna');
+  if(!recEl)return;
+  try{
+    const [rd,dd]=await Promise.all([apiGet('/api/video-intel/records?limit=60'),apiGet('/api/video-intel/dna')]);
+    const recs=rd.records||[];
+    if(badge){
+      badge.className='badge '+(rd.vision_pending>0?'badge-warning':'badge-success');
+      badge.textContent=`${recs.length} 件 / 未分析 ${rd.vision_pending}`;
+    }
+    const btn=document.getElementById('viAnalyzeBtn');
+    if(btn)btn.disabled=!(rd.vision_pending>0);
+    // DNA ランキング
+    if(dnaEl){
+      if(dd&&dd.ok){
+        const rows=(dd.top_positive||[]).slice(0,6).map(x=>
+          `<span class="badge badge-success" title="上位${x.win_rate_pct}% vs 全体${x.base_rate_pct}% (n=${x.n})">${esc(x.value)} +${x.lift_pct}pt</span>`).join(' ');
+        dnaEl.innerHTML=`<div class="fh" style="margin-bottom:var(--space-1)">勝ちサムネ要素（初速上位での出現率リフト・分析 ${dd.records} 件 / 中央値 ${Number(dd.v48_median).toLocaleString()}v）</div><div style="display:flex;gap:6px;flex-wrap:wrap">${rows||'<span class="fh">有意な差なし</span>'}</div>`;
+      }else{
+        dnaEl.innerHTML=`<div class="fh">${esc((dd&&dd.hint)||'サムネ DNA はデータ蓄積後に表示されます')}</div>`;
+      }
+    }
+    // レコード一覧
+    if(!recs.length){recEl.innerHTML='<div class="fh">レコードなし。「いま収集」を押すか毎朝の自動収集を待ってください。</div>';return}
+    const rows=recs.map(r=>{
+      const v=r.vision;
+      const tags=(v&&v.scene)?[v.scene,v.people,v.style,v.color_tone].filter(Boolean).map(t=>`<span class="badge badge-neutral" style="font-size:var(--text-3xs)">${esc(t)}</span>`).join(' '):'<span class="fh">未分析</span>';
+      const th=r.thumb_url?`<img src="${esc(r.thumb_url)}" loading="lazy" referrerpolicy="no-referrer" style="width:84px;height:47px;object-fit:cover;border-radius:var(--radius-xs);display:block"><div class="fh">出典: <a href="https://www.youtube.com/" target="_blank" rel="noopener">YouTube</a></div>`:'<div style="width:84px;height:47px;background:var(--bg-overlay);border-radius:var(--radius-xs)"></div>';
+      const link=r.video_id?`<a href="https://youtu.be/${esc(r.video_id)}" target="_blank" rel="noopener">${esc(r.title.slice(0,46))}</a>`:esc(r.title.slice(0,46));
+      return `<tr><td>${th}</td><td style="min-width:0"><div style="font-size:var(--text-sm)">${link}</div><div class="fh">${esc(r.channel)} ・ 検知 ${esc(r.detected_date||'-')}</div><div style="margin-top:2px">${tags}</div></td><td style="text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap"><strong>${Number(r.first_v48||0).toLocaleString()}</strong>v<div class="fh">48h初速</div></td></tr>`;
+    }).join('');
+    recEl.innerHTML=`<table class="ledger-table"><thead><tr><th>サムネ</th><th>動画 / 要素</th><th style="text-align:right">初速</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }catch(e){if(recEl)recEl.innerHTML=`<div class="fh" style="color:var(--accent-danger)">読込失敗: ${esc(e.message||'')}</div>`}
+}
+async function viCollect(){
+  toast('収集中…（TRACK タブ + YouTube API）','i');
+  try{
+    const d=await apiPost('/api/video-intel/collect');
+    toast(`収集完了: ${d.upserted} 件更新 / サムネ解決 ${d.enriched} 件`,'s');
+    viLoad();
+  }catch(e){toast('収集失敗: '+e.message,'e')}
+}
+async function viAnalyze(){
+  try{
+    const dry=await apiPost('/api/video-intel/analyze',{limit:8,dry_run:true});
+    if(!(dry.would_analyze>0)){toast('未分析のサムネがありません','w');return}
+    if(!confirm(`未分析 ${dry.pending_total} 件のうち初速上位 ${dry.would_analyze} 件を Vision 分析します（LLM コスト発生）。実行しますか？`))return;
+    toast(`Vision 分析中…（${dry.would_analyze} 件・数分かかります）`,'i');
+    const d=await apiPost('/api/video-intel/analyze',{limit:8});
+    toast(`分析完了: ${d.analyzed} 件 / 失敗 ${d.failed} 件（残り ${d.pending_remaining}）`, d.analyzed>0?'s':'w');
+    await apiGet('/api/video-intel/dna?refresh=1').catch(()=>{});
+    viLoad();
+  }catch(e){toast('分析失敗: '+e.message,'e')}
+}
+
+let _bmPollTimer=null;
+function _fmtBmDate(s){
+  if(!s)return '未生成';
+  return String(s).replace('T',' ').slice(0,16);
+}
+function _bmHealthBadge(ok,labelBad,labelOk){
+  return ok?`<span class="badge badge-success">${esc(labelOk||'OK')}</span>`:`<span class="badge badge-warning">${esc(labelBad||'未生成')}</span>`;
+}
+async function loadBenchmarkContextStatus(){
+  const el=document.getElementById('bmUnifiedStatusDetail');
+  if(!el)return;
+  el.innerHTML='読み込み中...';
+  try{
+    const r=await fetch('/api/benchmark/context-status');
+    const d=await r.json();
+    const a=d.analysis||{};
+    const p=d.profiles||{};
+    const running=d.running||{};
+    const analysisOk=!!a.cached && (a.channel_count||0)>0 && !a.schema_outdated;
+    const profileOk=(p.count||0)>0;
+    const age=a.age_days==null?'':` / ${a.age_days}日前`;
+    const stale=a.stale?'<span class="badge badge-warning">7日経過</span>':'';
+    const schema=a.schema_outdated?'<span class="badge badge-danger">旧スキーマ</span>':'';
+    el.innerHTML=`
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-2)">
+        <div style="background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-sm);padding:var(--space-2)">
+          <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px">制作分析 ${running.analysis?'<span class="badge badge-info">実行中</span>':_bmHealthBadge(analysisOk,'未生成','利用可能')}</div>
+          <div>入力: ${a.channel_count||0} ch / source: <code>${esc(a.source||'-')}</code> ${stale} ${schema}</div>
+          <div>最終分析: ${esc(_fmtBmDate(a.analyzed_at))}${age}</div>
+          <div style="color:var(--text-tertiary);margin-top:4px">使う場所: メタ提案、SUNO/Flow提案、タイトル/コンセプト/サムネ分析</div>
+        </div>
+        <div style="background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:var(--radius-sm);padding:var(--space-2)">
+          <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px">深掘りプロファイル ${running.benchmark?'<span class="badge badge-info">実行中</span>':_bmHealthBadge(profileOk,'未生成','利用可能')}</div>
+          <div>プロファイル: ${p.count||0} ch</div>
+          <div>生成日時: ${esc(_fmtBmDate(p.generated_at))}</div>
+          <div style="color:var(--text-tertiary);margin-top:4px">使う場所: プロファイル一覧、要素合成、ペルソナ提案</div>
+        </div>
+      </div>`;
+  }catch(e){
+    el.innerHTML='<span style="color:var(--accent-danger)">状態取得に失敗しました</span>';
+  }
+}
+let _bmCorePollTimer=null;
+function _bmCoreProgressShow(show){
+  const box=document.getElementById('bmCoreProgress');
+  if(box)box.style.display=show?'block':'none';
+}
+function _bmCoreProgressRender(logs){
+  const el=document.getElementById('bmCoreProgressLog');
+  const lines=(logs||[]).filter(l=>String(l).trim());
+  // 右上の「実行ログ」ポップオーバーにも集約（ベンチマーク分析セクション）
+  if(lines.length)_updateLogPopoverData('benchmark', lines);
+  if(!el)return;
+  el.textContent=lines.length?lines.slice(-40).join('\n'):'起動中...';
+  el.scrollTop=el.scrollHeight;
+}
+async function runBenchmarkCoreAnalysis(onFinish){
+  // onFinish: 任意。core 完了時に finish(ok) を渡して呼ぶフック（一括分析の連鎖に使用）。
+  const btn=document.getElementById('bmRunCoreAnalysisBtn');
+  const label=document.getElementById('bmCoreProgressLabel');
+  const selected=_bmSelected();
+  if(selected.length)await bmSaveSelectedBenchmarkPins(selected, false);
+  if(_bmCorePollTimer){clearInterval(_bmCorePollTimer);_bmCorePollTimer=null;}
+  if(btn){btn.disabled=true;btn.textContent='制作分析中...'}
+  _bmCoreProgressShow(true);
+  if(label)label.textContent='ライバル/スプシ取得 → Claude 分析中...（約1分）';
+  _bmCoreProgressRender(['スプレッドシート読み取り → ライバル取得 → Claude 分析を開始します...']);
+  try{
+    const r=await fetch('/api/analysis/competitors',{method:'POST'});
+    if(!r.ok){
+      const e=await r.json().catch(()=>({}));
+      const msg=e.detail||'制作分析の開始に失敗しました';
+      toast(msg,'e');
+      if(label)label.textContent='開始できませんでした';
+      _bmCoreProgressRender([msg, (r.status===400?'※ 既に実行中です。完了を待つか、しばらくしてから再実行してください。':'')]);
+      if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
+      setTimeout(()=>_bmCoreProgressShow(false),4000);
+      loadBenchmarkContextStatus();
+      if(typeof onFinish==='function')onFinish(false);
+      return false;
+    }
+    let _done=false;
+    const finish=(ok,errLine)=>{
+      _done=true;
+      if(_bmCorePollTimer){clearInterval(_bmCorePollTimer);_bmCorePollTimer=null;}
+      if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
+      const spin=document.querySelector('#bmCoreProgress .spinner');
+      if(spin)spin.style.display='none';
+      if(label)label.textContent=ok?'制作分析が完了しました':'制作分析が失敗しました';
+      // 結果ビューを再読込（状態カード・キャッシュ情報・概況・サムネ等の各タブ入力を更新）
+      loadBenchmarkContextStatus();
+      loadCacheInfo?.();
+      loadBmOverview?.();
+      // 一括分析の連鎖フック（指定時はトーストと自動クローズを抑制し、連鎖側で制御）
+      if(typeof onFinish==='function'){onFinish(ok);return;}
+      if(ok){toast('制作分析が完了しました。各タブに反映されました','s');}
+      else{toast('制作分析が失敗しました。ログを確認してください'+(errLine?'：'+errLine:''),'e');}
+      // 完了ログはしばらく残し、スピナーを戻す（次回用）
+      setTimeout(()=>{
+        _bmCoreProgressShow(false);
+        if(spin)spin.style.display='inline-block';
+      }, ok?6000:12000);
+    };
+    const poll=async()=>{
+      try{
+        const sr=await fetch('/api/analysis/status');
+        const sd=await sr.json();
+        _bmCoreProgressRender(sd.logs);
+        if(sd.running)return;
+        // 完走: ログ末尾でエラー終了コードを検出
+        const logs=sd.logs||[];
+        const tail=logs.slice(-8).join('\n');
+        const failed=/終了コード: (?!0\b)\d/.test(tail) || /\[エラー\]|❌/.test(tail);
+        const errLine=failed?(logs.filter(l=>/❌|\[エラー\]/.test(l)).slice(-1)[0]||'').slice(0,140):'';
+        finish(!failed, errLine);
+      }catch(e){ /* 一時的なポーリング失敗は無視して継続 */ }
+    };
+    await poll();
+    if(!_done){_bmCorePollTimer=setInterval(poll,2500);}
+    return true;
+  }catch(e){
+    toast('接続エラー','e');
+    if(label)label.textContent='接続エラー';
+    if(btn){btn.disabled=false;btn.textContent='制作分析を実行'}
+    setTimeout(()=>_bmCoreProgressShow(false),4000);
+    loadBenchmarkContextStatus();
+    if(typeof onFinish==='function')onFinish(false);
+    return false;
+  }
+}
+/* ==== 一括分析：制作分析(core) → コンセプト/タイトル/サムネ(+任意で投稿文)を自動連鎖 ====
+   各軸は同一の competitor_analysis_cache.json を入力にする非同期 run。
+   core 完了フックから順次 /api/benchmark/{...}/run をキックし、完了を待って次へ進む。
+   description は YouTube API quota を消費するため、既定OFF（チェックボックスで明示同意）。 */
+let _bmBatchRunning=false;
+function _bmBatchLog(line){
+  const el=document.getElementById('bmCoreProgressLog');
+  if(!el)return;
+  const prev=el.textContent==='起動中...'?'':el.textContent;
+  el.textContent=(prev?prev+'\n':'')+line;
+  el.scrollTop=el.scrollHeight;
+}
+function _bmBatchSetLabel(text){
+  const label=document.getElementById('bmCoreProgressLabel');
+  if(label)label.textContent=text;
+}
+// 1軸を run → 完了までポーリング（GET エンドポイントの running フラグで判定）
+async function _bmRunAxis(axis, label, body){
+  _bmBatchSetLabel(label+'中...');
+  _bmBatchLog('▶ '+label+' を開始');
+  try{
+    const r=await fetch(`/api/benchmark/${axis}/run`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body||{}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(d.status==='already_running'){_bmBatchLog('… '+label+'：既に実行中。完了を待ちます');}
+  }catch(e){
+    _bmBatchLog('[NG] '+label+'：開始失敗 '+(e.message||e));
+    return false;
+  }
+  // ポーリング（GET /api/benchmark/{axis} の running を監視）
+  for(let i=0;i<240;i++){   // 最大 ~10 分（2.5s × 240）
+    await new Promise(res=>setTimeout(res,2500));
+    try{
+      const sr=await fetch(`/api/benchmark/${axis}`);
+      if(!sr.ok)continue;
+      const sd=await sr.json();
+      if(!sd.running){
+        const ok=sd.phase!=='error';
+        _bmBatchLog((ok?'[OK] ':'[NG] ')+label+'：'+(sd.phase==='error'?('失敗 '+(sd.msg||'')):'完了'));
+        return ok;
+      }
+    }catch(_){ /* 一時失敗は無視 */ }
+  }
+  _bmBatchLog('… '+label+'：タイムアウト（バックグラウンドで継続中の可能性）');
+  return false;
+}
+async function runBenchmarkBatchAnalysis(){
+  if(_bmBatchRunning){toast('一括分析を実行中です','w');return}
+  const batchBtn=document.getElementById('bmRunBatchAnalysisBtn');
+  const coreBtn=document.getElementById('bmRunCoreAnalysisBtn');
+  const includeDesc=!!document.getElementById('bmBatchIncludeDesc')?.checked;
+  _bmBatchRunning=true;
+  if(batchBtn){batchBtn.disabled=true;batchBtn.textContent='一括分析中...'}
+  if(coreBtn)coreBtn.disabled=true;
+  _bmCoreProgressShow(true);
+  _bmBatchSetLabel('制作分析（core）を実行中...');
+  // core 完了フックで各軸を連鎖
+  await runBenchmarkCoreAnalysis(async(coreOk)=>{
+    if(!coreOk){
+      _bmBatchSetLabel('制作分析が失敗したため中断しました');
+      _bmBatchLog('[NG] 制作分析が失敗。各軸の連鎖を中止します');
+      _bmBatchFinish(false,batchBtn,coreBtn);
+      return;
+    }
+    _bmBatchLog('[OK] 制作分析が完了。各軸の連鎖を開始します');
+    // 1) コンセプト
+    await _bmRunAxis('concept','コンセプト分析',{per_channel_cap:8});
+    bcLoad?.();
+    // 2) タイトル
+    await _bmRunAxis('title','タイトル分析',{per_channel_cap:10});
+    btitleLoad?.();
+    // 3) サムネ（DL + Vision）
+    await _bmRunAxis('thumbnail','サムネ分析',{dl_only:false,per_channel_cap:8});
+    btLoad?.();
+    // 4) 投稿文（既定OFF。明示同意時のみ。quota 消費）
+    if(includeDesc){
+      await _bmRunAxis('description','投稿文分析',{per_channel_cap:8,refetch_full:true});
+      bdescLoad?.();
+    }else{
+      _bmBatchLog('⏭ 投稿文分析はスキップ（quota 消費のため既定OFF）');
+    }
+    _bmBatchSetLabel('一括分析が完了しました');
+    _bmBatchLog('一括分析が完了しました');
+    toast('一括分析が完了しました（各軸の結果を反映済み）','s');
+    _bmBatchFinish(true,batchBtn,coreBtn);
+  });
+}
+function _bmBatchFinish(ok,batchBtn,coreBtn){
+  _bmBatchRunning=false;
+  if(batchBtn){batchBtn.disabled=false;batchBtn.textContent='一括分析'}
+  if(coreBtn)coreBtn.disabled=false;
+  const spin=document.querySelector('#bmCoreProgress .spinner');
+  if(spin)spin.style.display='none';
+  loadBenchmarkContextStatus?.();
+  setTimeout(()=>{
+    _bmCoreProgressShow(false);
+    if(spin)spin.style.display='inline-block';
+  }, ok?8000:14000);
+}
+async function ensureBenchmarkCoreCache(statusElId){
+  try{
+    const r=await fetch('/api/analysis/cache-info');
+    const d=await r.json();
+    if(d.cached && (d.channel_count||0)>0 && !d.schema_outdated)return true;
+    const msg='先にページ上部の「制作分析を実行」ボタンで制作分析を実行してください';
+    const el=statusElId?document.getElementById(statusElId):null;
+    if(el){el.style.color='var(--accent-warning)';el.textContent=msg}
+    toast(msg,'w');
+    document.getElementById('bmRunCoreAnalysisBtn')?.scrollIntoView({behavior:'smooth',block:'center'});
+    loadBenchmarkContextStatus();
+    return false;
+  }catch(e){
+    toast('制作分析キャッシュの確認に失敗','e');
+    return false;
+  }
+}
+async function loadBmOverview(){
+  const grid=document.getElementById('bmOverviewGrid');if(!grid)return;
+  grid.innerHTML='<div class="fh" style="grid-column:1/-1">読み込み中...</div>';
+  try{
+    const r=await fetch('/api/analysis/overview');
+    if(!r.ok){grid.innerHTML='<div class="fh" style="grid-column:1/-1;color:var(--accent-warning)">スプレッドシート未設定</div>';return}
+    const d=await r.json();
+    if(!d.configured){grid.innerHTML='<div class="fh" style="grid-column:1/-1;color:var(--accent-warning)">成長トラッキングシート URL が未設定（基本設定で入力）</div>';return}
+    const card=(label,value,sub,accent)=>`
+      <div class="card" style="padding:var(--space-6);background:var(--bg-surface);border-radius:var(--radius-lg);border:1px solid var(--border-default)">
+        <div style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-2)">${esc(label)}</div>
+        <div style="font-size:var(--text-2xl);font-weight:var(--font-bold);color:${accent||'var(--text-primary)'};font-family:var(--font-mono);line-height:1.2">${value}</div>
+        ${sub?`<div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:var(--space-2);line-height:1.5">${sub}</div>`:''}
+      </div>`;
+    const tg=(d.top_growth||[]).map(x=>`<div style="display:flex;justify-content:space-between"><span>${esc(x.name).slice(0,18)}</span><span style="color:var(--accent-success);font-family:var(--font-mono)">+${x.growth_rate.toFixed(2)}%</span></div>`).join('')||'—';
+    const tv=(d.top_recent_views||[]).map(x=>`<div style="display:flex;justify-content:space-between"><span>${esc(x.name).slice(0,18)}</span><span style="color:var(--accent-info);font-family:var(--font-mono)">+${(x.daily_views||0).toLocaleString()}</span></div>`).join('')||'—';
+    grid.innerHTML=
+      card('総チャンネル数',(d.total_channels||0).toLocaleString(),'スプレッドシートから取得')+
+      card('週次成長 TOP3','<div style="font-size:var(--text-sm);font-family:inherit;font-weight:normal;line-height:1.7">'+tg+'</div>','日次成長率の上位 3 件','var(--accent-success)')+
+      card('直近再生急上昇 TOP3','<div style="font-size:var(--text-sm);font-family:inherit;font-weight:normal;line-height:1.7">'+tv+'</div>','日次再生数の増加 上位 3 件','var(--accent-info)')+
+      card('集計更新',d.updated_at||'—','スプシ更新タイムスタンプ');
+  }catch(e){grid.innerHTML='<div class="fh" style="grid-column:1/-1;color:var(--accent-danger)">取得エラー</div>'}
+}
+/* 詳細ツール（bmDetailTools）を開いて指定カードへスクロールする（J2 再設計後の共通導線） */
+function bmOpenDetailTools(cardId){
+  const det=document.getElementById('bmDetailTools');
+  if(det)det.open=true;
+  const card=cardId?document.getElementById(cardId):det;
+  if(card)setTimeout(()=>card.scrollIntoView({behavior:'smooth',block:'start'}),60);
+}
+
+/* ==== ベンチマーク・投稿文(説明文)軸 ==== */
+let _bdescCache={per_channel:{},aggregate:{},generated_at:'',no_data:false};
+let _bdescPolling=null;
+
+async function bdescLoad(){
+  try{
+    const r=await fetch('/api/benchmark/description');
+    if(!r.ok) return;
+    const d=await r.json();
+    _bdescCache=d;
+    bdescRender();
+    if(d.running){
+      bdescUpdateStatus(d.phase, d.msg, true);
+      if(!_bdescPolling) _bdescPolling=setInterval(bdescPoll, 2500);
+    }else{
+      bdescUpdateStatus(d.phase, d.msg, false);
+      if(_bdescPolling){clearInterval(_bdescPolling); _bdescPolling=null}
+    }
+  }catch(e){console.error(e)}
+}
+
+async function bdescPoll(){
+  try{
+    const r=await fetch('/api/benchmark/description');
+    if(!r.ok) return;
+    const d=await r.json();
+    bdescUpdateStatus(d.phase, d.msg, d.running);
+    if(!d.running){
+      if(_bdescPolling){clearInterval(_bdescPolling); _bdescPolling=null}
+      _bdescCache=d;
+      bdescRender();
+    }
+  }catch(_){}
+}
+
+function bdescUpdateStatus(phase, msg, running){
+  const el=document.getElementById('bdescStatus');
+  const btn=document.getElementById('bdescRunBtn');
+  if(!el) return;
+  if(running){
+    el.style.color='var(--accent-warning)';
+    el.textContent=`⏳ ${phase||''} ${msg||''}`;
+    if(btn) btn.disabled=true;
+  }else if(phase==='error'){
+    el.style.color='var(--accent-danger)';
+    el.textContent=`✗ ${msg||'エラー'}`;
+    if(btn) btn.disabled=false;
+  }else if(phase==='done'){
+    el.style.color='var(--accent-success)';
+    el.textContent=`✓ ${msg||'完了'}`;
+    if(btn) btn.disabled=false;
+  }else{
+    el.textContent='';
+    if(btn) btn.disabled=false;
+  }
+}
+
+async function bdescRun(){
+  if(!(await ensureBenchmarkCoreCache('bdescStatus')))return;
+  try{
+    const r=await fetch('/api/benchmark/description/run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({per_channel_cap:8, refetch_full:true}),
+    });
+    const d=await r.json();
+    if(d.status==='already_running'){toast('すでに実行中','w');return}
+    bdescUpdateStatus('analyzing','full 再取得して分析を開始',true);
+    if(!_bdescPolling) _bdescPolling=setInterval(bdescPoll, 2500);
+  }catch(e){toast('開始失敗: '+e.message,'e')}
+}
+
+function bdescRender(){
+  const aggWrap=document.getElementById('bdescAggregate');
+  const chWrap=document.getElementById('bdescChannels');
+  if(!aggWrap||!chWrap) return;
+  // no-data degrade（スプシ fallback 等で説明文ゼロ）
+  if(_bdescCache.no_data){
+    aggWrap.innerHTML=`<div class="card" style="border-left:3px solid var(--accent-warning)">
+      <div style="font-weight:600;color:var(--accent-warning);margin-bottom:4px">投稿文データがありません</div>
+      <div class="fh">${esc(_bdescCache.reason||'説明文が取得できませんでした。')}</div>
+      <div class="fh" style="margin-top:6px;color:var(--text-tertiary)">基本設定タブで「ライバルチャンネル」を登録すると、YouTube API 経路で説明文を取得して投稿文分析が可能になります。</div>
+    </div>`;
+    chWrap.innerHTML='';
+    return;
+  }
+  const perCh=_bdescCache.per_channel||{};
+  const ids=Object.keys(perCh);
+  if(ids.length===0){
+    chWrap.innerHTML='<div class="card empty"><div class="empty-title">未分析です</div><div class="empty-sub">ページ上部の「制作分析を実行」で制作分析を行い、ライバルチャンネルを登録してから「分析を実行」してください</div></div>';
+    aggWrap.innerHTML='';
+    return;
+  }
+  // aggregate（投稿文テンプレート提案）
+  const agg=_bdescCache.aggregate||{};
+  if(agg && Object.keys(agg).length){
+    const recs=agg.recommendation_for_self||{};
+    const tmpl=recs.description_template||'';
+    aggWrap.innerHTML=`<div class="card"><div class="section-heading"><div class="sec-title" style="margin:0">横断分析（投稿文テンプレート提案）</div><span class="fh" style="font-weight:normal;font-size:var(--text-xs)">${esc(_bdescCache.generated_at||'')}${_bdescCache.source?(' / '+esc(_bdescCache.source)):''}</span></div>
+      <div class="bt-analysis-block">
+        ${(agg.shared_structure||[]).length?`<div><strong>共通構成：</strong>${(agg.shared_structure||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(agg.differentiators||[]).length?`<div style="margin-top:6px"><strong>差別化：</strong><ul style="margin:4px 0 0 18px;padding:0">${(agg.differentiators||[]).map(d=>`<li>${esc(d.channel||'')}: ${esc(d.edge||'')}</li>`).join('')}</ul></div>`:''}
+        ${(agg.underserved_patterns||[]).length?`<div style="margin-top:6px"><strong>未活用：</strong>${(agg.underserved_patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${recs.tone_one_line?`<div style="margin-top:8px;color:var(--text-primary);font-weight:500">▶ ${esc(recs.tone_one_line)}</div>`:''}
+        ${recs.opening_hook?`<div style="margin-top:8px"><strong>冒頭フック(EN)：</strong><div style="font-size:var(--text-xs);color:var(--text-secondary);margin-top:2px">${esc(recs.opening_hook)}</div></div>`:''}
+        ${recs.cta_block?`<div style="margin-top:6px"><strong>CTA(EN)：</strong><div style="font-size:var(--text-xs);color:var(--text-secondary);white-space:pre-wrap;margin-top:2px">${esc(recs.cta_block)}</div></div>`:''}
+        ${(recs.hashtag_set||[]).length?`<div style="margin-top:6px"><strong>ハッシュタグ：</strong>${(recs.hashtag_set||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${tmpl?`<div style="margin-top:8px"><strong>投稿文テンプレート(EN)：</strong><pre style="white-space:pre-wrap;background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-sm);padding:8px;font-size:var(--text-xs);margin-top:4px;max-height:240px;overflow:auto">${esc(tmpl)}</pre>
+          <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="bdescCopyTemplate()">テンプレートをコピー</button></div>`:''}
+      </div></div>`;
+  }else{
+    aggWrap.innerHTML='';
+  }
+  // per channel（投稿文の構成パターン）
+  chWrap.innerHTML=ids.map(id=>{
+    const c=perCh[id]||{};
+    return `<div class="bc-channel-card">
+      <div class="bc-channel-head">
+        <span>${esc(c.channel||id)}</span>
+        <span class="badge badge-success" style="font-size:var(--text-2xs)">分析済み</span>
+      </div>
+      ${(c.structure_blocks||[]).length?`<div class="bc-row"><strong>構成順</strong>${(c.structure_blocks||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join(' ▸ ')}</div>`:''}
+      ${(c.opening_hooks||[]).length?`<div class="bc-row"><strong>冒頭フック</strong>${(c.opening_hooks||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.cta_patterns||[]).length?`<div class="bc-row"><strong>CTA</strong>${(c.cta_patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.hashtag_clusters||[]).length?`<div class="bc-row"><strong>ハッシュタグ</strong>${(c.hashtag_clusters||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${c.timestamp_usage?`<div class="bc-row"><strong>タイムコード</strong><span style="font-size:var(--text-xs);color:var(--text-secondary)">${esc(c.timestamp_usage)}</span></div>`:''}
+      ${c.link_policy?`<div class="bc-row"><strong>リンク方針</strong><span style="font-size:var(--text-xs);color:var(--text-secondary)">${esc(c.link_policy)}</span></div>`:''}
+      ${(c.examples||[]).length?`<ul class="bc-examples">${(c.examples||[]).map(e=>`<li><span style="white-space:pre-wrap">${esc(e.snippet||'')}</span> — ${esc(e.why||'')}</li>`).join('')}</ul>`:''}
+    </div>`;
+  }).join('');
+}
+
+function bdescCopyTemplate(){
+  const tmpl=((_bdescCache.aggregate||{}).recommendation_for_self||{}).description_template||'';
+  if(!tmpl){toast('テンプレートがありません','e');return}
+  navigator.clipboard.writeText(tmpl).then(()=>toast('投稿文テンプレートをコピーしました','s')).catch(()=>toast('コピー失敗','e'));
+}
+
+/* ==== チャンネル追跡（個別タブ時系列・新着検知・イベント） ==== */
+let _trkChannels=[];      // channel-list キャッシュ
+let _trkSelected='';      // 深掘り中のチャンネル名
+
+function _sparkline(points, w, h, color){
+  w=w||260; h=h||44; color=color||'var(--accent-info)';
+  const pts=(points||[]).filter(p=>typeof p[1]==='number');
+  if(pts.length<2) return '<span class="fh">データ不足</span>';
+  const vals=pts.map(p=>p[1]);
+  const min=Math.min(...vals), max=Math.max(...vals), rng=(max-min)||1;
+  const dx=w/(pts.length-1);
+  const coords=pts.map((p,i)=>`${(i*dx).toFixed(1)},${(h-((p[1]-min)/rng)*(h-4)-2).toFixed(1)}`);
+  const last=coords[coords.length-1].split(',');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;max-width:100%">
+    <polyline points="${coords.join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${color}"/></svg>`;
+}
+
+function _bar(value, maxv, color){
+  const pct=maxv>0?Math.min(100,Math.round(value/maxv*100)):0;
+  return `<div style="background:var(--bg-overlay);border-radius:var(--radius-xs);height:6px;overflow:hidden;flex:1;min-width:40px"><div style="width:${pct}%;height:100%;background:${color||'var(--accent-info)'}"></div></div>`;
+}
+
+async function loadTrackingPane(){
+  const days=document.getElementById('trkNewDays')?.value||14;
+  const nl=document.getElementById('trkNewList');
+  const ev=document.getElementById('trkEvents');
+  const pk=document.getElementById('trkPicker');
+  if(nl)nl.innerHTML='<div class="fh">読み込み中...</div>';
+  if(ev)ev.innerHTML='<div class="fh">読み込み中...</div>';
+  if(pk)pk.innerHTML='<div class="fh">読み込み中...</div>';
+  // 新着チャンネル
+  fetch(`/api/analysis/new-channels?within_days=${days}`).then(r=>r.json()).then(d=>{
+    const cnt=document.getElementById('trkNewCount');
+    if(!d.configured){if(cnt)cnt.textContent='未設定';if(nl)nl.innerHTML='<div class="fh" style="color:var(--accent-warning)">成長トラッキングシート URL が未設定（基本設定で入力）</div>';return}
+    const list=d.new_channels||[];
+    if(cnt)cnt.textContent=`${list.length} 件`;
+    if(!list.length){if(nl)nl.innerHTML='<div class="fh">直近の新着チャンネルはありません</div>';return}
+    const maxSub=Math.max(...list.map(c=>c.daily_subs||0),1);
+    const maxView=Math.max(...list.map(c=>c.daily_views||0),1);
+    nl.innerHTML=list.map(c=>`
+      <div style="display:flex;gap:var(--space-3);padding:var(--space-2) 0;border-top:1px solid var(--border-default);align-items:center">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:var(--font-semibold);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <span class="badge" style="background:rgba(34,197,94,.15);color:var(--accent-success);font-size:var(--text-2xs);margin-right:6px">${c.days_tracked}日前</span>${esc(c.name)}
+          </div>
+          <div style="font-size:var(--text-xs);color:var(--text-tertiary)">登録 ${(c.subscribers||0).toLocaleString()} ・ 動画 ${c.video_count||0} ・ 直近投稿 ${esc(c.last_post_date||'—')}</div>
+        </div>
+        <div style="width:160px;flex-shrink:0;font-size:var(--text-2xs);color:var(--text-tertiary)">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="width:54px">登録+${(c.daily_subs||0).toLocaleString()}</span>${_bar(c.daily_subs,maxSub,'var(--accent-success)')}</div>
+          <div style="display:flex;align-items:center;gap:6px"><span style="width:54px">再生+${(c.daily_views||0).toLocaleString()}</span>${_bar(c.daily_views,maxView,'var(--accent-info)')}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="flex-shrink:0" onclick="openChannelTimeline('${esc(c.name).replace(/'/g,"\\'")}')">深掘り</button>
+      </div>`).join('');
+  }).catch(()=>{if(nl)nl.innerHTML='<div class="fh" style="color:var(--accent-danger)">新着取得エラー</div>'});
+  // 追跡イベント
+  fetch('/api/analysis/tracking-events?record=0').then(r=>r.json()).then(d=>{
+    const meta=document.getElementById('trkEventsMeta');
+    if(!d.configured){if(ev)ev.innerHTML='<div class="fh" style="color:var(--accent-warning)">未設定</div>';return}
+    const e=d.events||{};
+    if(d.first_run){if(meta)meta.textContent='初回（基準スナップショット未保存）';ev.innerHTML='<div class="fh">「日次記録」を押すと今日を基準に保存し、明日以降から前回比イベントを表示します。</div>';return}
+    if(meta)meta.textContent=`${e.prev_date||'—'} → ${e.curr_date||'今日'}`;
+    const sec=(title,rows)=>rows?`<div style="margin-bottom:var(--space-2)"><div style="font-size:var(--text-xs);font-weight:600;color:var(--text-secondary);margin-bottom:3px">${title}</div>${rows}</div>`:'';
+    const nc=(e.new_channels||[]).slice(0,8).map(c=>`<span class="badge badge-neutral" style="margin:2px">NEW ${esc(c.name)} (登録${(c.subs||0).toLocaleString()})</span>`).join('');
+    const nv=(e.new_videos||[]).slice(0,8).map(v=>`<span class="badge badge-neutral" style="margin:2px">${esc(v.name)} +${v.video_delta}本</span>`).join('');
+    const sg=(e.surging||[]).slice(0,8).map(s=>`<span class="badge" style="background:rgba(34,197,94,.12);color:var(--accent-success);margin:2px">▲ ${esc(s.name)} +${(s.sub_delta||0).toLocaleString()}登録</span>`).join('');
+    const html=sec('新着チャンネル',nc)+sec('新作投稿',nv)+sec('登録急伸',sg);
+    ev.innerHTML=html||'<div class="fh">前回比の変化はありません</div>';
+  }).catch(()=>{if(ev)ev.innerHTML='<div class="fh" style="color:var(--accent-danger)">イベント取得エラー</div>'});
+  // チャンネルピッカー
+  fetch('/api/analysis/channel-list').then(r=>r.json()).then(d=>{
+    _trkChannels=d.channels||[];
+    renderChannelPicker();
+  }).catch(()=>{if(pk)pk.innerHTML='<div class="fh" style="color:var(--accent-danger)">一覧取得エラー</div>'});
+}
+
+function renderChannelPicker(){
+  const pk=document.getElementById('trkPicker');if(!pk)return;
+  const q=(document.getElementById('trkPickerFilter')?.value||'').toLowerCase();
+  let list=_trkChannels;
+  if(q)list=list.filter(c=>(c.name||'').toLowerCase().includes(q));
+  if(!list.length){pk.innerHTML='<div class="fh">該当なし</div>';return}
+  pk.innerHTML=list.slice(0,120).map(c=>{
+    const on=c.name===_trkSelected;
+    const badge=c.is_new?'<span style="color:var(--accent-success)">NEW</span> ':'';
+    return `<button class="btn btn-sm ${on?'btn-primary':'btn-ghost'}" style="font-size:var(--text-xs);padding:3px 8px" onclick="openChannelTimeline('${esc(c.name).replace(/'/g,"\\'")}')" title="登録 ${(c.subscribers||0).toLocaleString()}">${badge}${esc(c.name)}</button>`;
+  }).join('');
+}
+
+async function recordTrackingSnapshot(){
+  try{
+    const r=await fetch('/api/analysis/tracking-events?record=1');
+    if(!r.ok){toast('スナップショット記録に失敗','e');return}
+    toast('今日のスナップショットを記録しました','s');
+    loadTrackingPane();
+  }catch(e){toast('記録エラー','e')}
+}
+
+async function openChannelTimeline(name){
+  _trkSelected=name;
+  renderChannelPicker();
+  const box=document.getElementById('trkTimeline');if(!box)return;
+  box.innerHTML=`<div class="card" style="margin-top:var(--space-2)"><div class="fh">「${esc(name)}」の個別タブを読み込み中...（最大40秒）</div></div>`;
+  try{
+    const r=await fetch('/api/analysis/channel-timeline?'+new URLSearchParams({name}));
+    const d=await r.json();
+    if(!r.ok||!d.ok){
+      box.innerHTML=`<div class="card" style="margin-top:var(--space-2);border-left:3px solid var(--accent-warning)">
+        <div style="font-weight:600;color:var(--accent-warning);margin-bottom:4px">個別タブを取得できませんでした</div>
+        <div class="fh">${esc(d.error||('HTTP '+r.status))}</div>
+        <div class="fh" style="margin-top:6px;color:var(--text-tertiary)">個別タブは新スプレッドシート（CHANNEL_TRACK と同じブック）にのみ存在します。設定の成長トラッキング URL がそのブックを指しているか確認してください。</div>
+      </div>`;
+      return;
+    }
+    renderTimeline(d);
+  }catch(e){box.innerHTML='<div class="card" style="margin-top:var(--space-2)"><div class="fh" style="color:var(--accent-danger)">取得エラー</div></div>'}
+}
+
+function renderTimeline(tl){
+  const box=document.getElementById('trkTimeline');if(!box)return;
+  const accelColor=tl.accel_label==='加速'||tl.accel_label==='新規急加速'?'var(--accent-success)':(tl.accel_label==='減速'?'var(--accent-danger)':'var(--text-secondary)');
+  const staleBadge=tl.is_stale?`<span class="badge" style="background:rgba(239,68,68,.12);color:var(--accent-danger)">⚠ ${tl.fresh_days_ago}日前更新</span>`:`<span class="badge" style="background:rgba(34,197,94,.12);color:var(--accent-success)">最新 ${esc(tl.last_data_date)}</span>`;
+  const accelText=tl.accel_label==='新規急加速'?'新規急加速':(tl.accel>0?`x${tl.accel}`:'—');
+  const stat=(label,val,color)=>`<div style="text-align:center;padding:var(--space-2);background:var(--bg-surface);border-radius:var(--radius-md);border:1px solid var(--border-default)"><div style="font-size:var(--text-2xs);color:var(--text-tertiary)">${label}</div><div style="font-size:var(--text-lg);font-weight:700;font-family:var(--font-mono);color:${color||'var(--text-primary)'}">${val}</div></div>`;
+  const vids=(tl.new_videos||[]).map(v=>`
+    <div style="display:flex;gap:var(--space-2);padding:6px 0;border-top:1px solid var(--border-default);align-items:center;font-size:var(--text-xs)">
+      <span style="width:42px;color:var(--text-tertiary);flex-shrink:0">${esc(v.date)}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v.title)}</span>
+      <span style="flex-shrink:0;color:var(--accent-info);font-family:var(--font-mono)" title="48h初速ピーク">▲${(v.first_v48||0).toLocaleString()}</span>
+      ${v.ctr?`<span style="flex-shrink:0;color:var(--accent-success);font-family:var(--font-mono)" title="クリック率">${v.ctr.toFixed(1)}%</span>`:''}
+    </div>`).join('')||'<div class="fh">新着動画イベントなし</div>';
+  box.innerHTML=`
+    <div class="card" style="margin-top:var(--space-2)">
+      <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-3)">
+        <div class="sec-title" style="margin:0">${esc(tl.channel_name)}</div>
+        ${staleBadge}
+        <span class="badge" style="background:rgba(99,102,241,.12);color:${accelColor}">${esc(tl.accel_label)}</span>
+        <span style="flex:1"></span>
+        <span class="fh" style="margin:0">${tl.days}日分・${tl.rows_parsed}取得</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:var(--space-2);margin-bottom:var(--space-3)">
+        ${stat('登録者',(tl.latest_subs||0).toLocaleString())}
+        ${stat('総再生',(tl.latest_total_views||0).toLocaleString())}
+        ${stat('登録加速度',accelText,accelColor)}
+        ${stat('48h初速ピーク',(tl.v48_peak_recent||0).toLocaleString(),'var(--accent-info)')}
+      </div>
+      <div style="margin-bottom:var(--space-3)">
+        <div style="display:flex;justify-content:space-between;font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">
+          <span>登録者推移</span><span style="font-family:var(--font-mono)">直近7日 +${(tl.sub_gain_7d||0).toLocaleString()} / 前7日 +${(tl.sub_gain_prev7d||0).toLocaleString()}</span>
+        </div>
+        ${_sparkline(tl.daily_subs,520,48,'var(--accent-success)')}
+      </div>
+      <div>
+        <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px">新着動画（タイトル変化点・新しい順 / ▲=48h初速）</div>
+        ${vids}
+      </div>
+    </div>`;
+}
+
+/* ==== ベンチマーク・タイトル軸（Phase 3） ==== */
+let _btitleCache={per_channel:{},aggregate:{},generated_at:''};
+let _btitlePolling=null;
+
+async function btitleLoad(){
+  try{
+    const r=await fetch('/api/benchmark/title');
+    if(!r.ok) return;
+    const d=await r.json();
+    _btitleCache=d;
+    btitleRender();
+    if(d.running){
+      btitleUpdateStatus(d.phase, d.msg, true);
+      if(!_btitlePolling) _btitlePolling=setInterval(btitlePoll, 2500);
+    }else{
+      btitleUpdateStatus(d.phase, d.msg, false);
+      if(_btitlePolling){clearInterval(_btitlePolling); _btitlePolling=null}
+    }
+  }catch(e){console.error(e)}
+}
+
+async function btitlePoll(){
+  try{
+    const r=await fetch('/api/benchmark/title');
+    if(!r.ok) return;
+    const d=await r.json();
+    btitleUpdateStatus(d.phase, d.msg, d.running);
+    if(!d.running){
+      if(_btitlePolling){clearInterval(_btitlePolling); _btitlePolling=null}
+      _btitleCache=d;
+      btitleRender();
+    }
+  }catch(_){}
+}
+
+function btitleUpdateStatus(phase, msg, running){
+  const el=document.getElementById('btitleStatus');
+  const btn=document.getElementById('btitleRunBtn');
+  if(!el) return;
+  if(running){
+    el.style.color='var(--accent-warning)';
+    el.textContent=`⏳ ${phase||''} ${msg||''}`;
+    if(btn) btn.disabled=true;
+  }else if(phase==='error'){
+    el.style.color='var(--accent-danger)';
+    el.textContent=`✗ ${msg||'エラー'}`;
+    if(btn) btn.disabled=false;
+  }else if(phase==='done'){
+    el.style.color='var(--accent-success)';
+    el.textContent=`✓ ${msg||'完了'}`;
+    if(btn) btn.disabled=false;
+  }else{
+    el.textContent='';
+    if(btn) btn.disabled=false;
+  }
+}
+
+async function btitleRun(){
+  if(!(await ensureBenchmarkCoreCache('btitleStatus')))return;
+  try{
+    const r=await fetch('/api/benchmark/title/run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({per_channel_cap:10}),
+    });
+    const d=await r.json();
+    if(d.status==='already_running'){toast('すでに実行中','w');return}
+    btitleUpdateStatus('analyzing','分析を開始',true);
+    if(!_btitlePolling) _btitlePolling=setInterval(btitlePoll, 2500);
+  }catch(e){toast('開始失敗: '+e.message,'e')}
+}
+
+function btitleRender(){
+  const aggWrap=document.getElementById('btitleAggregate');
+  const chWrap=document.getElementById('btitleChannels');
+  if(!aggWrap||!chWrap) return;
+  const perCh=_btitleCache.per_channel||{};
+  const ids=Object.keys(perCh);
+  if(ids.length===0){
+    chWrap.innerHTML='<div class="card empty"><div class="empty-title">未分析です</div><div class="empty-sub">ページ上部の「制作分析を実行」で制作分析を行ってから、この分析を実行してください</div></div>';
+    aggWrap.innerHTML='';
+    return;
+  }
+  const agg=_btitleCache.aggregate||{};
+  if(agg && Object.keys(agg).length){
+    const recs=agg.recommendation_for_self||{};
+    const clusters=(agg.keyword_clusters||[]).map(c=>{
+      const ex=(c.examples||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('');
+      return `<li><strong>${esc(c.cluster||'')}</strong> ${ex}</li>`;
+    }).join('');
+    aggWrap.innerHTML=`<div class="card"><div class="section-heading"><div class="sec-title" style="margin:0">横断分析（aggregate）</div><span class="fh" style="font-weight:normal;font-size:var(--text-xs)">${esc(_btitleCache.generated_at||'')}</span></div>
+      <div class="bt-analysis-block">
+        ${(agg.shared_patterns||[]).length?`<div><strong>共通構造：</strong>${(agg.shared_patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(agg.winning_formulas||[]).length?`<div style="margin-top:6px"><strong>勝ちテンプレ：</strong><ul style="margin:4px 0 0 18px;padding:0">${(agg.winning_formulas||[]).map(x=>`<li><code style="font-size:var(--text-xs)">${esc(x)}</code></li>`).join('')}</ul></div>`:''}
+        ${clusters?`<div style="margin-top:6px"><strong>キーワード軸：</strong><ul style="margin:4px 0 0 18px;padding:0;list-style:none">${clusters}</ul></div>`:''}
+        ${(agg.avoid_patterns||[]).length?`<div style="margin-top:6px"><strong>避ける：</strong>${(agg.avoid_patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(recs.title_scaffolds||[]).length?`<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border-default)"><strong>自軸スキャフォールド：</strong><ul style="margin:4px 0 0 18px;padding:0">${(recs.title_scaffolds||[]).map(x=>`<li><code style="font-size:var(--text-xs);color:var(--text-primary)">${esc(x)}</code></li>`).join('')}</ul></div>`:''}
+        ${(recs.primary_keywords||[]).length?`<div style="margin-top:6px"><strong>狙う KW：</strong>${(recs.primary_keywords||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(recs.avoid_keywords||[]).length?`<div style="margin-top:6px"><strong>避ける KW：</strong>${(recs.avoid_keywords||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${recs.tone_one_line?`<div style="margin-top:6px;color:var(--text-primary);font-weight:500">▶ ${esc(recs.tone_one_line)}</div>`:''}
+      </div></div>`;
+  }else{
+    aggWrap.innerHTML='';
+  }
+  chWrap.innerHTML=ids.map(id=>{
+    const c=perCh[id]||{};
+    return `<div class="bc-channel-card">
+      <div class="bc-channel-head">
+        <span>${esc(c.channel||id)}</span>
+        ${c.avg_length?`<span class="badge badge-neutral" style="font-size:var(--text-2xs)">avg ${c.avg_length} 字</span>`:''}
+        <span class="badge badge-success" style="font-size:var(--text-2xs)">分析済み</span>
+      </div>
+      ${(c.patterns||[]).length?`<div class="bc-row"><strong>構造</strong>${(c.patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.formulas||[]).length?`<div class="bc-row"><strong>テンプレ</strong><ul style="margin:4px 0 0 18px;padding:0">${(c.formulas||[]).map(x=>`<li><code style="font-size:var(--text-xs)">${esc(x)}</code></li>`).join('')}</ul></div>`:''}
+      ${(c.keywords||[]).length?`<div class="bc-row"><strong>KW</strong>${(c.keywords||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.hooks||[]).length?`<div class="bc-row"><strong>フック</strong>${(c.hooks||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.examples||[]).length?`<ul class="bc-examples">${(c.examples||[]).map(e=>`<li><strong>${esc(e.title||'')}</strong>${esc(e.why||'')}</li>`).join('')}</ul>`:''}
+      ${(c.anti_patterns||[]).length?`<div class="bc-row" style="color:var(--accent-warning)"><strong>注意</strong>${(c.anti_patterns||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+    </div>`;
+  }).join('');
+}
+
+/* ==== ベンチマーク・コンセプト軸（Phase 2） ==== */
+let _bcCache={per_channel:{},aggregate:{},generated_at:''};
+let _bcPolling=null;
+
+async function bcLoad(){
+  try{
+    const r=await fetch('/api/benchmark/concept');
+    if(!r.ok) return;
+    const d=await r.json();
+    _bcCache=d;
+    bcRender();
+    if(d.running){
+      bcUpdateStatus(d.phase, d.msg, true);
+      if(!_bcPolling) _bcPolling=setInterval(bcPoll, 2500);
+    }else{
+      bcUpdateStatus(d.phase, d.msg, false);
+      if(_bcPolling){clearInterval(_bcPolling); _bcPolling=null}
+    }
+  }catch(e){console.error(e)}
+}
+
+async function bcPoll(){
+  try{
+    const r=await fetch('/api/benchmark/concept');
+    if(!r.ok) return;
+    const d=await r.json();
+    bcUpdateStatus(d.phase, d.msg, d.running);
+    if(!d.running){
+      if(_bcPolling){clearInterval(_bcPolling); _bcPolling=null}
+      _bcCache=d;
+      bcRender();
+    }
+  }catch(_){}
+}
+
+function bcUpdateStatus(phase, msg, running){
+  const el=document.getElementById('bcStatus');
+  const btn=document.getElementById('bcRunBtn');
+  if(!el) return;
+  if(running){
+    el.style.color='var(--accent-warning)';
+    el.textContent=`⏳ ${phase||''} ${msg||''}`;
+    if(btn) btn.disabled=true;
+  }else if(phase==='error'){
+    el.style.color='var(--accent-danger)';
+    el.textContent=`✗ ${msg||'エラー'}`;
+    if(btn) btn.disabled=false;
+  }else if(phase==='done'){
+    el.style.color='var(--accent-success)';
+    el.textContent=`✓ ${msg||'完了'}`;
+    if(btn) btn.disabled=false;
+  }else{
+    el.textContent='';
+    if(btn) btn.disabled=false;
+  }
+}
+
+async function bcRun(){
+  if(!(await ensureBenchmarkCoreCache('bcStatus')))return;
+  try{
+    const r=await fetch('/api/benchmark/concept/run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({per_channel_cap:8}),
+    });
+    const d=await r.json();
+    if(d.status==='already_running'){toast('すでに実行中','w');return}
+    bcUpdateStatus('analyzing','分析を開始',true);
+    if(!_bcPolling) _bcPolling=setInterval(bcPoll, 2500);
+  }catch(e){toast('開始失敗: '+e.message,'e')}
+}
+
+function bcRender(){
+  const aggWrap=document.getElementById('bcAggregate');
+  const chWrap=document.getElementById('bcChannels');
+  if(!aggWrap||!chWrap) return;
+  const perCh=_bcCache.per_channel||{};
+  const ids=Object.keys(perCh);
+  if(ids.length===0){
+    chWrap.innerHTML='<div class="card empty"><div class="empty-title">未分析です</div><div class="empty-sub">ページ上部の「制作分析を実行」で制作分析を行ってから、この分析を実行してください</div></div>';
+    aggWrap.innerHTML='';
+    return;
+  }
+  // aggregate
+  const agg=_bcCache.aggregate||{};
+  if(agg && Object.keys(agg).length){
+    const recs=agg.recommendation_for_self||{};
+    aggWrap.innerHTML=`<div class="card"><div class="section-heading"><div class="sec-title" style="margin:0">横断分析（aggregate）</div><span class="fh" style="font-weight:normal;font-size:var(--text-xs)">${esc(_bcCache.generated_at||'')}</span></div>
+      <div class="bt-analysis-block">
+        ${(agg.shared_themes||[]).length?`<div><strong>共通題材：</strong>${(agg.shared_themes||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(agg.differentiators||[]).length?`<div style="margin-top:6px"><strong>差別化軸：</strong><ul style="margin:4px 0 0 18px;padding:0">${(agg.differentiators||[]).map(d=>`<li>${esc(d.channel||'')}: ${esc(d.edge||'')}</li>`).join('')}</ul></div>`:''}
+        ${(agg.underserved_concepts||[]).length?`<div style="margin-top:6px"><strong>未充足：</strong>${(agg.underserved_concepts||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(recs.focus_themes||[]).length?`<div style="margin-top:6px"><strong>狙うべき：</strong>${(recs.focus_themes||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(recs.avoid_themes||[]).length?`<div style="margin-top:6px"><strong>避ける：</strong>${(recs.avoid_themes||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${recs.vibe_one_line?`<div style="margin-top:6px;color:var(--text-primary);font-weight:500">▶ ${esc(recs.vibe_one_line)}</div>`:''}
+      </div></div>`;
+  }else{
+    aggWrap.innerHTML='';
+  }
+  // per channel
+  chWrap.innerHTML=ids.map(id=>{
+    const c=perCh[id]||{};
+    return `<div class="bc-channel-card">
+      <div class="bc-channel-head">
+        <span>${esc(c.channel||id)}</span>
+        <span class="badge badge-success" style="font-size:var(--text-2xs)">分析済み</span>
+      </div>
+      ${c.concept_signature?`<div class="bc-signature">${esc(c.concept_signature)}</div>`:''}
+      ${(c.themes||[]).length?`<div class="bc-row"><strong>題材</strong>${(c.themes||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.emotional_jobs||[]).length?`<div class="bc-row"><strong>感情ジョブ</strong>${(c.emotional_jobs||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.scene_anchors||[]).length?`<div class="bc-row"><strong>シーン</strong>${(c.scene_anchors||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+      ${(c.examples||[]).length?`<ul class="bc-examples">${(c.examples||[]).map(e=>`<li><strong>${esc(e.title||'')}</strong>${esc(e.why||'')}</li>`).join('')}</ul>`:''}
+    </div>`;
+  }).join('');
+}
+
+/* ==== ベンチマーク・サムネ分析（Phase 1） ==== */
+let _btCache={channels:[],analysis:{},picked:[]};
+let _btSelected=new Set();
+let _btPolling=null;
+
+async function btLoad(){
+  try{
+    const r=await fetch('/api/benchmark/thumbnail');
+    if(!r.ok) return;
+    const d=await r.json();
+    _btCache=d;
+    _btSelected=new Set(d.picked||[]);
+    btRender();
+    // 実行中なら polling
+    if(d.running){
+      btUpdateStatus(d.phase, d.msg, true);
+      if(!_btPolling) _btPolling=setInterval(btPoll, 2500);
+    }else{
+      btUpdateStatus(d.phase, d.msg, false);
+      if(_btPolling){clearInterval(_btPolling); _btPolling=null}
+    }
+  }catch(e){console.error(e)}
+}
+
+async function btPoll(){
+  try{
+    const r=await fetch('/api/benchmark/thumbnail');
+    if(!r.ok) return;
+    const d=await r.json();
+    btUpdateStatus(d.phase, d.msg, d.running);
+    if(!d.running){
+      if(_btPolling){clearInterval(_btPolling); _btPolling=null}
+      _btCache=d;
+      _btSelected=new Set(d.picked||[]);
+      btRender();
+    }
+  }catch(_){}
+}
+
+function btUpdateStatus(phase, msg, running){
+  const el=document.getElementById('btStatus');
+  const btn=document.getElementById('btRunBtn');
+  if(!el) return;
+  if(running){
+    el.style.color='var(--accent-warning)';
+    el.textContent=`⏳ ${phase||''} ${msg||''}`;
+    if(btn) btn.disabled=true;
+  }else if(phase==='error'){
+    el.style.color='var(--accent-danger)';
+    el.textContent=`✗ ${msg||'エラー'}`;
+    if(btn) btn.disabled=false;
+  }else if(phase==='done'){
+    el.style.color='var(--accent-success)';
+    el.textContent=`✓ ${msg||'完了'}`;
+    if(btn) btn.disabled=false;
+  }else{
+    el.textContent='';
+    if(btn) btn.disabled=false;
+  }
+}
+
+async function btRun(dlOnly){
+  if(!(await ensureBenchmarkCoreCache('btStatus')))return;
+  try{
+    const r=await fetch('/api/benchmark/thumbnail/run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({dl_only:!!dlOnly, per_channel_cap:8}),
+    });
+    const d=await r.json();
+    if(d.status==='already_running'){
+      toast('すでに実行中です','w');
+      return;
+    }
+    btUpdateStatus(dlOnly?'downloading':'starting', dlOnly?'DL を開始':'分析を開始', true);
+    if(!_btPolling) _btPolling=setInterval(btPoll, 2500);
+  }catch(e){toast('開始失敗: '+e.message,'e')}
+}
+
+function btRender(){
+  const chWrap=document.getElementById('btChannels');
+  const aggWrap=document.getElementById('btAggregate');
+  if(!chWrap||!aggWrap) return;
+  const chs=_btCache.channels||[];
+  if(chs.length===0){
+    chWrap.innerHTML='<div class="card empty"><div class="empty-title">まだサムネが DL されていません</div><div class="empty-sub">ページ上部の「制作分析を実行」で制作分析を行ってから、DL + 分析を実行してください</div></div>';
+    aggWrap.innerHTML='';
+    btUpdatePickedCount();
+    return;
+  }
+  // aggregate
+  const agg=(_btCache.analysis||{}).aggregate||{};
+  if(agg && Object.keys(agg).length){
+    const recs=agg.recommendation_for_self||{};
+    aggWrap.innerHTML=`<div class="card"><div class="section-heading"><div class="sec-title" style="margin:0">横断分析（aggregate）</div><span class="fh" style="font-weight:normal;font-size:var(--text-xs)">${esc(_btCache.generated_at||'')}</span></div>
+      <div class="bt-analysis-block">
+        ${(agg.shared_palette||[]).length?`<div><strong>共通配色：</strong>${(agg.shared_palette||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${agg.shared_composition?`<div style="margin-top:6px"><strong>共通構図：</strong>${esc(agg.shared_composition)}</div>`:''}
+        ${(agg.differentiators||[]).length?`<div style="margin-top:6px"><strong>差別化軸：</strong><ul style="margin:4px 0 0 18px;padding:0">${(agg.differentiators||[]).map(d=>`<li>${esc(d.channel||'')}: ${esc(d.edge||'')}</li>`).join('')}</ul></div>`:''}
+        ${(agg.underserved_visual||[]).length?`<div style="margin-top:6px"><strong>未充足視覚軸：</strong>${(agg.underserved_visual||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(recs.keep||[]).length?`<div style="margin-top:6px"><strong>取り入れる：</strong>${(recs.keep||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${(recs.transform||[]).length?`<div style="margin-top:6px"><strong>翻訳する：</strong>${(recs.transform||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+        ${recs.vibe_one_line?`<div style="margin-top:6px;color:var(--text-primary);font-weight:500">▶ ${esc(recs.vibe_one_line)}</div>`:''}
+      </div></div>`;
+  }else{
+    aggWrap.innerHTML='';
+  }
+  // channels
+  const perCh=(_btCache.analysis||{}).per_channel||{};
+  chWrap.innerHTML=chs.map(ch=>{
+    const an=perCh[ch.channelId]||{};
+    const thumbs=(ch.thumbnails||[]).slice().sort((a,b)=>(b.viewCount||0)-(a.viewCount||0));
+    return `<div class="bt-channel-card">
+      <div class="bt-channel-head" onclick="btToggleChannel(this)">
+        <span>${esc(ch.channelName||'(no name)')}</span>
+        <span class="bt-ch-meta">${thumbs.length} 枚</span>
+        ${an.viewer_hooks?'<span class="badge badge-success" style="font-size:var(--text-2xs)">分析済み</span>':'<span class="badge badge-neutral" style="font-size:var(--text-2xs)">未分析</span>'}
+        <span class="bt-ch-toggle">▼</span>
+      </div>
+      <div class="bt-channel-body">
+        ${an.viewer_hooks?`<div class="bt-analysis-block">
+          ${(an.common_palette||[]).length?`<div><strong>配色：</strong>${(an.common_palette||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+          ${an.common_composition?`<div style="margin-top:4px"><strong>構図：</strong>${esc(an.common_composition)}</div>`:''}
+          ${(an.viewer_hooks||[]).length?`<div style="margin-top:4px"><strong>フック：</strong>${(an.viewer_hooks||[]).map(x=>`<span class="bt-tag">${esc(x)}</span>`).join('')}</div>`:''}
+          ${an.common_atmosphere?`<div style="margin-top:4px"><strong>雰囲気：</strong>${esc(an.common_atmosphere)}</div>`:''}
+        </div>`:''}
+        <div class="bt-thumb-grid">
+          ${thumbs.map(t=>btRenderThumb(ch.channelId, t)).join('')}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  btUpdatePickedCount();
+}
+
+function btRenderThumb(channelId, t){
+  const picked=_btSelected.has(t.videoId);
+  const safeCh=encodeURIComponent(channelId);
+  const safeId=encodeURIComponent(t.videoId);
+  return `<div class="bt-thumb${picked?' is-picked':''}" data-vid="${esc(t.videoId)}" onclick="btTogglePick('${esc(t.videoId)}', this)">
+    <img src="/api/benchmark/thumbnail/image/${safeCh}/${safeId}" loading="lazy" onerror="this.style.opacity=.3">
+    <div class="bt-pick-mark">${picked?'✓':''}</div>
+    <div class="bt-meta">
+      <div class="bt-title" title="${esc(t.title||'')}">${esc(t.title||'')}</div>
+      <div class="bt-stats">${(t.viewCount||0).toLocaleString()} views • ${(t.likeCount||0).toLocaleString()} likes</div>
+    </div>
+  </div>`;
+}
+
+function btTogglePick(vid, el){
+  if(_btSelected.has(vid)){_btSelected.delete(vid)}else{_btSelected.add(vid)}
+  if(el){
+    el.classList.toggle('is-picked', _btSelected.has(vid));
+    const m=el.querySelector('.bt-pick-mark');
+    if(m) m.textContent=_btSelected.has(vid)?'✓':'';
+  }
+  btUpdatePickedCount();
+}
+
+function btUpdatePickedCount(){
+  const el=document.getElementById('btPickedCount');
+  if(el) el.textContent=`Picked ${_btSelected.size} 件`;
+}
+
+function btToggleChannel(head){
+  const body=head.nextElementSibling;
+  if(!body) return;
+  const open=body.style.display!=='none';
+  body.style.display=open?'none':'';
+  const t=head.querySelector('.bt-ch-toggle');
+  if(t) t.textContent=open?'▶':'▼';
+}
+
+async function btSavePicked(){
+  try{
+    const r=await fetch('/api/benchmark/thumbnail/picked',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({picked:Array.from(_btSelected)}),
+    });
+    const d=await r.json();
+    if(d.status==='ok'){
+      btUpdateStatus('done', `Picked ${d.count} 件保存`, false);
+      _btCache.picked=d.picked;
+    }
+  }catch(e){toast('保存失敗: '+e.message,'e')}
+}
+function _bmInputs(){
+  return {
+    sheetA:(document.getElementById('bmSheetA').value||'').trim(),
+    sheetB:(document.getElementById('bmSheetB').value||'').trim(),
+    extras:(document.getElementById('bmExtraUrls').value||'').split('\n').map(s=>s.trim()).filter(Boolean),
+  };
+}
+let _bmSortKey='growth_rate',_bmSortDesc=true;
+let _bmSources=[];
+let _bmFilteredSources=[];
+let _bmSelectedNames=new Set();
+let _bmPinnedNames=new Set();      // ベンチマーク採用中(pinned_names)
+const BM_SEC_PER_CH=50;            // 1ch あたり生成秒数の目安（コスト見積り共通定数）
+function _bmDaysAgo(iso){
+  if(!iso)return '';
+  const t=Date.parse((iso||'').replace(' ','T'));
+  if(isNaN(t))return '';
+  const days=Math.floor((Date.now()-t)/86400000);
+  if(days<=0)return '今日';
+  return days+'日前';
+}
+async function loadBmPinned(){
+  try{
+    const r=await fetch('/api/analysis/benchmark-config');
+    if(!r.ok)return;
+    const d=await r.json();
+    const cfg=d.config||d||{};
+    _bmPinnedNames=new Set(cfg.pinned_names||cfg.benchmark_pinned_names||[]);
+  }catch(_){}
+}
+// 「分析対象と状態」カードの対象チップ（採用＝pinned。運営チャンネル別に保存）
+function renderBmTargetChips(){
+  const box=document.getElementById('bmTargetChips');
+  if(!box)return;
+  const names=Array.from(_bmPinnedNames);
+  if(!names.length){
+    box.innerHTML='<span style="color:var(--text-tertiary)">分析対象が未選択です。「候補を絞る」からチャンネルを採用してください（目安 5 ch 程度）。</span>';
+    return;
+  }
+  box.innerHTML='<span style="color:var(--text-secondary);font-weight:600">分析対象 '+names.length+' ch:</span>'
+    +names.map(n=>`<span class="badge badge-info" style="display:inline-flex;align-items:center;gap:4px;font-weight:normal">${esc(n)}<a href="#" onclick="bmTogglePin('${esc(n).replace(/'/g,"\\'")}');return false" title="採用を解除" style="color:inherit;text-decoration:none;opacity:.7">×</a></span>`).join('')
+    +(names.length>8?'<span style="color:var(--accent-warning)">対象が多めです。5 ch 程度に絞ると分析が速く・ブレにくくなります。</span>':'');
+}
+// 未分析(=already_analyzed でない)かつ表示中の行だけ一括選択（増分だけ1クリック）
+function bmSelectUnanalyzed(){
+  document.querySelectorAll('.bm-src-chk').forEach(c=>{
+    if(c.dataset.analyzed==='1'){c.checked=false;if(c.dataset.ch)_bmSelectedNames.delete(c.dataset.ch);}
+    else{c.checked=true;if(c.dataset.ch)_bmSelectedNames.add(c.dataset.ch);}
+  });
+  bmSourcesOnChange();
+}
+async function bmPreviewSources(){
+  const {sheetA,sheetB,extras}=_bmInputs();
+  if(!sheetA && !extras.length){toast('分析シート URL またはリスト外 URL を 1 つ以上指定してください','w');return;}
+  const card=document.getElementById('bmSourcesCard');
+  const list=document.getElementById('bmSourcesList');
+  const meta=document.getElementById('bmSourcesMeta');
+  card.style.display='block';
+  list.innerHTML='<div style="padding:var(--space-3);text-align:center;color:var(--text-tertiary);font-size:var(--text-sm)">⟳ 取り込み中...</div>';
+  meta.textContent='';
+  try{
+    await loadBmPinned();  // 採用(pinned)状態を取得してから描画
+    const r=await fetch('/api/benchmark/preview-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sheet_a_url:sheetA,sheet_b_url:sheetB,extra_urls:extras})});
+    if(!r.ok){const t=await r.text();throw new Error(t)}
+    const d=await r.json();
+    _bmSources=d.channels||[];
+    _bmFilteredSources=_bmSources.slice();
+    _bmSelectedNames=new Set();
+    const anN=_bmSources.filter(c=>c.already_analyzed).length;
+    meta.textContent=`${_bmSources.length} チャンネル (分析済 ${anN} / 未分析 ${_bmSources.length-anN} ・ 分析シート: ${_bmSources.filter(c=>c.source==='sheet_a').length} / 追加: ${_bmSources.filter(c=>c.source==='extra_url').length})`;
+    if(!_bmSources.length){list.innerHTML='<div style="padding:var(--space-3);text-align:center;color:var(--text-tertiary);font-size:var(--text-sm)">取得されたチャンネルがありません</div>';return;}
+    _renderBmSourcesTable();
+    toast(`${_bmSources.length} チャンネルを取得しました`,'s');
+  }catch(e){
+    list.innerHTML=`<div style="padding:var(--space-3);color:var(--accent-danger);font-size:var(--text-sm)">取得失敗: ${esc(String(e.message||e))}</div>`;
+  }
+}
+function _bmSortBy(key){
+  if(_bmSortKey===key){_bmSortDesc=!_bmSortDesc;}
+  else{_bmSortKey=key;_bmSortDesc=true;}
+  _renderBmSourcesTable(true);
+}
+function _bmNum(v){const n=parseFloat(v);return Number.isFinite(n)?n:0}
+function _bmTerms(v){return (v||'').split(/[,\s　]+/).map(s=>s.trim().toLowerCase()).filter(Boolean)}
+function _bmSearchText(c){
+  return [
+    c.channel_name||'',
+    c.url||'',
+    c.source||'',
+  ].join(' ').toLowerCase();
+}
+function _bmPassFilters(c){
+  const text=_bmSearchText(c);
+  const include=_bmTerms(document.getElementById('bmFilterText')?.value||'');
+  const exclude=_bmTerms(document.getElementById('bmFilterExclude')?.value||'');
+  if(include.length && !include.some(t=>text.includes(t)))return false;
+  if(exclude.length && exclude.some(t=>text.includes(t)))return false;
+  const g=c.growth||{};
+  const subs=_bmGet(c,'total_subs');
+  const viewsDiff=_bmGet(c,'views_diff');
+  const growth=_bmGet(c,'growth_rate');
+  const minSubs=_bmNum(document.getElementById('bmFilterMinSubs')?.value||0);
+  const minViews=_bmNum(document.getElementById('bmFilterMinViewsDiff')?.value||0);
+  const minGrowth=_bmNum(document.getElementById('bmFilterMinGrowth')?.value||0);
+  const growthOnly=document.getElementById('bmFilterGrowthOnly')?.value||'';
+  if(minSubs && subs<minSubs)return false;
+  if(minViews && viewsDiff<minViews)return false;
+  if(minGrowth && growth<minGrowth)return false;
+  if(growthOnly==='growth' && !c.growth)return false;
+  if(growthOnly==='positive' && !(g.views_diff>0 || g.subs_diff>0 || g.growth_rate>0))return false;
+  return true;
+}
+function bmApplySourceFilters(){
+  _syncBmSelectedFromDom();
+  _bmFilteredSources=_bmSources.filter(_bmPassFilters);
+  _renderBmSourcesTable(true);
+}
+function _bmGet(c,key){
+  const g=c.growth||{};
+  switch(key){
+    case 'channel_name':return (c.channel_name||'').toLowerCase();
+    case 'tracking_start':return g.tracking_start||'';
+    case 'fetched_at':return g.fetched_at||'';
+    case 'total_views':return g.total_views||c.total_views||0;
+    case 'total_subs':return g.total_subs||c.subscribers||0;
+    case 'views_diff':return g.views_diff||0;
+    case 'subs_diff':return g.subs_diff||0;
+    case 'growth_rate':return g.growth_rate||0;
+    default:return 0;
+  }
+}
+function _renderBmSourcesTable(preserveChecked){
+  const list=document.getElementById('bmSourcesList');
+  if(!list||!_bmSources.length)return;
+  if(preserveChecked)_syncBmSelectedFromDom();
+  else _bmSelectedNames=new Set();
+  const rows=(_bmFilteredSources.length||_hasActiveBmFilters()?_bmFilteredSources:_bmSources).slice().sort((a,b)=>{
+    const va=_bmGet(a,_bmSortKey),vb=_bmGet(b,_bmSortKey);
+    if(typeof va==='string'||typeof vb==='string'){
+      return _bmSortDesc?String(vb).localeCompare(String(va)):String(va).localeCompare(String(vb));
+    }
+    return _bmSortDesc?(vb-va):(va-vb);
+  });
+  const summary=document.getElementById('bmFilterSummary');
+  if(summary){
+    const selectedInView=rows.filter(c=>_bmSelectedNames.has(c.channel_name)).length;
+    summary.textContent=`表示 ${rows.length} / 全 ${_bmSources.length} チャンネル ・ 表示中の選択 ${selectedInView} ・ 全選択 ${_bmSelectedNames.size}`;
+  }
+  if(!rows.length){
+    list.innerHTML='<div style="padding:var(--space-4);text-align:center;color:var(--text-tertiary);font-size:var(--text-sm)">条件に一致するチャンネルがありません</div>';
+    bmSourcesOnChange();
+    return;
+  }
+  const th=(key,label,align)=>{
+    const active=_bmSortKey===key;
+    const arrow=active?(_bmSortDesc?' ▼':' ▲'):'';
+    const a=align||'left';
+    return `<th style="text-align:${a};padding:6px 8px;background:var(--bg-elevated);border-bottom:1px solid var(--border-default);font-size:var(--text-xs);font-weight:600;color:${active?'var(--accent-primary)':'var(--text-secondary)'};cursor:pointer;white-space:nowrap;position:sticky;top:0;z-index:1" onclick="_bmSortBy('${key}')">${esc(label)}${arrow}</th>`;
+  };
+  const fmt=(n)=>(n||0).toLocaleString();
+  const diffCell=(n)=>{
+    if(!n)return '<span style="color:var(--text-tertiary)">0</span>';
+    const col=n>0?'var(--accent-success)':'var(--accent-danger)';
+    const sign=n>0?'+':'';
+    return `<span style="color:${col};font-weight:600">${sign}${fmt(n)}</span>`;
+  };
+  const rateCell=(r)=>{
+    if(r===undefined||r===null||r===0)return '<span style="color:var(--text-tertiary)">—</span>';
+    const col=r>=10?'var(--accent-success)':(r>=1?'var(--text-primary)':'var(--text-tertiary)');
+    return `<span style="color:${col};font-weight:600">${r.toFixed(2)}%</span>`;
+  };
+  const html=`<div style="max-height:520px;overflow:auto;border:1px solid var(--border-default);border-radius:var(--radius-sm)">
+    <table style="width:100%;border-collapse:collapse;font-size:var(--text-xs)">
+      <thead><tr>
+        <th style="width:32px;padding:6px 8px;background:var(--bg-elevated);border-bottom:1px solid var(--border-default);position:sticky;top:0;z-index:1"></th>
+        <th style="width:44px;padding:6px 8px;background:var(--bg-elevated);border-bottom:1px solid var(--border-default);position:sticky;top:0;z-index:1">アイコン</th>
+        <th style="width:96px;padding:6px 8px;background:var(--bg-elevated);border-bottom:1px solid var(--border-default);position:sticky;top:0;z-index:1;font-size:var(--text-xs);font-weight:600;color:var(--text-secondary)">状態</th>
+        ${th('channel_name','チャンネル名','left')}
+        ${th('tracking_start','追跡開始日','center')}
+        ${th('fetched_at','取得日時','center')}
+        ${th('total_views','総再生回数','right')}
+        ${th('total_subs','登録者数','right')}
+        ${th('views_diff','前日比再生数','right')}
+        ${th('subs_diff','前日比登録者数','right')}
+        ${th('growth_rate','直近伸び率','right')}
+      </tr></thead>
+      <tbody>
+      ${rows.map(c=>{
+        const g=c.growth||{};
+        const subs=g.total_subs||c.subscribers||0;
+        const views=g.total_views||c.total_views||0;
+        const thumb=c.thumbnail?`<img src="${esc(c.thumbnail)}" alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover">`:'<div style="width:32px;height:32px;border-radius:50%;background:var(--bg-elevated)"></div>';
+        const isCh=_bmSelectedNames.has(c.channel_name);
+        const an=!!c.already_analyzed;
+        const pinned=_bmPinnedNames.has(c.channel_name);
+        const ago=an?_bmDaysAgo(c.last_analyzed_at):'';
+        const statusCell=`${an?`<span class="badge badge-success" style="font-size:var(--text-3xs)" title="${esc(c.last_analyzed_at||'')}">分析済${ago?' '+ago:''}</span>`:'<span class="badge badge-neutral" style="font-size:var(--text-3xs)">未分析</span>'}${pinned?'<span class="badge" style="font-size:var(--text-3xs);background:rgba(245,158,11,.15);color:var(--accent-warning);margin-left:3px" title="ベンチマーク採用中">★採用</span>':''}`;
+        return `<tr class="bm-src-tr" style="border-bottom:1px solid var(--border-subtle)${an?';opacity:.62':''}">
+          <td style="padding:6px 8px;text-align:center"><input type="checkbox" class="bm-src-chk" data-ch="${esc(c.channel_name)}" data-analyzed="${an?'1':'0'}" onchange="bmSourcesOnChange()" ${isCh?'checked':''} style="width:16px;height:16px;cursor:pointer"></td>
+          <td style="padding:4px 8px">${thumb}</td>
+          <td style="padding:6px 8px;white-space:nowrap">${statusCell}</td>
+          <td style="padding:6px 8px"><div style="font-weight:600">${esc(c.channel_name||'—')}</div>${c.url?`<a href="${esc(c.url)}" target="_blank" style="font-size:var(--text-2xs);color:var(--text-tertiary);text-decoration:none">${esc((c.url||'').slice(0,50))}</a>`:''}</td>
+          <td style="padding:6px 8px;text-align:center;color:var(--text-tertiary)">${esc(g.tracking_start||'—')}</td>
+          <td style="padding:6px 8px;text-align:center;color:var(--text-tertiary)">${esc(g.fetched_at||'—')}</td>
+          <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${fmt(views)}</td>
+          <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${fmt(subs)}</td>
+          <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${diffCell(g.views_diff)}</td>
+          <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${diffCell(g.subs_diff)}</td>
+          <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${rateCell(g.growth_rate)}</td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+  list.innerHTML=html;
+  bmSourcesOnChange();
+}
+function _hasActiveBmFilters(){
+  return !!(
+    (document.getElementById('bmFilterText')?.value||'').trim() ||
+    (document.getElementById('bmFilterExclude')?.value||'').trim() ||
+    (document.getElementById('bmFilterMinSubs')?.value||'').trim() ||
+    (document.getElementById('bmFilterMinViewsDiff')?.value||'').trim() ||
+    (document.getElementById('bmFilterMinGrowth')?.value||'').trim() ||
+    (document.getElementById('bmFilterGrowthOnly')?.value||'')
+  );
+}
+function _syncBmSelectedFromDom(){
+  document.querySelectorAll('.bm-src-chk').forEach(c=>{
+    if(!c.dataset.ch)return;
+    if(c.checked)_bmSelectedNames.add(c.dataset.ch);
+    else _bmSelectedNames.delete(c.dataset.ch);
+  });
+}
+function _bmSelected(){_syncBmSelectedFromDom();return Array.from(_bmSelectedNames);}
+function bmSourcesOnChange(){
+  _syncBmSelectedFromDom();
+  const n=_bmSelectedNames.size;
+  const cnt=document.getElementById('bmSourcesCount');
+  const btn=document.getElementById('bmRunSelectedBtn');
+  // 再分析(=選択∩分析済み)件数とコスト見積り（S3）
+  const analyzedSel=document.querySelectorAll('.bm-src-chk:checked[data-analyzed="1"]').length;
+  const min=Math.max(1,Math.round(n*BM_SEC_PER_CH/60));
+  if(cnt){
+    cnt.textContent=`${n} 件選択 ・ 約${min}分`+(analyzedSel>0?` ・ うち再分析${analyzedSel}件`:'');
+    cnt.style.color=analyzedSel>0?'var(--accent-warning)':'';
+  }
+  if(btn)btn.disabled=n<1;
+  const adoptBtn=document.getElementById('bmAdoptSelectedBtn');
+  if(adoptBtn)adoptBtn.disabled=n<1;
+  const summary=document.getElementById('bmFilterSummary');
+  if(summary && _bmSources.length){
+    const rows=(_bmFilteredSources.length||_hasActiveBmFilters()?_bmFilteredSources:_bmSources);
+    const selectedInView=rows.filter(c=>_bmSelectedNames.has(c.channel_name)).length;
+    summary.textContent=`表示 ${rows.length} / 全 ${_bmSources.length} チャンネル ・ 表示中の選択 ${selectedInView} ・ 全選択 ${n}`;
+  }
+}
+function bmSourcesSelectVisible(){document.querySelectorAll('.bm-src-chk').forEach(c=>{c.checked=true;if(c.dataset.ch)_bmSelectedNames.add(c.dataset.ch)});bmSourcesOnChange();}
+function bmSourcesClear(){_bmSelectedNames=new Set();document.querySelectorAll('.bm-src-chk').forEach(c=>{c.checked=false});bmSourcesOnChange();}
+async function bmSaveSelectedBenchmarkPins(names, notify=true){
+  if(!names.length)return false;
+  try{
+    const r=await fetch('/api/analysis/benchmark-config',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pinned_names:names}),
+    });
+    if(!r.ok)throw new Error(await r.text());
+    if(notify)toast(`制作分析の対象を ${names.length} ch に更新しました`,'s');
+    return true;
+  }catch(e){
+    toast('制作分析対象の保存に失敗: '+String(e.message||e),'e');
+    return false;
+  }
+}
+function _bmMaxAgeDays(){
+  const v=parseInt(document.getElementById('bmMaxAgeDays')?.value||'0',10);
+  return v>0?v:null;  // 0=常にスキップ(=max_age_days無効)
+}
+// dry_run を叩いて {total,new_count,reanalyze_count,skip_count,cli_count,est_seconds} を取得
+async function _bmDryRun(channelFilter, force){
+  const {sheetA,sheetB,extras}=_bmInputs();
+  const body={sheet_a_url:sheetA,sheet_b_url:sheetB,extra_urls:extras,dry_run:true,force:!!force,max_age_days:_bmMaxAgeDays()};
+  if(channelFilter&&channelFilter.length)body.channel_filter=channelFilter;
+  const r=await fetch('/api/benchmark/run-full',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok)return null;
+  return await r.json();
+}
+async function bmRunSelected(){
+  const selected=_bmSelected();
+  if(!selected.length){toast('チャンネルを選択してください','w');return;}
+  const est=await _bmDryRun(selected,false);
+  const cli=est?est.cli_count:selected.length, skip=est?est.skip_count:0, mins=Math.max(1,Math.round((est?est.est_seconds:selected.length*BM_SEC_PER_CH)/60));
+  const adopt=confirm(`選択 ${selected.length} ch を処理します。\n\n・Claude CLI 実行: ${cli} 回（新規/再分析）\n・スキップ(分析済み): ${skip} 件\n・想定時間: 約 ${mins} 分\n\n【OK】で実行します。`);
+  if(!adopt)return;
+  // 採用するかを別途確認（分析と採用を分離・通知あり）
+  const alsoPin=confirm(`この ${selected.length} ch を「ベンチマークに採用」(制作分析の対象=pinned)にも設定しますか？\n\n【OK】= 分析して採用 / 【キャンセル】= 分析のみ`);
+  if(alsoPin)await bmSaveSelectedBenchmarkPins(selected, true);
+  await _bmRun(selected,{force:false});
+}
+async function runBenchmarkFull(){
+  const est=await _bmDryRun(null,false);
+  if(est){
+    if(!confirm(`表示中の全チャンネルを対象に再生成します。\n\n・対象: ${est.total} ch\n・Claude CLI 実行: ${est.cli_count} 回（新規 ${est.new_count} / 再分析 ${est.reanalyze_count}）\n・スキップ(分析済み): ${est.skip_count} 件\n・想定時間: 約 ${Math.max(1,Math.round(est.est_seconds/60))} 分\n\n⚠ 分析済みでも『再分析しきい値』に該当するものは再生成されます。`))return;
+  }else{
+    if(!confirm('全チャンネルを対象にプロファイル生成します（数十分かかる可能性）。続行しますか？'))return;
+  }
+  await _bmRun(null,{force:false});
+}
+async function _bmRun(channelFilter, opts){
+  opts=opts||{};
+  const {sheetA,sheetB,extras}=_bmInputs();
+  if(!sheetA && !extras.length){toast('分析シート URL またはリスト外 URL を 1 つ以上指定してください','w');return}
+  document.getElementById('bmRunStatus').textContent='起動中...';
+  try{
+    const body={sheet_a_url:sheetA,sheet_b_url:sheetB,extra_urls:extras,
+      skip_existing:true, force:!!opts.force, max_age_days:_bmMaxAgeDays()};
+    if(channelFilter&&channelFilter.length)body.channel_filter=channelFilter;
+    const r=await fetch('/api/benchmark/run-full',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const t=await r.text();throw new Error(t)}
+    document.getElementById('bmRunStatus').innerHTML=`<span style="color:var(--accent-success)">${channelFilter?`選択 ${channelFilter.length}ch`:'全件'} 起動成功</span>`;
+    toast('プロファイル生成を開始しました','s');
+    loadBenchmarkContextStatus();
+    pollBenchmarkStatus();
+  }catch(e){
+    document.getElementById('bmRunStatus').innerHTML=`<span style="color:var(--accent-danger)">${esc(String(e.message||e))}</span>`;
+  }
+}
+// 採用のみ（再分析せず pinned に設定）。S4 採用導線の明示化
+async function bmAdoptSelected(){
+  const selected=_bmSelected();
+  if(!selected.length){toast('チャンネルを選択してください','w');return;}
+  if(!confirm(`選択した ${selected.length} ch をベンチマークに採用（制作分析の対象=pinned）します。再分析はしません。`))return;
+  const ok=await bmSaveSelectedBenchmarkPins(selected, true);
+  if(ok){selected.forEach(n=>_bmPinnedNames.add(n));_renderBmSourcesTable(true);}
+}
+async function pollBenchmarkStatus(){
+  if(_bmPollTimer)clearInterval(_bmPollTimer);
+  async function tick(){
+    try{
+      const r=await fetch('/api/benchmark/status');
+      const d=await r.json();
+      const logs=d.logs||[];
+      const meta=d.meta||{};
+      // 進行ログは右上の「実行ログ」ポップオーバー（ベンチマーク分析セクション）に集約
+      _updateLogPopoverData('benchmark', logs);
+      const st=document.getElementById('bmRunStatus');
+      if(st){
+        if(d.running){st.innerHTML='<span style="color:var(--accent-warning)">実行中...（進捗は右上の実行ログ）</span>'}
+        else if(meta.status==='done'){
+          st.innerHTML='<span style="color:var(--accent-success)">完了</span>';
+          clearInterval(_bmPollTimer);_bmPollTimer=null;
+          loadBenchmarkProfiles();
+          loadBenchmarkContextStatus();
+        }
+        else if(meta.status==='failed'){
+          st.innerHTML=`<span style="color:var(--accent-danger)">失敗: ${esc(meta.error||'')}</span>`;
+          clearInterval(_bmPollTimer);_bmPollTimer=null;
+        }
+      }
+      if(!d.running && meta.status!=='running')return;
+    }catch{}
+  }
+  await tick();
+  _bmPollTimer=setInterval(tick,3000);
+}
+async function bmTogglePin(name){
+  const on=_bmPinnedNames.has(name);
+  if(on)_bmPinnedNames.delete(name); else _bmPinnedNames.add(name);
+  const names=Array.from(_bmPinnedNames);
+  try{
+    const r=await fetch('/api/analysis/benchmark-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pinned_names:names})});
+    if(!r.ok)throw new Error(await r.text());
+    toast(on?`「${name}」を採用解除しました`:`「${name}」をベンチマークに採用しました`,'s');
+    renderBmTargetChips();
+    loadBenchmarkProfiles();
+  }catch(e){
+    if(on)_bmPinnedNames.add(name); else _bmPinnedNames.delete(name);
+    toast('採用状態の保存に失敗: '+String(e.message||e),'e');
+  }
+}
+async function loadBenchmarkProfiles(){
+  const el=document.getElementById('bmProfiles');
+  const metaEl=document.getElementById('bmProfilesMeta');
+  try{
+    await loadBmPinned();  // ★採用中バッジのため採用状態を取得
+    const r=await fetch('/api/benchmark/profiles');
+    const d=await r.json();
+    const profiles=d.profiles||[];
+    if(metaEl){
+      metaEl.innerHTML=d.generated_at?
+        `生成日時: ${esc(d.generated_at.replace('T',' ').slice(0,16))} / ${profiles.length} プロファイル`:
+        '<span style="color:var(--text-tertiary)">まだ生成されていません</span>';
+    }
+    if(!profiles.length){
+      el.innerHTML='<div class="empty" style="padding:var(--space-4);text-align:center;color:var(--text-tertiary)">プロファイル未生成。詳細ツールの「候補フィルタ」から「選択分のみ分析」または「全件を再生成」を実行してください。</div>';
+      return;
+    }
+    // 要素合成(bm-fuse-chk)の選択を再描画で消さない（採用トグル等の再読込対策）
+    const _checked=new Set([...el.querySelectorAll('.bm-fuse-chk:checked')].map(c=>c.dataset.ch));
+    el.innerHTML=profiles.map(p=>renderBenchmarkProfile(p)).join('');
+    if(_checked.size)el.querySelectorAll('.bm-fuse-chk').forEach(c=>{if(_checked.has(c.dataset.ch))c.checked=true});
+    bmFuseOnChange();
+    // アイコン未取得のプロファイルがあれば、背景で解決して再描画（初期描画はブロックしない）
+    bmResolveProfileIcons(profiles);
+  }catch(e){el.innerHTML=`<div style="color:var(--accent-danger)">読み込み失敗: ${esc(String(e.message||e))}</div>`}
+}
+async function bmResolveProfileIcons(profiles){
+  try{
+    if(!Array.isArray(profiles)||!profiles.length)return;
+    if(!profiles.some(p=>!((p&&p.thumbnail)||'').trim()))return; // 全件アイコン有なら何もしない
+    const r=await fetch('/api/benchmark/profiles?resolve_icons=true');
+    if(!r.ok)return;
+    const d=await r.json();
+    const resolved=d.profiles||[];
+    if(!resolved.length)return;
+    const el=document.getElementById('bmProfiles');
+    if(!el)return;
+    // チェック状態を保ってから再描画（要素合成の選択を消さない）
+    const checked=new Set([...el.querySelectorAll('.bm-fuse-chk:checked')].map(c=>c.dataset.ch));
+    el.innerHTML=resolved.map(p=>renderBenchmarkProfile(p)).join('');
+    if(checked.size){el.querySelectorAll('.bm-fuse-chk').forEach(c=>{if(checked.has(c.dataset.ch))c.checked=true})}
+    bmFuseOnChange();
+  }catch(_){}
+}
+function renderBenchmarkProfile(p){
+  const pf=p.profile||{};
+  const mp=pf.music_profile||{};
+  const vp=pf.visual_profile||{};
+  const pe=pf.persona||{};
+  const ap=pf.appeal_points||[];
+  const ci=pf.comment_insights||[];
+  const ah=pf.adaptation_hints_for_orzz||{};
+  const vids=(p.top_videos||[]).slice(0,5);
+  const recent=(p.recent_videos||[]).slice(0,5);
+  const bpm=mp.bpm_range?`${mp.bpm_range.min||'?'}-${mp.bpm_range.max||'?'}`:'—';
+  const arr=(x)=>Array.isArray(x)?x.join(', '):(x||'—');
+  const box=(k,v)=>`<div class="bm-box"><div class="bm-k">${esc(k)}</div><div class="bm-v">${esc(arr(v))}</div></div>`;
+  const growth=p.growth?`<span class="badge badge-neutral" style="margin-left:var(--space-2)">+${(p.growth.views_diff||0).toLocaleString()}v/日</span>`:'';
+  const cn=p.channel_name||'';
+  return `
+    <div class="bm-profile-card" data-ch="${esc(cn)}">
+      <div class="ch-head">
+        <label style="display:flex;align-items:center;cursor:pointer;padding-right:var(--space-2)">
+          <input type="checkbox" class="bm-fuse-chk" data-ch="${esc(cn)}" onchange="bmFuseOnChange()" style="width:18px;height:18px;cursor:pointer">
+        </label>
+        ${p.thumbnail?`<img class="ch-icon" src="${esc(p.thumbnail)}" alt="">`:'<div class="ch-icon"></div>'}
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap">
+            <div style="font-size:var(--text-lg);font-weight:700">${esc(p.channel_name||'—')}</div>
+            ${_bmPinnedNames.has(cn)?'<span class="badge" style="background:rgba(245,158,11,.15);color:var(--accent-warning)" title="ベンチマーク採用中">★採用中</span>':''}
+            <span class="badge badge-neutral">${(p.subscribers||0).toLocaleString()} subs</span>
+            <span class="badge badge-neutral">${(p.total_views||0).toLocaleString()} views</span>
+            ${growth}
+            <span class="badge badge-neutral">${esc(p.source||'')}</span>
+          </div>
+          ${p.url?`<a href="${esc(p.url)}" target="_blank" style="font-size:var(--text-xs);color:var(--text-tertiary)">${esc(p.url)}</a>`:''}
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="btn btn-ghost btn-sm" onclick="bmTogglePin('${esc((cn||'').replace(/'/g,"\\'"))}')" style="padding:4px 10px;${_bmPinnedNames.has(cn)?'color:var(--accent-warning)':'color:var(--text-secondary)'}" title="ベンチマーク採用(制作分析の対象)を切替">${_bmPinnedNames.has(cn)?'★ 採用中':'☆ 採用'}</button>
+          <button class="btn btn-ghost btn-sm" onclick="bmDeleteOne('${esc((cn||'').replace(/'/g,"\\'"))}')" style="color:var(--accent-danger);padding:4px 10px" title="このチャンネルをプロファイルから削除">✕ 削除</button>
+        </div>
+      </div>
+      ${vids.length?`<div class="bm-thumb-grid">${vids.map(v=>v.thumbnail?`<a href="${esc(v.url||'#')}" target="_blank" title="${esc(v.title||'')}"><img src="${esc(v.thumbnail)}" alt=""></a>`:'<div></div>').join('')}</div>`:''}
+      ${recent.length?`<div style="margin:var(--space-2) 0 var(--space-3);font-size:var(--text-xs);color:var(--text-secondary)">
+        <div class="bm-k">最新投稿（Data API 現在値）</div>
+        ${recent.map(v=>`<div>${(v.views||0).toLocaleString()}回 ・ ${esc((v.published||v.published_at||'').slice(0,10))} ・ ${esc(v.title||'')}</div>`).join('')}
+      </div>`:''}
+      ${pf.error?`<div style="color:var(--accent-danger);font-size:var(--text-xs)">プロファイル生成失敗: ${esc(pf.error)}</div>`:`
+      <div class="bm-profile-grid">
+        <div class="bm-box"><div class="bm-k">音楽プロファイル</div><div class="bm-v">
+          <div><strong>genres:</strong> ${esc(arr(mp.genres))}</div>
+          <div><strong>BPM:</strong> ${esc(bpm)}</div>
+          <div><strong>mood:</strong> ${esc(arr(mp.mood))}</div>
+          <div><strong>楽器:</strong> ${esc(arr(mp.instrumentation))}</div>
+          <div><strong>イメージ:</strong> ${esc(mp.imagery||'—')}</div>
+        </div></div>
+        <div class="bm-box"><div class="bm-k">視覚プロファイル</div><div class="bm-v">
+          <div><strong>配色:</strong> ${esc(arr(vp.palette))}</div>
+          <div><strong>時間帯:</strong> ${esc(vp.time_of_day||'—')}</div>
+          <div><strong>構図:</strong> ${esc(vp.composition||'—')}</div>
+          <div><strong>被写体:</strong> ${esc(arr(vp.recurring_subjects))}</div>
+          <div><strong>雰囲気:</strong> ${esc(vp.atmosphere||'—')}</div>
+        </div></div>
+        <div class="bm-box"><div class="bm-k">ペルソナ</div><div class="bm-v">
+          <div><strong>年齢層:</strong> ${esc(pe.age_range||'—')}</div>
+          <div><strong>属性:</strong> ${esc(pe.demographics||'—')}</div>
+          <div><strong>視聴シーン:</strong> ${esc(arr(pe.viewing_scenes))}</div>
+          <div><strong>心理的ニーズ:</strong> ${esc(arr(pe.psychological_needs))}</div>
+        </div></div>
+        <div class="bm-box" style="background:rgba(99,102,241,.08);border:1px solid var(--accent-primary)">
+          <div class="bm-k" style="color:var(--accent-primary)">このチャンネルへの翻訳ヒント</div>
+          <div class="bm-v">
+            <div><strong>keep:</strong> ${esc(arr(ah.keep))}</div>
+            <div><strong>transform:</strong> ${esc(arr(ah.transform))}</div>
+            <div><strong>avoid:</strong> ${esc(arr(ah.avoid))}</div>
+          </div>
+        </div>
+      </div>
+      ${ap.length?`<div style="margin-top:var(--space-3)"><div class="bm-k">訴求ポイント</div><ul style="margin:var(--space-1) 0 0;padding-left:var(--space-4);font-size:var(--text-sm);color:var(--text-secondary)">${ap.map(a=>`<li>${esc(String(a))}</li>`).join('')}</ul></div>`:''}
+      ${ci.length?`<div style="margin-top:var(--space-3)"><div class="bm-k">コメント洞察</div><ul style="margin:var(--space-1) 0 0;padding-left:var(--space-4);font-size:var(--text-sm);color:var(--text-secondary)">${ci.map(c=>`<li>${esc(String(c))}</li>`).join('')}</ul></div>`:''}
+      `}
+    </div>`;
+}
+function _bmFuseSelected(){
+  return Array.from(document.querySelectorAll('.bm-fuse-chk:checked')).map(c=>c.dataset.ch).filter(Boolean);
+}
+function bmFuseOnChange(){
+  const sel=_bmFuseSelected();
+  const btn=document.getElementById('bmFuseBtn');
+  const delBtn=document.getElementById('bmDeleteBtn');
+  const cnt=document.getElementById('bmFuseCount');
+  if(cnt)cnt.textContent=`${sel.length} 件選択`;
+  if(btn)btn.disabled=sel.length<1;
+  if(delBtn)delBtn.disabled=sel.length<1;
+}
+
+async function bmDeleteSelected(){
+  const names=_bmFuseSelected();
+  if(!names.length){toast('削除するチャンネルを選択してください','w');return}
+  if(!confirm(`${names.length} 件のチャンネルをプロファイル一覧から削除しますか？\n\n${names.slice(0,5).map(n=>'・'+n).join('\n')}${names.length>5?'\n…ほか '+(names.length-5)+' 件':''}\n\n（取り込み URL も併せて除去します。再分析すれば復活します）`))return;
+  await _bmDeleteAndReload(names);
+}
+async function bmDeleteOne(name){
+  if(!name)return;
+  if(!confirm(`「${name}」をプロファイル一覧から削除しますか？\n（取り込み URL も併せて除去します。再分析すれば復活します）`))return;
+  await _bmDeleteAndReload([name]);
+}
+async function _bmDeleteAndReload(names){
+  try{
+    const r=await fetch('/api/benchmark/profiles',{
+      method:'DELETE',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({channel_names:names})
+    });
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('削除失敗: '+(e.detail||r.status),'e');return}
+    const d=await r.json();
+    toast(`${d.removed||0} 件を削除（残り ${d.remaining||0} 件）`,'s');
+    await loadBenchmarkProfiles();
+  }catch(e){toast('接続エラー','e')}
+}
+function bmFuseSelectAll(){
+  document.querySelectorAll('.bm-fuse-chk').forEach(c=>{c.checked=true});
+  bmFuseOnChange();
+}
+function bmFuseClear(){
+  document.querySelectorAll('.bm-fuse-chk').forEach(c=>{c.checked=false});
+  bmFuseOnChange();
+}
+async function bmFuseRun(){
+  const names=_bmFuseSelected();
+  if(names.length<1){toast('チャンネルを 1 件以上選択してください','w');return;}
+  const btn=document.getElementById('bmFuseBtn');
+  const resEl=document.getElementById('bmFuseResult');
+  if(btn){btn.disabled=true;btn.textContent='⟳ 分析中（1-3 分）...';}
+  const verb=names.length>=2?'チャンネルの受け要素を抽出・融合し、このチャンネル向けに再構成中':'チャンネルの勝ち筋を抽出し、このチャンネル向けに翻案中';
+  resEl.innerHTML='<div class="card" style="padding:var(--space-3);font-size:var(--text-sm);color:var(--text-secondary)">⟳ Claude が '+names.length+' '+verb+'...</div>';
+  try{
+    const r=await fetch('/api/benchmark/fuse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_names:names})});
+    if(!r.ok){const t=await r.text();throw new Error(t)}
+    const d=await r.json();
+    _bmLastFusion=d.fusion||{};
+    _bmLastFusionChannels=d.channel_names||[];
+    resEl.innerHTML=_renderFusionCard(_bmLastFusion,_bmLastFusionChannels);
+    toast('融合プロンプトを生成しました','s');
+  }catch(e){
+    resEl.innerHTML=`<div class="card" style="padding:var(--space-3);border-left:3px solid var(--accent-danger);color:var(--accent-danger);font-size:var(--text-sm)">融合失敗: ${esc(String(e.message||e))}</div>`;
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='融合してプロンプト生成';}
+  }
+}
+let _bmLastFusion=null,_bmLastFusionChannels=[];
+function _renderFusionCard(f,chs){
+  const arr=(x)=>Array.isArray(x)?x.join(', '):(x||'—');
+  const md=f.fused_music_direction||{};
+  const vd=f.fused_visual_direction||{};
+  const pe=f.fused_persona||{};
+  const ad=f.orzz_adaptation||{};
+  const hooks=f.shared_hooks||[];
+  const trans=f.buzz_to_prompt_translation||{};
+  const titles=f.title_candidates||[];
+  const imgPrompts=f.image_prompts||[];
+  const bpm=md.bpm_range?`${md.bpm_range.min||'?'}-${md.bpm_range.max||'?'}`:'—';
+  return `<div class="card bm-production-plan" style="padding:var(--space-4)">
+    <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2);flex-wrap:wrap">
+      <div style="font-size:var(--text-lg);font-weight:700">制作プラン: ${chs.length>=2?chs.length+' チャンネルの要素合成':'1 チャンネルから抽出'}</div>
+      <span style="font-size:var(--text-xs);color:var(--text-tertiary)">${esc(chs.join(' / '))}</span>
+    </div>
+    ${f.rationale?`<div class="bm-plan-block" style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-3)">${esc(f.rationale)}</div>`:''}
+    <div class="bm-plan-actions">
+      <button class="btn btn-primary btn-sm" onclick="bmApplyFusionToLatest()">最新動画へ反映</button>
+      <button class="btn btn-secondary btn-sm" onclick="go('dashboard')">この方針で新規作成</button>
+    </div>
+	    ${hooks.length?`<div style="margin-bottom:var(--space-3)"><div class="bm-k">共通する視聴者訴求要素</div><ul style="margin:var(--space-1) 0 0;padding-left:var(--space-4);font-size:var(--text-sm);color:var(--text-secondary)">${hooks.map(h=>`<li>${esc(String(h))}</li>`).join('')}</ul></div>`:''}
+	    ${(trans.title_angles||trans.suno_prompt_ingredients||trans.image_prompt_ingredients)?`<div class="bm-box" style="margin-bottom:var(--space-3)">
+	      <div class="bm-k">バズ要素 → 制作プロンプトへの変換</div>
+	      <div class="bm-v">
+	        <div><strong>タイトル角度:</strong> ${esc(arr(trans.title_angles))}</div>
+	        <div><strong>SUNO材料:</strong> ${esc(arr(trans.suno_prompt_ingredients))}</div>
+	        <div><strong>画像材料:</strong> ${esc(arr(trans.image_prompt_ingredients))}</div>
+	      </div>
+	    </div>`:''}
+    <div class="bm-profile-grid" style="margin-bottom:var(--space-3)">
+      <div class="bm-box"><div class="bm-k">統合音楽 direction</div><div class="bm-v">
+        <div><strong>genres:</strong> ${esc(arr(md.recommended_genres))}</div>
+        <div><strong>BPM:</strong> ${esc(bpm)}</div>
+        <div><strong>mood:</strong> ${esc(arr(md.mood_tags))}</div>
+        <div><strong>楽器:</strong> ${esc(arr(md.instrumentation))}</div>
+        <div><strong>イメージ:</strong> ${esc(md.reference_vibe||'—')}</div>
+      </div></div>
+      <div class="bm-box"><div class="bm-k">統合視覚 direction</div><div class="bm-v">
+        <div><strong>配色:</strong> ${esc(arr(vd.color_palette))}</div>
+        <div><strong>時間帯:</strong> ${esc(vd.time_of_day||'—')}</div>
+        <div><strong>構図:</strong> ${esc(vd.composition||'—')}</div>
+        <div><strong>被写体:</strong> ${esc(arr(vd.subjects))}</div>
+        <div><strong>雰囲気:</strong> ${esc(vd.atmosphere||'—')}</div>
+      </div></div>
+      <div class="bm-box" style="background:rgba(99,102,241,.08);border:1px solid var(--accent-primary)">
+        <div class="bm-k" style="color:var(--accent-primary)">このチャンネルへの落とし込み</div>
+        <div class="bm-v">
+          <div><strong>keep:</strong> ${esc(arr(ad.keep))}</div>
+          <div><strong>transform:</strong> ${esc(arr(ad.transform))}</div>
+          <div><strong>avoid:</strong> ${esc(arr(ad.avoid))}</div>
+        </div>
+      </div>
+	    </div>
+	    ${titles.length?`<div style="margin-bottom:var(--space-3)">
+	      <div class="bm-k" style="margin-bottom:var(--space-1)">タイトル候補</div>
+	      <ul style="margin:0;padding-left:var(--space-4);font-size:var(--text-sm);color:var(--text-secondary)">${titles.map(t=>`<li>${esc(String(t))}</li>`).join('')}</ul>
+	    </div>`:''}
+	    ${f.suno_prompt?`<div style="margin-bottom:var(--space-3)">
+      <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1)">
+        <div class="bm-k">SUNO プロンプト</div>
+        <button class="btn btn-secondary btn-sm" onclick="bmFuseCopy('suno')">コピー</button>
+        <button class="btn btn-primary btn-sm" onclick="bmFuseApply('suno')">→ SUNO タブに反映</button>
+      </div>
+      <div class="bm-plan-block" style="font-size:var(--text-xs);font-family:monospace;white-space:pre-wrap">${esc(f.suno_prompt)}</div>
+    </div>`:''}
+	    ${imgPrompts.length?`<div style="margin-top:var(--space-3)">
+	      <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-1)">
+	        <div class="bm-k">画像生成プロンプト複数案</div>
+	        <button class="btn btn-secondary btn-sm" onclick="bmFuseCopy('images')">コピー</button>
+	      </div>
+	      <div class="bm-plan-block" style="font-size:var(--text-xs);font-family:monospace;white-space:pre-wrap">${esc(imgPrompts.join('\n'))}</div>
+	    </div>`:''}
+	  </div>`;
+}
+function bmFuseCopy(kind){
+  const f=_bmLastFusion||{};
+  const txt=kind==='suno'?(f.suno_prompt||''):((f.image_prompts||[]).join('\n'));
+  if(!txt){toast('コピー対象なし','w');return;}
+  navigator.clipboard.writeText(txt).then(()=>toast('コピーしました','s'),()=>toast('コピー失敗','e'));
+}
+function bmFuseApply(kind){
+  const f=_bmLastFusion||{};
+  if(kind==='suno'){
+    const t=f.suno_prompt||'';if(!t){toast('SUNO プロンプトなし','w');return;}
+    go('settings');
+    setTimeout(()=>{
+      const ta=document.getElementById('cfgSunoPrompt');
+      if(ta){ta.value=t;ta.scrollIntoView({behavior:'smooth',block:'center'});toast('プロンプトに反映（保存ボタンで確定）','s');}
+    },200);
+  }
+}
+async function bmApplyFusionToLatest(){
+  const f=_bmLastFusion||{};
+  if(!f.suno_prompt&&!(f.title_candidates||[]).length){toast('反映する制作プランがありません','w');return}
+  const name=await _latestVideoName();
+  if(!name){toast('対象動画が見つかりません','w');return}
+  goToVideoDetail(name);
+  setTimeout(()=>{
+    const mini=document.getElementById('miniPrompt');
+    if(mini&&f.suno_prompt)mini.value=f.suno_prompt;
+    const titles=f.title_candidates||[];
+    const list=document.getElementById('sgTitleList');
+    if(list&&titles.length){
+      list.innerHTML=titles.map(t=>`<div class="pc" onclick="adoptTitle(this,'${esc(name)}')" style="border-left:3px solid var(--accent-primary)">${esc(String(t))}</div>`).join('');
+    }
+    toast('最新動画へ制作プランを反映しました','s');
+  },500);
+}
+
+
+/* ==== Phase 5: 分析から制作（単一アクション駆動） ==== */
+async function refreshAutoApprovalHint(){
+  const el=document.getElementById('dashAutoApprovalHint');
+  if(!el)return;
+  try{
+    const r=await fetch('/api/automation/config');
+    const d=await r.json();
+    const on=!!(d.config||{}).auto_approval_mode;
+    if(on){
+      el.innerHTML='<span style="color:var(--accent-success)">自動運転連携あり</span> — 作成後、自動運転がONのチャンネルでは予約投稿まで自動で進みます';
+    }else{
+      el.innerHTML='作成後、自動運転がONのチャンネルでは予約投稿まで自動で進みます';
+    }
+  }catch{el.textContent='—'}
+}
+
+function goToVideoDetail(name){
+  navigate({page:'videos',video:name});
+}
+
+async function saveVideoTitle(name){
+  const t=document.getElementById('vdTitle').value;
+  await fetch(`/api/videos/${encodeURIComponent(name)}/title`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name,new_title:t})});
+  // 旧 upTitle 入力欄は撤去済（vdTitle と統合）。互換のため要素があれば同期。
+  const up=document.getElementById('upTitle');
+  if(up)up.value=t;
+  toast('タイトルを保存','s');
+  // コンテンツ一覧／ダッシュボードに即反映（バックグラウンドで再取得）
+  refreshListsQuiet();
+}
+async function saveVideoDesc(name){
+  const t=document.getElementById('vdDesc').value;
+  await fetch('/api/youtube-desc/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name,text:t})});
+  toast('説明文を保存','s');
+  refreshListsQuiet();
+}
+async function saveVideoTags(name){
+  const raw=document.getElementById('vdTags').value;
+  const tags=raw.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);
+  const r=await fetch(`/api/videos/${encodeURIComponent(name)}/tags`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags})});
+  if(r.ok){toast(`タグを保存 (${tags.length}件)`,'s');loadUploadTagPreview(name);refreshListsQuiet()}else toast('保存失敗','e');
+}
+
+async function reloadVideoDetailTab(name,tab){
+  await showVideoDetail(name);
+  setTimeout(()=>setTab(tab||'meta'),50);
+}
+
+function _mp4InitialFolder(){
+  const cur=(document.getElementById('mp4RefPath')?.value||'').trim();
+  if(cur && cur.includes('/'))return cur.split('/').slice(0,-1).join('/');
+  return '';
+}
+
+async function pickMp4Reference(name){
+  const initial=_mp4InitialFolder();
+  try{
+    const r=await fetch('/api/finder/pick-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({extensions:['mp4'],initial,prompt:'書き出し済み MP4 を選択'})});
+    const d=await r.json();
+    if(!r.ok){toast(d.detail||'動画選択に失敗','e');return}
+    if(d.status==='canceled'||!d.path)return;
+    const input=document.getElementById('mp4RefPath');
+    if(input)input.value=d.path;
+    await saveMp4Reference(name,d.path);
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function browseMp4Folder(name){
+  pickFolder(_mp4InitialFolder(), async folder=>{
+    const input=document.getElementById('mp4RefPath');
+    if(input)input.value=folder;
+    await loadMp4Candidates(name,folder);
+  });
+}
+
+async function loadMp4Candidates(name,folder){
+  const el=document.getElementById('mp4CandidateList');
+  if(!el)return;
+  el.innerHTML='<div class="fh"><span class="spinner"></span> MP4 を検索中...</div>';
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/mp4-candidates?folder=${encodeURIComponent(folder||'')}`);
+    const d=await r.json();
+    if(!r.ok){el.innerHTML=`<div class="fh" style="color:var(--accent-danger)">${esc(d.detail||'検索失敗')}</div>`;return}
+    const items=d.candidates||[];
+    if(!items.length){el.innerHTML='<div class="fh">このフォルダー内に MP4 が見つかりませんでした。</div>';return}
+    el.innerHTML=items.map(it=>{
+      const enc=encodeURIComponent(it.path||'');
+      const badge=it.source==='manual'?'登録中':it.source==='selected_folder'?'選択フォルダー':it.source==='export_path'?'書き出し先':'動画フォルダー';
+      return `<div style="display:grid;grid-template-columns:1fr auto;gap:var(--space-2);align-items:center;padding:8px 0;border-top:1px solid var(--border-default)">
+        <div style="min-width:0">
+          <div style="font-size:var(--text-sm);color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.path||'')}">${esc(it.filename||'')}</div>
+          <div class="fh" style="font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.folder||'')} ・ ${esc(String(it.size_mb||0))}MB ・ ${esc(badge)}</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="selectMp4Candidate('${esc(name)}','${enc}')">この動画を使う</button>
+      </div>`;
+    }).join('');
+  }catch(e){el.innerHTML='<div class="fh" style="color:var(--accent-danger)">接続エラー</div>'}
+}
+
+async function selectMp4Candidate(name,encodedPath){
+  const path=decodeURIComponent(encodedPath||'');
+  const input=document.getElementById('mp4RefPath');
+  if(input)input.value=path;
+  await saveMp4Reference(name,path);
+}
+
+async function saveMp4Reference(name,path){
+  const p=(path||document.getElementById('mp4RefPath')?.value||'').trim();
+  if(!p || !p.toLowerCase().endsWith('.mp4')){toast('MP4 ファイルを指定してください','w');return}
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/mp4-reference`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'MP4 の読み込みに失敗','e');return}
+    toast('MP4 を読み込みました。公開設定を編集できます','s');
+    await refreshListsQuiet();
+    await reloadVideoDetailTab(name,'export');
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function clearMp4Reference(name){
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/mp4-reference`,{method:'DELETE'});
+    if(!r.ok){const d=await r.json().catch(()=>({}));toast(d.detail||'解除失敗','e');return}
+    toast('手動参照を解除しました','s');
+    await refreshListsQuiet();
+    await reloadVideoDetailTab(name,'export');
+  }catch(e){toast('接続エラー','e')}
+}
+
+
+async function uploadFromDetailV2(name){
+  // upTitle 入力欄は撤去。上の編集エリア vdTitle (YouTube タイトル) の値をそのまま使う。
+  const vt=document.getElementById('vdTitle');
+  const title=(vt&&vt.value)||undefined;
+  const privacy=document.getElementById('upPrivacy').value;
+  const schedRaw=document.getElementById('upSchedule').value;
+  const schedule=schedRaw?new Date(schedRaw).toISOString():undefined;
+  // タグは保存済みを再取得してそのまま渡す
+  const tr=await fetch(`/api/videos/${encodeURIComponent(name)}/tags`);
+  const td=await tr.json();const tags=td.tags||[];
+
+  if(!confirm(`この動画をアップロードしますか？\n\nタイトル: ${title||'(保存済みを使用)'}\n公開設定: ${privacy}${schedule?'\n予約: '+schedRaw:''}\nタグ: ${tags.length}件`))return;
+
+  const btn=document.getElementById('upBtn');
+  btn.disabled=true;btn.textContent='送信中...';
+  try{
+    const r=await fetch('/api/youtube/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name,title,privacy,schedule,tags})});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){
+      toast(`アップロードをキューに追加${d.position?`（待ち順 ${d.position}）`:''}`,'s');
+      // アップロード履歴に追記（fire-and-forget）— スプシ貼付け用に蓄積
+      _recordYoutubeHistory(name,{title,privacy,schedule:schedRaw||'',tags}).catch(e=>console.error('history record failed:',e));
+      go('youtube');clrLog('ytLogs');startPoll('youtube','ytLogs');
+    }else{
+      toast(d.detail||'失敗','e');
+      btn.disabled=false;btn.textContent='▶ アップロード実行';
+    }
+  }catch(e){toast('接続エラー','e');btn.disabled=false;btn.textContent='▶ アップロード実行'}
+}
+
+/* ==== YouTube アップロード履歴（D-4 ライト版） ==== */
+async function loadYoutubeHistory(){
+  const el=document.getElementById('ytHistoryList');
+  const cnt=document.getElementById('ytHistoryCount');
+  if(!el)return;
+  try{
+    const r=await fetch('/api/youtube/history?limit=50');
+    const d=await r.json();
+    if(cnt)cnt.textContent=`${d.total||0} 件`;
+    const items=d.items||[];
+    if(!items.length){el.innerHTML='<div style="color:var(--text-tertiary);padding:var(--space-2)">記録なし</div>';return}
+    const cat=await loadYtLangCatalog();
+    el.innerHTML=`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:var(--text-xs)">
+      <thead><tr style="border-bottom:1px solid var(--border-default);color:var(--text-tertiary)">
+        <th style="text-align:left;padding:6px 8px;white-space:nowrap">投稿日時</th>
+        <th style="text-align:left;padding:6px 8px;white-space:nowrap">vol</th>
+        <th style="text-align:left;padding:6px 8px">タイトル</th>
+        <th style="text-align:left;padding:6px 8px;white-space:nowrap">公開</th>
+        <th style="text-align:left;padding:6px 8px;white-space:nowrap">予約</th>
+        <th style="text-align:left;padding:6px 8px">翻訳</th>
+        <th style="text-align:right;padding:6px 8px;white-space:nowrap">タグ</th>
+        <th style="text-align:right;padding:6px 8px;white-space:nowrap">説明</th>
+      </tr></thead>
+      <tbody>
+        ${items.map(it=>{
+          const ts=(it.recorded_at||'').replace('T',' ').slice(0,19);
+          const locCodes=(it.localizations||[]);
+          return `<tr style="border-bottom:1px solid var(--border-default)">
+            <td style="padding:6px 8px;white-space:nowrap;color:var(--text-tertiary);font-family:var(--font-mono)">${esc(ts)}</td>
+            <td style="padding:6px 8px;white-space:nowrap">${esc(it.vol||'')}</td>
+            <td style="padding:6px 8px;color:var(--text-primary)">${esc((it.title||'').slice(0,60))}${(it.title||'').length>60?'…':''}</td>
+            <td style="padding:6px 8px;white-space:nowrap">${esc(it.privacy||'')}</td>
+            <td style="padding:6px 8px;white-space:nowrap;color:var(--text-tertiary)">${esc(it.schedule||'')}</td>
+            <td style="padding:6px 8px" title="${esc(locCodes.join(', '))}">${locCodes.length?locCodes.length+' 言語':'<span style="color:var(--text-tertiary)">—</span>'}</td>
+            <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${(it.tags||[]).length}</td>
+            <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${it.description_chars||0}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`;
+  }catch(e){console.error('loadYoutubeHistory:',e);el.innerHTML='<div style="color:var(--accent-danger)">読み込み失敗</div>'}
+}
+async function clearYoutubeHistory(){
+  if(!confirm('アップロード履歴をすべて削除しますか？\nこの操作は取り消せません（事前に CSV ダウンロードでバックアップできます）'))return;
+  try{
+    await fetch('/api/youtube/history',{method:'DELETE'});
+    toast('履歴を削除しました','s');
+    await loadYoutubeHistory();
+  }catch(e){toast('失敗','e')}
+}
+
+async function _recordYoutubeHistory(name,extra){
+  // アップロードのメタ情報を集約して履歴に1行追記
+  const [detailRes,locRes]=await Promise.all([
+    fetch(`/api/videos/${encodeURIComponent(name)}/detail`).then(r=>r.json()).catch(()=>({})),
+    fetch(`/api/videos/${encodeURIComponent(name)}/youtube-localizations`).then(r=>r.json()).catch(()=>({localizations:{}})),
+  ]);
+  const body={
+    video_name:name,
+    vol:detailRes.num||'',
+    title:extra.title||'',
+    privacy:extra.privacy||'',
+    schedule:extra.schedule||'',
+    tags:extra.tags||[],
+    localizations:Object.keys(locRes.localizations||{}),
+    description_chars:(detailRes.description||'').length,
+    has_thumbnail:!!detailRes.thumbnail,
+  };
+  await fetch('/api/youtube/history',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+}
+
+async function confirmReupload(name){
+  if(!confirm(`"${name}" はすでにアップロード済みです。再度アップロードしますか？\n（YouTube上には別動画として重複作成されます）`))return;
+  // 再アップロードの場合は既存マーカーを無視してフォームを表示
+  document.getElementById('uploadCard').classList.remove('hidden');
+  toast('再アップロードフォームを表示','i');
+}
+
+/* 全言語生成: youtube_title.txt + youtube_description.txt → 10 言語翻訳 → youtube_localizations.json */
+async function runGenerateLocalizations(name, force){
+  if(!confirm(`"${name}" の youtube_title.txt + description.txt を Claude CLI で 10言語翻訳します。\n所要時間: 1-2分。続行しますか？`))return;
+  toast('多言語翻訳生成を開始…','i');
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/generate-localizations`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({force: !!force}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'生成失敗','e');return;}
+    if(d.status==='skipped'){
+      if(confirm(`既存の youtube_localizations.json があります (${(d.languages||[]).length}言語)。force=true で再生成しますか？`)){
+        return runGenerateLocalizations(name, true);
+      }
+      return;
+    }
+    toast(`✓ ${(d.languages||[]).length}言語生成完了 → youtube_localizations.json`,'s');
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* メタ充足チェック: GET /api/videos/{name}/meta-status の結果をモーダル風に表示 */
+async function loadMetaStatus(name){
+  toast('メタ充足チェック中…','i');
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/meta-status`);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'取得失敗','e');return;}
+    const okMark=v=>v?'✓':'✗';
+    const lines=[
+      `--- メタ充足チェック: ${name} ---`,
+      `${okMark(d.title&&d.title.ok)} タイトル (${d.title?.size||0} bytes): ${(d.title?.preview||'').slice(0,60)}`,
+      `${okMark(d.description&&d.description.ok)} 説明文 (${d.description?.size||0} bytes)`,
+      `${okMark(d.tags&&d.tags.ok)} タグ (${d.tags?.size||0} bytes)`,
+      `${okMark(d.localizations&&d.localizations.ok)} 多言語ローカライズ (${d.localizations?.count||0}言語: ${(d.localizations?.languages||[]).join(', ')})`,
+      `${okMark(d.mp4&&d.mp4.present)} mp4 (${d.mp4?.path||'未'})`,
+      `${okMark(d.upload&&d.upload.present)} YouTube アップロード (${d.upload?.url||'未'})`,
+      ``,
+      `総合: ${d.ready_for_upload?'✓ アップロード可':'⚠ 未充足'}`,
+    ];
+    modal(`<div class="mo-title">メタ充足チェック</div><pre style="white-space:pre-wrap;font-size:var(--text-xs);font-family:var(--font-mono);color:var(--text-primary)">${esc(lines.join('\n'))}</pre><div class="btns" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" onclick="closeModal()">閉じる</button></div>`);
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* MP4 詳細: GET /api/videos/{name}/mp4-info でファイル場所と仕様を表示 */
+async function loadMp4Info(name){
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/mp4-info`);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'取得失敗','e');return;}
+    if(!d.present){toast('mp4 が見つかりません','e');return;}
+    const sizeMB=(d.size_bytes/1024/1024).toFixed(1);
+    const durMin=d.duration_sec?Math.floor(d.duration_sec/60)+':'+String(Math.floor(d.duration_sec%60)).padStart(2,'0'):'?';
+    const lines=[
+      `--- MP4 詳細: ${name} ---`,
+      `パス: ${d.path}`,
+      `検出ソース: ${d.source}`,
+      `サイズ: ${sizeMB} MB`,
+      `解像度: ${d.resolution||'?'}`,
+      `尺: ${durMin}`,
+      `コーデック: ${d.video_codec||'?'}`,
+    ];
+    modal(`<div class="mo-title">MP4 詳細</div><pre style="white-space:pre-wrap;font-size:var(--text-xs);font-family:var(--font-mono);color:var(--text-primary)">${esc(lines.join('\n'))}</pre><div class="btns" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" onclick="closeModal()">閉じる</button></div>`);
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* 一括アップロード: 複数 vol を順次 enqueue (改修#4 batch-upload API) */
+async function runBatchUpload(names, privacy){
+  privacy = privacy || 'unlisted';
+  if(!names || names.length===0){toast('アップロード対象が空です','e');return;}
+  if(!confirm(`${names.length} 件の vol を ${privacy} で順次アップロードします。\n（quota 約100 unit/件）\n続行しますか？`))return;
+  toast(`${names.length} 件をキューに追加中…`,'i');
+  try{
+    const r=await fetch('/api/youtube/batch-upload',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_names:names, privacy:privacy}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'バッチ投入失敗','e');return;}
+    const enq=(d.enqueued||[]).length;
+    const skip=(d.skipped||[]).length;
+    toast(`✓ ${enq} 件 enqueue、${skip} 件 skip`,'s');
+    if(skip>0){
+      console.warn('スキップされた vol:', d.skipped);
+    }
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+/* メタを YouTube に反映: videos.update API で既存動画の snippet + localizations を上書き */
+async function runUpdateSnippet(name){
+  if(!confirm(`既存の YouTube 動画 "${name}" のタイトル・説明・タグ・10言語ローカライズを更新します。\n（動画ファイル再アップは無し、YouTube API quota ~50 unit を消費）\n続行しますか？`))return;
+  toast('YouTube 側メタ更新を開始…','i');
+  try{
+    const r=await fetch(`/api/youtube/update-snippet/${encodeURIComponent(name)}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({apply_localizations: true}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'更新失敗','e');return;}
+    const locs = (d.localizations_applied||[]).length;
+    toast(`✓ メタ更新完了: parts=${(d.applied_parts||[]).join(',')}, localizations=${locs}言語`,'s');
+    if(d.previous_title && d.new_title && d.previous_title !== d.new_title){
+      console.log(`Title changed: "${d.previous_title}" → "${d.new_title}"`);
+    }
+  }catch(e){
+    toast('通信エラー: '+e.message,'e');
+  }
+}
+
+async function loadUploadTagPreview(name){
+  const el=document.getElementById('upTagPreview');if(!el)return;
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/tags`);
+    const d=await r.json();const tags=d.tags||[];
+    if(tags.length===0){
+      el.innerHTML='<span style="color:var(--text-tertiary)">（タグ未設定 → 既定タグ: BGM, Lounge, Chill, Relax, Study, Work, AI Music, SUNO）</span>';
+    }else{
+      el.innerHTML=tags.map(t=>`<span class="badge badge-neutral">${esc(t)}</span>`).join('');
+    }
+  }catch(e){}
+}
+
+/* ==== 動画詳細「アップロード」タブ：テンプレート + 動画別上書き + 多言語（D-1/D-2/D-3） ==== */
+async function initDetailUploadPanels(name){
+  // 並列で初期描画
+  await Promise.all([
+    loadDetailUploadDefaults(),
+    loadDetailVideoOverrides(name),
+    loadDetailLocalizations(name),
+    (async()=>{
+      if(document.getElementById('upLocLanguagesGrid')){
+        // 既定言語: アクティブチャンネルテンプレートの localization_languages を使用
+        let preset=YT_LANG_PRESET_RECOMMENDED;
+        try{const r=await fetch('/api/youtube/upload-defaults');const d=await r.json();const ll=d.defaults?.localization_languages;if(Array.isArray(ll)&&ll.length)preset=ll}catch(e){}
+        await renderLangChecklist('upLocLanguagesGrid',preset,{presetCodes:YT_LANG_PRESET_RECOMMENDED});
+      }
+    })()
+  ]);
+}
+
+async function loadDetailUploadDefaults(){
+  const sumEl=document.getElementById('upDefSummary');
+  const hintEl=document.getElementById('upDefHint');
+  if(!sumEl)return;
+  try{
+    const r=await fetch('/api/youtube/upload-defaults');const d=await r.json();
+    const s=d.defaults||{};
+    if(hintEl)hintEl.textContent=d.saved?'保存済':'既定値';
+    const langs=(s.localization_languages||[]);
+    const cat=await loadYtLangCatalog();
+    const langChips=langs.length?langs.map(c=>{
+      const meta=cat.find(x=>x.code===c);
+      return meta?`<span class="badge badge-neutral" style="margin-right:4px">${esc(meta.name)}</span>`:`<span class="badge badge-neutral" style="margin-right:4px">${esc(c)}</span>`;
+    }).join(''):'<span style="color:var(--text-tertiary)">未設定</span>';
+    sumEl.innerHTML=`
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px var(--space-3)">
+        <div style="color:var(--text-tertiary)">カテゴリ</div><div>${esc(s.category_id||'10')}</div>
+        <div style="color:var(--text-tertiary)">ライセンス</div><div>${esc(s.license||'youtube')}</div>
+        <div style="color:var(--text-tertiary)">言語</div><div>${esc(s.default_language||'en')} / 音声: ${esc(s.default_audio_language||'en')}</div>
+        <div style="color:var(--text-tertiary)">AI 開示</div><div>${s.synthetic_media?'ON':'OFF'}</div>
+        <div style="color:var(--text-tertiary)">子供向け</div><div>${s.made_for_kids?'ON':'OFF'}</div>
+        <div style="color:var(--text-tertiary)">埋め込み</div><div>${s.embeddable!==false?'許可':'不可'}</div>
+        <div style="color:var(--text-tertiary)">登録者通知</div><div>${s.notify_subscribers!==false?'ON':'OFF'}</div>
+        <div style="color:var(--text-tertiary)">翻訳対象</div><div>${langChips}</div>
+      </div>`;
+  }catch(e){if(hintEl)hintEl.textContent='読み込み失敗'}
+}
+
+async function loadDetailVideoOverrides(name){
+  const $=id=>document.getElementById(id);
+  ['upDefaultLanguage','upDefaultAudioLanguage','upSyntheticMedia','upMadeForKids'].forEach(id=>{if($(id))$(id).value=''});
+  if($('upOvHint'))$('upOvHint').textContent='';
+  if(!name)return;
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-overrides');
+    if(!r.ok)return;
+    const d=await r.json();const ov=d.overrides||{};
+    if(ov.default_language!=null && $('upDefaultLanguage'))$('upDefaultLanguage').value=ov.default_language;
+    if(ov.default_audio_language!=null && $('upDefaultAudioLanguage'))$('upDefaultAudioLanguage').value=ov.default_audio_language;
+    if(ov.synthetic_media!=null && $('upSyntheticMedia'))$('upSyntheticMedia').value=String(ov.synthetic_media);
+    if(ov.made_for_kids!=null && $('upMadeForKids'))$('upMadeForKids').value=String(ov.made_for_kids);
+    if($('upOvHint'))$('upOvHint').textContent=Object.keys(ov).length?`✓ ${Object.keys(ov).length} 項目を上書き`:'テンプレート使用中';
+  }catch(e){console.error('loadDetailVideoOverrides:',e)}
+}
+
+async function saveDetailVideoOverrides(name){
+  if(!name)return;
+  const $=id=>document.getElementById(id);
+  const _bool=v=>v===''||v==null?undefined:(v==='true');
+  const body={
+    default_language:$('upDefaultLanguage').value||undefined,
+    default_audio_language:$('upDefaultAudioLanguage').value||undefined,
+    synthetic_media:_bool($('upSyntheticMedia').value),
+    made_for_kids:_bool($('upMadeForKids').value),
+  };
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-overrides',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('保存失敗: '+(e.detail||r.status),'e');return}
+    toast('上書きを保存しました','s');
+    await loadDetailVideoOverrides(name);
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function clearDetailVideoOverrides(name){
+  if(!name)return;
+  if(!confirm('この動画の上書きをクリアしてテンプレートを使用しますか？'))return;
+  try{
+    await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-overrides',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    toast('テンプレートに戻しました','s');
+    await loadDetailVideoOverrides(name);
+  }catch(e){toast('失敗','e')}
+}
+
+async function loadDetailLocalizations(name){
+  const el=document.getElementById('upLocList');
+  const hintEl=document.getElementById('upLocHint');
+  if(!el)return;
+  if(!name){el.textContent='';return}
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-localizations');
+    if(!r.ok){el.textContent='';return}
+    const d=await r.json();const loc=d.localizations||{};
+    const langs=Object.keys(loc);
+    if(hintEl)hintEl.textContent=langs.length?`${langs.length} 言語登録済`:'未登録';
+    if(!langs.length){el.innerHTML='<span style="color:var(--text-tertiary)">登録済みの翻訳はありません</span>';return}
+    const cat=await loadYtLangCatalog();
+    el.innerHTML=langs.map(lang=>{
+      const e=loc[lang]||{};
+      const meta=cat.find(x=>x.code===lang);
+      const head=meta?`${esc(meta.name)} <span style="color:var(--text-tertiary);font-family:var(--font-mono);font-size:var(--text-2xs)">${esc(lang)}</span>`:esc(lang);
+      return `<div style="margin-bottom:var(--space-2);padding:var(--space-2);background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-sm)">
+        <div style="font-weight:var(--font-semibold);color:var(--accent-primary);margin-bottom:2px">${head}</div>
+        <div><strong>title:</strong> ${esc((e.title||'').slice(0,120))}</div>
+        <div style="margin-top:2px;color:var(--text-tertiary);max-height:60px;overflow:hidden">${esc((e.description||'').slice(0,180))}${(e.description||'').length>180?'…':''}</div>
+      </div>`;
+    }).join('');
+  }catch(e){console.error('loadDetailLocalizations:',e)}
+}
+
+async function generateDetailLocalizations(name){
+  if(!name)return;
+  let langs=getLangChecklistSelected('upLocLanguagesGrid');
+  if(!langs.length){toast('対象言語が選択されていません','w');return}
+  langs=langs.filter(l=>l && l!=='en');
+  const overwrite=document.getElementById('upLocOverwrite')?.checked||false;
+  const btn=document.getElementById('upLocGenBtn');
+  const el=document.getElementById('upLocList');
+  if(btn){btn.disabled=true;btn.textContent='翻訳中…'}
+  if(el)el.innerHTML='<div class="loading-overlay"><span class="spinner"></span>Claude で '+langs.length+' 言語へ翻訳中…</div>';
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-translate',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({languages:langs,overwrite,source_language:'en'})
+    });
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('翻訳失敗: '+(e.detail||r.status),'e');await loadDetailLocalizations(name);return}
+    const d=await r.json();
+    if(d.skipped){toast('全言語が既に存在します','i')}
+    else{toast('翻訳生成: '+(d.added||[]).length+' 言語','s')}
+    await loadDetailLocalizations(name);
+  }catch(e){toast('接続エラー','e');await loadDetailLocalizations(name)}
+  finally{if(btn){btn.disabled=false;btn.textContent='▶ 翻訳を生成'}}
+}
+
+async function clearDetailLocalizations(name){
+  if(!name)return;
+  if(!confirm('登録済みの翻訳をすべて削除しますか？'))return;
+  try{
+    await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-localizations',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({localizations:{}})});
+    toast('削除しました','s');
+    await loadDetailLocalizations(name);
+  }catch(e){toast('失敗','e')}
+}
+
+/* ==== AI 提案（Claude CLI 経由） ==== */
+async function _suggestCall(name,mode,extra){
+  const body={mode,...(extra||{})};
+  const r=await fetch(`/api/videos/${encodeURIComponent(name)}/suggest`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'AI提案に失敗')}
+  return r.json();
+}
+async function suggestTitles(name){
+  const btn=document.getElementById('sgTitleBtn'),list=document.getElementById('sgTitleList');
+  btn.disabled=true;btn.textContent='生成中...';list.innerHTML='';
+  try{
+    const d=await _suggestCall(name,'titles',{count:5});
+    list.innerHTML=(d.titles||[]).map(t=>`<div class="pc" onclick="adoptTitle(this,'${esc(name)}')">${esc(t)}</div>`).join('');
+    toast(`タイトル提案 ${d.titles?.length||0}件`,'s');
+  }catch(e){toast(e.message,'e')}
+  btn.disabled=false;btn.textContent='英語タイトル候補 ×5';
+}
+async function suggestDescription(name){
+  const btn=document.getElementById('sgDescBtn'),preview=document.getElementById('sgDescPreview');
+  btn.disabled=true;btn.textContent='生成中...';preview.innerHTML='';
+  try{
+    // 参考として現在の説明文を渡す（あれば）
+    const current=document.getElementById('vdDesc').value||'';
+    const d=await _suggestCall(name,'description',{reference:current});
+    const desc=d.description||'';
+    preview.innerHTML=`<div class="pc" style="white-space:pre-wrap;font-family:var(--font-mono);font-size:var(--text-xs);max-height:200px;overflow-y:auto">${esc(desc)}</div>
+      <div class="btns" style="margin-top:6px">
+        <button class="btn btn-primary btn-sm" onclick="adoptDescription()">採用（上書き）</button>
+        <button class="btn btn-secondary btn-sm" onclick="appendDescription()">末尾に追加</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('sgDescPreview').innerHTML=''">破棄</button>
+      </div>`;
+    preview.dataset.desc=desc;
+    toast('説明文を提案','s');
+  }catch(e){toast(e.message,'e')}
+  btn.disabled=false;btn.textContent='英語説明文';
+}
+async function suggestTags(name){
+  const btn=document.getElementById('sgTagBtn'),list=document.getElementById('sgTagList');
+  btn.disabled=true;btn.textContent='生成中...';list.innerHTML='';
+  try{
+    const d=await _suggestCall(name,'tags');
+    const tags=d.tags||[];
+    list.innerHTML=`<div style="display:flex;flex-wrap:wrap;gap:6px">${tags.map(t=>`<span class="badge badge-info" style="cursor:pointer" onclick="adoptTag('${esc(t).replace(/'/g,"\\'")}')">＋ ${esc(t)}</span>`).join('')}</div>
+      <div class="fh" style="margin-top:6px">タグをクリックで下欄に追加。「全部採用」で一括。</div>
+      <div class="btns"><button class="btn btn-secondary btn-sm" onclick="adoptAllTags(${JSON.stringify(tags).replace(/"/g,'&quot;')})">全部採用</button></div>`;
+    toast(`タグ提案 ${tags.length}件`,'s');
+  }catch(e){toast(e.message,'e')}
+  btn.disabled=false;btn.textContent='英語タグ';
+}
+function adoptTitle(el,name){
+  const t=el.textContent;
+  document.getElementById('vdTitle').value=t;
+  saveVideoTitle(name);
+  document.querySelectorAll('#sgTitleList .pc').forEach(x=>x.classList.remove('sel'));
+  el.classList.add('sel');
+}
+function adoptDescription(){
+  const d=document.getElementById('sgDescPreview').dataset.desc||'';
+  document.getElementById('vdDesc').value=d;
+  document.getElementById('sgDescPreview').innerHTML='';
+  toast('説明文を採用（未保存）。「説明文を保存」を押してください','i');
+}
+function appendDescription(){
+  const d=document.getElementById('sgDescPreview').dataset.desc||'';
+  const cur=document.getElementById('vdDesc');
+  cur.value=(cur.value?cur.value+'\n\n':'')+d;
+  document.getElementById('sgDescPreview').innerHTML='';
+  toast('末尾に追加（未保存）','i');
+}
+function adoptTag(t){
+  const ta=document.getElementById('vdTags');
+  const cur=ta.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);
+  if(cur.includes(t))return;
+  cur.push(t);ta.value=cur.join(', ');
+}
+function adoptAllTags(tags){
+  const ta=document.getElementById('vdTags');
+  const cur=ta.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);
+  tags.forEach(t=>{if(!cur.includes(t))cur.push(t)});
+  ta.value=cur.join(', ');
+  toast(`タグ ${tags.length}件を追加（未保存）`,'i');
+}
+
+// 詳細画面を開く時、保存済みタグも読み込む
+async function loadVideoTags(name){
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/tags`);
+    const d=await r.json();
+    const ta=document.getElementById('vdTags');if(ta)ta.value=(d.tags||[]).join(', ');
+  }catch(e){}
+}
+
+// 一覧／ダッシュボードを静かに再取得（トーストなし）
+// ※ 動画詳細を開いている場合は一覧を再描画しない（説明文候補等が消えるのを防ぐ）
+function refreshListsQuiet(){
+  if(document.getElementById('p-dashboard').classList.contains('on'))loadDashboard();
+  // 詳細画面を開いていたら一覧再描画をスキップ
+  if(!_curVideo){
+    if(document.getElementById('p-videos').classList.contains('on'))loadVideos();
+  }
+}
+
+/* ==== SUNO ==== */
+function _sunoPhaseLabel(p){
+  return ({llm:'LLM呼び出し中', generating:'曲情報入力中', submitted:'Create クリック済', waiting:'次の生成を待機中', done:'完了'})[p]||'実行中';
+}
+function _fmtSec(s){s=Math.max(0,Math.floor(s));const m=Math.floor(s/60);return m>0?`${m}分${String(s%60).padStart(2,'0')}秒`:`${s}秒`}
+function _renderSunoProgPanel(targetId,data){
+  const el=document.getElementById(targetId);if(!el)return;
+  if(!data.running && !(data.progress && data.progress.total)){el.style.display='none';return}
+  const pg=data.progress||{};
+  const cur=pg.current||0,tot=pg.total||parseInt(data.meta?.count||0)||1;
+  const pct=Math.min(100,Math.round((cur/tot)*100));
+  // 経過時間
+  let elapsed='--';
+  if(data.started_at){const ms=Date.now()-new Date(data.started_at).getTime();elapsed=_fmtSec(ms/1000)}
+  // 次回実行
+  const next=pg.next_remaining_sec||0;
+  const phase=_sunoPhaseLabel(pg.phase);
+  const ws=data.meta?.workspace||'';
+  el.style.display='block';
+  el.className='suno-prog';
+  el.innerHTML=`
+    <div class="suno-prog-head">
+      <div>
+        <div class="suno-prog-title">${data.running?'SUNO 実行中':'停止中'} ・ ${cur}/${tot}</div>
+        <div class="suno-prog-sub">${ws?'作業領域: '+esc(ws)+' ・ ':''}${esc(phase)}</div>
+      </div>
+      <div class="suno-prog-sub">${pct}%</div>
+    </div>
+    <div class="suno-prog-bar"><div class="suno-prog-fill" style="width:${pct}%"></div></div>
+    <div class="suno-prog-meta">
+      <div><div class="l">経過時間</div><div class="v">${elapsed}</div></div>
+      <div><div class="l">進行フェーズ</div><div class="v">${esc(phase)}</div></div>
+      <div><div class="l">次の生成まで</div><div class="v">${next>0?_fmtSec(next):'—'}</div></div>
+      <div><div class="l">全体</div><div class="v">${cur}/${tot}</div></div>
+    </div>`;
+}
+
+async function updateSunoWorkspace(){
+  const sel=document.getElementById('sunoVideo');if(!sel)return;
+  const opt=sel.options[sel.selectedIndex];
+  const num=opt?opt.dataset.num:'';
+  // チャンネル名はconfigから
+  let channel='orzz';
+  try{const r=await fetch('/api/config'),d=await r.json();channel=(d.dashboard.channel_name||'orzz').trim().replace(/[^A-Za-z0-9_-]+/g,'_').replace(/^_|_$/g,'')||'orzz'}catch(e){}
+  const ws=num?`${channel}_vol${num}`:'';
+  const wsInput=document.getElementById('sunoWorkspace');
+  const wsPrev=document.getElementById('sunoWsPreview');
+  if(wsInput)wsInput.value=ws;
+  if(wsPrev)wsPrev.textContent=ws||'<channel>_volN';
+}
+async function startSuno(){
+  clrLog('sunoLogs');
+  // サーバ側に保存されている SUNO 設定を fresh fetch（DOM ではなくサーバ値を信頼）
+  let cfg={};
+  try{const r=await fetch('/api/config');if(r.ok){const d=await r.json();cfg=d.suno||{}}}catch(e){}
+  if(!cfg.prompt){toast('SUNO プロンプトが未設定です。設定タブで入力してください','e');go('settings');return}
+  const body={
+    prompt:cfg.prompt,
+    count:parseInt(cfg.loop_count||5),
+    interval:parseInt(cfg.loop_interval_sec||180),
+    provider:(cfg.provider==='gemini'?'claude':cfg.provider)||'claude',
+    model:cfg.model||'',
+    batch:!!cfg.loop_batch,
+    auto_download:true,
+  };
+  const customDuration=document.getElementById('sunoDurationSeconds')?.value;
+  if(customDuration)body.duration_seconds=parseInt(customDuration);
+  const ws=document.getElementById('sunoWorkspace')?.value?.trim();
+  const vn=document.getElementById('sunoVideo')?.value;
+  if(ws)body.workspace=ws;
+  if(vn)body.video_name=vn;
+  try{
+    const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){
+      document.getElementById('btnStop').classList.remove('hidden');
+      document.getElementById('btnStart').disabled=true;
+      connectWs('suno','sunoLogs');
+      toast(ws?`生成開始 (作業領域: ${ws})`:'生成開始','s');
+    }else{const e=await r.json();toast(e.detail||'失敗','e')}
+  }catch(e){toast('接続エラー','e')}
+  pollStatus();
+}
+
+/* ==== 競合分析 ==== */
+function _renderAnalysisCacheTo(res, cd, opts){
+  if(!res||!cd||!cd.cached||!cd.analysis){
+    if(res) res.innerHTML='';
+    return false;
+  }
+  const a=cd.analysis;
+  const bp=a.buzz_patterns||{};
+  const ts=a.trend_shift||{};
+  const rc=a.recommendations||{};
+  const at=cd.analyzed_at||'';
+  const src=cd.source||'';
+  const lang=cd.language||'';
+  const title=(opts&&opts.title)||'分析結果';
+  res.innerHTML=`<div class="card" style="padding:14px;font-size:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <div class="sec-title" style="margin:0">${esc(title)} <span class="fh" style="font-weight:normal">(${esc(at)})</span></div>
+      <div class="fh" style="font-size:var(--text-2xs)">source: ${esc(src)} / ${esc(lang)}</div>
+    </div>
+    <div style="margin-bottom:var(--space-2)"><strong>バズパターン:</strong> ${esc((bp.title_patterns||[]).join(' / '))}</div>
+    <div style="margin-bottom:var(--space-2)"><strong>ホットキーワード:</strong> ${(bp.keywords||[]).map(k=>'<span class="badge badge-info" style="margin:2px">'+esc(k)+'</span>').join('')}</div>
+    <div style="margin-bottom:var(--space-2)"><strong>トレンド変化:</strong> ${esc(ts.from_buzz_to_recent||'')}</div>
+    <div style="margin-bottom:var(--space-2)"><strong>タイトル推奨:</strong> ${esc((rc.title_tips||[]).join(' / '))}</div>
+    ${(rc.description_tips&&rc.description_tips.length)?`<div style="margin-bottom:var(--space-2)"><strong>投稿文ヒント:</strong> ${esc((rc.description_tips||[]).join(' / '))}</div>`:''}
+    ${(rc.tag_suggestions&&rc.tag_suggestions.length)?`<div><strong>タグ候補:</strong> ${(rc.tag_suggestions||[]).map(k=>'<span class="badge badge-neutral" style="margin:2px">'+esc(k)+'</span>').join('')}</div>`:''}
+  </div>`;
+  return true;
+}
+
+async function showCachedAnalysisIfAny(){
+  // メタタブ表示時に呼ばれる: 既存の競合分析キャッシュがあれば AI 提案パネル冒頭に自動表示
+  const res=document.getElementById('sgAnalysisResult');
+  if(!res) return;
+  try{
+    const cr=await fetch('/api/analysis/cache');
+    if(!cr.ok) return;
+    const cd=await cr.json();
+    _renderAnalysisCacheTo(res, cd, {title:'保存済み分析結果'});
+  }catch(_){}
+}
+
+async function runCompetitorAnalysis(){
+  const btn=document.getElementById('sgAnalyzeBtn');
+  btn.disabled=true;btn.textContent='分析中...';
+  const res=document.getElementById('sgAnalysisResult');
+  res.innerHTML='<div style="color:var(--accent-info);font-size:12px">ライバルチャンネル取得 → Claude で分析中... (1-2分)</div>';
+  try{
+    const r=await fetch('/api/analysis/competitors',{method:'POST'});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.detail||'分析開始失敗','e');btn.disabled=false;btn.textContent='制作分析を実行';return}
+    // ポーリング
+    const poll=async()=>{
+      const sr=await fetch('/api/analysis/status');
+      const sd=await sr.json();
+      if(sd.running){setTimeout(poll,2000);return}
+      btn.disabled=false;btn.textContent='制作分析を実行';
+      // 結果を表示（キャッシュとして保存済み）
+      const cr=await fetch('/api/analysis/cache');
+      const cd=await cr.json();
+      if(_renderAnalysisCacheTo(res, cd, {title:'分析結果（最新）'})){
+        toast('競合分析完了（次回からは自動表示）','s');
+        loadBenchmarkContextStatus?.();
+      }else{
+        res.innerHTML='<div style="color:var(--accent-danger);font-size:12px">分析結果の取得に失敗</div>';
+      }
+    };
+    setTimeout(poll,3000);
+  }catch(e){toast('接続エラー','e');btn.disabled=false;btn.textContent='制作分析を実行'}
+}
+/* 競合分析ベースの一気通貫提案 / SUNO・Flow 個別提案 */
+async function _latestVideoName(){
+  try{
+    const r=await fetch('/api/videos');if(!r.ok)return null;
+    const d=await r.json();const vs=d.videos||[];
+    if(!vs.length)return null;
+    // num 降順でソート（数値優先、同値ならフォルダ名降順）
+    vs.sort((a,b)=>{const na=parseInt(a.num)||0,nb=parseInt(b.num)||0;if(na!==nb)return nb-na;return (b.name||'').localeCompare(a.name||'')});
+    return vs[0].name;
+  }catch{return null}
+}
+async function suggestSunoFromAnalysis(){
+  const rEl=document.getElementById('cfgSunoSuggestRationale');
+  const name=await _latestVideoName();
+  if(!name){toast('対象動画が見つかりません（先に動画フォルダを作成してください）','e');return}
+  if(rEl)rEl.textContent='競合分析からプロンプト生成中...';
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/suggest-suno-prompt`,{method:'POST'});
+    if(!r.ok){const e=await r.json().catch(()=>({}));const msg=(e.detail?.hint)||e.detail||'提案失敗';toast(msg,'e');if(rEl)rEl.textContent='';return}
+    const d=await r.json();
+    const ta=document.getElementById('cfgSunoPrompt');if(ta&&d.prompt){ta.value=d.prompt;ta.scrollIntoView({behavior:'smooth',block:'center'})}
+    if(rEl&&d.rationale)rEl.textContent=d.rationale;
+    toast('競合分析からプロンプトを注入（保存ボタンで確定）','s');
+  }catch(e){if(rEl)rEl.textContent='';toast('接続エラー','e')}
+}
+async function suggestAll(name){
+  const btn=document.getElementById('sgSuggestAllBtn');
+  const res=document.getElementById('sgAnalysisResult');
+  if(btn){btn.disabled=true;btn.textContent='60-90秒...'}
+  if(res)res.innerHTML='<div class="loading-overlay"><span class="spinner"></span>楽曲・サムネ・メタを一気通貫生成中（約 60-90 秒）…</div>';
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/suggest-all`,{method:'POST'});
+    if(!r.ok){const e=await r.json().catch(()=>({}));const msg=(e.detail?.hint)||JSON.stringify(e.detail)||'提案失敗';toast(msg,'e');if(res)res.innerHTML=`<div style="color:var(--accent-danger);font-size:var(--text-sm)">エラー: ${esc(msg)}</div>`;return}
+    const d=await r.json();
+    const parts=[];
+    if(d.suno?.prompt){
+      parts.push(`<details open style="margin-bottom:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);padding:var(--space-2)">
+        <summary style="cursor:pointer;font-weight:var(--font-semibold);color:var(--text-primary)">SUNO プロンプト案</summary>
+        <div style="margin-top:var(--space-2);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-primary);white-space:pre-wrap">${esc(d.suno.prompt)}</div>
+        ${d.suno.rationale?`<div style="margin-top:var(--space-1);font-size:var(--text-xs);color:var(--text-tertiary)">${esc(d.suno.rationale)}</div>`:''}
+        <div class="btns" style="margin-top:var(--space-2)">
+          <button class="btn btn-primary btn-sm" onclick="(()=>{go('settings');setTimeout(()=>{const ta=document.getElementById('cfgSunoPrompt');if(ta){ta.value=${JSON.stringify(d.suno.prompt)};ta.scrollIntoView({behavior:'smooth',block:'center'})}toast('プロンプトに反映（保存ボタンで確定）','s')},150)})()">設定タブへ反映</button>
+        </div>
+      </details>`);
+    }
+    if(d.meta){
+      const m=d.meta;
+      parts.push(`<details open style="margin-bottom:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm);padding:var(--space-2)">
+        <summary style="cursor:pointer;font-weight:var(--font-semibold);color:var(--text-primary)">メタデータ案（タイトル / 説明 / タグ）</summary>
+        <div style="margin-top:var(--space-2)">
+          ${m.titles?.length?`<div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">タイトル候補（クリックで採用）</div>
+            ${m.titles.map(t=>`<div class="pc" onclick="adoptTitle(this,'${esc(name)}')" style="border-left:3px solid var(--brand-accent)">${esc(t)}</div>`).join('')}`:''}
+          ${m.description?`<div style="margin-top:var(--space-2);font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">説明文</div>
+            <div class="pc" style="white-space:pre-wrap;font-family:var(--font-mono);font-size:var(--text-xs);max-height:200px;overflow-y:auto;border-left:3px solid var(--brand-accent)">${esc(m.description)}</div>`:''}
+          ${m.tags?.length?`<div style="margin-top:var(--space-2);font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">タグ</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px">${m.tags.map(t=>`<span class="badge badge-info" style="cursor:pointer;border-left:3px solid var(--brand-accent)" onclick="adoptTag('${esc(t).replace(/'/g,"\\'")}')">＋ ${esc(t)}</span>`).join('')}</div>`:''}
+        </div>
+      </details>`);
+    }
+    const errMsg=d.errors&&Object.keys(d.errors).length?`<div style="margin-top:var(--space-2);font-size:var(--text-xs);color:var(--accent-warning)">一部失敗: ${esc(JSON.stringify(d.errors))}</div>`:'';
+    if(res)res.innerHTML=parts.join('')+errMsg||'<div style="color:var(--text-tertiary)">結果が空でした</div>';
+    toast('一気通貫提案が完了しました','s');
+  }catch(e){
+    if(res)res.innerHTML=`<div style="color:var(--accent-danger);font-size:var(--text-sm)">接続エラー: ${esc(String(e))}</div>`;
+    toast('接続エラー','e');
+  }
+  if(btn){btn.disabled=false;btn.textContent='一気通貫提案（楽曲・サムネ・メタ）'}
+}
+
+/* 楽曲タブから SUNO に遷移（vol 自動選択） */
+
+/* ==== 楽曲プレイヤー + いいね ==== */
+async function loadTrackList(name){
+  const listEl=document.getElementById('trackList');
+  const cntEl=document.getElementById('trackCount');
+  if(!listEl)return;
+  listEl.innerHTML='<div class="loading-overlay"><span class="spinner"></span>楽曲を読み込み中...</div>';
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/tracks`);
+    const d=await r.json();
+    let tracks=d.tracks||[];
+    // music/ にファイルがあれば original_music/ は非表示（処理済みのみ表示）
+    const hasMusic=tracks.some(t=>t.location==='music');
+    if(hasMusic){
+      tracks=tracks.filter(t=>t.location!=='original_music');
+    }
+    const total=tracks.length;
+    const liked=tracks.filter(t=>t.likes>0).length;
+    if(cntEl)cntEl.textContent=`(${total}曲${liked?` / ${liked}`:''})`;
+    if(total===0){
+      listEl.innerHTML='<div class="empty">楽曲がありません<div class="empty-sub">「SUNOから取得」で楽曲を取得するか、手動で MP3 を配置してください</div></div>';
+      return;
+    }
+    // ソート
+    const sortKey=document.getElementById('trackSort')?.value||'name';
+    if(sortKey==='duration')tracks.sort((a,b)=>b.duration-a.duration);
+    else if(sortKey==='likes')tracks.sort((a,b)=>(b.likes-a.likes)||(a.is_bad?1:0)-(b.is_bad?1:0));
+    // 合計時間
+    const totalSec=tracks.reduce((s,t)=>s+t.duration,0);
+    const totalEl=document.getElementById('trackTotalDur');
+    if(totalEl){
+      const h=Math.floor(totalSec/3600),m=Math.floor((totalSec%3600)/60),s=Math.floor(totalSec%60);
+      totalEl.textContent=`合計: ${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
+    }
+    _lastTrackList=tracks;
+    if(_pl.name===name)_pl.tracks=tracks;
+    const review=d.review;
+    const selectionNote=review?`<p>${review.selected_count} / ${review.group_count}タイトルを選択済み。各タイトルから１テイクをハートで採用します。 <a href="/static/music-review.html?batch=${encodeURIComponent(review.id)}">並べて聴き比べる</a></p>`:'';
+    listEl.innerHTML=selectionNote+tracks.map((t,i)=>renderTrackRow(name,t,i)).join('');
+  }catch(e){console.error(e);listEl.innerHTML='<div class="empty">読み込み失敗</div>'}
+}
+function _fmtDur(sec){
+  if(!sec||sec<=0)return '--:--';
+  const m=Math.floor(sec/60),s=Math.floor(sec%60);
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+function renderTrackRow(name,t,idx){
+  const locClass=t.location==='music'?'tr-loc-music':(t.location==='original_music'?'tr-loc-original_music':'tr-loc-root');
+  const locLabel=t.location==='music'?'MUSIC':(t.location==='original_music'?'ORIG':'ROOT');
+  const relEsc=esc(t.rel_path).replace(/'/g,"\\'");
+  const likes=Math.min(t.likes||0,3);
+  const rowClass=t.is_bad?'bad':(likes===3?'liked-3':likes===2?'liked-2':likes===1?'liked':'');
+  const prefix=t.is_bad?'<span style="color:var(--text-tertiary);font-weight:700">x_</span>':(likes>0?`<span style="color:var(--accent-danger);font-weight:700">${'z'.repeat(likes)}_</span>`:'');
+  const semi=t.selection_mode==='heart';
+  const nextLikes=semi?(likes?0:1):(likes>=3?0:likes+1);
+  const deleteKey=_trackDeleteKey(name,t.rel_path);
+  const pending=_trackDeleteTimers.get(deleteKey);
+  const pendingClass=pending?' pending-delete':'';
+  const deleteAction=semi?'':pending
+    ?`<button class="btn btn-secondary btn-sm tr-undo-btn" onclick="event.stopPropagation();undoTrackDelete('${esc(name)}','${relEsc}')">元に戻す</button>`
+    :`<button class="tr-bad-btn" onclick="event.stopPropagation();toggleBad('${esc(name)}','${relEsc}')" title="5秒後に完全削除">削除</button>`;
+  return `<div class="tr-row ${rowClass}${pendingClass}" data-rel="${esc(t.rel_path)}" data-idx="${idx}" onclick="_trRowClick(event,'${esc(name)}','${relEsc}',${idx})">
+    <div class="tr-idx">${idx+1}</div>
+    <div class="tr-info">
+      <div class="tr-name">${prefix}${esc(t.base_name)}</div>
+      <div class="tr-sub"><span class="tr-location-badge ${locClass}">${locLabel}</span>${semi?' '+esc(t.filename):''}</div>
+    </div>
+    <div class="tr-dur">${_fmtDur(t.duration)}</div>
+    <div class="tr-like">${pending?`<span class="tr-delete-state">削除まで <span class="tr-delete-countdown">${Math.max(1,Math.ceil((pending.deadline-Date.now())/1000))}</span>秒</span>`:`<button class="tr-heart ${likes?`on-${likes}`:''}" onclick="event.stopPropagation();setLikeTrack('${esc(name)}','${relEsc}',${nextLikes})" title="${semi?'ハートでこのテイクを採用':'優先度アップ(ファイル名にzを追記)'}">${semi?(likes?'♥ 採用中':'♡ 採用'):`優先度 ${likes}/3`}</button>`}</div>
+    ${deleteAction}
+  </div>`;
+}
+function _trRowClick(e,name,relPath,idx){
+  const tracks=_pl.name===name?_pl.tracks:_lastTrackList;
+  if(!tracks||tracks.length===0)return;
+  playerLoad(name,tracks,idx);
+}
+let _lastTrackList=[];
+const _trackDeleteTimers=new Map();
+function _trackDeleteKey(name,relPath){return `${name}\n${relPath}`}
+function _refreshTrackDeleteCountdown(key){
+  const pending=_trackDeleteTimers.get(key);if(!pending)return;
+  const row=Array.from(document.querySelectorAll('.tr-row[data-rel]')).find(r=>r.dataset.rel===pending.relPath);
+  const el=row?.querySelector('.tr-delete-countdown');
+  if(el)el.textContent=String(Math.max(1,Math.ceil((pending.deadline-Date.now())/1000)));
+}
+function _rerenderTrackRow(name,relPath){
+  const row=Array.from(document.querySelectorAll('.tr-row[data-rel]')).find(r=>r.dataset.rel===relPath);
+  if(!row)return;
+  const idx=parseInt(row.dataset.idx)||0,t=_lastTrackList[idx];if(!t)return;
+  const tmp=document.createElement('div');tmp.innerHTML=renderTrackRow(name,t,idx);row.replaceWith(tmp.firstElementChild);
+}
+function toggleBad(name,relPath){
+  const key=_trackDeleteKey(name,relPath);
+  if(_trackDeleteTimers.has(key))return;
+  const pending={name,relPath,deadline:Date.now()+5000,timer:null,interval:null};
+  pending.timer=setTimeout(()=>commitTrackDelete(key),5000);
+  pending.interval=setInterval(()=>_refreshTrackDeleteCountdown(key),250);
+  _trackDeleteTimers.set(key,pending);
+  _rerenderTrackRow(name,relPath);
+  toast('5秒後にローカルから完全削除します','w');
+}
+function undoTrackDelete(name,relPath){
+  const key=_trackDeleteKey(name,relPath),pending=_trackDeleteTimers.get(key);
+  if(!pending)return;
+  clearTimeout(pending.timer);
+  clearInterval(pending.interval);
+  _trackDeleteTimers.delete(key);
+  _rerenderTrackRow(name,relPath);
+  toast('削除を取り消しました','s');
+}
+async function commitTrackDelete(key){
+  const pending=_trackDeleteTimers.get(key);if(!pending)return;
+  clearInterval(pending.interval);
+  _trackDeleteTimers.delete(key);
+  try{
+    let relPaths=[pending.relPath];
+    const tracksR=await fetch(`/api/videos/${encodeURIComponent(pending.name)}/tracks`);
+    if(tracksR.ok){
+      const tracks=(await tracksR.json()).tracks||[];
+      const target=tracks.find(t=>t.rel_path===pending.relPath);
+      if(target)relPaths=[...new Set(tracks.filter(t=>t.base_name===target.base_name).map(t=>t.rel_path))];
+    }
+    const results=await Promise.all(relPaths.map(relPath=>fetch(`/api/videos/${encodeURIComponent(pending.name)}/track?rel_path=${encodeURIComponent(relPath)}`,{method:'DELETE'})));
+    if(results.every(r=>r.ok)){
+      toast('楽曲を削除しました','s');
+      loadTrackList(pending.name);
+    }
+    else{
+      const failed=results.find(r=>!r.ok),e=await failed.json().catch(()=>({}));
+      _rerenderTrackRow(pending.name,pending.relPath);toast(e.detail||'一部の削除に失敗しました','e');
+    }
+  }catch(e){_rerenderTrackRow(pending.name,pending.relPath);toast('接続エラー','e')}
+}
+function _patchTrackRow(name,oldRelPath,data){
+  const row=Array.from(document.querySelectorAll('.tr-row[data-rel]')).find(r=>r.dataset.rel===oldRelPath);
+  if(!row){loadTrackList(name);return;}
+  const idx=parseInt(row.dataset.idx)||0;
+  const t=_lastTrackList[idx];
+  if(!t){loadTrackList(name);return;}
+  t.likes=data.likes??t.likes;
+  t.is_bad=data.is_bad??t.is_bad;
+  if(data.rel_path)t.rel_path=data.rel_path;
+  const tmp=document.createElement('div');
+  tmp.innerHTML=renderTrackRow(name,t,idx);
+  const newRow=tmp.firstElementChild;
+  row.replaceWith(newRow);
+  if(_pl.name===name&&_pl.idx===idx)_pl.tracks[idx]=t;
+  const liked=_lastTrackList.filter(x=>x.likes>0).length;
+  const total=_lastTrackList.length;
+  const cntEl=document.getElementById('trackCount');
+  if(cntEl)cntEl.textContent=`(${total}曲${liked?` / ${liked}`:''})`;
+}
+async function bulkDeleteShort(name){
+  const sec=parseInt(document.getElementById('minDurInput')?.value||'60');
+  if(!confirm(`${sec}秒以下の楽曲を一括削除しますか？\n\n※ 元に戻せません`))return;
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/tracks-bulk-delete`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'short',min_duration:sec})});
+    if(r.ok){const d=await r.json();toast(`${d.deleted} ファイル削除しました`,'s');loadTrackList(name)}
+    else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
+  }catch(e){toast('接続エラー','e')}
+}
+async function setLikeTrack(name,relPath,targetLikes){
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/track-like`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rel_path:relPath,set_likes:targetLikes})});
+    if(r.ok){const d=await r.json();if(d.review)loadTrackList(name);else _patchTrackRow(name,relPath,d)}
+    else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
+  }catch(e){toast('接続エラー','e')}
+}
+async function processTracks(name){
+  const semi=_lastTrackList.some(t=>t.selection_mode==='heart');
+  if(!semi&&!confirm(`フォルダ内の MP3 を後処理しますか？
+・サムネ画像から Claude CLI が楽曲名を提案してリネーム
+・いいね数（z プレフィックス）は保持
+・original_music/ にバックアップ
+・music/ に 無音トリム + 8秒フェードアウト + ゲイン正規化 (-16 LUFS) 適用`))return;
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/process-tracks`,{method:'POST'});
+    if(r.ok){toast('後処理を開始しました（完了まで数分）','s');pollProcessStatus(name)}
+    else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function renameTracksOnly(name){
+  if(!confirm(`フォルダ内の MP3 を リネームのみ 実行しますか？
+・サムネ画像があれば → 画像の世界観に合わせて Claude CLI がタイトル提案
+・サムネが無い場合 → チャンネルペルソナから提案
+・いいね数（z プレフィックス）は保持
+・FFmpeg 処理（音声加工）はスキップ`))return;
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/process-tracks?rename_only=true`,{method:'POST'});
+    if(r.ok){toast('リネーム処理を開始しました','s');pollProcessStatus(name)}
+    else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
+  }catch(e){toast('接続エラー','e')}
+}
+async function pollProcessStatus(name){
+  try{
+    const r=await fetch('/api/process/status'),d=await r.json();
+    if(d.running){setTimeout(()=>pollProcessStatus(name),2000)}
+    else{loadTrackList(name);if(d.exit_code===0)toast('後処理完了','s');else toast('後処理が完了していません。ログを確認してください','e')}
+  }catch(e){}
+}
+
+/* Workspace の楽曲を一括 DL → 動画フォルダに保存 */
+async function downloadWorkspaceTracks(name){
+  if(!confirm(`SUNO Workspace "${name.match(/^(\\d+)_/)?'vol.'+RegExp.$1:name}" の全楽曲を
+ダウンロードしますか？保存先: <動画フォルダ>/ 直下に展開`))return;
+  try{
+    const r=await fetch('/api/suno/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name})});
+    if(r.ok){const d=await r.json();toast(`Workspace ダウンロード開始（→ ${d.target_dir}）`,'s');pollStatus();_startSunoLogRelay&&_startSunoLogRelay();}
+    else{const e=await r.json().catch(()=>({}));toast(e.detail||'失敗','e')}
+  }catch(e){toast('接続エラー','e')}
+}
+
+/* 楽曲タブのミニパネルから SUNO 生成開始 */
+function _collectMiniSunoParams(){
+  return {
+    prompt:document.getElementById('miniPrompt').value.trim(),
+    count:parseInt(document.getElementById('miniCount').value)||5,
+    interval:parseInt(document.getElementById('miniInterval').value)||180,
+    provider:document.getElementById('miniProvider').value,
+    generation_mode:document.getElementById('miniMode')?.value||'styles_title_only',
+    batch:document.getElementById('miniBatch')?.checked||false,
+    dl_wait_sec:parseInt(document.getElementById('miniDlWait')?.value)||30,
+    headless:document.getElementById('miniHeadless')?.value==='1',
+    diversity_threshold:_numOrUndef(document.getElementById('miniDivThreshold')?.value,true),
+    diversity_retry:_numOrUndef(document.getElementById('miniDivRetry')?.value,false),
+    history_limit:_numOrUndef(document.getElementById('miniHistoryLimit')?.value,false),
+  };
+}
+/* 数値入力を number に。空欄/不正は undefined（= サーバー側の既定/チャンネル設定を使う）*/
+function _numOrUndef(v,isFloat){
+  if(v===undefined||v===null||String(v).trim()==='')return undefined;
+  const n=isFloat?parseFloat(v):parseInt(v,10);
+  return isNaN(n)?undefined:n;
+}
+async function startSunoForVideo(name){
+  const p=_collectMiniSunoParams();
+  if(!p.prompt){toast('プロンプトを入力してください','e');return}
+  const body={...p,video_name:name};
+  try{
+    const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){toast(`生成開始（Workspace 自動確保）`,'s');_plAppend(`▶ SUNO 生成開始: ${p.count}曲・${p.provider}${p.batch?' (batch)':''}`);pollStatus();_startSunoLogRelay()}
+    else{const e=await r.json();toast(e.detail||'失敗','e')}
+  }catch(e){toast('接続エラー','e')}
+}
+/* ==== ドラフト生成 → 確認/編集 → 投入 ==== */
+/* vol(動画名)ごとにドラフト状態を保持（複数 vol を並行で開いても競合しない）。
+   key = 動画名(name), value = [{title,styles,lyrics,mode}, ...] */
+const _sunoDraftsByVideo={};
+/* チャンネル config の suno.tag_defaults キャッシュ（整備タグの既定値表示に使う） */
+let _sunoTagDefaults={};
+/* 動画名 → DOM id 安全文字列（[A-Za-z0-9_-] のみ。それ以外は _ に）。
+   element id / querySelector でそのまま使える形にする。 */
+function sunoSafeId(name){
+  return String(name||'').replace(/[^A-Za-z0-9_-]+/g,'_').replace(/^_+|_+$/g,'')||'_';
+}
+/* 対象 vol のドラフトパネル配下の要素を id で引く（el(name,'sunoDraftList') 等） */
+function _sunoEl(name,prefix){return document.getElementById(`${prefix}-${sunoSafeId(name)}`);}
+/* Genre 方式トグル: 固定値選択時のみ手入力欄を出す */
+function onSunoGenreModeChange(name){
+  const mode=_sunoEl(name,'sunoTagGenreMode')?.value||'by_kind';
+  const wrap=_sunoEl(name,'sunoTagGenreFixedWrap');
+  if(wrap)wrap.style.display=(mode==='fixed')?'':'none';
+}
+/* 整備タグ入力の既定値を tag_defaults とドラフトから流し込む（XSS: value 代入のみ） */
+function _applySunoTagDefaults(name){
+  const td=_sunoTagDefaults||{};
+  const aIn=_sunoEl(name,'sunoTagArtist');
+  if(aIn&&!aIn.value)aIn.value=td.artist||'SUKIMA';
+  const alIn=_sunoEl(name,'sunoTagAlbum');
+  if(alIn&&!alIn.value){
+    // album_template の {N} は vol 番号で置換（サーバー側と同じ規則）。
+    const m=String(name||'').match(/^(\d+)_/);
+    const tpl=td.album_template||'';
+    alIn.value=(tpl&&m)?tpl.replace('{N}',m[1]):tpl;
+  }
+  const gfIn=_sunoEl(name,'sunoTagGenreFixed');
+  if(gfIn&&!gfIn.value)gfIn.value=td.genre_default||'';
+  // 曲別 genre の見取り図をヒント表示（bossa→Bossa Nova 等）
+  const hint=_sunoEl(name,'sunoTagGenreHint');
+  if(hint){
+    const gbk=td.genre_by_kind||{};
+    const pairs=Object.keys(gbk).map(k=>`${k}→${gbk[k]}`);
+    hint.textContent=pairs.length
+      ?`曲別の対応: ${pairs.join(' / ')}（曲の kind は draft の Style から判定）`
+      :'曲別 genre のマップ未設定。固定値方式を推奨します。';
+  }
+}
+/* ドラフト生成: SUNOは起動せず LLM だけで N曲分のドラフトを取得して一覧表示 */
+async function generateSunoDrafts(name){
+  const p=_collectMiniSunoParams();
+  if(!p.prompt){toast('プロンプトを入力してください','e');return}
+  if(p.provider!=='claude'&&p.provider!=='codex'){
+    toast('ドラフト生成は Claude / Codex のみ対応です','e');return;
+  }
+  const body={
+    prompt:p.prompt, count:p.count, generation_mode:p.generation_mode,
+    provider:p.provider, video_name:name,
+    diversity_threshold:p.diversity_threshold, diversity_retry:p.diversity_retry,
+    history_limit:p.history_limit,
+  };
+  const btn=document.getElementById('miniDraftBtn');
+  const orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='生成中…';}
+  _plAppend(`SUNO ドラフト生成: ${p.count}曲・${p.provider}（SUNOは起動しません）`);
+  try{
+    const r=await fetch('/api/suno/generate-drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!r.ok){toast(d.detail||'ドラフト生成失敗','e');_plAppend(`✗ ドラフト生成失敗: ${d.detail||''}`);return;}
+    _sunoDraftsByVideo[name]=(d.songs||[]).map(s=>({title:s.title||'',styles:s.styles||'',lyrics:s.lyrics||'',mode:s.mode||d.generation_mode||''}));
+    renderSunoDrafts(name);
+    const n=_sunoDraftsByVideo[name].length;
+    toast(`ドラフト ${n}曲 を生成`,'s');
+    _plAppend(`✓ ドラフト ${n}曲 生成完了 → 確認してください`);
+  }catch(e){toast('接続エラー','e');_plAppend('✗ ドラフト生成 接続エラー')}
+  finally{if(btn){btn.disabled=false;btn.textContent=orig;}}
+}
+/* ドラフト一覧を編集可能フォームで描画（XSS: 値は value/textContent で安全に流し込む） */
+function renderSunoDrafts(name){
+  const drafts=_sunoDraftsByVideo[name]||[];
+  const panel=_sunoEl(name,'sunoDraftPanel');
+  const list=_sunoEl(name,'sunoDraftList');
+  const cnt=_sunoEl(name,'sunoDraftCount');
+  if(!panel||!list)return;
+  if(cnt)cnt.textContent=`${drafts.length}曲`;
+  list.innerHTML='';
+  drafts.forEach((s,i)=>{
+    const card=document.createElement('div');
+    card.className='card';
+    card.style.cssText='margin-bottom:var(--space-2);padding:var(--space-2)';
+    card.dataset.draftIdx=String(i);
+    // ヘッダ（曲番号）
+    const hd=document.createElement('div');
+    hd.style.cssText='font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:4px';
+    hd.textContent=`曲 ${i+1}`;
+    card.appendChild(hd);
+    // Title
+    const tWrap=document.createElement('div');tWrap.className='ff';
+    const tLab=document.createElement('label');tLab.className='fl';tLab.textContent='Title';
+    const tIn=document.createElement('input');tIn.className='fi draft-title';tIn.type='text';tIn.value=s.title;
+    tWrap.appendChild(tLab);tWrap.appendChild(tIn);card.appendChild(tWrap);
+    // Styles
+    const sWrap=document.createElement('div');sWrap.className='ff';
+    const sLab=document.createElement('label');sLab.className='fl';sLab.textContent='Style';
+    const sIn=document.createElement('input');sIn.className='fi draft-styles';sIn.type='text';sIn.value=s.styles;
+    sWrap.appendChild(sLab);sWrap.appendChild(sIn);card.appendChild(sWrap);
+    // Lyrics
+    const lWrap=document.createElement('div');lWrap.className='ff';
+    const lLab=document.createElement('label');lLab.className='fl';lLab.textContent='Lyrics';
+    const lTa=document.createElement('textarea');lTa.className='ft draft-lyrics';lTa.rows=s.lyrics?6:2;lTa.value=s.lyrics;
+    lTa.placeholder='（インスト系は空でも可）';
+    lWrap.appendChild(lLab);lWrap.appendChild(lTa);card.appendChild(lWrap);
+    list.appendChild(card);
+  });
+  // 整備タグの既定値を反映（既に入力済みなら尊重）
+  _applySunoTagDefaults(name);
+  panel.classList.remove('hidden');
+}
+/* DOM から編集後の最新ドラフトを吸い上げる（対象 vol のリストのみ走査） */
+function _collectSunoDraftsFromDom(name){
+  const list=_sunoEl(name,'sunoDraftList');
+  if(!list)return [];
+  const drafts=_sunoDraftsByVideo[name]||[];
+  return Array.from(list.querySelectorAll('[data-draft-idx]')).map(card=>{
+    const i=parseInt(card.dataset.draftIdx,10);
+    const mode=(drafts[i]&&drafts[i].mode)||'';
+    return {
+      title:(card.querySelector('.draft-title')?.value||'').trim(),
+      styles:(card.querySelector('.draft-styles')?.value||'').trim(),
+      lyrics:(card.querySelector('.draft-lyrics')?.value||'').trim(),
+      mode:mode,
+    };
+  });
+}
+/* 対象 vol の整備タグ入力を収集（process-tracks に渡す形）。
+   genre 方式が by_kind の場合は genre は送らず（サーバーが tag_defaults.genre_by_kind を使う）。 */
+function _collectSunoTagsFromDom(name){
+  const artist=(_sunoEl(name,'sunoTagArtist')?.value||'').trim();
+  const album=(_sunoEl(name,'sunoTagAlbum')?.value||'').trim();
+  const genreMode=_sunoEl(name,'sunoTagGenreMode')?.value||'by_kind';
+  const genreFixed=(_sunoEl(name,'sunoTagGenreFixed')?.value||'').trim();
+  return {
+    artist:artist||undefined,
+    album:album||undefined,
+    genre:(genreMode==='fixed'&&genreFixed)?genreFixed:undefined,
+    genre_mode:genreMode,
+    // ドラフト投入時はファイル名（draft 正式名）を維持し、曲別 genre を効かせる
+    keep_names:true,
+  };
+}
+function clearSunoDrafts(name){
+  _sunoDraftsByVideo[name]=[];
+  const panel=_sunoEl(name,'sunoDraftPanel');
+  const list=_sunoEl(name,'sunoDraftList');
+  if(list)list.innerHTML='';
+  if(panel)panel.classList.add('hidden');
+}
+/* 確認済みドラフトを --songs-file 経由でそのまま投入（LLM再生成なし） */
+async function submitSunoDrafts(name){
+  const songs=_collectSunoDraftsFromDom(name);
+  if(!songs.length){toast('投入するドラフトがありません','e');return}
+  const bad=songs.findIndex(s=>!s.title&&!s.styles);
+  if(bad>=0){toast(`曲 ${bad+1}: Title か Style を入力してください`,'e');return}
+  const p=_collectMiniSunoParams();
+  const tags=_collectSunoTagsFromDom(name);
+  // 整備タグは投入後の後処理（process-tracks/S6 一気通貫）で使うため data 属性に保持しておく。
+  const panel=_sunoEl(name,'sunoDraftPanel');
+  if(panel)panel.dataset.sunoTags=JSON.stringify(tags);
+  if(!confirm(`確認済みドラフト ${songs.length}曲 をそのまま SUNO に投入します\n（LLM 再生成なし）\n\n実行しますか？`))return;
+  // start 側の prompt≥10字検証は songs_draft_json があれば緩める想定だが、現状サーバーは
+  // prompt 必須のため、空/短い時は曲名・Style からプレースホルダ prompt を合成して通す。
+  let prompt=p.prompt;
+  if(!prompt||prompt.length<10){
+    const seed=songs.map(s=>s.styles||s.title).filter(Boolean).join('; ').slice(0,200);
+    prompt=`[draft submit] ${seed}`.slice(0,300);
+    if(prompt.length<10)prompt=`[draft submit] ${name}`;
+  }
+  const body={
+    prompt:prompt, provider:p.provider, generation_mode:p.generation_mode,
+    interval:p.interval, headless:p.headless, video_name:name,
+    songs_draft_json:songs,auto_download:true,duration_seconds:p.duration_seconds||240,
+  };
+  try{
+    const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.detail||'投入失敗','e');return}
+    toast(`ドラフト ${songs.length}曲 を投入`,'s');
+    _plAppend(`確認済みドラフト ${songs.length}曲 を投入（LLM再生成なし）`);
+    pollStatus();_startSunoLogRelay();
+    clearSunoDrafts(name);
+  }catch(e){toast('接続エラー','e')}
+}
+/* 生成 → 待機 → DL → 後処理（リネーム + フェード + ゲイン + music/ 格納） の一気通貫 */
+async function runSunoFullFlow(name){
+  const p=_collectMiniSunoParams();
+  if(!p.prompt){toast('プロンプトを入力してください','e');return}
+  const summary=`${p.count}タイトルを生成し、各２テイクを自動ダウンロードします。\n聴き比べてハートで１テイクを選んだ後、採用曲だけを後処理します。\n曲の長さ: カスタム4:00`;
+  if(!confirm(`SUNO 生成・取得を開始します\n\n${summary}`))return;
+  const body={...p,video_name:name,auto_download:true,duration_seconds:p.duration_seconds||240};
+  try{
+    const r=await fetch('/api/suno/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json();toast(e.detail||'失敗','e');return}
+    toast('生成・２テイクの取得を開始しました','s');
+    _plAppend(`SUNO: ${p.count}タイトル生成 → 全テイク取得 → ハート選択待ち`);
+    pollStatus();_startSunoLogRelay();_watchSunoThenDownload(name,p);
+  }catch(e){toast('接続エラー','e')}
+}
+async function _watchSunoThenDownload(name,p){
+  const poll=async()=>{
+    try{
+      const r=await fetch('/api/suno/status'),d=await r.json();
+      if(d.running){setTimeout(poll,3000);return}
+      const tr=await fetch(`/api/videos/${encodeURIComponent(name)}/tracks`);
+      const tracks=await tr.json(),review=tracks.review;
+      loadTrackList(name);
+      if(!review){_setPlStatus('取得状態の確認が必要です');_plAppend('SUNOログと保存済み音声を確認してください。生成の再投入は不要です。');return}
+      if(!review.download_complete){_setPlStatus('テイク取得不足');_plAppend(`取得済み ${review.takes.filter(t=>t.available).length}/${review.expected}テイク。取得を完了してください。`);return}
+      _setPlStatus('ハート選択待ち');
+      _plAppend('全テイクの取得完了。各タイトルから１テイクをハートで選び、採用曲の後処理へ進んでください。');
+      toast('取得完了。聴き比べてハートで採用してください','s');
+    }catch(e){setTimeout(poll,3000)}
+  };
+  setTimeout(poll,2500);
+}
+/* SUNO status → 永続ログへ定期転送 */
+let _sunoLogTimer=null,_sunoLastPhase=null,_sunoLastCurrent=-1;
+function _startSunoLogRelay(){
+  if(_sunoLogTimer)return;
+  _sunoLogTimer=setInterval(async()=>{
+    try{
+      const r=await fetch('/api/suno/status'),d=await r.json();
+      const pg=d.progress||{};
+      const phase=pg.phase||'';
+      const cur=pg.current||0,tot=pg.total||0;
+      if(phase && phase!==_sunoLastPhase){_plAppend(`  └ フェーズ: ${_sunoPhaseLabel(phase)}`);_sunoLastPhase=phase}
+      if(cur!==_sunoLastCurrent && tot){_plAppend(`  └ 進捗: ${cur}/${tot}`);_sunoLastCurrent=cur;_setPlStatus(`SUNO ${cur}/${tot}`)}
+      if(!d.running){clearInterval(_sunoLogTimer);_sunoLogTimer=null;_sunoLastPhase=null;_sunoLastCurrent=-1}
+    }catch(e){}
+  },1500);
+}
+
+/* 楽曲タブ用: ミニパネルに既定値 + Workspace バッジ */
+async function setupMiniSunoPanel(name){
+  // プロンプト/設定の初期値
+  try{
+    const r=await fetch('/api/config'),d=await r.json();
+    const s=d.suno||{};
+    // 整備タグの既定（process-tracks の ID3）をキャッシュ。ドラフトパネルの初期値に使う。
+    _sunoTagDefaults=s.tag_defaults||{};
+    const pr=document.getElementById('miniPrompt');if(pr&&!pr.value)pr.value=s.prompt||'';
+    _renderMiniPromptPicker();
+    const pv=document.getElementById('miniProvider');if(pv)pv.value=s.provider||'claude';
+    const md=document.getElementById('miniMode');if(md&&s.generation_mode){md.value=s.generation_mode;onMiniModeChange();}
+    const cn=document.getElementById('miniCount');if(cn&&s.loop_count)cn.value=s.loop_count;
+    const iv=document.getElementById('miniInterval');if(iv&&s.loop_interval_sec)iv.value=s.loop_interval_sec;
+    // 多様性（チャンネル別 suno 設定の既定値を反映）
+    const dt=document.getElementById('miniDivThreshold');if(dt)dt.value=(s.diversity_threshold!=null?s.diversity_threshold:0.6);
+    const dr=document.getElementById('miniDivRetry');if(dr)dr.value=(s.diversity_retry!=null?s.diversity_retry:2);
+    const hl=document.getElementById('miniHistoryLimit');if(hl)hl.value=(s.history_limit!=null?s.history_limit:40);
+    // Workspace バッジ
+    const channel=(d.dashboard.channel_name||'orzz').trim().replace(/[^A-Za-z0-9_-]+/g,'_').replace(/^_|_$/g,'')||'orzz';
+    const m=name.match(/^(\d+)_/);
+    const vol=m?m[1]:'';
+    const badge=document.getElementById('miniWsBadge');
+    if(badge)badge.textContent=vol?`作業領域: ${channel}_vol${vol}`:'作業領域: 自動';
+  }catch(e){}
+}
+async function stopSuno(){await fetch('/api/suno/stop',{method:'POST'});document.getElementById('btnStop').classList.add('hidden');document.getElementById('btnStart').disabled=false;toast('停止','i')}
+let _lastPipelineRunning=false,_pipelineDoneShownAt=0;
+
+/* ==== 全タスクログ集約ポップオーバー ==== */
+let _lpHideTimer=null, _lpPinned=false;
+let _lpAllLogs={suno:[],pipeline:[],youtube:[],ame:[],benchmark:[]};
+function _stripEmoji(s){
+  // 絵文字 / 記号系を除去（ユーザー要望: ログから絵文字オフ）
+  if(!s)return '';
+  return String(s).replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{1F100}-\u{1F1FF}\u{1FA70}-\u{1FAFF}\u{200D}\u{FE0F}]/gu,'').trim();
+}
+function showLogPopover(){
+  cancelHideLogPopover();
+  document.getElementById('logPopover')?.classList.add('show');
+  renderLogPopover();
+}
+function scheduleHideLogPopover(){
+  if(_lpPinned)return;
+  cancelHideLogPopover();
+  _lpHideTimer=setTimeout(()=>{document.getElementById('logPopover')?.classList.remove('show')},250);
+}
+function cancelHideLogPopover(){if(_lpHideTimer){clearTimeout(_lpHideTimer);_lpHideTimer=null}}
+function toggleLogPopoverPin(ev){
+  ev?.stopPropagation();
+  _lpPinned=!_lpPinned;
+  const pop=document.getElementById('logPopover');
+  if(_lpPinned){pop?.classList.add('show');renderLogPopover()}
+  else{pop?.classList.remove('show')}
+}
+function closeLogPopover(){
+  _lpPinned=false;
+  document.getElementById('logPopover')?.classList.remove('show');
+}
+function _updateLogPopoverData(key, lines){
+  if(!Array.isArray(lines))return;
+  // 末尾100件だけキャッシュ
+  _lpAllLogs[key]=lines.slice(-100).map(_stripEmoji).filter(s=>s);
+  // 開いているなら即再描画
+  if(document.getElementById('logPopover')?.classList.contains('show'))renderLogPopover();
+}
+function renderLogPopover(){
+  const body=document.getElementById('lpBody');
+  const meta=document.getElementById('lpMeta');
+  if(!body)return;
+  const sections=[
+    ['suno','SUNO 楽曲生成 / DL'],
+    ['pipeline','パイプライン'],
+    ['youtube','YouTube アップロード'],
+    ['ame','Adobe Media Encoder'],
+    ['benchmark','ベンチマーク分析'],
+  ];
+  let total=0;
+  const html=sections.map(([k,label])=>{
+    const lines=_lpAllLogs[k]||[];
+    total+=lines.length;
+    const inner=lines.length
+      ? lines.slice(-30).map(l=>`<div class="log-line">${esc(l)}</div>`).join('')
+      : '<div class="log-popover-empty" style="padding:0">（ログなし）</div>';
+    return `<div class="log-popover-section">
+      <div class="log-popover-section-head">${esc(label)} <span style="color:var(--text-tertiary);font-weight:normal">${lines.length} 行</span></div>
+      <div class="log-popover-section-body">${inner}</div>
+    </div>`;
+  }).join('');
+  body.innerHTML=html||'<div class="log-popover-empty">タスクが実行されるとここに表示されます。</div>';
+  if(meta)meta.textContent=`${total} 行`;
+}
+function downloadAllLogs(){
+  const sections=[
+    ['SUNO 楽曲生成 / DL','suno'],
+    ['パイプライン','pipeline'],
+    ['YouTube アップロード','youtube'],
+    ['Adobe Media Encoder','ame'],
+    ['ベンチマーク分析','benchmark'],
+  ];
+  const ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  let txt=`# Automation Studio 実行ログ\n# generated: ${new Date().toISOString()}\n\n`;
+  for(const [label,k] of sections){
+    txt+=`## ${label}\n`;
+    const lines=_lpAllLogs[k]||[];
+    txt+=lines.length?lines.join('\n'):'(ログなし)';
+    txt+='\n\n';
+  }
+  const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=`automation-studio-logs-${ts}.txt`;
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url)},100);
+}
+async function pollStatus(){
+  try{
+    const [sR,pR,yR]=await Promise.all([
+      fetch('/api/suno/status'),
+      fetch('/api/pipeline/status').catch(()=>null),
+      fetch('/api/youtube/status').catch(()=>null),
+    ]);
+    const d=await sR.json();
+    // 全タスクログ集約（右上チップのホバーで参照）
+    try{ _updateLogPopoverData('suno', d.logs||[]); }catch(_){}
+    if(pR){try{ const pd=await pR.clone().json(); _updateLogPopoverData('pipeline', pd.logs||[]); }catch(_){}}
+    if(yR){try{ const yd=await yR.clone().json(); _updateLogPopoverData('youtube', yd.logs||[]); }catch(_){}}
+    // YouTube アップロードチップ更新（SUNO/AME とは独立）
+    let ytRunning=false, ytPct=0;
+    try{
+      const yt=yR?await yR.json():null;
+      const chip=document.getElementById('youtubeStatusChip');
+      if(chip && yt){
+        ytRunning=!!yt.running;
+        if(ytRunning){
+          // 直近 30 行から最新の進捗ログをパース
+          // 形式: "(矢印) 47% (2220/4707 MB) | 8.5 MB/s | 残り約 4分54秒"
+          const logs=yt.logs||[];
+          let pctTxt='', sizeTxt='', rateTxt='', etaTxt='';
+          for(let i=logs.length-1;i>=Math.max(0,logs.length-30);i--){
+            const m=(logs[i]||'').match(/(\d+)%\s*\((\d+)\/(\d+)\s*MB\)\s*\|\s*([\d.]+\s*[KMG]?B\/s)\s*\|\s*残り約\s*(.+?)$/);
+            if(m){ytPct=parseInt(m[1],10); pctTxt=m[1]+'%'; sizeTxt=`${m[2]}/${m[3]}MB`; rateTxt=m[4]; etaTxt=m[5].trim(); break}
+          }
+          // 進捗ログがまだ出ていない（認証中など）→ 直近行をそのまま表示
+          if(!pctTxt){
+            const last=(logs[logs.length-1]||'').trim().replace(/^[📤✅⚠️ℹ️]+\s*/,'').slice(0,30);
+            pctTxt=last||'準備中';
+          }
+          chip.style.display='inline-flex';
+          chip.innerHTML=`<span style="font-size:13px">↑</span><span class="status-text">YT ${esc(pctTxt)}${etaTxt?' ・残り'+esc(etaTxt):''}</span>`;
+          chip.title=`YouTube アップロード中\n${sizeTxt?sizeTxt+' / '+rateTxt+'\n':''}クリックでログ画面へ`;
+        }else{
+          const queued=yt.queued_count||0;
+          if(queued>0){
+            chip.style.display='inline-flex';
+            chip.innerHTML=`<span style="font-size:13px">↑</span><span class="status-text">YT 待機 ${queued}件</span>`;
+            chip.title=`YouTube アップロード待機中: ${queued}件\nクリックでログ画面へ`;
+          }else{
+            chip.style.display='none';
+          }
+        }
+      }
+    }catch(_){}
+    const e=document.getElementById('globalStatus');
+    const miniStart=document.getElementById('miniStartBtn'),miniStop=document.getElementById('miniStopBtn');
+    const gBar=document.getElementById('globalProgressBar');
+    const gFill=document.getElementById('globalProgressFill');
+    let pipelineRunning=false,pipelinePhase='',pipelineStepInfo='';
+    if(pR){try{const pd=await pR.json();pipelineRunning=!!pd.running;
+      const logs=pd.logs||[];
+      // 直近 30 行から「▶ STEP <name> 開始 (i/N)」を抽出
+      for(let i=logs.length-1;i>=Math.max(0,logs.length-30);i--){
+        const m1=(logs[i]||'').match(/▶ STEP (\w+) 開始 \((\d+)\/(\d+)\)/);
+        if(m1){pipelineStepInfo=`${m1[2]}/${m1[3]}`;pipelinePhase=m1[1];break}
+      }
+      if(!pipelinePhase){
+        const lastLog=logs[logs.length-1]||'';
+        const m=lastLog.match(/\d+\/\d+\s+(.+)/);if(m)pipelinePhase=m[1];
+      }
+    }catch(e){}}
+    // パイプライン完了直後 30 秒は「✓ 完了」を表示
+    if(_lastPipelineRunning && !pipelineRunning){_pipelineDoneShownAt=Date.now()}
+    _lastPipelineRunning=pipelineRunning;
+    if(d.running){
+      e.innerHTML='<span class="status-dot status-running"></span><span class="status-text">SUNO実行中</span>';
+      document.getElementById('btnStop')?.classList.remove('hidden');
+      const bs=document.getElementById('btnStart');if(bs)bs.disabled=true;
+      if(miniStop)miniStop.classList.remove('hidden');
+      if(miniStart)miniStart.disabled=true;
+      _renderSunoProgPanel('sunoProgPanel',d);
+      _renderSunoProgPanel('miniSunoProgPanel',d);
+      const pg=d.progress||{};
+      const pct=pg.total?Math.min(100,Math.round((pg.current/pg.total)*100)):0;
+      if(gBar){gBar.style.display='block';gFill.style.width=pct+'%'}
+      setTimeout(pollStatus,1500);
+    }else if(pipelineRunning){
+      const phaseLabel={suno:'楽曲生成',select:'楽曲選定',rename:'楽曲加工',bgimage:'背景画像',composite:'画像合成',psd_composite:'画像合成',premiere:'自動配置',render:'書き出し',export:'書き出し',qa:'検査',meta:'メタ生成',localization:'多言語',thumbnail:'サムネ',upload:'アップロード'}[pipelinePhase]||pipelinePhase;
+      e.innerHTML=`<span class="status-dot status-running"></span><span class="status-text">${esc(pipelineStepInfo)} ${esc(phaseLabel.slice(0,16))}</span>`;
+      if(gBar){gBar.style.display='block';gFill.style.width='50%'}
+      setTimeout(pollStatus,2000);
+    }else if(ytRunning){
+      // YouTube アップロード単独実行中: トップバーの進捗バーをアップロード % で駆動
+      e.innerHTML=`<span class="status-dot status-running" style="background:#ef4444;box-shadow:0 0 6px #ef4444"></span><span class="status-text">YT ${ytPct}%</span>`;
+      if(gBar){gBar.style.display='block';gFill.style.width=(ytPct||1)+'%';gFill.style.background='linear-gradient(90deg,#ef4444,#f87171)'}
+      setTimeout(pollStatus,2000);
+    }else if(Date.now()-_pipelineDoneShownAt < 30000){
+      e.innerHTML='<span class="status-dot status-running" style="background:var(--accent-success);box-shadow:0 0 6px var(--accent-success)"></span><span class="status-text">✓ パイプライン完了</span>';
+      if(gBar)gBar.style.display='none';
+      setTimeout(pollStatus,5000);
+    }else{
+      e.innerHTML='<span class="status-dot status-idle"></span><span class="status-text">待機中</span>';
+      document.getElementById('btnStop')?.classList.add('hidden');
+      const bs=document.getElementById('btnStart');if(bs)bs.disabled=false;
+      if(miniStop)miniStop.classList.add('hidden');
+      if(miniStart)miniStart.disabled=false;
+      if(d.progress&&d.progress.total)_renderSunoProgPanel('sunoProgPanel',d);
+      if(d.progress&&d.progress.total)_renderSunoProgPanel('miniSunoProgPanel',d);
+      if(gBar){gBar.style.display='none';gFill.style.background='linear-gradient(90deg,var(--accent-primary),var(--brand-accent))'}
+      // アイドル時は 8 秒間隔で軽くポーリング（パイプライン開始の検知用）
+      setTimeout(pollStatus,8000);
+    }
+  }catch(e){setTimeout(pollStatus,10000)}
+}
+
+/* ==== 共通ステータスバー（全タスク集約） ==== */
+let _gtbTimer=null;
+async function pollGlobalStatus(){
+  const bar=document.getElementById('globalTaskBar');
+  const inner=document.getElementById('gtbInner');
+  // 詳細ビュー（vDetail）内に配置されているため、未表示時は bar 自体が存在しない
+  if(!bar||!inner){_scheduleGlobalStatus(2000);return;}
+  const vDetail=document.getElementById('vDetail');
+  const onDetail=vDetail && vDetail.style.display!=='none';
+  if(!onDetail){bar.style.display='none';return _scheduleGlobalStatus(3000);}
+  try{
+    const [statusR,sunoR]=await Promise.all([fetch('/api/status/all'),fetch('/api/suno/status').catch(()=>null)]);
+    const d=await statusR.json();
+    const tasks=d.tasks||[];
+    let sunoData=null;
+    if(sunoR){try{sunoData=await sunoR.json();}catch(e){}}
+    const sunoActive=sunoData && (sunoData.running || (sunoData.progress && sunoData.progress.total));
+    if(tasks.length===0 && !sunoActive){bar.style.display='none';return _scheduleGlobalStatus(d.any_running?1500:4000);}
+    bar.style.display='block';
+    const sunoHtml=sunoActive?`<div id="globalSunoProg" class="suno-prog-slot"></div>`:'';
+    const miniTasks=tasks.filter(t=>t.key!=='suno');
+    const miniHtml=miniTasks.length?`<div class="gtb-mini-list">${miniTasks.map(_renderGtbMini).join('')}</div>`:'';
+    inner.innerHTML=sunoHtml+miniHtml;
+    if(sunoActive)_renderSunoProgPanel('globalSunoProg',sunoData);
+    _scheduleGlobalStatus(d.any_running||sunoActive?1500:4000);
+  }catch(e){_scheduleGlobalStatus(4000);}
+}
+function _scheduleGlobalStatus(ms){
+  if(_gtbTimer)clearTimeout(_gtbTimer);
+  _gtbTimer=setTimeout(pollGlobalStatus,ms);
+}
+function _renderGtbMini(t){
+  const cls=t.running?'running':'done';
+  const last=(t.last_log||'').slice(-80);
+  const pg=t.progress;
+  const hasBar=pg&&pg.total;
+  const pct=hasBar?pg.percent:0;
+  const sub=hasBar?`${pg.current}/${pg.total}${pg.phase?' · '+esc(pg.phase):''}`:esc(last);
+  return `<div class="gtb-mini ${cls}" title="${esc(last)}">
+    <span class="gtb-icon">${esc(t.icon||'•')}</span>
+    <div class="gtb-mini-body">
+      <div class="gtb-mini-label">${esc(t.label)} ${t.running?'':' <span style="color:var(--accent-success);font-weight:400">✓</span>'}</div>
+      <div class="gtb-mini-sub">${sub||'—'}</div>
+      ${hasBar?`<div class="gtb-mini-bar"><div class="gtb-mini-bar-fill" style="width:${pct}%"></div></div>`:''}
+    </div>
+    ${hasBar?`<span class="gtb-mini-pct">${pct}%</span>`:''}
+  </div>`;
+}
+
+/* ==== Prompts ==== */
+let _prompts=[];
+async function loadPrompts(){
+  try{
+    const r=await fetch('/api/prompts'),d=await r.json();
+    _prompts=d.prompts||[];
+    _renderPromptLibrary();
+    _renderMiniPromptPicker();
+    _renderAutPromptPicker();
+  }catch(e){}
+}
+function _renderAutPromptPicker(){
+  const pp=document.getElementById('autPromptPicker');if(!pp)return;
+  if(!_prompts.length){pp.innerHTML='<span style="color:var(--text-tertiary);font-size:var(--text-xs)">「SUNO」画面でプロンプトを保存するとここに表示されます</span>';return;}
+  pp.innerHTML=_prompts.map(p=>`<div class="mp-chip" data-pid="${esc(String(p.id))}"><span class="mp-chip-label" title="${esc(p.text)}">${esc(p.name)}</span><span class="mp-chip-act"><button class="mp-chip-btn" title="編集" data-act="edit">✎</button><button class="mp-chip-btn del" title="削除" data-act="del">✕</button></span></div>`).join('');
+  pp.querySelectorAll('.mp-chip').forEach(chip=>{
+    const pid=chip.dataset.pid;
+    chip.querySelector('.mp-chip-label').onclick=()=>{const p=_prompts.find(x=>String(x.id)===pid);if(p){const ta=document.getElementById('autPrompt');if(ta){ta.value=p.text;toast(`"${p.name}" を読み込み`,'s');}}};
+    chip.querySelector('[data-act="edit"]').onclick=(e)=>{e.stopPropagation();editPromptModal(pid);};
+    chip.querySelector('[data-act="del"]').onclick=(e)=>{e.stopPropagation();deletePrompt(pid);};
+  });
+}
+function _renderPromptLibrary(){
+  const c=document.getElementById('promptPresets');if(!c)return;
+  if(!_prompts.length){c.innerHTML='<div style="color:var(--text-tertiary);font-size:12px;padding:var(--space-1) 0">保存済みプロンプトはありません。「+ 新規作成」から追加できます。</div>';return;}
+  c.innerHTML='';
+  _prompts.forEach(p=>{
+    const el=document.createElement('div');el.className='pc';el.dataset.pid=p.id;
+    el.innerHTML=`<div class="pc-body"><div class="pc-n">${esc(p.name)}</div><div class="pc-t">${esc(p.text)}</div></div><div class="pc-actions"><button class="pc-btn" onclick="editPromptModal('${p.id}');event.stopPropagation()">編集</button><button class="pc-btn del" onclick="deletePrompt('${p.id}');event.stopPropagation()">削除</button></div>`;
+    el.querySelector('.pc-body').onclick=()=>{
+      const ta=document.getElementById('cfgSunoPrompt');if(ta)ta.value=p.text;
+      document.querySelectorAll('#promptPresets .pc').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');
+    };
+    c.appendChild(el);
+  });
+}
+function _renderMiniPromptPicker(){
+  const c=document.getElementById('miniPromptPicker');if(!c)return;
+  if(!_prompts.length){c.innerHTML='<span style="color:var(--text-tertiary);font-size:var(--text-xs)">ライブラリが空です。「+ 保存」から追加できます。</span>';return;}
+  c.innerHTML=_prompts.map(p=>`<div class="mp-chip" data-pid="${esc(String(p.id))}"><span class="mp-chip-label" title="${esc(p.text)}">${esc(p.name)}</span><span class="mp-chip-act"><button class="mp-chip-btn" title="編集" data-act="edit">✎</button><button class="mp-chip-btn del" title="削除" data-act="del">✕</button></span></div>`).join('');
+  c.querySelectorAll('.mp-chip').forEach(chip=>{
+    const pid=chip.dataset.pid;
+    chip.querySelector('.mp-chip-label').onclick=()=>{const p=_prompts.find(x=>String(x.id)===pid);if(p){const ta=document.getElementById('miniPrompt');if(ta)ta.value=p.text;toast(`"${p.name}" を読み込み`,'s');}};
+    chip.querySelector('[data-act="edit"]').onclick=(e)=>{e.stopPropagation();editPromptModal(pid);};
+    chip.querySelector('[data-act="del"]').onclick=(e)=>{e.stopPropagation();deletePrompt(pid);};
+  });
+}
+function showSavePromptModal(source){
+  const t=(source==='mini'?document.getElementById('miniPrompt'):document.getElementById('cfgSunoPrompt'))?.value?.trim()||'';
+  modal(`<div class="mo-title">プロンプトを保存</div><div class="ff"><label class="fl">名前</label><input type="text" class="fi" id="promptSaveName" placeholder="例: Lounge Jazz BGM"></div><div class="ff"><label class="fl">プロンプト</label><textarea class="ft" id="promptSaveText" rows="3">${esc(t)}</textarea></div><div class="btns"><button class="btn btn-primary" onclick="saveNewPrompt()">保存</button><button class="btn btn-secondary" onclick="closeModal()">キャンセル</button></div>`);
+  if(!t){setTimeout(()=>{const n=document.getElementById('promptSaveName');if(n)n.focus();},50);}
+}
+function createNewPromptModal(){
+  modal(`<div class="mo-title">新規プロンプト作成</div><div class="ff"><label class="fl">名前</label><input type="text" class="fi" id="promptSaveName" placeholder="例: Lounge Jazz BGM"></div><div class="ff"><label class="fl">プロンプト</label><textarea class="ft" id="promptSaveText" rows="4" placeholder="BGMの雰囲気を英語で入力..."></textarea></div><div class="btns"><button class="btn btn-primary" onclick="saveNewPrompt()">作成</button><button class="btn btn-secondary" onclick="closeModal()">キャンセル</button></div>`);
+  setTimeout(()=>{const n=document.getElementById('promptSaveName');if(n)n.focus();},50);
+}
+async function saveNewPrompt(){
+  const n=document.getElementById('promptSaveName')?.value?.trim();
+  const t=document.getElementById('promptSaveText')?.value?.trim();
+  if(!n){toast('名前を入力してください','e');return;}
+  if(!t){toast('プロンプトを入力してください','e');return;}
+  await fetch('/api/prompts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,text:t})});
+  closeModal();loadPrompts();toast('保存しました','s');
+}
+
+/* ==== 汎用ヘルパー（旧 書き出しタブ由来） ==== */
+function _fmtBytes(b){
+  if(!b||b<0)return '';
+  if(b<1024)return b+' B';
+  if(b<1024*1024)return (b/1024).toFixed(1)+' KB';
+  if(b<1024*1024*1024)return (b/1024/1024).toFixed(1)+' MB';
+  return (b/1024/1024/1024).toFixed(2)+' GB';
+}
+
+function copyUiText(value,successMessage='コピーしました'){
+  navigator.clipboard.writeText(String(value||'')).then(()=>toast(successMessage,'s')).catch(()=>toast('コピーに失敗しました','e'));
+}
+
+function _fmtMmSs(s){
+  if(!s||s<0)return '';
+  s=Math.floor(s);
+  const m=Math.floor(s/60), ss=s%60;
+  return `${m}:${String(ss).padStart(2,'0')}`;
+}
+
+/* ==== 自動化設定（チャンネル別） ==== */
+async function loadAutomationConfig(){
+  setAutomationSaveStatus('loading','読み込み中');
+  // 書き出し関連の設定は段階 1a で廃止（AME キュー）。ここでは触らない。
+  try{
+    const [cr,ar,pr]=await Promise.all([
+      fetch('/api/config'),
+      fetch('/api/automation/config'),
+      fetch('/api/prompts'),
+    ]);
+    const cfg=await cr.json();
+    const a=(await ar.json()).config||{};
+    _prompts=(await pr.json()).prompts||[];
+    document.getElementById('autChName').textContent=`( ${cfg.dashboard.channel_name||'orzz'} / ${(cfg.dashboard.channel_folder||'').split('/').pop()} )`;
+    // プリセットピッカー
+    const pp=document.getElementById('autPromptPicker');
+    if(pp){
+      if(_prompts.length){
+        pp.innerHTML=_prompts.map(p=>`<div class="mp-chip" data-pid="${esc(String(p.id))}"><span class="mp-chip-label" title="${esc(p.text)}">${esc(p.name)}</span><span class="mp-chip-act"><button class="mp-chip-btn" title="編集" data-act="edit">✎</button><button class="mp-chip-btn del" title="削除" data-act="del">✕</button></span></div>`).join('');
+        pp.querySelectorAll('.mp-chip').forEach(chip=>{
+          const pid=chip.dataset.pid;
+          chip.querySelector('.mp-chip-label').onclick=()=>{const p=_prompts.find(x=>String(x.id)===pid);if(p){document.getElementById('autPrompt').value=p.text;toast(`"${p.name}" を読み込み`,'s');}};
+          chip.querySelector('[data-act="edit"]').onclick=(e)=>{e.stopPropagation();editPromptModal(pid);};
+          chip.querySelector('[data-act="del"]').onclick=(e)=>{e.stopPropagation();deletePrompt(pid);};
+        });
+      }else{pp.innerHTML='<span style="color:var(--text-tertiary);font-size:var(--text-xs)">「SUNO」画面でプロンプトを保存するとここに表示されます</span>';}
+    }
+    // 値を注入（suno_config 既定 + automation.json の上書き）
+    const s=cfg.suno||{};
+    const g=(k,d)=>a[k]!==undefined?a[k]:d;
+    document.getElementById('autPrompt').value=g('suno_prompt',s.prompt||'');
+    document.getElementById('autProvider').value=g('suno_provider',s.provider||'claude');
+    document.getElementById('autMode').value=g('suno_mode',s.generation_mode||'styles_title_only');
+    document.getElementById('autCount').value=g('suno_count',s.loop_count||20);
+    document.getElementById('autInterval').value=g('suno_interval',s.loop_interval_sec||180);
+    document.getElementById('autDlWait').value=g('dl_wait_sec',30);
+    document.getElementById('autHeadless').value=g('suno_headless',false)?'1':'0';
+    document.getElementById('autBatch').value=g('suno_batch',true)?'1':'0';
+    document.getElementById('autDivThreshold').value=g('suno_diversity_threshold',s.diversity_threshold!=null?s.diversity_threshold:0.6);
+    document.getElementById('autDivRetry').value=g('suno_diversity_retry',s.diversity_retry!=null?s.diversity_retry:2);
+    document.getElementById('autHistoryLimit').value=g('suno_history_limit',s.history_limit!=null?s.history_limit:40);
+    const dur=g('premiere_duration',10800);
+    document.getElementById('autPrH').value=Math.floor(dur/3600);
+    document.getElementById('autPrM').value=Math.floor((dur%3600)/60);
+    document.getElementById('autPrS').value=dur%60;
+    document.getElementById('autAutoExport').checked=!!g('premiere_auto_export',false);
+    document.getElementById('autMetaTitleN').value=g('meta_title_count',5);
+    document.getElementById('autPrivacy').value=g('upload_privacy','unlisted');
+    document.getElementById('autAutoUpload').checked=!!g('auto_upload',false);
+    document.getElementById('autThumbProvider').value=g('thumb_provider','none');
+    document.getElementById('autThumbPrompt').value=g('thumb_prompt','');
+    document.getElementById('autThumbAuto').checked=!!g('thumb_auto',false);
+    document.getElementById('autAutoApproval').checked=!!g('auto_approval_mode',false);
+    updateAutPrPreview();
+    bindAutomationDirtyTracking();
+    setAutomationSaveStatus('saved','保存済み');
+  }catch(e){setAutomationSaveStatus('error','読み込み失敗');toast('読み込みに失敗','e')}
+}
+function setAutomationSaveStatus(state,label){
+  const el=document.getElementById('autSaveStatus');if(!el)return;
+  const dotClass=state==='saved'?'status-running':state==='dirty'?'status-pending':state==='error'?'status-error':'status-idle';
+  el.innerHTML=`<span class="status-dot ${dotClass}"></span><span>${esc(label)}</span>`;
+}
+function bindAutomationDirtyTracking(){
+  document.querySelectorAll('#automation-settings-source input,#automation-settings-source select,#automation-settings-source textarea').forEach(el=>{
+    if(el.dataset.autDirtyBound)return;
+    el.dataset.autDirtyBound='1';
+    el.addEventListener('input',()=>setAutomationSaveStatus('dirty','未保存の変更'));
+    el.addEventListener('change',()=>setAutomationSaveStatus('dirty','未保存の変更'));
+  });
+}
+function updateAutPrPreview(){
+  const h=Math.max(0,parseInt(document.getElementById('autPrH')?.value)||0);
+  const m=Math.max(0,Math.min(59,parseInt(document.getElementById('autPrM')?.value)||0));
+  const s=Math.max(0,Math.min(59,parseInt(document.getElementById('autPrS')?.value)||0));
+  const el=document.getElementById('autPrPreview');
+  if(el)el.textContent=`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+async function saveAutomationConfig(){
+  setAutomationSaveStatus('loading','保存中');
+  const h=parseInt(document.getElementById('autPrH').value)||0;
+  const m=parseInt(document.getElementById('autPrM').value)||0;
+  const s=parseInt(document.getElementById('autPrS').value)||0;
+  const body={
+    suno_prompt:document.getElementById('autPrompt').value.trim(),
+    suno_provider:document.getElementById('autProvider').value,
+    suno_mode:document.getElementById('autMode').value,
+    suno_count:parseInt(document.getElementById('autCount').value)||20,
+    suno_interval:parseInt(document.getElementById('autInterval').value)||180,
+    suno_batch:document.getElementById('autBatch').value==='1',
+    suno_headless:document.getElementById('autHeadless').value==='1',
+    suno_diversity_threshold:_numOrUndef(document.getElementById('autDivThreshold').value,true),
+    suno_diversity_retry:_numOrUndef(document.getElementById('autDivRetry').value,false),
+    suno_history_limit:_numOrUndef(document.getElementById('autHistoryLimit').value,false),
+    dl_wait_sec:parseInt(document.getElementById('autDlWait').value)||30,
+    premiere_duration:h*3600+m*60+s,
+    premiere_auto_export:document.getElementById('autAutoExport').checked,
+    meta_title_count:parseInt(document.getElementById('autMetaTitleN').value)||5,
+    upload_privacy:document.getElementById('autPrivacy').value,
+    auto_upload:document.getElementById('autAutoUpload').checked,
+    thumb_provider:document.getElementById('autThumbProvider').value,
+    thumb_prompt:document.getElementById('autThumbPrompt').value,
+    thumb_auto:document.getElementById('autThumbAuto').checked,
+    auto_approval_mode:document.getElementById('autAutoApproval').checked,
+  };
+  try{
+    const r=await fetch('/api/automation/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){setAutomationSaveStatus('saved','保存済み');toast('このチャンネルに保存しました','s');}
+    else{setAutomationSaveStatus('error','保存失敗');toast('保存失敗','e');}
+  }catch(e){setAutomationSaveStatus('error','接続エラー');toast('接続エラー','e')}
+}
+
+function editPromptModal(id){
+  const p=_prompts.find(x=>String(x.id)===String(id));if(!p)return;
+  modal(`<div class="mo-title">プロンプトを編集</div><div class="ff"><label class="fl">名前</label><input type="text" class="fi" id="promptEditName" value="${esc(p.name)}"></div><div class="ff"><label class="fl">プロンプト</label><textarea class="ft" id="promptEditText" rows="4">${esc(p.text)}</textarea></div><div class="btns"><button class="btn btn-primary" onclick="updatePrompt('${esc(String(id))}')">更新</button><button class="btn btn-secondary" onclick="closeModal()">キャンセル</button></div>`);
+}
+async function updatePrompt(id){
+  const n=document.getElementById('promptEditName')?.value?.trim();
+  const t=document.getElementById('promptEditText')?.value?.trim();
+  if(!n||!t){toast('入力してください','e');return;}
+  await fetch('/api/prompts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,name:n,text:t})});
+  closeModal();loadPrompts();toast('更新しました','s');
+}
+async function deletePrompt(id){
+  if(!confirm('このプロンプトを削除しますか？'))return;
+  await fetch(`/api/prompts/${encodeURIComponent(id)}`,{method:'DELETE'});
+  loadPrompts();toast('削除しました','s');
+}
+
+/* ==== Create Video ==== */
+function showCreateVideoModal(){
+  const now=new Date();
+  const t=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  const prefix=_safePrefixValue(_lastConfig?.dashboard?.file_prefix)||'vol';
+  modal(`<div class="mo-title">新規動画フォルダ</div><div class="ff"><label class="fl">公開予定日</label><input type="date" class="fi" id="newVDate" value="${t}"></div><div class="fh" style="margin-bottom:14px"><code>{連番}_${esc(prefix)}_{日付}</code> 形式で自動生成します。変更は「基本設定 → 動画フォルダ prefix」から行えます。</div><div class="btns"><button class="btn btn-primary" onclick="createVideo()">作成</button><button class="btn btn-secondary" onclick="closeModal()">キャンセル</button></div>`);
+}
+async function createVideo(){
+  const d=document.getElementById('newVDate').value;if(!d)return;
+  const r=await fetch('/api/videos/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({publish_date:d})});
+  const data=await r.json();
+  if(data.status==='ok'){
+    closeModal();
+    const created=data.created||[];
+    toast(`vol.${data.num} を作成: ${data.folder}${created.length?' / '+created.length+' ファイル生成':''}`,'s');
+    loadVideos();loadDashboard();
+  }
+  else toast('失敗','e');
+}
+
+/* ベンチマーク → 自チャンネルペルソナ提案 */
+	
+	function _bpAll(on){
+	  document.querySelectorAll('.bp-item:not(.is-filter-hidden) .bp-chk').forEach(c=>{c.checked=!!on});
+	  _bpUpdate();
+	}
+	function _bpUpdate(){
+	  document.querySelectorAll('.bp-item').forEach(item=>{
+	    const chk=item.querySelector('.bp-chk');
+	    item.dataset.selected=chk?.checked?'1':'0';
+	  });
+	  const n=document.querySelectorAll('.bp-chk:checked').length;
+	  const el=document.getElementById('bpSelCount');
+	  if(el)el.textContent=n+' 件選択';
+	  const btn=document.getElementById('bpGenBtn');
+	  if(btn)btn.disabled=n<1;
+	  _bpFilter(false);
+	}
+	function _bpFilter(update=true){
+	  const q=(document.getElementById('bpFilterInput')?.value||'').trim().toLowerCase();
+	  const selectedOnly=!!document.getElementById('bpSelectedOnly')?.checked;
+	  const items=Array.from(document.querySelectorAll('.bp-item'));
+	  let visible=0;
+	  items.forEach(item=>{
+	    const hit=(!q||(item.dataset.filter||'').includes(q))&&(!selectedOnly||item.dataset.selected==='1');
+	    item.classList.toggle('is-filter-hidden',!hit);
+	    if(hit)visible++;
+	  });
+	  const cnt=document.getElementById('bpFilterCount');
+	  if(cnt)cnt.textContent=`表示 ${visible} / ${items.length}`;
+	  if(update)_bpUpdate();
+	}
+function _bpSelected(){
+  return Array.from(document.querySelectorAll('.bp-chk:checked')).map(c=>c.dataset.name);
+}
+
+
+function bpAdoptPersona(text){
+  const ta=document.getElementById('cfgPersona');
+  if(!ta){toast('ペルソナ欄が見つかりません','e');return}
+  ta.value=String(text||'');
+  ta.dispatchEvent(new Event('input',{bubbles:true}));
+  closeModal();
+  ta.scrollIntoView({behavior:'smooth',block:'center'});
+  ta.focus();
+  toast('ペルソナに反映しました（保存ボタンで確定）','s');
+}
+
+/* 初期設定の必須項目チェック — Phase 3-(9) + 未設定フィールドのハイライト */
+async function checkOnboardingState(){
+  const banner=document.getElementById('onboardingBanner');
+  const missingEl=document.getElementById('onboardingMissing');
+  if(!banner||!missingEl)return;
+  try{
+    const r=await fetch('/api/config');const d=await r.json();
+    const dc=d.dashboard||{};const s=d.suno||{};
+    const missing=[];
+    // 必須項目: チャンネル名・チャンネルフォルダ・ペルソナ・ファイル prefix・LLM API キー or CLI
+    if(!(dc.channel_name||'').trim())missing.push({label:'チャンネル名',target:'cfgName'});
+    if(!(dc.channel_folder||'').trim())missing.push({label:'チャンネルフォルダ',target:'cfgFolder'});
+    if(!(dc.persona||'').trim())missing.push({label:'ペルソナ（ベンチマーク分析ページ）',target:'cfgPersona'});
+    if(!(dc.file_prefix||'').trim()&&dc.file_prefix!=='vol')missing.push({label:'動画フォルダ prefix',target:'cfgFilePrefix'});
+    if(!((s.api_key||'').trim()||(s.claude_cli||'').trim()||(s.codex_cli||'').trim()))missing.push({label:'LLM API キー or CLI',target:'cfgApiKey'});
+    // 未設定フィールドに data-required-empty 属性を付ける（CSS でハイライト）
+    _highlightMissingFields(missing.map(m=>m.target));
+    if(missing.length){
+      banner.style.display='block';
+      missingEl.innerHTML='下記の必須項目が未設定です。<strong style="color:var(--text-primary)">設定しないと制作フローが正常に動かない</strong>可能性があります:<br>'+
+        missing.map(m=>`<a href="#" onclick="go('settings');setTimeout(()=>{const el=document.getElementById('${esc(m.target)}');if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.focus?.();}},300);return false" style="color:var(--accent-warning);text-decoration:underline;margin-right:var(--space-2)">→ ${esc(m.label)}</a>`).join('');
+    }else{
+      banner.style.display='none';
+    }
+  }catch(e){banner.style.display='none'}
+}
+
+/* 必須未入力フィールドに data-required-empty 属性を付与 + 値変更で自動解除 */
+function _highlightMissingFields(missingIds){
+  const targetSet=new Set(missingIds||[]);
+  // 既存の対象候補は固定リスト（それ以外には付けない）
+  const allRequiredIds=['cfgName','cfgFolder','cfgPersona','cfgFilePrefix','cfgApiKey'];
+  for(const id of allRequiredIds){
+    const el=document.getElementById(id);
+    if(!el)continue;
+    const ff=el.closest('.ff');
+    if(targetSet.has(id)){
+      el.setAttribute('data-required-empty','true');
+      if(ff)ff.setAttribute('data-required-empty','true');
+      // 入力で自動解除（一度きり）
+      if(!el.dataset.reqWired){
+        el.dataset.reqWired='1';
+        const handler=()=>{
+          const v=(el.value||'').trim();
+          // select の場合は空文字以外で OK
+          if(v){
+            el.removeAttribute('data-required-empty');
+            const ff2=el.closest('.ff');if(ff2)ff2.removeAttribute('data-required-empty');
+            // 全部解除されたらバナーも更新
+            setTimeout(checkOnboardingState,200);
+          }
+        };
+        el.addEventListener('input',handler);
+        el.addEventListener('change',handler);
+      }
+    }else{
+      el.removeAttribute('data-required-empty');
+      if(ff)ff.removeAttribute('data-required-empty');
+    }
+  }
+}
+
+/* ライバルチャンネル ピッカー（取り込み済みベンチマーク・チャンネルから複数選択）— Phase 2-(7) */
+
+
+function _updateRivalsCount(){
+  const ta=document.getElementById('cfgRivals');
+  const lines=(ta?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const cntEl=document.getElementById('cfgRivalsCount');
+  if(cntEl)cntEl.textContent=lines.length+' 件選択';
+  const overall=document.getElementById('bmRivalCount');
+  if(overall)overall.textContent=lines.length+' 件';
+}
+
+function _filterRivals(){
+  const q=(document.getElementById('rivalsFilterInput')?.value||'').trim().toLowerCase();
+  const selectedOnly=!!document.getElementById('rivalsSelectedOnly')?.checked;
+  const items=Array.from(document.querySelectorAll('.rival-item'));
+  let visible=0;
+  items.forEach(item=>{
+    const hit=(!q||(item.dataset.filter||'').includes(q))&&(!selectedOnly||item.dataset.selected==='1');
+    item.classList.toggle('is-filter-hidden',!hit);
+    if(hit)visible++;
+  });
+  const cnt=document.getElementById('rivalsFilterCount');
+  if(cnt)cnt.textContent=`表示 ${visible} / ${items.length}`;
+}
+
+/* OS ネイティブのファイル選択ダイアログでテンプレを選ぶ（macOS osascript） */
+
+/* ===== サムネ制作 一気通貫（正規パイプライン bgimage→psd_composite）=====
+   主CTA「サムネを制作」: run-pipeline に steps を渡し、/api/pipeline/status をポーリングして進捗表示。
+   only 未指定=['bgimage','psd_composite'] / 'psd_composite'=文字だけ / 'bgimage'=背景だけ */
+let _mkThumbPoll=null;
+function _mkThumbLog(name, msg, type){
+  const el=document.getElementById('mkThumbLog_'+name);if(!el)return;
+  el.style.display='block';
+  const t=new Date().toLocaleTimeString('ja-JP',{hour12:false});
+  const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
+  el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
+  el.scrollTop=el.scrollHeight;
+}
+async function makeThumbnail(name, only){
+  const steps = only ? [only] : ['bgimage','psd_composite'];
+  const label = only==='psd_composite' ? (isAdobeFree()?'画像合成（Adobeなし）':'文字入れ(PSD合成)') : (only==='bgimage' ? '背景画像生成' : 'サムネ制作（背景→文字入れ）');
+  if(_mkThumbPoll){toast('実行中です。完了までお待ちください','w');return;}
+  if(!isAdobeFree() && steps.includes('psd_composite') && !confirm('Photoshop を起動していますか？\nPSD合成（文字入れ）には Photoshop の起動が必要です。\n\nこのまま実行しますか？'))return;
+  const btn=document.getElementById('mkThumbBtn_'+name);
+  if(btn){btn.disabled=true;btn.dataset._t=btn.textContent;btn.textContent='⏳ 実行中...';}
+  _mkThumbLog(name,`▶ ${label} 開始（steps=${steps.join(' → ')}）`,'info');
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/run-pipeline`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({steps})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){_mkThumbLog(name,'✕ 起動失敗: '+(d.detail||r.status),'error');toast(d.detail||'起動失敗','e');return;}
+    _mkThumbLog(name,'✓ パイプライン起動。進捗を監視します…','info');
+    let lastLen=0;
+    await new Promise(resolve=>{
+      _mkThumbPoll=setInterval(async()=>{
+        let s=null;try{s=await fetch('/api/pipeline/status').then(x=>x.ok?x.json():null);}catch(_){return;}
+        if(!s)return;
+        const logs=s.logs||[];
+        for(let i=lastLen;i<logs.length;i++){_mkThumbLog(name,logs[i],'info');}
+        lastLen=logs.length;
+        if(!s.running){clearInterval(_mkThumbPoll);_mkThumbPoll=null;resolve();}
+      },2500);
+    });
+    _mkThumbLog(name,`✓ 完了: ${label}`,'done');
+    toast(`${label} 完了`,'s');
+    try{loadBgImagePreview(name);}catch(_){}
+    try{if(typeof loadVideos==='function')loadVideos();}catch(_){}
+  }catch(e){
+    _mkThumbLog(name,'✕ '+e.message,'error');toast('通信エラー','e');
+    if(_mkThumbPoll){clearInterval(_mkThumbPoll);_mkThumbPoll=null;}
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=btn.dataset._t||'▶ サムネを制作（背景→文字入れ）';}
+  }
+}
+
+function _ciThumbLog(name, msg, type){
+  const el=document.getElementById(`ciThumbLog_${name}`);if(!el)return;
+  el.style.display='block';
+  const t=new Date().toLocaleTimeString('ja-JP',{hour12:false});
+  const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
+  el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
+  el.scrollTop=el.scrollHeight;
+}
+
+async function runImageCompositorFor(name){
+  const btn=document.getElementById(`ciThumbBtn_${name}`);
+  if(btn){btn.disabled=true;btn.textContent='生成中...';}
+  const sceneText=(document.getElementById(`ciSceneText_${name}`)?.value||'').trim();
+  const sceneJa=(document.getElementById(`ciSceneJa_${name}`)?.value||'').trim();
+  const playlist=(document.getElementById(`ciPlaylistText_${name}`)?.value||'').trim();
+  const darken=(Number(document.getElementById(`ciDarken_${name}`)?.value||18)||0)/100;
+  const vignette=(Number(document.getElementById(`ciVignette_${name}`)?.value||28)||0)/100;
+  const headlineAlways=!!document.getElementById(`ciHeadlineAlways_${name}`)?.checked;
+  const body={video_name:name,darken,vignette,toggle_always_visible:headlineAlways};
+  if(sceneText)body.scene_text=sceneText;
+  if(sceneJa)body.scene_text_ja=sceneJa;
+  if(playlist)body.playlist_text=playlist;
+  _ciThumbLog(name,`▶ 非Adobe合成: ${name}${sceneText?` / scene="${sceneText}"`:''}`,'info');
+  try{
+    const r=await fetch('/api/image-compositor/render-dual-thumbnail',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      _ciThumbLog(name,'✕ '+(d.detail||'失敗'),'error');
+      toast(d.detail||'非Adobe合成に失敗','e');
+      return;
+    }
+    if(!sceneText && d.scene_text){
+      const input=document.getElementById(`ciSceneText_${name}`);
+      if(input)input.value=d.scene_text;
+    }
+    _ciThumbLog(name,`✓ 元画像: ${d.base_image}`,'done');
+    _ciThumbLog(name,`✓ 背景画像: ${d.bg}`,'done');
+    _ciThumbLog(name,`✓ サムネイル: ${d.thumbnail}`,'done');
+    _renderImageCompositorResult(name,d);
+    try{await initLayerEditor(name,true);}catch(_){}
+    toast('非Adobe合成 2枚生成完了','s');
+    refreshListsQuiet();
+  }catch(e){
+    _ciThumbLog(name,'✕ '+e.message,'error');
+    toast('通信エラー','e');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='▶ 非Adobeで2枚生成';}
+  }
+}
+
+function _renderImageCompositorResult(name,d){
+  const wrap=document.getElementById(`ciThumbResult_${name}`);
+  if(!wrap)return;
+  wrap.style.display='block';
+  const v=Date.now();
+  const buildUrl=p=>{
+    const base=p.split('/').pop();
+    return `/api/videos/${encodeURIComponent(name)}/image-file/${encodeURIComponent(base)}?v=${v}`;
+  };
+  wrap.innerHTML=`
+    <div class="fh" style="margin-bottom:var(--space-2)">生成結果（非Adobe）</div>
+    <div style="display:flex;gap:var(--space-3);flex-wrap:wrap">
+      <div style="flex:1;min-width:240px">
+        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">背景（${esc(d.bg.split('/').pop())}）</div>
+        <img src="${buildUrl(d.bg)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="non-adobe bg">
+      </div>
+      <div style="flex:1;min-width:240px">
+        <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-1)">サムネイル.jpg</div>
+        <img src="${buildUrl(d.thumbnail)}" style="width:100%;border:1px solid var(--border-default);border-radius:var(--radius-sm)" alt="non-adobe thumbnail">
+      </div>
+    </div>
+  `;
+}
+
+const _layerEditors={};
+let _layerFontCatalog=null;
+function _layerEditorVol(name){
+  const m=String(name||'').match(/^(\d+)_/);
+  return m?m[1]:'';
+}
+function _layerLog(name,msg,type){
+  const el=document.getElementById(`layerEditorLog_${name}`);if(!el)return;
+  el.style.display='block';
+  const t=new Date().toLocaleTimeString('ja-JP',{hour12:false});
+  const col=type==='error'?'var(--accent-danger)':type==='done'?'var(--accent-success)':'var(--text-secondary)';
+  el.innerHTML+=`<div style="color:${col};margin-bottom:2px"><span style="opacity:.6">${t}</span> ${esc(msg)}</div>`;
+  el.scrollTop=el.scrollHeight;
+}
+function _loadLayerImage(src){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>resolve(img);
+    img.onerror=()=>reject(new Error('画像を読み込めません'));
+    img.src=src;
+  });
+}
+async function _tryLayerBackground(name){
+  const v=Date.now();
+  const vol=_layerEditorVol(name);
+  const cands=['サムネイル.jpg'];
+  if(vol)cands.push(`vol${vol}.jpg`,`vol${vol}.png`,`vol${vol}_source.jpg`);
+  for(const fn of cands){
+    const url=`/api/videos/${encodeURIComponent(name)}/image-file/${encodeURIComponent(fn)}?v=${v}`;
+    try{return {img:await _loadLayerImage(url),filename:fn};}catch(_){}
+  }
+  return null;
+}
+async function initLayerEditor(name,force){
+  const canvas=document.getElementById(`layerCanvas_${name}`);
+  if(!canvas)return;
+  if(_layerEditors[name]&&!force){await loadLayerFonts(name);drawLayerEditor(name);return;}
+  const st={canvas,ctx:canvas.getContext('2d'),bg:null,bgName:'',layers:[],selected:null,drag:null,templatePath:''};
+  _layerEditors[name]=st;
+  _bindLayerCanvas(name);
+  await loadLayerFonts(name);
+  const bg=await _tryLayerBackground(name);
+  if(bg){st.bg=bg.img;st.bgName=bg.filename;_layerLog(name,`背景読み込み: ${bg.filename}`,'done');}
+  else{_layerLog(name,'背景候補が見つかりません。画像を追加して編集できます。','info');}
+  await loadLayerTemplate(name,false);
+  if(!st.layers.length){
+    const seed=(document.getElementById(`ciSceneJa_${name}`)?.value||document.getElementById(`ciSceneText_${name}`)?.value||'').trim();
+    if(seed)st.layers.push(_makeTextLayer(seed, st.canvas.width/2, st.canvas.height/2));
+  }
+  drawLayerEditor(name);
+}
+function _bindLayerCanvas(name){
+  const c=_layerEditors[name].canvas;
+  if(c.dataset.layerBound)return;
+  c.dataset.layerBound='1';
+  const pos=e=>{
+    const r=c.getBoundingClientRect();
+    return {x:(e.clientX-r.left)*c.width/r.width,y:(e.clientY-r.top)*c.height/r.height};
+  };
+  c.addEventListener('pointerdown',e=>{
+    const st=_layerEditors[name];if(!st)return;
+    initLayerEditor(name,false);
+    const p=pos(e);
+    const idx=_hitLayer(st,p.x,p.y);
+    st.selected=idx;
+    syncLayerControls(name);
+    renderLayerList(name);
+    if(idx!=null){
+      const l=st.layers[idx];
+      if(!l.locked){
+        st.drag={idx,dx:p.x-l.x,dy:p.y-l.y};
+        c.setPointerCapture(e.pointerId);
+        c.style.cursor='grabbing';
+      }
+    }
+    drawLayerEditor(name);
+  });
+  c.addEventListener('pointermove',e=>{
+    const st=_layerEditors[name];if(!st)return;
+    if(!st.drag)return;
+    const p=pos(e),l=st.layers[st.drag.idx];
+    l.x=p.x-st.drag.dx;l.y=p.y-st.drag.dy;
+    drawLayerEditor(name);
+  });
+  c.addEventListener('pointerup',e=>{
+    const st=_layerEditors[name];if(!st)return;
+    st.drag=null;c.style.cursor='grab';
+    try{c.releasePointerCapture(e.pointerId);}catch(_){}
+  });
+}
+function _hitLayer(st,x,y){
+  for(let i=st.layers.length-1;i>=0;i--){
+    if(st.layers[i].visible===false)continue;
+    const b=_layerBounds(st.layers[i],st.ctx);
+    if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h)return i;
+  }
+  return null;
+}
+function _layerFontStack(font){
+  const f=String(font||'system');
+  const map={
+    system:'system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif',
+    serif:'Georgia, "Times New Roman", "Hiragino Mincho ProN", "Yu Mincho", serif',
+    rounded:'"Hiragino Maru Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif',
+    mincho:'"Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif',
+    gothic:'"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif',
+    impact:'Impact, "Arial Black", "Helvetica Neue Condensed Black", sans-serif',
+    script:'"Snell Roundhand", "Brush Script MT", "Zapfino", cursive',
+    mono:'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+  };
+  if(map[f])return map[f];
+  const safe=f.replace(/["\\]/g,'').trim();
+  return safe?`"${safe}", ${map.system}`:map.system;
+}
+async function loadLayerFonts(name){
+  const select=document.getElementById(`layerFont_${name}`);
+  if(!select)return;
+  const current=select.value||'system';
+  try{
+    if(!_layerFontCatalog){
+      const r=await fetch('/api/image-compositor/fonts');
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok||!d.ok)throw new Error(d.detail||'フォント一覧を読めません');
+      _layerFontCatalog=Array.isArray(d.fonts)?d.fonts:[];
+    }
+    const fonts=_layerFontCatalog.length?_layerFontCatalog:[{family:'system',label:'System Sans'}];
+    const selected=(_layerEditors[name]&&_layerEditors[name].selected!=null&&_layerEditors[name].layers[_layerEditors[name].selected]?.font)||current;
+    const hasSelected=fonts.some(f=>f.family===selected);
+    const extra=hasSelected?'':`<option value="${esc(selected)}">${esc(selected)}（保存済み）</option>`;
+    select.innerHTML=fonts.map(f=>`<option value="${esc(f.family)}">${esc(f.label||f.family)}</option>`).join('')+extra;
+    select.value=selected||'system';
+  }catch(e){
+    select.innerHTML='<option value="system">System Sans</option><option value="gothic">Japanese Gothic</option><option value="mincho">Japanese Mincho</option><option value="serif">Serif</option><option value="script">Script / Brand</option><option value="mono">Mono</option>';
+    select.value=current||'system';
+    _layerLog(name,'フォント一覧の読み込みに失敗しました。基本フォントで続行します。','error');
+  }
+}
+function _layerFontPreviewText(l){
+  if(!l||l.type!=='text')return 'Aa あいうえお';
+  return (l.text||'Aa あいうえお').slice(0,18);
+}
+function _layerBounds(l,ctx){
+  if(l.type==='image'&&l.img){
+    const w=l.img.width*l.scale,h=l.img.height*l.scale;
+    return {x:l.x-w/2,y:l.y-h/2,w,h};
+  }
+  const fontSize=l.size*l.scale;
+  ctx.save();
+  ctx.font=`700 ${fontSize}px ${_layerFontStack(l.font)}`;
+  const w=Math.max(40,ctx.measureText(l.text||'TEXT').width),h=fontSize*1.25;
+  ctx.restore();
+  return {x:l.x-w/2,y:l.y-h/2,w,h};
+}
+function drawLayerEditor(name){
+  const st=_layerEditors[name];if(!st)return;
+  const {ctx,canvas}=st;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#111';ctx.fillRect(0,0,canvas.width,canvas.height);
+  if(st.bg)ctx.drawImage(st.bg,0,0,canvas.width,canvas.height);
+  for(let i=0;i<st.layers.length;i++){
+    const l=st.layers[i];
+    if(l.visible===false)continue;
+    ctx.save();
+    ctx.globalAlpha=l.opacity;
+    if(l.type==='image'&&l.img){
+      const w=l.img.width*l.scale,h=l.img.height*l.scale;
+      ctx.drawImage(l.img,l.x-w/2,l.y-h/2,w,h);
+    }else if(l.type==='text'){
+      const fs=l.size*l.scale;
+      ctx.font=`700 ${fs}px ${_layerFontStack(l.font)}`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.lineWidth=Math.max(3,fs*0.045);
+      ctx.strokeStyle='rgba(0,0,0,.55)';
+      ctx.fillStyle=l.color||'#fff';
+      ctx.strokeText(l.text||'TEXT',l.x,l.y);
+      ctx.fillText(l.text||'TEXT',l.x,l.y);
+    }
+    ctx.restore();
+    if(st.selected===i){
+      const b=_layerBounds(l,ctx);
+      ctx.save();
+      ctx.strokeStyle='#46d9ff';ctx.lineWidth=3;ctx.setLineDash([8,5]);
+      ctx.strokeRect(b.x,b.y,b.w,b.h);
+      ctx.restore();
+    }
+  }
+  renderLayerList(name);
+}
+function renderLayerList(name){
+  const st=_layerEditors[name],el=document.getElementById(`layerList_${name}`);
+  if(!st||!el)return;
+  if(!st.layers.length){el.innerHTML='<div class="fh" style="padding:10px">レイヤーなし</div>';return;}
+  el.innerHTML=st.layers.map((l,i)=>`
+    <div style="display:grid;grid-template-columns:28px 28px 1fr 44px;align-items:center;border-bottom:1px solid var(--border-default);background:${st.selected===i?'var(--bg-elevated)':'transparent'}">
+      <button type="button" onclick="toggleLayerVisible('${esc(name)}',${i});event.stopPropagation()" title="表示/非表示" style="height:34px;border:0;background:transparent;color:var(--text-secondary);cursor:pointer">${l.visible===false?'○':'◉'}</button>
+      <button type="button" onclick="toggleLayerLock('${esc(name)}',${i});event.stopPropagation()" title="ロック" style="height:34px;border:0;background:transparent;color:var(--text-secondary);cursor:pointer">${l.locked?'🔒':'◇'}</button>
+      <button type="button" onclick="selectLayer('${esc(name)}',${i})" style="height:34px;text-align:left;border:0;background:transparent;color:var(--text-primary);cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <span class="badge badge-neutral" style="font-size:10px;margin-right:6px">${st.layers.length-i}</span>${esc(l.name||l.type)}
+      </button>
+      <span style="color:var(--text-tertiary);font-size:11px;text-align:right;padding-right:8px">${Math.round((l.opacity??1)*100)}%</span>
+    </div>`).join('');
+}
+function selectLayer(name,i){
+  const st=_layerEditors[name];if(!st)return;
+  st.selected=i;syncLayerControls(name);drawLayerEditor(name);
+}
+function syncLayerControls(name){
+  const st=_layerEditors[name],l=st&&st.selected!=null?st.layers[st.selected]:null;
+  const text=document.getElementById(`layerText_${name}`);
+  const font=document.getElementById(`layerFont_${name}`);
+  const fontPreview=document.getElementById(`layerFontPreview_${name}`);
+  const op=document.getElementById(`layerOpacity_${name}`);
+  const sc=document.getElementById(`layerScale_${name}`);
+  if(text)text.value=(l&&l.type==='text')?(l.text||''):'';
+  if(font)font.value=(l&&l.type==='text')?(l.font||'system'):'system';
+  if(fontPreview){
+    fontPreview.textContent=_layerFontPreviewText(l);
+    fontPreview.style.fontFamily=(l&&l.type==='text')?_layerFontStack(l.font):_layerFontStack('system');
+  }
+  if(op)op.value=l?Math.round(l.opacity*100):100;
+  if(sc)sc.value=l?Math.round(l.scale*100):100;
+}
+function _makeTextLayer(text,x,y){
+  return {type:'text',name:'Text',text:text||'TEXT',x,y,scale:1,opacity:1,visible:true,locked:false,size:76,color:'#ffffff',font:'system'};
+}
+async function addLayerImage(name,file){
+  await initLayerEditor(name,false);
+  if(!file)return;
+  const st=_layerEditors[name];
+  const data=await new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=()=>resolve(r.result);
+    r.onerror=()=>reject(new Error('画像ファイルを読めません'));
+    r.readAsDataURL(file);
+  });
+  const img=await _loadLayerImage(data);
+  const maxW=st.canvas.width*.45,maxH=st.canvas.height*.45;
+  const scale=Math.min(1,maxW/img.width,maxH/img.height);
+  st.layers.push({type:'image',name:file.name,img,src:data,source_name:file.name,x:st.canvas.width/2,y:st.canvas.height/2,scale,opacity:1,visible:true,locked:false});
+  st.selected=st.layers.length-1;syncLayerControls(name);drawLayerEditor(name);
+}
+async function addLayerText(name){
+  await initLayerEditor(name,false);
+  const st=_layerEditors[name];
+  const seed=(document.getElementById(`ciSceneJa_${name}`)?.value||document.getElementById(`ciSceneText_${name}`)?.value||'NEW TEXT').trim();
+  st.layers.push(_makeTextLayer(seed,st.canvas.width/2,st.canvas.height/2));
+  st.selected=st.layers.length-1;syncLayerControls(name);drawLayerEditor(name);
+}
+function updateLayerText(name,val){
+  const st=_layerEditors[name],l=st&&st.selected!=null?st.layers[st.selected]:null;
+  if(!l||l.type!=='text'||l.locked)return;
+  l.text=val;drawLayerEditor(name);
+  const fontPreview=document.getElementById(`layerFontPreview_${name}`);
+  if(fontPreview)fontPreview.textContent=_layerFontPreviewText(l);
+}
+function updateLayerFont(name,val){
+  const st=_layerEditors[name],l=st&&st.selected!=null?st.layers[st.selected]:null;
+  if(!l||l.type!=='text'||l.locked)return;
+  l.font=val||'system';
+  drawLayerEditor(name);
+  syncLayerControls(name);
+}
+function updateLayerOpacity(name,val){
+  const st=_layerEditors[name],l=st&&st.selected!=null?st.layers[st.selected]:null;
+  if(!l||l.locked)return;
+  l.opacity=Math.max(0,Math.min(1,Number(val)/100));drawLayerEditor(name);
+}
+function updateLayerScale(name,val){
+  const st=_layerEditors[name],l=st&&st.selected!=null?st.layers[st.selected]:null;
+  if(!l||l.locked)return;
+  l.scale=Math.max(.05,Math.min(3,Number(val)/100));drawLayerEditor(name);
+}
+function deleteLayer(name){
+  const st=_layerEditors[name];if(!st||st.selected==null)return;
+  st.layers.splice(st.selected,1);
+  st.selected=st.layers.length?Math.min(st.selected,st.layers.length-1):null;
+  syncLayerControls(name);drawLayerEditor(name);
+}
+function moveLayerOrder(name,dir){
+  const st=_layerEditors[name];if(!st||st.selected==null)return;
+  const i=st.selected,j=i-dir;
+  if(j<0||j>=st.layers.length)return;
+  const tmp=st.layers[i];st.layers[i]=st.layers[j];st.layers[j]=tmp;st.selected=j;
+  drawLayerEditor(name);
+}
+function toggleLayerVisible(name,i){
+  const st=_layerEditors[name];if(!st||!st.layers[i])return;
+  st.layers[i].visible=st.layers[i].visible===false;
+  drawLayerEditor(name);
+}
+function toggleLayerLock(name,i){
+  const st=_layerEditors[name];if(!st||!st.layers[i])return;
+  st.layers[i].locked=!st.layers[i].locked;
+  drawLayerEditor(name);
+}
+function serializeLayerTemplate(name){
+  const st=_layerEditors[name];if(!st)return null;
+  return {
+    canvas:{width:st.canvas.width,height:st.canvas.height},
+    background:{name:st.bgName||''},
+    layers:st.layers.map(l=>{
+      const base={type:l.type,name:l.name||l.type,x:l.x,y:l.y,scale:l.scale,opacity:l.opacity,visible:l.visible!==false,locked:!!l.locked};
+      if(l.type==='text')return {...base,text:l.text||'',size:l.size||76,color:l.color||'#ffffff',font:l.font||'system'};
+      return {...base,src:l.src||'',source_name:l.source_name||l.name||''};
+    })
+  };
+}
+async function saveLayerTemplate(name){
+  await initLayerEditor(name,false);
+  const template=serializeLayerTemplate(name);
+  if(!template)return;
+  _layerLog(name,'▶ レイアウトテンプレート保存中…','info');
+  try{
+    const r=await fetch('/api/image-compositor/template',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name,template})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){_layerLog(name,'✕ '+(d.detail||'テンプレ保存失敗'),'error');toast(d.detail||'テンプレ保存失敗','e');return;}
+    _layerLog(name,`✓ テンプレ保存: ${d.path}`,'done');
+    toast('レイアウトテンプレートを保存しました','s');
+  }catch(e){_layerLog(name,'✕ '+e.message,'error');toast('通信エラー','e');}
+}
+async function loadLayerTemplate(name,notify){
+  const st=_layerEditors[name];if(!st)return false;
+  try{
+    const r=await fetch(`/api/image-compositor/template?video_name=${encodeURIComponent(name)}`);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){if(notify)toast(d.detail||'テンプレ読込失敗','e');return false;}
+    if(!d.exists||!d.template){if(notify){_layerLog(name,'テンプレート未保存です','info');toast('テンプレート未保存です','i');}return false;}
+    st.templatePath=d.path||'';
+    st.layers=[];
+    for(const layer of (d.template.layers||[])){
+      const l={...layer,opacity:layer.opacity??1,scale:layer.scale||1,visible:layer.visible!==false,locked:!!layer.locked};
+      if(l.type==='image'&&l.src){
+        try{l.img=await _loadLayerImage(l.src);}catch(_){l.img=null;}
+      }
+      st.layers.push(l);
+    }
+    st.selected=st.layers.length?st.layers.length-1:null;
+    syncLayerControls(name);
+    drawLayerEditor(name);
+    if(notify){_layerLog(name,`✓ テンプレ読込: ${d.path}`,'done');toast('テンプレートを読み込みました','s');}
+    return true;
+  }catch(e){if(notify){_layerLog(name,'✕ '+e.message,'error');toast('通信エラー','e');}return false;}
+}
+async function applyTemplateText(name){
+  await initLayerEditor(name,false);
+  const st=_layerEditors[name];if(!st)return;
+  const text=(document.getElementById(`ciSceneJa_${name}`)?.value||document.getElementById(`ciSceneText_${name}`)?.value||document.getElementById(`layerText_${name}`)?.value||'').trim();
+  if(!text){toast('反映する文字を入力してください','w');return;}
+  let idx=st.layers.findIndex(l=>l.type==='text');
+  if(idx<0){st.layers.push(_makeTextLayer(text,st.canvas.width/2,st.canvas.height/2));idx=st.layers.length-1;}
+  st.layers[idx].text=text;
+  st.layers[idx].visible=true;
+  st.selected=idx;
+  syncLayerControls(name);
+  drawLayerEditor(name);
+  _layerLog(name,`✓ Text レイヤーへ反映: ${text}`,'done');
+}
+async function renderFromLayerTemplate(name){
+  await initLayerEditor(name,false);
+  await applyTemplateText(name);
+  await saveLayerEditorCanvas(name);
+}
+async function saveLayerEditorCanvas(name){
+  await initLayerEditor(name,false);
+  const st=_layerEditors[name];if(!st)return;
+  drawLayerEditor(name);
+  const dataUrl=st.canvas.toDataURL('image/jpeg',.92);
+  _layerLog(name,'▶ サムネイル.jpg に保存中…','info');
+  try{
+    const r=await fetch('/api/image-compositor/save-canvas',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_name:name,filename:'サムネイル.jpg',data_url:dataUrl})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){_layerLog(name,'✕ '+(d.detail||'保存失敗'),'error');toast(d.detail||'保存失敗','e');return;}
+    _layerLog(name,`✓ 保存: ${d.path}`,'done');
+    toast('サムネイル.jpg に保存しました','s');
+    refreshListsQuiet();
+  }catch(e){_layerLog(name,'✕ '+e.message,'error');toast('通信エラー','e');}
+}
+
+async function generateSceneTextFor(name){
+  // Image2 Layout Studio のシーンテキスト欄に、AI 背景画像から生成した英語フレーズを入れる
+  const btn=document.getElementById(`ciSceneGenBtn_${name}`);
+  const input=document.getElementById(`ciSceneText_${name}`);
+  if(btn){btn.disabled=true;btn.textContent='生成中...';}
+  _ciThumbLog(name,'シーンテキスト自動生成: Vision 呼び出し中（数十秒）','info');
+  try{
+    const r=await fetch('/api/scene-text/generate',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({video_name:name})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      _ciThumbLog(name,'失敗: '+(d.detail||'生成失敗'),'error');
+      toast(d.detail||'生成失敗','e');
+      return;
+    }
+    if(input){
+      input.value=d.scene_text||'';
+      input.focus();
+    }
+    _ciThumbLog(name,`生成: "${d.scene_text}" (元画像: ${d.image_path})`,'done');
+    toast(`生成: ${d.scene_text}`,'s');
+  }catch(e){
+    _ciThumbLog(name,'通信エラー: '+e.message,'error');
+    toast('通信エラー','e');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='シーンテキスト自動生成';}
+  }
+}
+
+/* ==== YouTube Desc ==== */
+async function loadVideoDescInfo(){
+  const n=document.getElementById('descVideo').value;if(!n)return;
+  const r=await fetch('/api/youtube-desc/video-info/'+encodeURIComponent(n)),d=await r.json();_descVD=d;
+  let h='<div style="display:flex;gap:var(--space-3)">';
+  if(d.thumbnail)h+=`<img src="/api/youtube-desc/thumbnail/${encodeURIComponent(n)}" style="width:140px;border-radius:var(--radius-sm);border:1px solid var(--border-default)">`;
+  h+=`<div style="font-size:12px;color:var(--text-secondary)"><strong>${d.song_count}曲</strong><div style="max-height:80px;overflow-y:auto;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-tertiary);white-space:pre-wrap;margin-top:var(--space-1)">${esc(d.songs.join('\n'))}</div></div></div>`;
+  document.getElementById('descInfo').innerHTML=h;
+  const refs=_descRefs.find(r=>r.name===n);if(refs)document.getElementById('descEditor').value=refs.full_text;
+}
+function loadRefText(){const i=document.getElementById('descRef').value;if(i!==''&&_descRefs[i])document.getElementById('descRefPre').textContent=_descRefs[i].full_text}
+function insertTC(){if(!_descVD)return;const e=document.getElementById('descEditor');const tc=(_descVD.timecodes||_descVD.songs?.join('\n')||'').trim();e.value+='\n\n---\n\n'+tc+'\n\n---\n\n#LoungeMusic #ChillVibes #RelaxingBGM #CinematicMusic #StudyMusic #SmoothJazz #NightDrive #AIMusic'}
+async function saveDesc(){const n=document.getElementById('descVideo').value,t=document.getElementById('descEditor').value;if(!n||!t)return;await fetch('/api/youtube-desc/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:n,text:t})});toast('保存','s')}
+
+/* ==== YouTube Upload ==== */
+async function startYTUpload(){
+  const f=document.getElementById('ytFolder').value;if(!f){toast('フォルダを選択','e');return}
+  const sc=document.getElementById('ytSchedule').value;clrLog('ytLogs');
+  // 動画別 UI の値も合わせて送る（テンプレート + 動画別オーバーライド + 言語ファイル + ここの値 の優先順位は backend が解決）
+  const _sel=id=>{const v=document.getElementById(id)?.value;return v?v:undefined};
+  const _bool=id=>{const v=document.getElementById(id)?.value;return v===''||v==null?undefined:(v==='true')};
+  const body={
+    folder:f,
+    title:document.getElementById('ytTitle').value||undefined,
+    schedule:sc?new Date(sc).toISOString():undefined,
+    privacy:document.getElementById('ytPrivacy').value,
+    default_language:_sel('ytoDefaultLanguage'),
+    default_audio_language:_sel('ytoDefaultAudioLanguage'),
+    synthetic_media:_bool('ytoSyntheticMedia'),
+    made_for_kids:_bool('ytoMadeForKids'),
+  };
+  const r=await fetch('/api/youtube/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  connectWs('youtube','ytLogs');
+  toast(r.ok?`アップロードをキューに追加${d.position?`（待ち順 ${d.position}）`:''}`:(d.detail||'失敗'),r.ok?'i':'e');
+}
+
+/* ==== 言語チェックリスト（YouTube ローカリゼーション共通コンポーネント） ==== */
+let _ytLangCatalog=null;
+async function loadYtLangCatalog(){
+  if(_ytLangCatalog)return _ytLangCatalog;
+  try{
+    const r=await fetch('/api/youtube/languages');
+    const d=await r.json();
+    _ytLangCatalog=d.languages||[];
+  }catch(e){console.error('loadYtLangCatalog:',e);_ytLangCatalog=[]}
+  return _ytLangCatalog;
+}
+async function renderLangChecklist(mountId,selected,opts){
+  opts=opts||{};
+  const el=document.getElementById(mountId);if(!el)return;
+  const exclude=new Set(opts.excludeCodes||['en']);
+  const catalog=(await loadYtLangCatalog()).filter(l=>!exclude.has(l.code));
+  const sel=new Set((selected||[]).filter(code=>code && !exclude.has(code)));
+  const counterId=mountId+'__counter';
+  const gridId=mountId+'__grid';
+  const total=catalog.length;
+  el.innerHTML=`
+    <div class="lang-checklist-toolbar">
+      <button type="button" class="btn btn-ghost btn-sm" data-lang-act="all">全選択</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-lang-act="none">全解除</button>
+      ${opts.presetCodes&&opts.presetCodes.length?`<button type="button" class="btn btn-ghost btn-sm" data-lang-act="preset" title="${esc(opts.presetCodes.join(','))}">推奨を選ぶ</button>`:''}
+      <span class="lang-checklist-counter" id="${esc(counterId)}">${sel.size} / ${total} 言語選択中</span>
+    </div>
+    <div class="lang-grid" id="${esc(gridId)}">
+      ${catalog.map(l=>`
+        <label class="lang-chip">
+          <input type="checkbox" data-lang-code="${esc(l.code)}" ${sel.has(l.code)?'checked':''}>
+          
+          <div class="lang-chip-body">
+            <div class="lang-chip-name">${esc(l.name)}</div>
+            <div class="lang-chip-meta">${esc(l.code)} ・ ${esc(l.native)}</div>
+          </div>
+        </label>
+      `).join('')}
+    </div>
+  `;
+  const counter=el.querySelector('#'+CSS.escape(counterId));
+  const updateCounter=()=>{
+    const n=el.querySelectorAll('input[type=checkbox][data-lang-code]:checked').length;
+    if(counter)counter.textContent=`${n} / ${total} 言語選択中`;
+  };
+  el.querySelectorAll('input[type=checkbox][data-lang-code]').forEach(cb=>{
+    cb.addEventListener('change',()=>{
+      updateCounter();
+      if(opts.onChange)opts.onChange(getLangChecklistSelected(mountId));
+    });
+  });
+  el.querySelectorAll('button[data-lang-act]').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const act=btn.dataset.langAct;
+      const cbs=el.querySelectorAll('input[type=checkbox][data-lang-code]');
+      if(act==='all')cbs.forEach(c=>c.checked=true);
+      else if(act==='none')cbs.forEach(c=>c.checked=false);
+      else if(act==='preset'){
+        const presetSet=new Set(opts.presetCodes||[]);
+        cbs.forEach(c=>c.checked=presetSet.has(c.dataset.langCode));
+      }
+      updateCounter();
+      if(opts.onChange)opts.onChange(getLangChecklistSelected(mountId));
+    });
+  });
+}
+function getLangChecklistSelected(mountId){
+  const el=document.getElementById(mountId);if(!el)return [];
+  return Array.from(el.querySelectorAll('input[type=checkbox][data-lang-code]:checked')).map(cb=>cb.dataset.langCode);
+}
+const YT_LANG_PRESET_RECOMMENDED=['ja','zh-Hans','zh-Hant','ko','es','es-419','pt-BR','fr','de','ru'];
+
+/* ==== YouTube アップロード詳細設定（テンプレート） ==== */
+async function loadYtUploadDefaults(){
+  try{
+    const r=await _nativeFetch('/api/youtube/upload-defaults'),d=await r.json();
+    const s=d.defaults||{};
+    const $=id=>document.getElementById(id);
+    if($('ytdCategory'))$('ytdCategory').value=s.category_id||'10';
+    if($('ytdLicense'))$('ytdLicense').value=s.license||'youtube';
+    if($('ytdDefaultLanguage'))$('ytdDefaultLanguage').value=s.default_language||'en';
+    if($('ytdDefaultAudioLanguage'))$('ytdDefaultAudioLanguage').value=s.default_audio_language||'en';
+    if($('ytdSyntheticMedia'))$('ytdSyntheticMedia').checked=!!s.synthetic_media;
+    if($('ytdMadeForKids'))$('ytdMadeForKids').checked=!!s.made_for_kids;
+    if($('ytdEmbeddable'))$('ytdEmbeddable').checked=s.embeddable!==false;
+    if($('ytdPublicStatsViewable'))$('ytdPublicStatsViewable').checked=s.public_stats_viewable!==false;
+    if($('ytdNotifySubscribers'))$('ytdNotifySubscribers').checked=s.notify_subscribers!==false;
+    if(document.getElementById('ytdLocLanguagesGrid')){
+      await renderLangChecklist('ytdLocLanguagesGrid',s.localization_languages||['ja','zh-Hans','zh-Hant','ko'],{
+        presetCodes:YT_LANG_PRESET_RECOMMENDED,
+        onChange:()=>{
+          clearTimeout(_autoSaveTimer);
+          if(typeof _setAutoSaveIndicator==='function')_setAutoSaveIndicator('入力中...','var(--text-tertiary)');
+          _autoSaveTimer=setTimeout(async()=>{
+            await saveYtUploadDefaults(true).catch(()=>{});
+            if(typeof _setAutoSaveIndicator==='function')_setAutoSaveIndicator('✓ 自動保存しました ('+new Date().toLocaleTimeString('ja-JP')+')','var(--accent-success)');
+          },600);
+        }
+      });
+    }
+    if($('ytdSavedHint'))$('ytdSavedHint').textContent=d.saved?'✓ 保存済（カスタム設定）':'※ 既定値（未保存）';
+  }catch(e){console.error('loadYtUploadDefaults:',e)}
+}
+async function saveYtUploadDefaults(silent){
+  const $=id=>document.getElementById(id);
+  const langs=getLangChecklistSelected('ytdLocLanguagesGrid');
+  const body={
+    category_id:$('ytdCategory').value,
+    license:$('ytdLicense').value,
+    default_language:$('ytdDefaultLanguage').value,
+    default_audio_language:$('ytdDefaultAudioLanguage').value,
+    synthetic_media:$('ytdSyntheticMedia').checked,
+    made_for_kids:$('ytdMadeForKids').checked,
+    embeddable:$('ytdEmbeddable').checked,
+    public_stats_viewable:$('ytdPublicStatsViewable').checked,
+    notify_subscribers:$('ytdNotifySubscribers').checked,
+    localization_languages:langs,
+  };
+  try{
+    const r=await fetch('/api/youtube/upload-defaults',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));if(!silent)toast('保存失敗: '+(e.detail||r.status),'e');return}
+    if(!silent)toast('テンプレートを保存しました','s');
+    await loadYtUploadDefaults();
+  }catch(e){if(!silent)toast('接続エラー','e')}
+}
+async function resetYtUploadDefaults(){
+  if(!confirm('既定値に戻します。テンプレートのカスタム値は失われます。よろしいですか？'))return;
+  try{
+    const r=await fetch('/api/youtube/upload-defaults?reset=1',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      category_id:'10',license:'youtube',default_language:'en',default_audio_language:'en',
+      synthetic_media:true,made_for_kids:false,embeddable:true,public_stats_viewable:true,notify_subscribers:true,
+      localization_languages:['ja','zh-Hans','zh-Hant','ko']
+    })});
+    if(r.ok){toast('既定値に戻しました','s');await loadYtUploadDefaults()}
+  }catch(e){toast('失敗','e')}
+}
+
+/* ==== 動画別の YouTube 上書き設定 ==== */
+function _videoNameFromPath(p){return p?(p.split('/').pop()||''):''}
+async function loadVideoYtOverrides(){
+  const folder=document.getElementById('ytFolder')?.value||'';
+  const name=_videoNameFromPath(folder);
+  const $=id=>document.getElementById(id);
+  // リセット
+  ['ytoDefaultLanguage','ytoDefaultAudioLanguage','ytoSyntheticMedia','ytoMadeForKids'].forEach(id=>{if($(id))$(id).value=''});
+  if(document.getElementById('ytoLocLanguagesGrid')){
+    await renderLangChecklist('ytoLocLanguagesGrid',[],{presetCodes:YT_LANG_PRESET_RECOMMENDED});
+  }
+  if($('ytoSavedHint'))$('ytoSavedHint').textContent='';
+  if($('ytoLocList'))$('ytoLocList').textContent='';
+  if(!name)return;
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-overrides');
+    if(r.ok){
+      const d=await r.json();
+      const ov=d.overrides||{};
+      if(ov.default_language!=null && $('ytoDefaultLanguage'))$('ytoDefaultLanguage').value=ov.default_language;
+      if(ov.default_audio_language!=null && $('ytoDefaultAudioLanguage'))$('ytoDefaultAudioLanguage').value=ov.default_audio_language;
+      if(ov.synthetic_media!=null && $('ytoSyntheticMedia'))$('ytoSyntheticMedia').value=String(ov.synthetic_media);
+      if(ov.made_for_kids!=null && $('ytoMadeForKids'))$('ytoMadeForKids').value=String(ov.made_for_kids);
+      if($('ytoSavedHint'))$('ytoSavedHint').textContent=Object.keys(ov).length?`✓ 上書き ${Object.keys(ov).length} 項目`:'※ 上書きなし（テンプレート使用中）';
+    }
+    await loadVideoLocalizations();
+  }catch(e){console.error('loadVideoYtOverrides:',e)}
+}
+async function saveVideoYtOverrides(){
+  const folder=document.getElementById('ytFolder')?.value||'';
+  const name=_videoNameFromPath(folder);
+  if(!name){toast('動画フォルダを選択してください','w');return}
+  const $=id=>document.getElementById(id);
+  const _bool=v=>v===''||v==null?undefined:(v==='true');
+  const body={
+    default_language:$('ytoDefaultLanguage').value||undefined,
+    default_audio_language:$('ytoDefaultAudioLanguage').value||undefined,
+    synthetic_media:_bool($('ytoSyntheticMedia').value),
+    made_for_kids:_bool($('ytoMadeForKids').value),
+  };
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-overrides',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('保存失敗: '+(e.detail||r.status),'e');return}
+    toast('この動画の上書きを保存しました','s');
+    await loadVideoYtOverrides();
+  }catch(e){toast('接続エラー','e')}
+}
+async function clearVideoYtOverrides(){
+  const folder=document.getElementById('ytFolder')?.value||'';
+  const name=_videoNameFromPath(folder);
+  if(!name)return;
+  if(!confirm('この動画の上書きをクリアしてテンプレートを使用しますか？'))return;
+  // 全 None で送ると保存先が空になり削除される
+  try{
+    await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-overrides',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    toast('上書きをクリアしました','s');
+    await loadVideoYtOverrides();
+  }catch(e){toast('失敗','e')}
+}
+
+/* ==== 多言語ローカライズ ==== */
+async function loadVideoLocalizations(){
+  const folder=document.getElementById('ytFolder')?.value||'';
+  const name=_videoNameFromPath(folder);
+  const el=document.getElementById('ytoLocList');
+  if(!name||!el)return;
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-localizations');
+    if(!r.ok){el.textContent='';return}
+    const d=await r.json();
+    const loc=d.localizations||{};
+    const langs=Object.keys(loc);
+    if(!langs.length){el.innerHTML='<span style="color:var(--text-tertiary)">登録済みの翻訳はありません</span>';return}
+    el.innerHTML='<div style="font-weight:var(--font-semibold);color:var(--text-primary);margin-bottom:var(--space-2)">登録済みの翻訳: '+langs.length+' 言語</div>'+
+      langs.map(lang=>{
+        const e=loc[lang]||{};
+        return `<div style="margin-bottom:var(--space-2);padding:var(--space-2);background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-sm)">
+          <div style="font-weight:var(--font-semibold);color:var(--accent-primary)">${esc(lang)}</div>
+          <div><strong>title:</strong> ${esc((e.title||'').slice(0,120))}</div>
+          <div style="margin-top:2px;color:var(--text-tertiary);max-height:60px;overflow:hidden">${esc((e.description||'').slice(0,180))}${(e.description||'').length>180?'...':''}</div>
+        </div>`;
+      }).join('');
+  }catch(e){console.error('loadVideoLocalizations:',e)}
+}
+async function generateVideoLocalizations(){
+  const folder=document.getElementById('ytFolder')?.value||'';
+  const name=_videoNameFromPath(folder);
+  if(!name){toast('動画フォルダを選択','w');return}
+  // 言語: 動画別 UI 選択 → テンプレートの順
+  let langs=getLangChecklistSelected('ytoLocLanguagesGrid');
+  if(!langs.length){
+    langs=getLangChecklistSelected('ytdLocLanguagesGrid');
+  }
+  if(!langs.length){
+    // テンプレートのデフォルト（API 側保存値）にフォールバック
+    try{const r=await fetch('/api/youtube/upload-defaults');const d=await r.json();langs=(d.defaults?.localization_languages||[]).filter(Boolean)}catch(e){}
+  }
+  if(!langs.length){toast('対象言語が選択されていません（チェックボックスから選んでください）','w');return}
+  langs=langs.filter(l=>l && l!=='en');
+  const overwrite=document.getElementById('ytoLocOverwrite')?.checked||false;
+  const el=document.getElementById('ytoLocList');
+  if(el)el.innerHTML='<div class="loading-overlay"><span class="spinner"></span>Claude で '+langs.length+' 言語へ翻訳中...</div>';
+  try{
+    const r=await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-translate',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({languages:langs,overwrite,source_language:'en'})
+    });
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('翻訳失敗: '+(e.detail||r.status),'e');await loadVideoLocalizations();return}
+    const d=await r.json();
+    if(d.skipped){toast('全言語が既に存在します','i')}
+    else{toast('翻訳生成: '+(d.added||[]).length+' 言語','s')}
+    await loadVideoLocalizations();
+  }catch(e){toast('接続エラー','e');await loadVideoLocalizations()}
+}
+async function clearVideoLocalizations(){
+  const folder=document.getElementById('ytFolder')?.value||'';
+  const name=_videoNameFromPath(folder);
+  if(!name)return;
+  if(!confirm('登録済みの翻訳をすべて削除しますか？'))return;
+  try{
+    await fetch('/api/videos/'+encodeURIComponent(name)+'/youtube-localizations',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({localizations:{}})});
+    toast('削除しました','s');
+    await loadVideoLocalizations();
+  }catch(e){toast('失敗','e')}
+}
+
+/* ==== Discord ==== */
+async function sendDiscord(){const m=document.getElementById('discordMsg').value;if(!m)return;const r=await fetch('/api/notify/discord',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:m})});r.ok?toast('送信','s'):toast('失敗','e')}
+
+/* Discord Webhook 設定の読込・保存 */
+async function loadDiscordConfig(){
+  const badge=document.getElementById('discordCfgBadge');
+  try{
+    const r=await fetch('/api/notify/discord/config');
+    const d=await r.json();
+    if(badge){
+      badge.className='badge '+(d.configured?'badge-success':'badge-danger');
+      badge.textContent=d.configured?'設定済み '+(d.preview||''):'未設定 — 自動通知は届きません';
+    }
+    const u=document.getElementById('discordUsername');
+    if(u&&!u.value)u.placeholder=d.username||'Automation Studio';
+  }catch{
+    if(badge){badge.className='badge badge-neutral';badge.textContent='取得失敗'}
+  }
+}
+async function saveDiscordConfig(testAfter){
+  const url=(document.getElementById('discordWebhookUrl')?.value||'').trim();
+  const username=(document.getElementById('discordUsername')?.value||'').trim();
+  if(!url){toast('Webhook URL を入力してください','e');return}
+  try{
+    const r=await fetch('/api/notify/discord/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({webhook_url:url,username})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'保存失敗','e');return}
+    toast('Webhook を保存しました','s');
+    document.getElementById('discordWebhookUrl').value='';
+    loadDiscordConfig();
+    if(testAfter===true){
+      const t=await fetch('/api/notify/discord',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:'Automation Studio: 通知テスト — この通知が届いていれば設定完了です'})});
+      t.ok?toast('テスト通知を送信しました。Discord を確認してください','s'):toast('テスト送信失敗: URL を確認してください','e');
+    }
+  }catch(e){toast('接続エラー','e')}
+}
+
+/* ==== Finder ==== */
+async function openF(p){if(!p){toast('パスが空','e');return}await fetch('/api/finder/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})})}
+
+/* ==== Setup ==== */
+async function autoDetect(){
+  try{const r=await fetch('/api/config/auto-detect'),d=await r.json();
+    if(d.channel_folder)document.getElementById('cfgFolder').value=d.channel_folder;
+    toast('検出しました','s');
+  }catch(e){toast('失敗','e')}
+}
+/* ==== ベンチマーク管理（ピン留め + フィルタ） ==== */
+// 候補リスト / 分析シート取り込みで一度でも見たチャンネル名（不一致警告の基準）
+let _knownChannelNames=new Set();
+let _knownChannelsLoaded=false;
+function _getPinnedSet(){
+  const ta=document.getElementById('cfgBenchPinned');
+  return new Set((ta?.value||'').split('\n').map(s=>s.trim()).filter(Boolean));
+}
+function _setPinned(set){
+  const ta=document.getElementById('cfgBenchPinned');
+  if(ta)ta.value=Array.from(set).join('\n');
+  _renderPinnedChips();
+  // 候補リスト側の表示も同期
+  document.querySelectorAll('#benchHotPicker .badge[data-name]').forEach(b=>{
+    const on=set.has(b.dataset.name);
+    b.classList.toggle('badge-success',on);
+    b.classList.toggle('badge-neutral',!on);
+    const txt=(b.dataset.label||b.textContent.replace(/^✓\s*/,''));
+    b.dataset.label=txt;
+    b.innerHTML=(on?'✓ ':'')+esc(txt);
+  });
+}
+function _renderPinnedChips(){
+  const el=document.getElementById('cfgBenchPinnedChips');
+  const cnt=document.getElementById('cfgBenchPinnedCount');
+  if(!el)return;
+  const names=Array.from(_getPinnedSet());
+  if(cnt){
+    cnt.textContent=`${names.length} 件 / 推奨 5-8`;
+    cnt.classList.remove('badge-neutral','badge-success','badge-warning');
+    cnt.classList.add(names.length===0?'badge-warning':(names.length>=5&&names.length<=8?'badge-success':'badge-neutral'));
+  }
+  if(names.length===0){
+    el.innerHTML='<div style="font-size:var(--text-xs);color:var(--text-tertiary);align-self:center">未選択（下のリストから追加してください）</div>';
+    return;
+  }
+  el.innerHTML=names.map(n=>{
+    // 既知名キャッシュにあれば「✓」、なければ警告チップ
+    const known=!_knownChannelsLoaded || _knownChannelNames.has(n);
+    const cls=known?'badge-success':'badge-warning';
+    const ariaInvalid=known?'':'aria-invalid="true"';
+    const warn=known?'':' <span title="候補リスト / 分析シート取り込みに該当なし。表記が一致しているか確認してください" style="opacity:.85">注意:</span>';
+    return `
+    <span class="badge ${cls}" ${ariaInvalid} style="display:inline-flex;align-items:center;gap:6px;padding:4px 8px 4px 10px;font-size:var(--text-xs)">
+      ${esc(n)}${warn}
+      <button type="button" onclick="removePinned('${esc(n).replace(/'/g,"\\'")}')" aria-label="削除" style="background:none;border:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0 2px;border-radius:50%;opacity:.7" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.7">×</button>
+    </span>`;
+  }).join('');
+}
+function removePinned(name){
+  const s=_getPinnedSet();
+  s.delete(name);
+  _setPinned(s);
+}
+async function loadBenchmarkConfig(){
+  try{
+    const r=await fetch('/api/analysis/benchmark-config');if(!r.ok)return;
+    const d=await r.json();
+    document.getElementById('cfgBenchPinned').value=(d.pinned_names||[]).join('\n');
+    const f=d.filter||{};
+    document.getElementById('cfgBenchTopN').value=f.top_n||15;
+    document.getElementById('cfgBenchMinSubs').value=f.min_subs||0;
+    document.getElementById('cfgBenchMaxSubs').value=f.max_subs||'';
+    document.getElementById('cfgBenchExclude').value=(f.exclude_names||[]).join('\n');
+    _renderPinnedChips();
+    // 候補リストも自動展開で読み込む（成功すればチップ更新もされる）
+    pickFromHotChannels();
+  }catch{}
+}
+async function saveBenchmarkConfig(){
+  const body={
+    pinned_names:document.getElementById('cfgBenchPinned').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    top_n:parseInt(document.getElementById('cfgBenchTopN').value)||15,
+    min_subs:parseInt(document.getElementById('cfgBenchMinSubs').value)||0,
+    max_subs:parseInt(document.getElementById('cfgBenchMaxSubs').value)||0,
+    exclude_names:document.getElementById('cfgBenchExclude').value.split('\n').map(s=>s.trim()).filter(Boolean),
+  };
+  try{
+    const r=await fetch('/api/analysis/benchmark-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){toast('保存失敗','e');return}
+    toast(`ベンチマーク設定を保存: ピン留め ${body.pinned_names.length}ch`,'s');
+  }catch{toast('接続エラー','e')}
+}
+async function pickFromHotChannels(){
+  const el=document.getElementById('benchHotPicker');
+  if(!el)return;
+  el.innerHTML='<div style="font-size:var(--text-xs);color:var(--text-tertiary)">候補取得中…</div>';
+  try{
+    const r=await fetch('/api/analysis/hot-channels?top_n=20');
+    if(!r.ok){el.innerHTML='<div style="color:var(--accent-danger);font-size:var(--text-xs)">取得失敗</div>';return}
+    const d=await r.json();
+    const hot=d.hot_channels||[];
+    if(!hot.length){el.innerHTML='<div style="color:var(--text-tertiary);font-size:var(--text-xs)">候補がまだありません（スプシ成長シートを設定してください）</div>';return}
+    // 既知名キャッシュを更新（不一致警告の判定用）
+    hot.forEach(h=>_knownChannelNames.add(h.name));
+    _knownChannelsLoaded=true;
+    _renderPinnedChips();
+    const pinned=_getPinnedSet();
+    el.innerHTML=`<div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-2)">タップでピン留めトグル（${hot.length} 候補）</div>
+      <div style="display:flex;flex-wrap:wrap;gap:var(--space-1)">
+        ${hot.map(h=>{const on=pinned.has(h.name);const label=`${h.name} · +${(h.daily_views||0).toLocaleString()}v/d · ${(h.subscribers||0).toLocaleString()}sub`;return `<span class="badge ${on?'badge-success':'badge-neutral'}" style="cursor:pointer" data-name="${esc(h.name)}" data-label="${esc(label)}" onclick="togglePinned(this)">${on?'✓ ':''}${esc(label)}</span>`}).join('')}
+      </div>`;
+  }catch{el.innerHTML='<div style="color:var(--accent-danger);font-size:var(--text-xs)">接続エラー</div>'}
+}
+function togglePinned(el){
+  const name=el.dataset.name;
+  const s=_getPinnedSet();
+  if(s.has(name))s.delete(name);else s.add(name);
+  _setPinned(s);
+}
+
+/* ==== 競合サムネ要素分析（手動・厳守：コピーではなく要素抽出→翻訳） ==== */
+async function runThumbAnalysis(){
+  const filesInput=document.getElementById('benchThumbFiles');
+  const urlsTa=document.getElementById('benchThumbUrls');
+  const ctxTa=document.getElementById('benchThumbContextHint');
+  const statusEl=document.getElementById('benchThumbStatus');
+  const resEl=document.getElementById('benchThumbResult');
+  const urls=(urlsTa.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const files=Array.from(filesInput.files||[]);
+  if(!files.length && !urls.length){toast('画像ファイルまたは URL を 1 つ以上指定してください','warn');return}
+  statusEl.textContent='アップロード中…';
+  resEl.innerHTML='';
+  try{
+    let upload_ids=[];
+    if(files.length){
+      const fd=new FormData();
+      files.forEach(f=>fd.append('files',f));
+      const up=await fetch('/api/analysis/thumbnails-upload',{method:'POST',body:fd});
+      if(!up.ok){throw new Error('アップロード失敗 '+up.status)}
+      const upd=await up.json();
+      if(upd.upload_id)upload_ids=[upd.upload_id];
+    }
+    statusEl.textContent='Claude Vision で分析中… (60-120s)';
+    const r=await fetch('/api/analysis/thumbnails',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({urls,upload_ids,context_hint:ctxTa.value||''})
+    });
+    if(!r.ok){const t=await r.text();throw new Error('分析失敗: '+t)}
+    const d=await r.json();
+    statusEl.textContent='完了 ✓';
+    renderThumbResult(d,resEl);
+  }catch(e){
+    statusEl.textContent='';
+    resEl.innerHTML=`<div style="color:var(--accent-danger);font-size:var(--text-xs)">${esc(String(e.message||e))}</div>`;
+  }
+}
+function renderThumbResult(d,el){
+  const r=d.result||d||{};
+  const ext=r.element_extraction||{};
+  const hooks=r.viewer_hooks||[];
+  const adapt=r.adaptation_hints||{};
+  const avoid=r.avoid||[];
+  el.innerHTML=`
+    <div class="card" style="padding:var(--space-3);background:var(--bg-elevated);border-left:3px solid var(--accent-primary)">
+      <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-2)">
+        注意: この結果は <strong>要素抽出と翻訳ヒント</strong>です。競合画像の再現ではなく、このチャンネルの世界観への落とし込みにご利用ください。
+      </div>
+      <div style="display:grid;gap:var(--space-3)">
+        <div>
+          <div class="sec-title" style="font-size:var(--text-sm);margin-bottom:var(--space-1)">要素抽出（競合サムネの観察）</div>
+          <div style="font-size:var(--text-sm);color:var(--text-secondary);display:grid;gap:var(--space-1)">
+            ${Object.entries(ext).map(([k,v])=>`<div><span style="color:var(--text-tertiary)">${esc(k)}:</span> ${esc(Array.isArray(v)?v.join(', '):String(v||''))}</div>`).join('')||'<div style="color:var(--text-tertiary)">—</div>'}
+          </div>
+        </div>
+        <div>
+          <div class="sec-title" style="font-size:var(--text-sm);margin-bottom:var(--space-1)">視聴者フック（なぜ受けているか）</div>
+          <ul style="font-size:var(--text-sm);color:var(--text-secondary);margin:0;padding-left:var(--space-4)">
+            ${hooks.map(h=>`<li>${esc(String(h))}</li>`).join('')||'<li style="color:var(--text-tertiary)">—</li>'}
+          </ul>
+        </div>
+        <div>
+          <div class="sec-title" style="font-size:var(--text-sm);margin-bottom:var(--space-1);color:var(--accent-primary)">このチャンネルへの翻訳ヒント（独自表現に変換）</div>
+          <div style="font-size:var(--text-sm);color:var(--text-secondary);display:grid;gap:var(--space-1)">
+            ${Object.entries(adapt).map(([k,v])=>`<div><span style="color:var(--text-tertiary)">${esc(k)}:</span> ${esc(Array.isArray(v)?v.join(', '):String(v||''))}</div>`).join('')||'<div style="color:var(--text-tertiary)">—</div>'}
+          </div>
+        </div>
+        ${avoid.length?`<div>
+          <div class="sec-title" style="font-size:var(--text-sm);margin-bottom:var(--space-1);color:var(--accent-danger)">回避すべき表現</div>
+          <ul style="font-size:var(--text-sm);color:var(--text-secondary);margin:0;padding-left:var(--space-4)">
+            ${avoid.map(a=>`<li>${esc(String(a))}</li>`).join('')}
+          </ul>
+        </div>`:''}
+      </div>
+    </div>`;
+}
+
+/* ==== A/B ログ（制作条件 → 7日後の成果） ==== */
+async function loadAbLogPanel(name){
+  const el=document.getElementById(`abLogPanel_${name.replace(/[^\w]/g,'_')}`) || document.querySelector(`[id^="abLogPanel_"][data-name="${name}"]`);
+  if(!el)return;
+  el.innerHTML='<div style="color:var(--text-tertiary);font-size:var(--text-xs)">読み込み中…</div>';
+  try{
+    const r=await fetch('/api/ab-log');
+    const d=await r.json();
+    const entry=(d.entries||[]).find(e=>e.video_name===name);
+    const sunoVal=()=>document.getElementById('cfgSunoPrompt')?.value||(_lastConfig?.suno?.prompt||'');
+    const benchVal=()=>(document.getElementById('cfgBenchPinned')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+    if(!entry){
+      el.innerHTML=`
+        <div class="card" style="padding:var(--space-3);background:var(--bg-elevated)">
+          <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-bottom:var(--space-2)">未記録。投稿直後に現在の SUNO/Flow プロンプト・ピン留めベンチマークを固定スナップショット。</div>
+          <div class="btns" style="margin:0">
+            <button class="btn btn-primary btn-sm" onclick="createAbLog('${esc(name)}')">今の条件を記録（投稿時）</button>
+          </div>
+        </div>`;
+      return;
+    }
+    const days=entry.days_since_publish;
+    const ready=entry.ready_to_measure;
+    const measured=entry.views_delta_7d!==null && entry.views_delta_7d!==undefined;
+    let statusHtml='';
+    if(measured){
+      statusHtml=`<span class="badge badge-success">計測済 +${(entry.views_delta_7d||0).toLocaleString()}v / +${(entry.subs_delta_7d||0).toLocaleString()}sub</span>`;
+    }else if(ready){
+      statusHtml='<span class="badge badge-warning">7日経過・計測待ち</span>';
+    }else{
+      statusHtml=`<span class="badge badge-neutral">投稿から ${days==null?'?':days} 日</span>`;
+    }
+    el.innerHTML=`
+      <div class="card" style="padding:var(--space-3);background:var(--bg-elevated)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)">
+          <div style="font-size:var(--text-sm)">記録日: <code>${esc((entry.published_at||'').slice(0,10))}</code> ${statusHtml}</div>
+          <button class="btn btn-ghost btn-sm" onclick="deleteAbLog('${esc(name)}')" title="記録を削除"></button>
+        </div>
+        <details style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:var(--space-2)">
+          <summary style="cursor:pointer">記録内容を表示</summary>
+          <div style="margin-top:var(--space-1);line-height:1.6">
+            <div><strong>SUNO:</strong> ${esc((entry.suno_prompt||'').slice(0,140))}${(entry.suno_prompt||'').length>140?'…':''}</div>
+            ${entry.flow_prompt?`<div><strong>Flow:</strong> ${esc(entry.flow_prompt.slice(0,140))}${entry.flow_prompt.length>140?'…':''}</div>`:''}
+            <div><strong>Benchmark:</strong> ${(entry.benchmark_names||[]).map(esc).join(', ')||'-'}</div>
+            ${entry.note?`<div><strong>Note:</strong> ${esc(entry.note)}</div>`:''}
+            ${entry.measure_note?`<div><strong>Measure Note:</strong> ${esc(entry.measure_note)}</div>`:''}
+          </div>
+        </details>
+        ${!measured?`
+          <div class="row" style="gap:var(--space-2);align-items:flex-end;flex-wrap:wrap">
+            <div class="ff" style="flex:0 0 140px"><label class="fl">7日間 再生 delta</label><input type="number" class="fi" id="abViews_${esc(name)}" placeholder="+12000"></div>
+            <div class="ff" style="flex:0 0 140px"><label class="fl">7日間 登録 delta</label><input type="number" class="fi" id="abSubs_${esc(name)}" placeholder="+85"></div>
+            <div class="ff" style="flex:1;min-width:180px"><label class="fl">コメント（任意）</label><input type="text" class="fi" id="abNote_${esc(name)}" placeholder="サムネ差し替え/タイトル変更など"></div>
+            <button class="btn btn-primary btn-sm" onclick="measureAbLog('${esc(name)}')" ${ready?'':'disabled title="投稿から7日経過後に有効化"'}>7日後の delta を記録</button>
+            <button class="btn btn-secondary btn-sm" onclick="autoMeasureAbLog('${esc(name)}')" ${ready?'':'disabled title="投稿から7日経過後に有効化"'} title="追跡スプシ（TRACK_自チャンネル）の時系列から自動算出">自動計測</button>
+          </div>
+        `:''}
+      </div>`;
+  }catch(e){el.innerHTML='<div style="color:var(--accent-danger);font-size:var(--text-xs)">A/B ログ取得失敗</div>'}
+}
+async function createAbLog(name){
+  const suno=document.getElementById('cfgSunoPrompt')?.value||(_lastConfig?.suno?.prompt||'');
+  const bench=(document.getElementById('cfgBenchPinned')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const note=prompt('コメント（任意・今回の狙い / 変更点など）','')||'';
+  try{
+    const r=await fetch('/api/ab-log',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_name:name,suno_prompt:suno,benchmark_names:bench,note})});
+    if(!r.ok){toast('記録失敗','e');return}
+    toast('A/B ログに記録','s');
+    loadAbLogPanel(name);
+  }catch{toast('接続エラー','e')}
+}
+async function measureAbLog(name){
+  const v=parseInt(document.getElementById(`abViews_${name}`).value)||0;
+  const s=parseInt(document.getElementById(`abSubs_${name}`).value)||0;
+  const n=document.getElementById(`abNote_${name}`).value||'';
+  if(!v && !s && !confirm('両方 0 で登録しますか？')){return}
+  try{
+    const r=await fetch(`/api/ab-log/${encodeURIComponent(name)}/measure`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({views_delta_7d:v,subs_delta_7d:s,note:n})});
+    if(!r.ok){toast('計測失敗','e');return}
+    toast('7日後 delta を保存','s');
+    loadAbLogPanel(name);
+  }catch{toast('接続エラー','e')}
+}
+async function deleteAbLog(name){
+  if(!confirm('A/B ログを削除しますか？'))return;
+  try{
+    const r=await fetch(`/api/ab-log/${encodeURIComponent(name)}`,{method:'DELETE'});
+    if(!r.ok){toast('削除失敗','e');return}
+    toast('削除しました','s');
+    loadAbLogPanel(name);
+  }catch{toast('接続エラー','e')}
+}
+/* 追跡スプシから計測待ち全件の 7日 delta を自動算出（nameは再描画用・処理は全件） */
+async function autoMeasureAbLog(name){
+  try{
+    toast('追跡スプシから自動計測中…','i');
+    const r=await fetch('/api/ab-log/auto-measure',{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){toast(d.detail||'自動計測失敗','e');return}
+    if(d.measured>0){
+      toast(`${d.measured} 件を自動計測しました`,'s');
+    }else{
+      const reason=(d.results||[]).find(x=>!x.ok)?.reason||'対象なし';
+      toast('自動計測できませんでした: '+reason,'w');
+    }
+    if(name)loadAbLogPanel(name);
+    loadWeeklyTasks?.();
+  }catch{toast('接続エラー','e')}
+}
+
+/* ==== 週次 PDCA レポート（S4） ==== */
+async function loadPdcaReport(){
+  const badge=document.getElementById('pdcaDateBadge');
+  const txt=document.getElementById('pdcaText');
+  if(!txt)return;
+  try{
+    const d=await apiGet('/api/weekly-report/latest');
+    if(d&&d.ok){
+      if(badge){badge.className='badge badge-info';badge.textContent=(d.generated_at||'').slice(0,16).replace('T',' ')}
+      txt.textContent=d.text||'';
+    }else{
+      if(badge){badge.className='badge badge-neutral';badge.textContent='未生成'}
+      txt.textContent=(d&&d.hint)||'レポート未生成。「いま生成し直す」で作成できます。';
+    }
+  }catch(e){if(badge){badge.className='badge badge-neutral';badge.textContent='取得失敗'}}
+}
+async function pdcaGenerate(){
+  toast('レポート生成中…','i');
+  try{
+    const d=await apiPost('/api/weekly-report/generate');
+    toast('レポートを生成しました','s');
+    const txt=document.getElementById('pdcaText');if(txt)txt.textContent=d.text||'';
+    const badge=document.getElementById('pdcaDateBadge');
+    if(badge){badge.className='badge badge-info';badge.textContent=(d.generated_at||'').slice(0,16).replace('T',' ')}
+  }catch(e){toast('生成失敗: '+e.message,'e')}
+}
+
+/* ==== 運用サイクル: 今週のタスク ==== */
+async function loadWeeklyTasks(){
+  const card=document.getElementById('dashWeeklyCard');
+  const el=document.getElementById('dashWeekly');
+  if(!el||!card)return;
+  try{
+    const[cacheR,logR]=await Promise.all([
+      fetch('/api/analysis/cache-info'),
+      fetch('/api/ab-log'),
+    ]);
+    const cache=await cacheR.json();
+    const logs=(await logR.json()).entries||[];
+    const rows=[];
+    // 競合分析の未実行・古いキャッシュ警告はベンチマーク分析ページ側で扱うため、ダッシュボードからは削除
+    const ready=logs.filter(e=>e.ready_to_measure);
+    ready.forEach(e=>{
+      rows.push(`<div class="video-row" style="grid-template-columns:32px 1fr 120px" onclick="goToVideoDetail('${esc(e.video_name)}');setTimeout(()=>setTab('meta'),200)">
+        <div></div>
+        <div><div class="vr-title">${esc(e.video_name)}: 7日 delta 計測待ち</div><div class="vr-sub">追跡スプシから自動計測、または手動転記</div></div>
+        <div style="text-align:right"><span class="badge ${(e.days_since_publish||0)>30?'badge-danger':'badge-warning'}" title="${(e.days_since_publish||0)>30?'30日以上放置されています。計測するか破棄してください':''}">${e.days_since_publish}日経過</span></div>
+      </div>`);
+    });
+    if(rows.length===0){
+      card.style.display='none';
+      return;
+    }
+    card.style.display='';
+    el.innerHTML=rows.join('')+`<div class="btns" style="margin-top:var(--space-2)"><button class="btn btn-secondary btn-sm" onclick="autoMeasureAbLog()">計測待ちを一括自動計測</button></div>`;
+  }catch{card.style.display='none'}
+}
+
+/* ==== ベンチマーク詳細サイドパネル + 徹底パクリ進化（Sprint 5-A） ==== */
+async function loadBenchmarkSidePanel(name){
+  const root=document.getElementById('benchSidePanel_'+name);if(!root)return;
+  root.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const [bvR,ptR,tfR]=await Promise.all([
+      fetch('/api/analysis/benchmark-videos'),
+      fetch('/api/analysis/posting-times'),
+      fetch('/api/analysis/tag-frequency?top_n=15'),
+    ]);
+    const bv=await bvR.json();const pt=await ptR.json();const tf=await tfR.json();
+    const channels=bv.channels||[];
+    if(!channels.length){root.innerHTML=`<div class="fh" style="color:var(--accent-warning)">${esc(bv.hint||'ベンチマーク対象が空')}</div>`;return}
+    let html='';
+    // === 適用中ベンチマーク ===
+    html+=`<div style="margin-bottom:var(--space-4)"><div class="sec-title" style="font-size:var(--text-sm);margin-bottom:var(--space-2)">適用中ベンチマーク（${channels.length} 件）</div>`;
+    html+=channels.map(ch=>{
+      if(!ch.found)return `<div style="padding:var(--space-2);color:var(--text-tertiary);font-size:var(--text-xs)">${esc(ch.name)}（Sheet1 で見つからず）</div>`;
+      const top=(ch.top_videos||[]).map(v=>`
+        <div style="display:flex;gap:var(--space-2);padding:var(--space-2);border-top:1px solid var(--border-default);align-items:flex-start">
+          ${v.thumb_url?`<img src="${esc(v.thumb_url)}" referrerpolicy="no-referrer" style="width:80px;height:45px;border-radius:var(--radius-sm);object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">`:''}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:var(--text-xs);color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.url?`<a href="${esc(v.url)}" target="_blank" rel="noopener" style="color:var(--text-primary);text-decoration:none">${esc(v.title)}</a>`:esc(v.title)}</div>
+            <div style="font-size:var(--text-2xs);color:var(--text-tertiary);font-family:var(--font-mono)">${(v.views||0).toLocaleString()}回 ・ ${esc(v.published_at||'')}</div>
+          </div>
+        </div>`).join('');
+      return `<details style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:var(--space-2);margin-bottom:var(--space-2)">
+        <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-weight:var(--font-medium)">${esc(ch.name)}</span>
+          <span style="font-size:var(--text-xs);color:var(--text-tertiary);font-family:var(--font-mono)">${(ch.subscribers||0).toLocaleString()} 登録</span>
+        </summary>
+        <div style="margin-top:var(--space-2)">${top||'<div class="fh">TOP 動画なし</div>'}</div>
+      </details>`;
+    }).join('');
+    html+='</div>';
+    // === 投稿時刻ヒートマップ ===
+    html+=`<div style="margin-bottom:var(--space-4)"><div class="sec-title" style="font-size:var(--text-sm);margin-bottom:var(--space-2)">投稿時刻パターン（曜日 × 時刻、計 ${pt.total_count||0} 件）</div>`;
+    if(pt.total_count>0){
+      const max=Math.max(...pt.heatmap.flat());
+      html+='<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:var(--text-2xs);font-family:var(--font-mono)"><thead><tr><th></th>';
+      pt.hour_labels.forEach(h=>{html+=`<th style="padding:1px 3px;color:var(--text-tertiary);font-weight:normal">${h}</th>`});
+      html+='</tr></thead><tbody>';
+      pt.weekday_labels.forEach((wd,i)=>{
+        html+=`<tr><th style="padding:1px 6px 1px 0;color:var(--text-tertiary);text-align:right">${wd}</th>`;
+        pt.heatmap[i].forEach(c=>{
+          const op=max>0?(c/max):0;
+          const bg=c>0?`rgba(59,130,246,${0.15+op*0.85})`:'var(--bg-elevated)';
+          html+=`<td title="${wd} ${c}件" style="width:14px;height:14px;background:${bg};border:1px solid var(--bg-base)"></td>`;
+        });
+        html+='</tr>';
+      });
+      html+='</tbody></table></div>';
+    }else{
+      html+='<div class="fh">投稿時刻データなし（Sheet1 の publish_datetime 列が必要）</div>';
+    }
+    html+='</div>';
+    // === タグ頻出 ===
+    html+=`<div><div class="sec-title" style="font-size:var(--text-sm);margin-bottom:var(--space-2)">タイトル頻出ワード TOP15</div>`;
+    if((tf.tags||[]).length){
+      html+='<div style="display:flex;flex-wrap:wrap;gap:var(--space-1)">';
+      tf.tags.forEach(t=>{
+        html+=`<span class="badge badge-info" style="font-size:var(--text-xs)">${esc(t.word)} <span style="opacity:.6">${t.count}</span></span>`;
+      });
+      html+='</div>';
+      html+=`<div class="fh" style="margin-top:var(--space-2);font-size:var(--text-2xs)">${esc(tf.source||'')}</div>`;
+    }else{
+      html+='<div class="fh">データなし</div>';
+    }
+    html+='</div>';
+    root.innerHTML=html;
+  }catch(e){root.innerHTML='<div class="fh" style="color:var(--accent-danger)">読み込み失敗: '+esc(e.message||'')+'</div>'}
+}
+async function suggestImitateEvolve(name){
+  const btn=document.getElementById('sgImitateBtn');
+  const out=document.getElementById('sgImitateResult');
+  if(btn){btn.disabled=true;const prev=btn.textContent;btn.textContent='60秒...'}
+  if(out)out.innerHTML='<div class="loading-overlay"><span class="spinner"></span>ベンチマーク先動画 + ペルソナから「徹底パクリ進化」3 軸を生成中...</div>';
+  try{
+    const r=await fetch(`/api/videos/${encodeURIComponent(name)}/suggest-imitate-evolve`,{method:'POST'});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.detail||'生成失敗','e');if(out)out.innerHTML='';return}
+    const d=await r.json();
+    const block=(label,arr,color,icon)=>`
+      <div style="background:var(--bg-elevated);border-left:3px solid ${color};border-radius:var(--radius-sm);padding:var(--space-3);margin-bottom:var(--space-2)">
+        <div style="font-weight:var(--font-semibold);color:${color};margin-bottom:var(--space-2)">${icon} ${label}</div>
+        <ul style="margin:0;padding-left:var(--space-4);font-size:var(--text-sm);color:var(--text-secondary);line-height:1.7">${(arr||[]).map(x=>`<li>${esc(String(x))}</li>`).join('')||'<li class="fh">（提案なし）</li>'}</ul>
+      </div>`;
+    out.innerHTML=`<div class="card" style="padding:var(--space-3);background:var(--bg-surface);border:1px solid var(--accent-primary)">
+      <div class="sec-title" style="margin-bottom:var(--space-3)">徹底パクリ進化分析</div>
+      ${d.summary?`<div style="font-size:var(--text-sm);color:var(--text-primary);margin-bottom:var(--space-3);padding:var(--space-2);background:var(--bg-elevated);border-radius:var(--radius-sm)">${esc(d.summary)}</div>`:''}
+      ${block('パクる要素（型・構成）',d.imitate,'var(--accent-success)','✓')}
+      ${block('避ける要素（差別化）',d.avoid,'var(--accent-danger)','✗')}
+      ${block('進化させる要素（ペルソナ × 弱点）',d.evolve,'var(--accent-info)','+')}
+    </div>`;
+    toast('徹底パクリ進化分析を生成しました','s');
+  }catch(e){toast('接続エラー','e');if(out)out.innerHTML=''}
+  finally{if(btn){btn.disabled=false;btn.textContent='徹底パクリ進化を提案'}}
+}
+
+/* ==== モバイル: サイドバートグル ==== */
+function toggleSidebar(force){
+  const sb=document.querySelector('.sidebar');
+  const bd=document.getElementById('sidebarBackdrop');
+  if(!sb)return;
+  const shouldOpen=(typeof force==='boolean')?force:!sb.classList.contains('open');
+  sb.classList.toggle('open',shouldOpen);
+  if(bd)bd.classList.toggle('open',shouldOpen);
+}
+// ページ遷移時にサイドバーを自動で閉じる（モバイル）
+document.addEventListener('click',e=>{
+  const nav=e.target.closest('.nav-btn');
+  if(nav && window.innerWidth<=900)setTimeout(()=>toggleSidebar(false),100);
+});
+async function clearAnalysisCache(){
+  if(!confirm('競合分析キャッシュを削除しますか？\n（次回の分析リクエストで英語メタデータ生成向けに再生成されます。）'))return;
+  try{
+    const r=await fetch('/api/analysis/cache',{method:'DELETE'});
+    if(!r.ok){toast('キャッシュ削除失敗','e');return}
+    toast('キャッシュを削除しました。再分析を実行してください','s');
+    loadCacheInfo();
+  }catch(e){toast('接続エラー','e')}
+}
+/* ==== Folder Picker（HOME / /Volumes 配下のディレクトリを参照して選択） ==== */
+let _fpState={path:'',onPick:null,initial:''};
+async function pickFolder(initialPath, onPick){
+  _fpState={path:'',onPick,initial:initialPath||''};
+  // モーダル骨格を生成
+  const c=document.getElementById('modalC');
+  c.innerHTML=`
+    <div class="fp-modal" id="fpModal" onclick="if(event.target.id==='fpModal')closeFolderPicker()">
+      <div class="fp-box" role="dialog" aria-modal="true" aria-labelledby="fpTitle">
+        <div class="fp-head">
+          <div class="fp-title" id="fpTitle">フォルダを選択</div>
+          <button class="fp-close" onclick="closeFolderPicker()" aria-label="閉じる">×</button>
+        </div>
+        <div class="fp-roots" id="fpRoots"></div>
+        <div class="fp-crumbs" id="fpCrumbs"></div>
+        <div class="fp-list" id="fpList"></div>
+        <div class="fp-foot">
+          <div class="fp-foot-path" id="fpFootPath" title=""></div>
+          <div class="fp-foot-actions">
+            <button class="btn btn-secondary btn-sm" onclick="closeFolderPicker()">キャンセル</button>
+            <button class="btn btn-primary btn-sm" id="fpPickBtn" onclick="confirmFolderPick()">このフォルダを選択</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.addEventListener('keydown', _fpKeyHandler);
+  await _fpLoad(initialPath || '');
+}
+function closeFolderPicker(){
+  document.removeEventListener('keydown', _fpKeyHandler);
+  document.getElementById('modalC').innerHTML='';
+  _fpState={path:'',onPick:null,initial:''};
+}
+function _fpKeyHandler(e){
+  if(e.key==='Escape'){closeFolderPicker()}
+}
+function confirmFolderPick(){
+  if(!_fpState.path){toast('フォルダが選択されていません','w');return}
+  const cb=_fpState.onPick;const p=_fpState.path;
+  closeFolderPicker();
+  if(typeof cb==='function')cb(p);
+}
+async function _fpLoad(path){
+  const list=document.getElementById('fpList');
+  if(!list)return;
+  list.innerHTML='<div class="fp-empty"><span class="spinner"></span> 読み込み中…</div>';
+  try{
+    const r=await fetch(`/api/finder/list?path=${encodeURIComponent(path)}`);
+    if(!r.ok){const e=await r.json().catch(()=>({}));list.innerHTML=`<div class="fp-empty">${esc(e.detail||'読み取れませんでした')}</div>`;return}
+    const d=await r.json();
+    _fpState.path=d.path;
+    // ルートチップ
+    const rootsEl=document.getElementById('fpRoots');
+    if(rootsEl)rootsEl.innerHTML=(d.roots||[]).map(rt=>`<button class="fp-root" onclick="_fpLoad('${esc(rt.path)}')">${rt.icon||''} ${esc(rt.label)}</button>`).join('');
+    // パンくず
+    _fpRenderCrumbs(d.path);
+    // フッターパス表示
+    const fp=document.getElementById('fpFootPath');
+    if(fp){fp.textContent=d.path;fp.title=d.path}
+    // 一覧
+    const items=(d.entries||[]).map((e,i)=>`
+      <div class="fp-item" tabindex="0" data-path="${esc(e.path)}" onclick="_fpLoad('${esc(e.path)}')" ondblclick="_fpLoad('${esc(e.path)}')">
+        <span class="fp-item-icon"></span>
+        <span class="fp-item-name">${esc(e.name)}</span>
+        <span class="fp-item-meta">${e.child_count} 件</span>
+      </div>`).join('');
+    let html='';
+    if(d.parent){
+      html+=`<div class="fp-item" tabindex="0" onclick="_fpLoad('${esc(d.parent)}')"><span class="fp-item-icon"></span><span class="fp-item-name">.. (上の階層へ)</span></div>`;
+    }
+    html+=items || '<div class="fp-empty">サブフォルダがありません</div>';
+    if(d.truncated)html+=`<div class="fp-truncated">注意: 200 件で打ち切りました。下層フォルダで絞り込んでください。</div>`;
+    list.innerHTML=html;
+  }catch(e){
+    list.innerHTML=`<div class="fp-empty" style="color:var(--accent-danger)">接続エラー: ${esc(String(e))}</div>`;
+  }
+}
+function _fpRenderCrumbs(path){
+  const el=document.getElementById('fpCrumbs');
+  if(!el)return;
+  if(!path){el.innerHTML='';return}
+  // パスを分割してパンくずを生成
+  const parts=path.split('/').filter(Boolean);
+  let cur='';
+  const crumbs=[`<span class="fp-crumb" onclick="_fpLoad('/')">/</span>`];
+  parts.forEach((p,i)=>{
+    cur+='/'+p;
+    const last=(i===parts.length-1);
+    crumbs.push(last
+      ? `<span class="fp-crumb current">${esc(p)}</span>`
+      : `<span class="fp-crumb" onclick="_fpLoad('${esc(cur)}')">${esc(p)}</span>`);
+    if(!last)crumbs.push('<span style="color:var(--text-tertiary)">›</span>');
+  });
+  el.innerHTML=crumbs.join(' ');
+}
+/** 入力欄に対してピッカーを開く便利関数 */
+function pickFolderInto(inputId, opts){
+  const el=document.getElementById(inputId);if(!el)return;
+  const initial=el.value || (opts && opts.fallback) || '';
+  pickFolder(initial,(picked)=>{
+    el.value=picked;
+    el.dispatchEvent(new Event('change'));
+    toast(`選択: ${picked}`,'s');
+  });
+}
+
+/* ==== 設定タブ用ヘルパー：コマンドコピー / パスワード表示切替 / 公式ページオープン / 接続テスト ==== */
+function togglePwd(inputId,btn){
+  const el=document.getElementById(inputId);if(!el)return;
+  if(el.type==='password'){el.type='text';if(btn)btn.textContent='隠す'}
+  else{el.type='password';if(btn)btn.textContent='表示'}
+}
+const API_PAGES={
+  gemini:'https://aistudio.google.com/app/apikey',
+  openai:'https://platform.openai.com/api-keys',
+  youtube:'https://console.cloud.google.com/apis/credentials',
+  youtubeQuota:'https://console.cloud.google.com/iam-admin/quotas?service=youtube.googleapis.com',
+  sheets:'https://console.cloud.google.com/apis/credentials',
+  claudeCli:'https://docs.claude.com/ja/docs/claude-code/quickstart',
+  codexCli:'https://developers.openai.com/codex/cli'
+};
+function openApiPage(key){
+  const url=API_PAGES[key];if(!url){toast('リンクが見つかりません','w');return}
+  window.open(url,'_blank','noopener');
+}
+function _setApiStatus(id,state,label){
+  const el=document.getElementById(id);if(!el)return;
+  el.classList.remove('ok','ng','idle','checking');
+  el.classList.add(state);
+  el.textContent=label;
+}
+async function testApiKey(kind){
+  const map={
+    llm:{input:'cfgApiKey',badge:'stLlm',label:'LLM'},
+    youtube:{input:'cfgYtApiKey',badge:'stYt',label:'YouTube'},
+    sheets:{input:'cfgSheetsApiKey',badge:'stSheets',label:'Sheets'},
+    claude:{input:'cfgClaudeCli',badge:'stClaude',label:'Claude CLI'},
+    codex:{input:'cfgCodexCli',badge:'stCodex',label:'Codex CLI'}
+  };
+  const m=map[kind];if(!m)return;
+  const inp=document.getElementById(m.input);
+  const val=(inp?.value||'').trim();
+  if(!val && kind!=='sheets'){
+    _setApiStatus(m.badge,'ng','未入力');
+    toast(`${m.label} の値を入力してください`,'w');return;
+  }
+  _setApiStatus(m.badge,'checking','確認中…');
+  try{
+    if(kind==='claude'){
+      // Claude CLI は credentials/status の claude_cli を再利用
+      const r=await fetch('/api/credentials/status');
+      const d=await r.json();
+      if(d?.claude_cli?.available){_setApiStatus(m.badge,'ok','利用可');toast('Claude CLI を検出','s')}
+      else{_setApiStatus(m.badge,'ng','未検出');toast('Claude CLI が見つかりません','e')}
+      return;
+    }
+    if(kind==='codex'){
+      const r=await fetch('/api/credentials/status');
+      const d=await r.json();
+      if(d?.codex_cli?.available){_setApiStatus(m.badge,'ok','利用可');toast('Codex CLI を検出','s')}
+      else{_setApiStatus(m.badge,'ng','未検出');toast('Codex CLI が見つかりません','e')}
+      return;
+    }
+    if(kind==='youtube'){
+      // YouTube Data API: 公開チャンネル取得で簡易テスト（Google公式チャンネル）
+      const r=await fetch(`https://www.googleapis.com/youtube/v3/channels?part=id&id=UC_x5XG1OV2P6uZZ5FSM9Ttw&key=${encodeURIComponent(val)}`);
+      const d=await r.json();
+      if(d?.items?.length){_setApiStatus(m.badge,'ok','OK');toast('YouTube API キーは有効です','s')}
+      else{_setApiStatus(m.badge,'ng','エラー');toast(d?.error?.message||'YouTube API キーが無効','e')}
+      return;
+    }
+    if(kind==='sheets'){
+      if(!val){_setApiStatus(m.badge,'idle','未設定（任意）');return}
+      // Sheets API は API キーだけでは検証しにくいので、形式のみチェック
+      if(/^AIza[\w-]{30,}$/.test(val)){_setApiStatus(m.badge,'ok','形式OK');toast('Sheets キー形式OK（接続は実利用時に確認されます）','s')}
+      else{_setApiStatus(m.badge,'ng','形式不正');toast('Sheets キーの形式が正しくありません','w')}
+      return;
+    }
+    if(kind==='llm'){
+      // 形式チェック（sk-...=OpenAI / AIza...=Google）
+      if(/^sk-[A-Za-z0-9_\-]{20,}/.test(val)){_setApiStatus(m.badge,'ok','OpenAI 形式OK');toast('OpenAI キー形式OK','s')}
+      else if(/^AIza[\w-]{30,}$/.test(val)){_setApiStatus(m.badge,'ok','Gemini 形式OK');toast('Gemini キー形式OK','s')}
+      else{_setApiStatus(m.badge,'ng','形式不明');toast('OpenAI(sk-...) / Gemini(AIza...) のいずれの形式にも一致しません','w')}
+      return;
+    }
+  }catch(e){
+    _setApiStatus(m.badge,'ng','失敗');
+    toast('接続エラー: '+(e.message||e),'e');
+  }
+}
+/* ==== スケジュール UI（Sprint 5-C） ==== */
+function onSchTypeChange(){
+  const t=document.getElementById('schNewType')?.value;
+  const exportRow=document.getElementById('schExportActionRow');
+  const volRow=document.getElementById('schVolRow');
+  const dateRow=document.getElementById('schDateRow');
+  const cronRow=document.getElementById('schCronRow');
+  const arRow=document.getElementById('schAutoResumeRow');
+  if(exportRow)exportRow.style.display=(t==='export_window')?'':'none';
+  if(volRow)volRow.style.display=(t==='spot_create')?'':'none';
+  // spot_create は date 推奨だが cron でも可
+  if(dateRow)dateRow.style.display=(t==='spot_create')?'':'none';
+  if(cronRow)cronRow.style.display=(t==='spot_create')?'none':'';
+  // auto_resume は vol_create / spot_create のみ意味がある
+  if(arRow)arRow.style.display=(t==='vol_create'||t==='spot_create')?'':'none';
+}
+async function loadMasterSchedule(){
+  const list=document.getElementById('masterScheduleList');if(!list)return;
+  list.innerHTML='<div class="fh">読み込み中...</div>';
+  try{
+    const filterEl=document.getElementById('schFilterChannel');
+    const filterValue=(filterEl&&filterEl.value)||'';
+    const url='/api/schedule/jobs'+(filterValue?'?channel_id='+encodeURIComponent(filterValue):'');
+    const r=await fetch(url);
+    const d=await r.json();
+    const jobs=d.jobs||[];
+    // フィルタ用 select の options を更新（registry 由来）
+    if(filterEl){
+      const cur=filterEl.value;
+      const chs=d.channels||[];
+      filterEl.innerHTML='<option value="">すべて</option>'
+        +'<option value="__none__">未指定（全チャンネル共通）</option>'
+        +chs.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+      filterEl.value=cur;
+    }
+    // フィルタ件数バッジ
+    const cnt=document.getElementById('schFilterCount');
+    if(cnt){
+      cnt.textContent=filterValue?`${jobs.length} 件`:`${jobs.length} 件 (全チャンネル)`;
+    }
+    if(!d.scheduler_active){list.innerHTML='<div class="fh" style="color:var(--accent-warning)">注意: スケジューラ未起動。<code>pip install apscheduler</code> 後にサーバー再起動が必要です</div>';return}
+    if(!jobs.length){
+      list.innerHTML=filterValue
+        ?'<div class="fh">このチャンネルには登録ジョブがありません</div>'
+        :'<div class="fh">登録ジョブなし。下の「ジョブを追加」から登録してください</div>';
+    }else{
+      const typeLabel={vol_create:'vol 定期生成',benchmark_refresh:'分析リフレッシュ',export_window:'AME ON/OFF',spot_create:'スポット動画作成'};
+      list.innerHTML=jobs.map(j=>{
+        const t=j.trigger||{};const tdesc=t.kind==='date'?`一回限り ${t.run_date||''}`:`${t.day_of_week||'*'} ${t.hour||0}:${String(t.minute||0).padStart(2,'0')}`;
+        const next=j.next_run?new Date(j.next_run).toLocaleString('ja-JP'):'—';
+        // P2-3: channel_name を表示（registry 解決済）
+        const chDisplay = j.channel_name
+          ? `<span class="badge badge-neutral" style="font-size:var(--text-2xs);margin-left:4px">${esc(j.channel_name)}</span>`
+          : (j.channel_id ? `<span class="badge badge-warning" style="font-size:var(--text-2xs);margin-left:4px" title="registry に未登録">${esc(j.channel_id)}</span>` : '');
+        const arBadge = j.auto_resume
+          ? `<span class="badge badge-success" style="font-size:var(--text-2xs);margin-left:4px" title="失敗時は ${j.auto_resume_delay_min||30} 分後に最大 ${j.auto_resume_max_attempts||3} 回まで再投入">auto-resume</span>`
+          : '';
+        return `<div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3);background:var(--bg-surface);border:1px solid var(--border-default);border-radius:var(--radius-md);margin-bottom:var(--space-2)">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:var(--font-semibold)">${esc(j.name||j.id)} <span class="badge badge-info" style="font-size:var(--text-2xs)">${esc(typeLabel[j.type]||j.type)}</span>${chDisplay}${arBadge} ${j.enabled===false?'<span class="badge badge-neutral" style="font-size:var(--text-2xs)">無効</span>':''}</div>
+            <div style="font-size:var(--text-xs);color:var(--text-tertiary);margin-top:2px">${esc(tdesc)}${j.action?' · '+esc(j.action):''}${j.vol?' · vol='+j.vol:''}</div>
+            <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-top:2px;font-family:var(--font-mono)">次回: ${esc(next)}</div>
+          </div>
+          <div class="btns" style="margin:0">
+            <button class="btn btn-secondary btn-sm" onclick="runScheduleJob('${esc(j.id)}')">▶ 今すぐ実行</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--accent-danger)" onclick="deleteScheduleJob('${esc(j.id)}','${esc(j.name||j.id)}')">削除</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    // 新規追加用のチャンネル選択肢を埋める（registry 由来）
+    const sel=document.getElementById('schNewChannel');
+    if(sel){
+      const cur=sel.value;
+      const chs=d.channels||[];
+      sel.innerHTML='<option value="">いま選んでいるチャンネル</option>'+chs.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+      sel.value=cur;
+    }
+    // 履歴
+    try{
+      const hr=await fetch('/api/schedule/history');const hd=await hr.json();
+      const histEl=document.getElementById('masterScheduleHistory');
+      const items=hd.history||[];
+      if(histEl){
+        histEl.innerHTML=items.length?items.map(h=>{
+          const c=({done:'var(--accent-success)',started:'var(--accent-info)',error:'var(--accent-danger)'})[h.status]||'var(--text-tertiary)';
+          return `<div style="padding:4px 0;border-top:1px solid var(--border-default)"><span style="color:${c};font-family:var(--font-mono);font-size:var(--text-2xs)">${esc(h.at.slice(11,19))}</span> <strong>${esc(h.job_id)}</strong> <span style="color:${c}">[${esc(h.status)}]</span> ${esc(h.detail||'')}</div>`;
+        }).join(''):'<div class="fh">履歴なし</div>';
+      }
+    }catch(e){}
+  }catch(e){list.innerHTML='<div class="fh" style="color:var(--accent-danger)">取得失敗</div>'}
+}
+async function saveScheduleJob(){
+  const $=id=>document.getElementById(id);
+  const type=$('schNewType').value;
+  const body={type,name:$('schNewName').value.trim()||type,enabled:true};
+  const ch=$('schNewChannel')?.value||'';if(ch)body.channel_id=ch;
+  // P2-6: auto_resume（vol_create / spot_create のみ）
+  if(type==='vol_create'||type==='spot_create'){
+    const ar=$('schNewAutoResume');
+    if(ar&&ar.checked){
+      body.auto_resume=true;
+      body.auto_resume_delay_min=parseInt($('schNewResumeDelay').value)||30;
+      body.auto_resume_max_attempts=parseInt($('schNewResumeMax').value)||3;
+    }
+  }
+  if(type==='spot_create'){
+    const vol=parseInt($('schNewVol').value);if(!vol){toast('vol を入力','w');return}body.vol=vol;
+    const dt=$('schNewDate').value;
+    if(dt){body.trigger={kind:'date',run_date:dt};}
+    else{toast('実行日時を入力（spot_create）','w');return}
+  }else if(type==='export_window'){
+    body.action=$('schNewAction').value;
+    body.trigger={kind:'cron',day_of_week:$('schNewDow').value||'*',hour:parseInt($('schNewHour').value)||0,minute:parseInt($('schNewMin').value)||0};
+  }else{
+    body.trigger={kind:'cron',day_of_week:$('schNewDow').value||'*',hour:parseInt($('schNewHour').value)||0,minute:parseInt($('schNewMin').value)||0};
+  }
+  try{
+    const r=await fetch('/api/schedule/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('追加失敗: '+(e.detail||r.status),'e');return}
+    const d=await r.json().catch(()=>({}));
+    if(d.slot_shifted_minutes && d.slot_shifted_minutes > 0){
+      const t=d.job?.trigger||{};
+      const tdesc=t.kind==='date'?(t.run_date||''):`${t.day_of_week||'*'} ${t.hour||0}:${String(t.minute||0).padStart(2,'0')}`;
+      toast(`衝突回避のため ${d.slot_shifted_minutes} 分後ろにずらしました → ${tdesc}`,'w');
+    }else{
+      toast('ジョブを追加しました','s');
+    }
+    $('schNewName').value='';$('schNewVol').value='';
+    loadMasterSchedule();
+  }catch(e){toast('接続エラー','e')}
+}
+async function runScheduleJob(id){
+  if(!confirm('このジョブを今すぐ実行しますか？'))return;
+  try{
+    const r=await fetch('/api/schedule/run-now/'+encodeURIComponent(id),{method:'POST'});
+    if(!r.ok){toast('実行失敗','e');return}
+    toast('実行を開始しました','s');
+    setTimeout(loadMasterSchedule,2000);
+  }catch(e){toast('接続エラー','e')}
+}
+async function deleteScheduleJob(id,name){
+  if(!confirm(`ジョブ「${name}」を削除しますか？`))return;
+  try{
+    await fetch('/api/schedule/jobs/'+encodeURIComponent(id),{method:'DELETE'});
+    toast('削除しました','s');loadMasterSchedule();
+  }catch(e){toast('接続エラー','e')}
+}
+
+/* ==== キャッシュ情報表示 ==== */
+async function loadCacheInfo(){
+  const el=document.getElementById('analysisCacheInfo');
+  if(!el)return;
+  el.innerHTML='読み込み中…';
+  try{
+    const r=await fetch('/api/analysis/cache-info');
+    const d=await r.json();
+    if(!d.cached){el.innerHTML='<span class="badge badge-warning">未実行</span> 競合分析を実行してください';const lh=document.getElementById('analysisLangHint');if(lh)lh.style.display='none';return}
+    const age=d.age_days===null?'?':`${d.age_days}日前`;
+    const staleBadge=d.stale?'<span class="badge badge-warning">7日経過</span>':'<span class="badge badge-success">鮮度OK</span>';
+    const schemaBadge=d.schema_outdated?'<span class="badge badge-danger">旧スキーマ（再分析必須）</span>':'<span class="badge badge-success">music/visual_direction ✓</span>';
+    el.innerHTML=`
+      <div style="line-height:1.8">
+        最終分析: <strong>${esc(d.analyzed_at||'?')}</strong> (${age}) ${staleBadge}<br>
+        ソース: <code>${esc(d.source||'?')}</code> / チャンネル数: ${d.channel_count||0}<br>
+        スキーマ: ${schemaBadge}
+      </div>`;
+    // キャッシュが英語メタデータ版か判定（cache.language='en' AND prompt_version>=3）
+    try{
+      const cr=await fetch('/api/analysis/cache');const cd=await cr.json();
+      const isEn = cd.language==='en' && (cd.prompt_version||0)>=3;
+      const lh=document.getElementById('analysisLangHint');
+      if(lh)lh.style.display=isEn?'none':'block';
+    }catch(e){}
+  }catch{el.innerHTML='<span class="badge badge-danger">取得失敗</span> <button class="btn btn-ghost btn-sm" onclick="loadCacheInfo()">再試行</button>'}
+}
+async function regenerateAnalysisJa(){
+  if(!confirm('既存の競合分析キャッシュを削除し、英語メタデータ生成向けに再分析を実行します。\n（YouTube API quota / Claude CLI 時間が消費されます。1〜2分。）\n続行しますか？'))return;
+  try{
+    const dr=await fetch('/api/analysis/cache',{method:'DELETE'});
+    // 既存に DELETE エンドポイントが無い場合のフォールバック: 直接再分析
+    const r=await fetch('/api/analysis/competitors',{method:'POST'});
+    if(!r.ok){const e=await r.json().catch(()=>({}));toast('再分析開始失敗: '+(e.detail||r.status),'e');return}
+    toast('再分析を開始しました（完了まで数分かかります）','s');
+    // ステータスポーリング
+    const poll=async()=>{
+      try{
+        const sr=await fetch('/api/analysis/status');const sd=await sr.json();
+        if(sd.running){setTimeout(poll,3000);return}
+        loadCacheInfo();
+        toast('再分析が完了しました（英語メタ向け）','s');
+      }catch(e){}
+    };
+    setTimeout(poll,3000);
+  }catch(e){toast('接続エラー','e')}
+}
+
+async function previewSpreadsheets(){
+  const el=document.getElementById('ssPreview');
+  el.innerHTML='<div style="color:var(--accent-info);font-size:12px">接続テスト中...</div>';
+  try{
+    const r=await fetch('/api/analysis/spreadsheet-preview');
+    const d=await r.json();
+    let html='<div class="g2" style="gap:var(--space-2)">';
+    if(d.detail){
+      if(d.detail.error)html+=`<div class="stat" style="padding:10px"><div class="stat-l">詳細シート</div><div style="color:var(--accent-danger);font-size:12px">${esc(d.detail.error)}</div></div>`;
+      else html+=`<div class="stat" style="padding:10px"><div class="stat-l">詳細シート</div><div class="stat-v" style="font-size:18px">${d.detail.channel_count}</div><div style="font-size:var(--text-xs);color:var(--text-tertiary)">${(d.detail.sample_names||[]).join(', ')}</div></div>`;
+    }else html+=`<div class="stat" style="padding:10px"><div class="stat-l">詳細シート</div><div style="color:var(--text-tertiary);font-size:12px">URL 未設定</div></div>`;
+    if(d.growth){
+      if(d.growth.error)html+=`<div class="stat" style="padding:10px"><div class="stat-l">成長トラッキング</div><div style="color:var(--accent-danger);font-size:12px">${esc(d.growth.error)}</div></div>`;
+      else{
+        const hotList=(d.growth.hot_channels||[]).map(h=>`<span class="badge badge-info" style="margin:2px">${esc(h.name)} ${h.growth_rate}%</span>`).join('');
+        html+=`<div class="stat" style="padding:10px"><div class="stat-l">成長トラッキング (${d.growth.channel_count}ch)</div><div style="font-size:var(--text-xs);margin-top:var(--space-1)">伸び順: ${hotList}</div></div>`;
+      }
+    }else html+=`<div class="stat" style="padding:10px"><div class="stat-l">成長トラッキング</div><div style="color:var(--text-tertiary);font-size:12px">URL 未設定</div></div>`;
+    html+='</div>';
+    el.innerHTML=html;
+    toast('接続テスト完了','s');
+  }catch(e){el.innerHTML=`<div style="color:var(--accent-danger);font-size:12px">接続失敗: ${e.message}</div>`}
+}
+async function checkCredentials(){
+  const el=document.getElementById('credStatus');
+  el.innerHTML='確認中...';
+  try{
+    const r=await fetch('/api/credentials/status');
+    const d=await r.json();
+    const yt=d.youtube||{};
+    const cl=d.claude_cli||{};
+    const cx=d.codex_cli||{};
+    const cfg=d.config||{};
+    const activeToken=yt.active_token_path||yt.channel_token?.path||'';
+    const legacy=yt.legacy_token||{};
+    const cv=yt.channel_verification||{};
+    const cvMatched=cv.matched===true;
+    const cvMismatch=cv.matched===false;
+    const cvUnknown=cv.matched==null;
+    const cvBadge=cvMismatch
+      ? '<span class="badge badge-danger">チャンネル不一致</span>'
+      : (cvMatched?'<span class="badge badge-success">チャンネル一致</span>':(cvUnknown?'<span class="badge badge-warning">チャンネル未確認</span>':''));
+    const legacyHint=(legacy.exists&&!yt.token_exists)
+      ? '<div style="font-size:var(--text-2xs);color:var(--accent-warning);margin-top:2px">旧グローバルトークンは存在しますが、このチャンネルの認証には使いません。</div>'
+      : '';
+    el.innerHTML=`<div class="g3" style="gap:var(--space-2);margin-top:var(--space-2)">
+      <div class="stat" style="padding:10px">
+        <div class="stat-l">YouTube OAuth</div>
+        <div style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(yt.active_channel_folder||'')}">${esc(yt.active_channel_name||'アクティブチャンネル')}</div>
+        <div style="font-size:12px;line-height:1.8">
+          ${yt.client_secret_exists?'<span class="badge badge-success">秘密鍵 OK</span>':'<span class="badge badge-danger">秘密鍵 未配置</span>'}
+          ${yt.token_exists?'<span class="badge badge-success">このチャンネルのトークン OK</span>':'<span class="badge badge-danger">このチャンネルのトークン 未作成</span>'}
+          ${yt.token_valid?'<span class="badge badge-success">有効</span>':'<span class="badge badge-warning">期限切れ</span>'}
+          ${yt.has_readonly?'<span class="badge badge-success">readonly ✓</span>':'<span class="badge badge-danger">readonly 不足</span>'}
+          ${yt.has_refresh_token?'<span class="badge badge-neutral">refresh ✓</span>':''}
+          ${cvBadge}
+        </div>
+        <div style="font-size:var(--text-2xs);color:${cvMismatch?'var(--accent-danger)':'var(--text-tertiary)'};margin-top:2px;line-height:1.5">
+          期待: ${esc(cv.expected_channel_name||yt.active_channel_name||'?')} ${cv.expected_channel_id?`(${esc(cv.expected_channel_id)})`:''}<br>
+          実際: ${esc(cv.actual_channel_title||'?')} ${cv.actual_channel_id?`(${esc(cv.actual_channel_id)})`:''}
+        </div>
+        <div style="font-size:var(--text-2xs);color:var(--text-tertiary)">expiry: ${esc(yt.expiry||'?')}</div>
+        <div style="font-size:var(--text-2xs);color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(activeToken)}">token: ${esc(activeToken||'?')}</div>
+        ${legacyHint}
+      </div>
+      <div class="stat" style="padding:10px">
+        <div class="stat-l">Claude CLI</div>
+        <div style="font-size:12px">${cl.available?'<span class="badge badge-success">利用可能</span>':'<span class="badge badge-danger">未検出</span>'} <code>${esc(cl.command)}</code></div>
+      </div>
+      <div class="stat" style="padding:10px">
+        <div class="stat-l">Codex CLI</div>
+        <div style="font-size:12px">${cx.available?'<span class="badge badge-success">利用可能</span>':'<span class="badge badge-danger">未検出</span>'} <code>${esc(cx.command)}</code></div>
+      </div>
+      <div class="stat" style="padding:10px">
+        <div class="stat-l">ffmpeg</div>
+        <div style="font-size:12px">${d.ffmpeg?.available?'<span class="badge badge-success">OK</span>':'<span class="badge badge-danger">未インストール</span>'}</div>
+      </div>
+      <div class="stat" style="padding:10px">
+        <div class="stat-l">Discord</div>
+        <div style="font-size:12px">${d.discord?.configured?'<span class="badge badge-success">設定済</span>':'<span class="badge badge-neutral">未設定</span>'}</div>
+      </div>
+      <div class="stat" style="padding:10px">
+        <div class="stat-l">SUNO ブラウザ</div>
+        <div style="font-size:12px">${d.suno_browser?.profile_exists?'<span class="badge badge-success">プロファイル有</span>':'<span class="badge badge-neutral">未作成</span>'}</div>
+      </div>
+      <div class="stat" style="padding:10px">
+        <div class="stat-l">設定</div>
+        <div style="font-size:12px">
+          ${cfg.persona_set?'<span class="badge badge-success">ペルソナ ✓</span>':'<span class="badge badge-warning">ペルソナ 空</span>'}
+          <span class="badge badge-neutral">ライバル ${cfg.rival_channels_count}件</span>
+          ${cfg.channel_folder_exists?'<span class="badge badge-success">フォルダ ✓</span>':'<span class="badge badge-danger">フォルダ ✗</span>'}
+        </div>
+      </div>
+    </div>`;
+  }catch(e){el.innerHTML='<div style="color:var(--accent-danger)">取得失敗</div>'}
+}
+async function reauthYouTube(){
+  if(!confirm('YouTube OAuth トークンを削除して再認証しますか？\\n\\n次の YouTube API 呼び出し（競合分析・アップロード等）時にブラウザで Google ログインが求められます。\\nreadonly スコープが追加されます。'))return;
+  try{
+    const r=await fetch('/api/credentials/reauth-youtube',{method:'POST'});
+    if(r.ok){toast('トークン削除完了。次の API 呼び出しで再認証されます','s');checkCredentials()}
+    else toast('失敗','e');
+  }catch(e){toast('接続エラー','e')}
+}
+async function checkSetup(){
+  try{const r=await fetch('/api/setup/status'),d=await r.json();const el=document.getElementById('setupStatus');
+    const labels={fastapi:'FastAPI',uvicorn:'Uvicorn',playwright:'Playwright',chromium:'Chromium',suno_config:'SUNO設定',suno_api_key:'APIキー/CLI',youtube_secret:'YouTube認証',discord_config:'Discord設定',chromium_profile:'ブラウザ'};
+    let h='<div class="g3" style="gap:6px">';
+    for(const[k,v]of Object.entries(d.checks)){h+=`<div style="display:flex;align-items:center;gap:5px;font-size:12px"><span class="badge ${v?'badge-success':'badge-danger'}">${v?'OK':'未'}</span>${labels[k]||k}</div>`}
+    h+='</div>';el.innerHTML=h;
+  }catch(e){}
+}
+async function runSetup(){document.getElementById('setupLogs').classList.remove('hidden');clrLog('setupLogs');await fetch('/api/setup/run',{method:'POST'});startPoll('setup','setupLogs');toast('セットアップ開始','i')}
+
+/* ==== WS + Polling ==== */
+function connectWs(t,el){
+  const p=location.protocol==='https:'?'wss':'ws';
+  try{const ws=new WebSocket(`${p}://${location.host}/ws/logs/${t}`);
+    ws.onmessage=e=>addLog(el,e.data);ws.onerror=()=>startPoll(t,el);ws.onclose=()=>addLog(el,'[終了]');
+  }catch(e){startPoll(t,el)}
+}
+function startPoll(t,el){
+  let last=0;const poll=async()=>{
+    try{const ep=t==='setup'?'/api/setup/logs':`/api/${t}/status`;
+      const r=await fetch(ep),d=await r.json(),logs=d.logs||[];
+      if(logs.length>last){for(let i=last;i<logs.length;i++)addLog(el,logs[i]);last=logs.length}
+      const running=d.running!==undefined?d.running:!logs.some(l=>l.includes('[完了]'));
+      if(running||logs.length===0)setTimeout(poll,1000);
+    }catch(e){}
+  };poll();
+}
+function addLog(id,t){const el=document.getElementById(id),l=document.createElement('div');if(t.includes('ERROR')||t.includes('NG'))l.className='e';else if(t.includes('OK'))l.className='i';else if(t.includes('注意:'))l.className='w';l.textContent=t;el.appendChild(l);el.scrollTop=el.scrollHeight}
+function clrLog(id){document.getElementById(id).innerHTML=''}
+
+/* ==== Clock ==== */
+function tick(){document.getElementById('clock').textContent=new Date().toLocaleString('ja-JP',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});setTimeout(tick,1000)}
+
+/* ==== History API: ブラウザ戻る/進む ==== */
+window.addEventListener('popstate', ()=>navigate(_stateFromHash(),{fromHistory:true}));
+
+async function _restoreFromHash(){
+  const state=_stateFromHash();
+  if(state.page==='videos'&&state.video){
+    await loadConfig();
+    await loadChannelSwitcher();
+  }
+  navigate(state,{replace:true});
+}
+
+/* ==== ライブ配信 (VPS) ==== */
+let _liveCfg=null,_liveStatus=null,_liveViewers=null,_livePollTimer=null,_liveViewerTimer=null,_liveUploadTimers={},_livePool={},_liveStatusBusy=false;
+let _liveLocalVids={},_liveExtVids={}; // アップロード候補（チャンネルフォルダ / 外部フォルダ別キャッシュ）
+function _lvVal(id){const e=document.getElementById(id);return e?e.value.trim():''}
+function _lvEl(id){return document.getElementById(id)}
+
+function loadLivePage(){loadLiveConfig();loadLiveStatus(true);loadLiveViewers(false)}
+
+async function loadLiveConfig(){
+  try{
+    const r=await fetchWithTimeout('/api/live/config');
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    _liveCfg=d;
+    const v=d.config.vps||{};
+    const set=(id,val)=>{const e=_lvEl(id);if(e)e.value=val};
+    set('liveVpsName',v.name||'');set('liveVpsHost',v.host||'');set('liveVpsPort',v.port||22);
+    set('liveVpsUser',v.user||'root');set('liveVpsDir',v.remote_dir||'/opt/ytlive');set('liveVpsKey',v.ssh_key||'~/.ssh/ytlive_ed25519');
+    const pk=_lvEl('livePubkey');if(pk)pk.value=d.pubkey||'（セットアップ実行で生成されます）';
+    const sel=_lvEl('liveAddRegistry');
+    if(sel)sel.innerHTML='<option value="">選択...</option>'+(d.registry_channels||[]).map(c=>`<option value="${esc(c.id)}">${esc(c.name||c.id)}</option>`).join('');
+    if(!v.host)_lvEl('liveSetupCard').style.display='block';
+  }catch(e){if(e?.name!=='AbortError')toast('ライブ配信設定の読込失敗: '+e,'e')}
+}
+
+async function loadLiveStatus(manual){
+  if(_liveStatusBusy&&!manual)return; // VPS 不達時(SSH timeout ~10s)のポーリング重複を防ぐ
+  _liveStatusBusy=true;
+  const el=_lvEl('liveVpsStatus');
+  if(el&&!_liveStatus)el.innerHTML='<span class="fh">読み込み中...</span>';
+  try{
+    const r=await fetchWithTimeout('/api/live/status');
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    _liveStatus=d;
+    renderLiveVps(d);
+    renderLiveGroups(d);
+    if(manual&&d.status==='ok')toast('状態を更新しました','i');
+  }catch(e){
+    if(e?.name==='AbortError')return;
+    if(el)el.innerHTML=fetchFallbackHtml('loadLiveStatus(true)',e?.name==='TimeoutError');
+    if(manual)toast('状態を取得できませんでした','e');
+  }
+  finally{_liveStatusBusy=false}
+}
+function startLivePoll(){
+  stopLivePoll();
+  _livePollTimer=setInterval(()=>loadLiveStatus(false),10000);
+  _liveViewerTimer=setInterval(()=>loadLiveViewers(false),300000); // 視聴者数は5分ごと(quota節約)
+}
+function stopLivePoll(){
+  if(_livePollTimer){clearInterval(_livePollTimer);_livePollTimer=null}
+  if(_liveViewerTimer){clearInterval(_liveViewerTimer);_liveViewerTimer=null}
+}
+
+async function loadLiveViewers(force){
+  try{
+    const d=await fetch('/api/live/viewers'+(force?'?force=1':'')).then(r=>r.json());
+    _liveViewers=d;
+    updateAllViewerCells();
+    if(force){
+      const n=Object.keys(d.streams||{}).length;
+      toast(`視聴者数を更新しました（配信中のライブ ${n} 件）`+((d.errors||[]).length?` / 取得不可: ${d.errors.join(', ')}`:''),(d.errors||[]).length?'w':'s');
+    }
+  }catch(e){if(force)toast('視聴者数取得失敗: '+e,'e')}
+}
+function updateAllViewerCells(){
+  if(!_liveStatus)return;
+  (_liveStatus.streams||[]).forEach(s=>updateStreamCells(s));
+  groupsOf(_liveStatus.streams||[]).forEach(g=>updateGroupAgg(g));
+}
+
+function fmtUptime(s){if(s==null)return'';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d${h}h`:h?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`}
+function fmtGB(bytes){if(bytes==null)return'-';return bytes>=2**30?(bytes/2**30).toFixed(2)+'GB':Math.round(bytes/2**20)+'MB'}
+
+function renderLiveVps(d){
+  const el=_lvEl('liveVpsStatus');if(!el)return;
+  if(d.status==='unconfigured'){el.innerHTML='<span class="badge badge-warning">未設定</span> 右上の「初期設定 / VPS 設定」から VPS を登録してください';return}
+  const running=(d.streams||[]).filter(c=>c.running).length;
+  if(!d.host){el.innerHTML=`<span class="badge badge-danger">接続エラー</span> ${esc(d.vps_error||'SSH 接続できません')} <span style="color:var(--text-tertiary)">(${esc(d.vps.user||'')}@${esc(d.vps.host||'')})</span>`;return}
+  const h=d.host;
+  let viewers=0;
+  if(_liveViewers)Object.values(_liveViewers.streams||{}).forEach(v=>viewers+=v.viewers||0);
+  el.innerHTML=[
+    `<span class="badge badge-success">接続OK</span> <b>${esc(d.vps.name||d.vps.host)}</b> <span style="color:var(--text-tertiary)">${esc(d.vps.user)}@${esc(d.vps.host)}</span>`,
+    `CPU負荷 ${Number(h.load[0]).toFixed(2)} / ${h.nproc}コア`,
+    `メモリ ${(h.mem_used_mb/1024).toFixed(1)} / ${(h.mem_total_mb/1024).toFixed(1)} GB`,
+    `ディスク ${h.disk_used_gb} / ${h.disk_total_gb} GB（空き ${h.disk_free_gb??'-'} GB）`,
+    `送信 ${h.tx_mbps} Mbps`,
+    `<span class="badge ${running?'badge-success':'badge-neutral'}">配信中 ${running} / ${(d.streams||[]).length}</span>`,
+    `<span class="badge badge-info">視聴者合計 ${viewers} 人</span>`
+  ].join('<span style="color:var(--text-tertiary)"> ・ </span>');
+}
+
+function groupsOf(streams){
+  const m={};
+  streams.forEach(s=>{(m[s.group||s.id]=m[s.group||s.id]||[]).push(s)});
+  return Object.keys(m).sort().map(g=>({id:g,streams:m[g]}));
+}
+
+function renderLiveGroups(d){
+  const wrap=_lvEl('liveChannels');if(!wrap)return;
+  const streams=d.streams||[];
+  const groups=groupsOf(streams);
+  const sig=groups.map(g=>g.id+':'+g.streams.map(s=>s.id).join('|')).join(',');
+  if(wrap.dataset.sig!==sig){
+    wrap.dataset.sig=sig;
+    wrap.innerHTML=groups.map(g=>groupCardHtml(g)).join('')||'<div class="card" style="margin-bottom:var(--space-4)"><div class="fh">配信がまだありません。下の「配信グループ追加」から始めてください。</div></div>';
+    groups.forEach(g=>{
+      liveLoadPool(g.id,false);
+      g.streams.forEach(s=>fillStreamSettings(s.id));
+    });
+  }
+  streams.forEach(s=>updateStreamCells(s));
+  groups.forEach(g=>updateGroupAgg(g));
+}
+
+function groupCardHtml(g){
+  const first=g.streams[0]||{};
+  const reg=first.registry_name||first.registry_id||'';
+  const live_url=first.channel_live_url||'';
+  return `<div class="card" style="margin-bottom:var(--space-4)" id="lvGroup_${g.id}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:var(--space-3)">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        ${first.icon_url?`<img src="${esc(first.icon_url)}" style="width:30px;height:30px;border-radius:50%" onerror="this.style.display='none'">`:''}
+        <b style="font-size:var(--text-lg)">${esc(reg||g.id)}</b>
+        <span style="color:var(--text-tertiary);font-size:var(--text-xs)">グループ: ${esc(g.id)}（videos/${esc(g.id)}/）</span>
+        <span id="lvGroupAgg_${g.id}"></span>
+      </div>
+      <div class="btns" style="margin:0">
+        ${live_url?`<a class="btn btn-secondary" href="${esc(live_url)}" target="_blank" rel="noopener" style="padding:4px 10px">チャンネル</a>`:''}
+        <button class="btn btn-secondary" style="padding:4px 10px" onclick="liveTogglePool('${g.id}')">動画プール</button>
+        <button class="btn btn-primary" style="padding:4px 10px" onclick="liveAddStream('${g.id}')">配信追加</button>
+      </div>
+    </div>
+    <div id="lvPool_${g.id}" style="display:none;background:var(--bg-elevated);border-radius:var(--radius-md);padding:var(--space-3);margin-bottom:var(--space-3)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:var(--space-2)">
+        <b style="font-size:var(--text-sm)">動画プール（VPS: videos/${esc(g.id)}/）</b>
+        <button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--text-xs)" onclick="liveLoadPool('${g.id}',true)">一覧更新</button>
+      </div>
+      <div class="fh" style="margin-bottom:var(--space-2)">配信で使えるのは、このプール（VPS 上）にある動画だけです。このMac・外部SSDの動画は下で選んで「VPSへアップロード」してください。</div>
+      <div id="lvPoolList_${g.id}" class="fh">読み込み中...</div>
+      <input type="file" id="lvBrowserFiles_${g.id}" accept=".mp4,.mov,.m4v,video/mp4,video/quicktime" multiple style="display:none" onchange="liveUploadBrowserFiles('${g.id}')">
+      <div class="fr" style="margin-top:var(--space-2)">
+        <div class="ff" style="margin-bottom:0"><label class="fl">1. アップロードする動画を選ぶ（このMac / 外部SSD）</label><select class="fs" id="lvPoolLocal_${g.id}"></select></div>
+        <div class="ff" style="flex:0;align-self:flex-end;margin-bottom:0"><button class="btn btn-primary" onclick="livePickBrowserFiles('${g.id}')" title="ブラウザのファイル選択からローカル動画を直接 VPS の動画プールへアップロードします">ローカル動画を選択</button></div>
+        <div class="ff" style="flex:0;align-self:flex-end;margin-bottom:0"><button class="btn btn-secondary" onclick="livePickLocal('${g.id}','file')" title="Finder のダイアログで動画ファイルを直接選びます（外部SSD可・複数可）">ファイルを選ぶ...</button></div>
+        <div class="ff" style="flex:0;align-self:flex-end;margin-bottom:0"><button class="btn btn-secondary" onclick="livePickLocal('${g.id}','folder')" title="Finder のダイアログでフォルダを選ぶと、中の動画が候補に並びます">フォルダを選ぶ...</button></div>
+        <div class="ff" style="flex:0;align-self:flex-end;margin-bottom:0"><button class="btn btn-primary" id="lvUpBtn_${g.id}" onclick="liveUploadPool('${g.id}')">2. VPSへアップロード</button></div>
+      </div>
+      <div class="fr" style="margin-top:var(--space-2)">
+        <div class="ff" style="margin-bottom:0"><label class="fl">フォルダパスを直接入力（ダイアログが使えない場合）</label><input class="fi" id="lvExtFolder_${g.id}" placeholder="例: /Volumes/MySSD/videos（動画ファイルのパスでも可）"></div>
+        <div class="ff" style="flex:0;align-self:flex-end;margin-bottom:0"><button class="btn btn-secondary" onclick="liveLoadExternalFolder('${g.id}')">読み込み</button></div>
+      </div>
+      <div class="fh" id="lvExtStatus_${g.id}" style="margin-top:4px"></div>
+      <div class="fh" id="lvUpProg_${g.id}"></div>
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:var(--text-sm)">
+      <thead><tr style="color:var(--text-tertiary);font-size:var(--text-xs);text-align:left">
+        <th style="padding:4px 8px">配信</th><th style="padding:4px 8px">状態</th><th style="padding:4px 8px">配信時間 / 残り</th>
+        <th style="padding:4px 8px">視聴者数</th><th style="padding:4px 8px">YouTube ライブ（タイトル・サムネイル）</th><th style="padding:4px 8px">現在の動画</th><th style="padding:4px 8px">ローテ</th><th style="padding:4px 8px;text-align:right">操作</th>
+      </tr></thead>
+      <tbody>${g.streams.map(s=>streamRowHtml(s)).join('')}</tbody>
+    </table>
+    </div>
+  </div>`;
+}
+
+function streamRowHtml(s){
+  const id=s.id;
+  return `<tr style="border-top:1px solid var(--border-default,rgba(255,255,255,.08))" id="lvRow_${id}">
+    <td style="padding:6px 8px;white-space:nowrap"><b>${esc(s.label||id)}</b><div style="color:var(--text-tertiary);font-size:var(--text-xs)">${esc(id)}</div></td>
+    <td style="padding:6px 8px" id="lvSt_${id}"></td>
+    <td style="padding:6px 8px;white-space:nowrap" id="lvUp_${id}"></td>
+    <td style="padding:6px 8px;white-space:nowrap" id="lvVw_${id}">-</td>
+    <td style="padding:6px 8px;max-width:300px" id="lvYt_${id}">-</td>
+    <td style="padding:6px 8px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="lvVid_${id}"></td>
+    <td style="padding:6px 8px;white-space:nowrap" id="lvRot_${id}"></td>
+    <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+      <button class="btn btn-primary" style="padding:2px 8px;font-size:var(--text-xs)" id="lvBtnStart_${id}" onclick="liveStart('${id}')">開始</button>
+      <button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--text-xs)" id="lvBtnStop_${id}" onclick="liveStop('${id}')">停止</button>
+      <button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--text-xs)" id="lvBtnSwap_${id}" onclick="liveSwap('${id}')" title="配信を止めずに動画を差し替え">差替</button>
+      <button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--text-xs)" onclick="liveToggleLog('${id}')">ログ</button>
+      <button class="btn btn-secondary" style="padding:2px 8px;font-size:var(--text-xs)" onclick="liveToggleSettings('${id}')">設定</button>
+    </td>
+  </tr>
+  <tr id="lvLogRow_${id}" style="display:none"><td colspan="8" style="padding:0 8px 8px"><pre id="lvLog_${id}" style="white-space:pre-wrap;max-height:220px;overflow:auto;background:var(--bg-elevated);padding:var(--space-3);border-radius:var(--radius-md);font-size:var(--text-xs);margin:0"></pre></td></tr>
+  <tr id="lvSetRow_${id}" style="display:none"><td colspan="8" style="padding:4px 8px 12px">
+    <div style="background:var(--bg-elevated);border-radius:var(--radius-md);padding:var(--space-3)">
+      <div class="fr">
+        <div class="ff"><label class="fl">ストリームキー</label><input type="password" class="fi" id="lvKey_${id}" placeholder="YouTube Studio → ライブ配信 → ストリームキー" autocomplete="new-password"></div>
+        <div class="ff" style="max-width:190px"><label class="fl">モード</label>
+          <select class="fs" id="lvMode_${id}" onchange="liveModeChanged('${id}')">
+            <option value="reencode">reencode（2秒キーフレーム・推奨）</option>
+            <option value="copy">copy（低負荷・元動画GOP依存）</option>
+          </select></div>
+        <div class="ff" style="max-width:130px"><label class="fl">最大配信時間(h)</label><input class="fi" id="lvMaxH_${id}" placeholder="0=無制限"></div>
+      </div>
+      <div class="fr" id="lvReencRow_${id}" style="display:none">
+        <div class="ff" style="max-width:150px"><label class="fl">映像ビットレート</label><input class="fi" id="lvVb_${id}" placeholder="4500k"></div>
+        <div class="ff" style="max-width:150px"><label class="fl">スケール</label><input class="fi" id="lvScale_${id}" placeholder="例 1280:720"></div>
+        <div class="ff" style="max-width:90px"><label class="fl">FPS</label><input class="fi" id="lvFps_${id}" placeholder="30"></div>
+      </div>
+      <div class="fr">
+        <div class="ff"><label class="fl">配信動画（プレイリスト未使用時）</label><select class="fs" id="lvVideo_${id}"></select></div>
+        <div class="ff" style="max-width:150px"><label class="fl">ローテ間隔(h)</label><input class="fi" id="lvRotH_${id}" placeholder="0=ローテなし"></div>
+      </div>
+      <div class="fr">
+        <div class="ff"><label class="fl">プレイリスト（1行=1動画・VPS上のパス。上から順に巡回）</label><textarea class="ft" id="lvPl_${id}" rows="3" style="font-size:var(--text-xs)" placeholder="（空ならプレイリスト未使用。右の「動画プールから選んで追加」が簡単です）"></textarea></div>
+        <div class="ff" style="max-width:320px"><label class="fl">動画プールから選んでプレイリストへ追加</label>
+          <div style="display:flex;gap:6px"><select class="fs" id="lvPlPick_${id}" style="flex:1"></select><button class="btn btn-secondary" style="padding:2px 8px;white-space:nowrap" onclick="liveAppendToPlaylist('${id}')" title="選んだ動画を左のプレイリスト末尾に1行追記します">追加</button></div>
+          <div class="fh" style="margin-top:2px">候補が無い場合はグループの「動画プール」からアップロード</div>
+        </div>
+      </div>
+      <div class="fh" style="margin-bottom:var(--space-2)">差し替えの流れ: 動画/プレイリストを変更 → <b>保存</b> → <b>差替</b>（配信は止まらず数秒で新動画に切替・同一ライブ継続）。ローテ間隔を設定するとプレイリストを自動巡回します。</div>
+      <div class="btns" style="margin-bottom:var(--space-3)">
+        <button class="btn btn-primary" onclick="liveSaveStream('${id}')">設定保存（VPS に反映）</button>
+        <button class="btn btn-secondary" style="color:var(--accent-danger)" onclick="liveDeleteStream('${id}')">配信削除</button>
+      </div>
+      <details>
+        <summary style="cursor:pointer;font-weight:var(--font-semibold)">YouTube 配信情報（タイトル・説明・サムネイル）</summary>
+        <div style="margin-top:var(--space-2)">
+          <div class="btns" style="margin-bottom:var(--space-2)"><button class="btn btn-secondary" onclick="liveLoadBroadcast('${id}')">YouTube から取得</button></div>
+          <div id="lvBc_${id}" class="fh">「YouTube から取得」でこの配信のライブ情報を表示します</div>
+        </div>
+      </details>
+    </div>
+  </td></tr>`;
+}
+
+function fillStreamSettings(id){
+  const s=(_liveCfg?.config?.streams||[]).find(x=>x.id===id);if(!s)return;
+  const set=(k,v)=>{const e=_lvEl(k+'_'+id);if(e)e.value=v};
+  set('lvKey',s.stream_key||'');
+  set('lvMode',s.mode||'reencode');
+  set('lvVb',s.vbitrate||'');
+  set('lvScale',s.scale||'');
+  set('lvFps',s.fps||30);
+  set('lvMaxH',s.max_hours||0);
+  set('lvRotH',s.rotate_hours||0);
+  set('lvPl',(s.playlist||[]).join('\n'));
+  liveModeChanged(id);
+  fillVideoSelect(id);
+}
+function liveModeChanged(id){
+  const m=_lvEl('lvMode_'+id)?.value;
+  const row=_lvEl('lvReencRow_'+id);
+  if(row)row.style.display=m==='reencode'?'':'none';
+}
+
+function fillVideoSelect(id){
+  const s=(_liveCfg?.config?.streams||[]).find(x=>x.id===id);if(!s)return;
+  const loaded=Object.prototype.hasOwnProperty.call(_livePool,s.group);
+  const pool=_livePool[s.group]||[];
+  const sel=_lvEl('lvVideo_'+id),pick=_lvEl('lvPlPick_'+id);
+  // プール未ロード/空でも状態が分かるようにする（「選べない」原因の可視化）
+  const emptyLabel=loaded?'プールに動画がありません（動画プールからアップロード）':'プール読み込み中...（VPS 接続）';
+  const optHtml=v=>`<option value="${esc(v.path)}"${v.uploading?' disabled':''}>${esc(v.path.split('/').pop())}${v.uploading?'（転送中・未完成）':`（${v.size_mb>=1024?(v.size_mb/1024).toFixed(2)+'GB':v.size_mb+'MB'}）`}</option>`;
+  if(sel){
+    const cur=s.video||sel.value;
+    sel.innerHTML='<option value="">'+(pool.length?'未設定':esc(emptyLabel))+'</option>'+pool.map(optHtml).join('');
+    if(cur&&![...sel.options].some(o=>o.value===cur))sel.innerHTML+=`<option value="${esc(cur)}">${esc(cur)}（未確認）</option>`;
+    sel.value=cur||'';
+  }
+  if(pick){
+    pick.innerHTML='<option value="">'+(pool.length?'選択...':esc(emptyLabel))+'</option>'+pool.map(v=>`<option value="${esc(v.path)}"${v.uploading?' disabled':''}>${esc(v.path.split('/').pop())}${v.uploading?'（転送中・未完成）':''}</option>`).join('');
+  }
+}
+function liveAppendToPlaylist(id){
+  const pick=_lvEl('lvPlPick_'+id),ta=_lvEl('lvPl_'+id);
+  if(!pick||!pick.value||!ta)return;
+  ta.value=(ta.value.trim()?ta.value.trim()+'\n':'')+pick.value;
+}
+
+function updateStreamCells(s){
+  const id=s.id,r=s.remote||{};
+  const st=_lvEl('lvSt_'+id);if(!st)return;
+  let badge;
+  if(s.running)badge=`<span class="badge badge-success">配信中</span>`;
+  else if(r.session_up)badge=`<span class="badge badge-warning">待機/異常</span>`;
+  else badge=`<span class="badge badge-neutral">停止</span>`;
+  if(!s.has_stream_key)badge+=' <span class="badge badge-danger">key未設定</span>';
+  if(r.video_exists===false&&r.video)badge+=' <span class="badge badge-danger">動画無し</span>';
+  st.innerHTML=badge;
+  const up=_lvEl('lvUp_'+id);
+  if(up){
+    let t=s.running?fmtUptime(r.uptime_sec):'-';
+    if(r.max_remaining_sec!=null&&r.session_up)t+=` <span style="color:var(--accent-warning)">残${fmtUptime(r.max_remaining_sec)}</span>`;
+    up.innerHTML=t;
+  }
+  const v=_liveViewers?.streams?.[id];
+  const vw=_lvEl('lvVw_'+id);
+  if(vw){
+    vw.innerHTML=v?`<a href="${esc(v.watch_url)}" target="_blank" rel="noopener" style="color:var(--accent-info);text-decoration:none">${v.viewers} 人</a>`:(s.running?'<span style="color:var(--text-tertiary)">未取得</span>':'-');
+  }
+  const yt=_lvEl('lvYt_'+id);
+  if(yt){
+    if(v&&v.video_id){
+      const img=v.thumbnail||`https://i.ytimg.com/vi/${esc(v.video_id)}/mqdefault.jpg`;
+      const since=v.actual_start?fmtUptime(Math.max(0,Math.floor((Date.now()-Date.parse(v.actual_start))/1000))):'';
+      yt.innerHTML=`<a href="${esc(v.watch_url)}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none" title="${esc(v.title)}">
+        <img src="${esc(img)}" alt="" style="width:64px;height:36px;object-fit:cover;border-radius:4px;flex:none;background:var(--bg-elevated)" onerror="this.style.display='none'">
+        <span style="min-width:0">
+          <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px">${esc(v.title||'(無題)')}</span>
+          ${since?`<span style="color:var(--text-tertiary);font-size:var(--text-xs)">ライブ開始から ${since}</span>`:''}
+        </span></a>`;
+    }else{
+      yt.innerHTML=s.running?'<span style="color:var(--text-tertiary)">未取得（「視聴者数更新」で取得）</span>':'<span style="color:var(--text-tertiary)">-</span>';
+    }
+  }
+  const vid=_lvEl('lvVid_'+id);
+  if(vid){
+    const cur=r.video||s.video||((s.playlist||[])[0])||'';
+    const name=cur?cur.split('/').pop():'未設定';
+    vid.innerHTML=cur?`<span title="${esc(cur)}">${esc(name)}</span>`:'<span style="color:var(--accent-danger)">未設定</span>';
+  }
+  const rot=_lvEl('lvRot_'+id);
+  if(rot){
+    const pl=(r.playlist&&r.playlist.length)?r.playlist.length:(s.playlist||[]).length;
+    const rh=r.rotate_seconds?Math.round(r.rotate_seconds/360)/10:(s.rotate_hours||0);
+    rot.innerHTML=pl?`${pl}本${rh?` / ${rh}h毎`:''}<span style="color:var(--text-tertiary)"> #${(r.playlist_idx??0)%(pl||1)+1}</span>`:'<span style="color:var(--text-tertiary)">単発</span>';
+  }
+  const bs=_lvEl('lvBtnStart_'+id),bp=_lvEl('lvBtnStop_'+id),bw=_lvEl('lvBtnSwap_'+id);
+  if(bs)bs.disabled=!!s.running;
+  if(bp)bp.disabled=!s.running&&!r.session_up;
+  if(bw)bw.disabled=!r.session_up;
+}
+
+function updateGroupAgg(g){
+  const el=_lvEl('lvGroupAgg_'+g.id);if(!el)return;
+  const run=g.streams.filter(s=>s.running).length;
+  let viewers=0,has=false;
+  g.streams.forEach(s=>{const v=_liveViewers?.streams?.[s.id];if(v){viewers+=v.viewers||0;has=true}});
+  const disk=_liveStatus?.host?.group_disk?.[g.id];
+  el.innerHTML=[
+    `<span class="badge ${run?'badge-success':'badge-neutral'}">${run}/${g.streams.length} 配信中</span>`,
+    has?`<span class="badge badge-info">視聴者 ${viewers} 人</span>`:'',
+    disk!=null?`<span class="badge badge-neutral">${fmtGB(disk)}</span>`:''
+  ].filter(Boolean).join(' ');
+}
+
+/* ── 操作 ── */
+async function _livePost(url,okMsg){
+  try{
+    const r=await fetch(url,{method:'POST'});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){toast(okMsg,'s');loadLiveStatus(false)}
+    else toast(d.detail||'失敗','e');
+  }catch(e){toast('失敗: '+e,'e')}
+}
+function liveStart(id){if(confirm(`「${id}」の配信を開始しますか？`))_livePost(`/api/live/streams/${id}/start`,'配信を開始しました（YouTube 反映まで数十秒）')}
+function liveStop(id){if(confirm(`「${id}」の配信を停止しますか？\n（YouTube 側は1〜2分でライブ終了になります）`))_livePost(`/api/live/streams/${id}/stop`,'停止しました')}
+function liveSwap(id){
+  const s=(_liveCfg?.config?.streams||[]).find(x=>x.id===id)||{};
+  const hasPl=(s.playlist||[]).length>0;
+  const msg=hasPl?`「${id}」をプレイリストの次の動画に差し替えますか？\n（配信は止まらず数秒で切替・同一ライブ継続）`:`「${id}」を保存済みの動画設定で差し替えますか？\n（配信は止まらず数秒で切替・同一ライブ継続）`;
+  if(confirm(msg))_livePost(`/api/live/streams/${id}/swap${hasPl?'?next=1':''}`,'差し替えました（数秒で新しい動画に切替わります）');
+}
+async function liveToggleLog(id){
+  const row=_lvEl('lvLogRow_'+id),pre=_lvEl('lvLog_'+id);if(!row)return;
+  if(row.style.display==='none'){
+    row.style.display='';pre.textContent='取得中...';
+    const d=await fetch(`/api/live/streams/${id}/log?lines=120`).then(r=>r.json()).catch(()=>({log:''}));
+    pre.textContent=d.log||'（ログなし）';
+    pre.scrollTop=pre.scrollHeight;
+  }else row.style.display='none';
+}
+function liveToggleSettings(id){
+  const row=_lvEl('lvSetRow_'+id);if(!row)return;
+  row.style.display=row.style.display==='none'?'':'none';
+  // 開いたときにプールが未ロードなら読み込む（動画セレクトを使えるように）
+  if(row.style.display!=='none'){
+    const s=(_liveCfg?.config?.streams||[]).find(x=>x.id===id);
+    if(s&&!Object.prototype.hasOwnProperty.call(_livePool,s.group))liveLoadPool(s.group,false);
+  }
+}
+
+/* ── 設定保存・追加・削除 ── */
+function _collectStreams(){return (_liveCfg.config.streams||[]).map(s=>({...s}))}
+async function _putStreams(streams,okMsg){
+  const r=await fetch('/api/live/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({streams})});
+  const d=await r.json().catch(()=>({}));
+  if(r.ok){
+    _liveCfg.config=d.config;
+    const pushErr=(d.env_push_errors||[]).length;
+    toast(pushErr?okMsg+'（VPS への反映は失敗: 接続を確認）':okMsg,pushErr?'w':'s');
+    loadLiveStatus(false);
+    return true;
+  }
+  toast(d.detail||'保存失敗','e');
+  return false;
+}
+async function liveSaveStream(id){
+  if(!_liveCfg)return;
+  const streams=_collectStreams();
+  const s=streams.find(x=>x.id===id);if(!s){toast('配信が見つかりません','e');return}
+  s.stream_key=_lvVal('lvKey_'+id);
+  s.mode=_lvVal('lvMode_'+id)||'reencode';
+  s.vbitrate=_lvVal('lvVb_'+id)||'4500k';
+  s.scale=_lvVal('lvScale_'+id);
+  s.fps=parseInt(_lvVal('lvFps_'+id))||30;
+  s.video=_lvVal('lvVideo_'+id);
+  s.max_hours=parseFloat(_lvVal('lvMaxH_'+id))||0;
+  s.rotate_hours=parseFloat(_lvVal('lvRotH_'+id))||0;
+  s.playlist=(_lvEl('lvPl_'+id)?.value||'').split('\n').map(x=>x.trim()).filter(Boolean);
+  if(s.rotate_hours>0&&s.playlist.length<2){toast('ローテ間隔を使うにはプレイリストに2本以上入れてください','w');return}
+  if(await _putStreams(streams,'保存して VPS に反映しました'))fillStreamSettings(id);
+}
+async function liveDeleteStream(id){
+  if(!confirm(`配信「${id}」を削除しますか？\n配信中の場合は停止され、VPS 上の設定も削除されます（動画ファイルは残ります）。`))return;
+  const streams=_collectStreams().filter(s=>s.id!==id);
+  await _putStreams(streams,'削除しました');
+}
+async function liveAddStream(group){
+  if(!_liveCfg)return;
+  const streams=_collectStreams();
+  const inGroup=streams.filter(s=>s.group===group);
+  if(!inGroup.length){toast('グループが見つかりません','e');return}
+  let n=1;
+  inGroup.forEach(s=>{const m=s.id.match(new RegExp('^'+group+'_(\\d+)$'));if(m)n=Math.max(n,parseInt(m[1]));if(s.id===group)n=Math.max(n,1)});
+  const newId=`${group}_${n+1}`;
+  const base=inGroup[0];
+  streams.push({...base,id:newId,label:`${base.registry_name||group} #${n+1}`,stream_key:'',video:'',playlist:[],rotate_hours:0,max_hours:0});
+  if(await _putStreams(streams,`配信「${newId}」を追加しました。「設定」からストリームキーを入力してください`)){
+    _lvEl('liveChannels').dataset.sig='';loadLiveStatus(false);
+  }
+}
+async function liveAddGroup(){
+  if(!_liveCfg){toast('設定読込中です','w');return}
+  const reg=_lvVal('liveAddRegistry');
+  const prefix=(_lvVal('liveAddPrefix')||reg);
+  if(!reg){toast('チャンネル（レジストリ）を選択してください','w');return}
+  if(!/^[A-Za-z0-9_-]{1,20}$/.test(prefix)){toast('プレフィックスは英数字・-・_（20文字まで）','w');return}
+  const streams=_collectStreams();
+  const newId=`${prefix}_1`;
+  if(streams.some(s=>s.id===newId||s.group===prefix&&s.id===prefix)){toast('同じプレフィックスのグループが既にあります','w');return}
+  const regCh=(_liveCfg.registry_channels||[]).find(c=>c.id===reg);
+  streams.push({id:newId,group:prefix,label:`${(regCh&&regCh.name)||prefix} #1`,registry_id:reg});
+  if(await _putStreams(streams,`グループ「${prefix}」と配信「${newId}」を追加しました`)){
+    _lvEl('liveAddPrefix').value='';
+    _lvEl('liveChannels').dataset.sig='';loadLiveStatus(false);
+  }
+}
+
+/* ── 動画プール ── */
+function liveTogglePool(group){
+  const el=_lvEl('lvPool_'+group);if(!el)return;
+  el.style.display=el.style.display==='none'?'':'none';
+  if(el.style.display!=='none')liveLoadPool(group,false);
+}
+async function liveLoadPool(group,manual){
+  const list=_lvEl('lvPoolList_'+group);
+  let d=null,upJobs=[];
+  try{
+    const [r,ur]=await Promise.all([
+      fetch(`/api/live/remote-videos?group=${encodeURIComponent(group)}`),
+      fetch(`/api/live/uploads?group=${encodeURIComponent(group)}`).catch(()=>null)
+    ]);
+    d=await r.json();
+    if(!r.ok||d.status==='error')throw new Error(d.detail||'VPS から一覧を取得できませんでした');
+    if(ur&&ur.ok){const ud=await ur.json().catch(()=>null);upJobs=(ud&&ud.jobs)||[]}
+  }catch(e){
+    if(list)list.innerHTML=`<span style="color:var(--accent-danger)">プール取得失敗: ${esc(String(e.message||e))}</span> <button class="btn btn-ghost btn-sm" style="padding:1px 8px" onclick="liveLoadPool('${group}',true)">再試行</button>`;
+    if(manual)toast('動画プールの取得に失敗しました','e');
+    return;
+  }
+  // 転送中ファイルの判定（部分ファイルを完成品と混同して配信に使う/削除する事故の防止）
+  const uploading={};
+  upJobs.filter(j=>j.state==='running').forEach(j=>{uploading[j.remote]=j});
+  _livePool[group]=(d.videos||[]).map(v=>({...v,uploading:!!uploading[v.path]}));
+  if(list){
+    if(!_livePool[group].length)list.innerHTML='動画がありません。下からアップロードしてください';
+    else list.innerHTML='<table style="width:100%;font-size:var(--text-xs);border-collapse:collapse">'+_livePool[group].map(v=>{
+      const used=(v.used_by||[]);
+      const up=uploading[v.path];
+      const pathArg=esc(v.path).replace(/'/g,"\\'");
+      return `
+      <tr style="border-top:1px solid var(--border-default,rgba(255,255,255,.06))${up?';opacity:.65':''}">
+        <td style="padding:3px 6px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v.path)}">${esc(v.path.split('/').pop())}</td>
+        <td style="padding:3px 6px;white-space:nowrap">${v.size_mb>=1024?(v.size_mb/1024).toFixed(2)+'GB':v.size_mb+'MB'}</td>
+        <td style="padding:3px 6px">${up?`<span class="badge badge-warning" style="font-size:10px">転送中 ${up.pct}%（未完成・配信に使わない）</span> `:''}${used.length?`<span class="badge badge-info" style="font-size:10px">使用中: ${esc(used.join(', '))}</span>`:''}</td>
+        <td style="padding:3px 6px;text-align:right">${up?'<span style="color:var(--text-tertiary);font-size:10px">転送完了後に操作可</span>':`<button class="btn btn-secondary" style="padding:1px 7px;font-size:10px;color:var(--accent-danger)" onclick="liveDeleteRemoteVideo('${pathArg}','${group}',${used.length?'true':'false'})" title="${used.length?'使用中の配信設定から外してから削除します':'VPS から削除'}">削除</button>`}</td>
+      </tr>`}).join('')+'</table>';
+  }
+  // ローカル動画 select（アップロード用・チャンネルフォルダ + 外部フォルダ）
+  if(!_liveLocalVids[group]){
+    const rid=((_liveCfg?.config?.streams||[]).find(s=>s.group===group)||{}).registry_id||group;
+    const ld=await fetch(`/api/live/local-videos?registry_id=${encodeURIComponent(rid)}`).then(r=>r.json()).catch(()=>({videos:[]}));
+    _liveLocalVids[group]={folder:ld.folder||'チャンネルフォルダ',videos:ld.videos||[]};
+  }
+  _renderLocalVideoSelect(group);
+  // 外部フォルダ入力の復元（前回使ったパス）
+  const ext=_lvEl('lvExtFolder_'+group);
+  if(ext&&!ext.value)ext.value=localStorage.getItem('lvExtFolder_'+group)||'';
+  // 各ストリームの動画 select も更新
+  (_liveCfg?.config?.streams||[]).filter(s=>s.group===group).forEach(s=>fillVideoSelect(s.id));
+  // 実行中のアップロードがあれば進捗表示に再アタッチ（ページ遷移しても転送はサーバー側で継続している）
+  _liveUploadsWatch(group);
+  if(manual)toast(`動画プール: ${(_livePool[group]||[]).length} 件`,'i');
+}
+// アップロード用セレクトを「チャンネルフォルダ」+「外部フォルダ/選択ファイル」の optgroup で構築
+function _renderLocalVideoSelect(group){
+  const sel=_lvEl('lvPoolLocal_'+group);if(!sel)return;
+  const cur=sel.value;
+  const fmt=v=>`<option value="${esc(v.path)}">${esc(v.rel||v.name)}（${v.size_mb>=1024?(v.size_mb/1024).toFixed(2)+'GB':v.size_mb+'MB'}）</option>`;
+  const loc=_liveLocalVids[group]||{folder:'チャンネルフォルダ',videos:[]};
+  const ext=_liveExtVids[group];
+  let html='<option value="">選択...（候補が無ければ「ファイルを選ぶ...」）</option>';
+  html+=`<optgroup label="チャンネルフォルダ（${esc(loc.folder.split('/').pop()||loc.folder)}）">`+(loc.videos.length?loc.videos.map(fmt).join(''):'<option value="" disabled>（動画なし）</option>')+'</optgroup>';
+  if(ext){
+    const label=ext.kind==='picked'?'Finder で選んだファイル':'外部: '+ext.folder;
+    html+=`<optgroup label="${esc(label)}">`+(ext.videos.length?ext.videos.map(fmt).join(''):'<option value="" disabled>（動画なし）</option>')+'</optgroup>';
+  }
+  sel.innerHTML=html;
+  if(cur&&[...sel.options].some(o=>o.value===cur))sel.value=cur;
+}
+// macOS ネイティブの Finder ダイアログでフォルダ/動画ファイルを選ぶ（ダイアログはサーバーMacの画面に出る）
+async function livePickLocal(group,kind){
+  const st=_lvEl('lvExtStatus_'+group);
+  if(st)st.textContent='Finder の選択ダイアログを開いています...（このMacの画面に表示されます。ブラウザの後ろに隠れることがあります）';
+  try{
+    const r=await fetch(`/api/live/pick-local?kind=${encodeURIComponent(kind)}`);
+    const d=await r.json();
+    if(d.status==='cancelled'){if(st)st.textContent='';return}
+    if(d.status!=='ok')throw new Error(d.error||'選択に失敗しました');
+    if(kind==='folder'){
+      const inp=_lvEl('lvExtFolder_'+group);if(inp)inp.value=d.folder||'';
+      await liveLoadExternalFolder(group);
+      return;
+    }
+    const vids=d.files||[];
+    if(!vids.length){if(st)st.textContent='動画が選択されませんでした';return}
+    // 既に Finder で選んだ分があればマージ（同一パスは重複させない）
+    const prev=(_liveExtVids[group]&&_liveExtVids[group].kind==='picked')?_liveExtVids[group].videos:[];
+    const merged=[...prev];
+    vids.forEach(v=>{if(!merged.some(x=>x.path===v.path))merged.push(v)});
+    _liveExtVids[group]={folder:'選択したファイル',videos:merged,kind:'picked'};
+    _renderLocalVideoSelect(group);
+    const sel=_lvEl('lvPoolLocal_'+group);
+    if(sel)sel.value=vids[0].path;
+    if(vids.length>1&&confirm(`選択した ${vids.length} 件をまとめて VPS へアップロードしますか？\n（並行で転送します。ページを移動しても続行されます）`)){
+      await _liveStartUploads(group,vids.map(v=>v.path));
+      if(st)st.textContent='';
+      return;
+    }
+    if(st)st.textContent=`${vids.length} 件を候補に追加して選択しました。「2. VPSへアップロード」で転送できます`;
+  }catch(e){
+    if(st)st.innerHTML=`<span style="color:var(--accent-danger)">${esc(String(e.message||e))}</span>`;
+    toast('選択に失敗: '+(e.message||e),'e');
+  }
+}
+// 外部フォルダ（外部 SSD 等）の動画を読み込んでアップロード候補に追加（動画ファイル単体のパスも可）
+async function liveLoadExternalFolder(group){
+  const inp=_lvEl('lvExtFolder_'+group),st=_lvEl('lvExtStatus_'+group);
+  const folder=(inp?.value||'').trim();
+  if(!folder){toast('フォルダのパスを入力するか「フォルダを選ぶ...」を使ってください（例: /Volumes/MySSD/videos）','w');return}
+  if(st)st.textContent='読み込み中...';
+  try{
+    const r=await fetch(`/api/live/local-videos?folder=${encodeURIComponent(folder)}`);
+    const d=await r.json();
+    if(d.status==='error')throw new Error(d.error||'読み込み失敗');
+    _liveExtVids[group]={folder:d.folder||folder,videos:d.videos||[]};
+    localStorage.setItem('lvExtFolder_'+group,folder);
+    _renderLocalVideoSelect(group);
+    const skip=d.skipped_small?`（10MB未満 ${d.skipped_small} 件は除外）`:'';
+    if(st)st.textContent=d.videos.length
+      ?`外部フォルダ: ${d.videos.length} 件を候補に追加しました${skip}。上の「1. アップロードする動画を選ぶ」から選択してください`
+      :`動画が見つかりません${skip}。対象は .mp4 / .mov / .m4v（大文字可）・10MB以上・フォルダ直下+1階層のみです`;
+    toast(d.videos.length?`外部フォルダから ${d.videos.length} 件読み込みました`:'動画が見つかりませんでした',d.videos.length?'s':'w');
+  }catch(e){
+    if(st)st.innerHTML=`<span style="color:var(--accent-danger)">${esc(String(e.message||e))}</span>`;
+    toast('外部フォルダの読み込みに失敗: '+(e.message||e),'e');
+  }
+}
+async function liveDeleteRemoteVideo(path,group,inUse){
+  // 使用中の場合は、先に各配信の設定（video / playlist）から外してから削除する
+  const usedBy=[];
+  (_liveCfg?.config?.streams||[]).forEach(s=>{
+    if(s.video===path||(s.playlist||[]).includes(path))usedBy.push(s.id);
+  });
+  if(inUse||usedBy.length){
+    if(!confirm(`この動画は配信「${usedBy.join(', ')}」の設定で使用中です。\n設定から外した上で VPS から削除しますか？\n${path}`))return;
+    const streams=_collectStreams().map(s=>{
+      if(s.video===path)s.video='';
+      s.playlist=(s.playlist||[]).filter(p=>p!==path);
+      return s;
+    });
+    if(!await _putStreams(streams,'配信設定から動画を外しました'))return;
+  }else{
+    if(!confirm(`VPS 上の動画を削除しますか？\n${path}`))return;
+  }
+  try{
+    const r=await fetch('/api/live/remote-videos',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok){toast('削除しました','s');liveLoadPool(group,false)}
+    else toast(d.detail||'削除失敗','e');
+  }catch(e){toast('削除失敗: '+e,'e')}
+}
+async function liveUploadPool(group){
+  const sel=_lvEl('lvPoolLocal_'+group);
+  if(!sel||!sel.value){toast('アップロードするローカル動画を選択してください','w');return}
+  await _liveStartUploads(group,[sel.value]);
+}
+function livePickBrowserFiles(group){
+  const input=_lvEl('lvBrowserFiles_'+group);
+  if(!input){toast('ファイル選択欄が見つかりません','e');return}
+  input.value='';
+  input.click();
+}
+async function liveUploadBrowserFiles(group){
+  const input=_lvEl('lvBrowserFiles_'+group);
+  const files=[...(input?.files||[])];
+  if(!files.length)return;
+  const okFiles=files.filter(f=>/\.(mp4|mov|m4v)$/i.test(f.name));
+  if(okFiles.length!==files.length)toast('対応している動画は .mp4 / .mov / .m4v です','w');
+  if(!okFiles.length)return;
+  const st=_lvEl('lvExtStatus_'+group);
+  let started=0;
+  for(const f of okFiles){
+    if(st)st.textContent=`${f.name} をこのMacから受信中...`;
+    const fd=new FormData();
+    fd.append('file',f,f.name);
+    try{
+      const r=await fetch(`/api/live/upload-file?group=${encodeURIComponent(group)}`,{method:'POST',body:fd});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(d.detail||'アップロード開始失敗');
+      started++;
+      _liveUploadsWatch(group);
+      if(st)st.textContent=`${f.name} を VPS 転送キューに追加しました`;
+    }catch(e){
+      toast(`${f.name}: ${e.message||e}`,'e');
+      if(st)st.innerHTML=`<span style="color:var(--accent-danger)">${esc(f.name)}: ${esc(String(e.message||e))}</span>`;
+    }
+  }
+  if(started)toast(`${started} 件をローカルから受け付けました（VPS 転送を開始します）`,'s');
+  _liveUploadsWatch(group);
+}
+// 複数パスを並行アップロード。ジョブはサーバー側スレッドで走る＝ページ遷移/リロードしても転送は継続
+async function _liveStartUploads(group,paths){
+  let started=0;
+  for(const p of paths){
+    try{
+      const r=await fetch('/api/live/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group,local_path:p})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(d.detail||'開始失敗');
+      started++;
+    }catch(e){toast(`${String(p).split('/').pop()}: ${e.message||e}`,'e')}
+  }
+  if(started)toast(`${started} 件のアップロードを開始しました（ページを移動しても続行されます）`,'s');
+  _liveUploadsWatch(group);
+}
+// アップロードジョブ一覧のポーリング開始（多重起動はしない）
+function _liveUploadsWatch(group){
+  if(_liveUploadTimers[group])return;
+  let fails=0;
+  const tick=async()=>{
+    let idle=null;
+    try{idle=await _liveRenderUploads(group)}catch(e){idle=null}
+    if(idle===null){
+      if(++fails>=5){clearInterval(_liveUploadTimers[group]);delete _liveUploadTimers[group]}
+      return;
+    }
+    fails=0;
+    if(idle){clearInterval(_liveUploadTimers[group]);delete _liveUploadTimers[group]}
+  };
+  _liveUploadTimers[group]=setInterval(tick,2000);
+  tick();
+}
+// ジョブ一覧を描画。戻り値 true=実行中ジョブなし（ポーリング終了してよい）
+let _liveUpHadRunning={},_liveUpRate={};
+async function _liveRenderUploads(group){
+  const box=_lvEl('lvUpProg_'+group);
+  const r=await fetch(`/api/live/uploads?group=${encodeURIComponent(group)}`);
+  if(!r.ok)throw new Error('uploads 取得失敗');
+  const d=await r.json();
+  const jobs=d.jobs||[];
+  if(box){
+    const mb=x=>Math.round((x||0)/1048576);
+    const now=Date.now();
+    box.innerHTML=jobs.map(j=>{
+      // 直近サンプルとの差分から転送レートを概算（回線品質の可視化）
+      let rate='';
+      if(j.state==='running'){
+        const prev=_liveUpRate[j.job_id];
+        if(prev&&now>prev.t){
+          const kbs=Math.max(0,Math.round((j.remote_size-prev.size)/((now-prev.t)/1000)/1024));
+          rate=`・${kbs>=1024?(kbs/1024).toFixed(1)+'MB/s':kbs+'KB/s'}`;
+          if(kbs>0&&j.local_size>j.remote_size){
+            const etaMin=Math.round((j.local_size-j.remote_size)/1024/kbs/60);
+            rate+=etaMin>0?`（残り約${etaMin>=60?Math.round(etaMin/60)+'時間':etaMin+'分'}）`:'';
+          }
+        }
+        _liveUpRate[j.job_id]={t:now,size:j.remote_size};
+      }else delete _liveUpRate[j.job_id];
+      const badge=j.state==='running'?`<span class="badge badge-info">転送中 ${j.pct}%</span>`
+        :j.state==='done'?'<span class="badge badge-success">完了</span>'
+        :j.state==='cancelled'?'<span class="badge badge-neutral">中止</span>'
+        :'<span class="badge badge-danger">失敗</span>';
+      const retry=j.attempts>1&&j.state==='running'?` <span style="color:var(--accent-warning)" title="回線が切れても続きから自動で再開しています">自動再開 ${j.attempts-1} 回</span>`:'';
+      return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0">
+        ${badge}
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px" title="${esc(j.remote||'')}">${esc(j.name||'')}</span>
+        <span style="color:var(--text-tertiary)">${mb(j.remote_size)} / ${mb(j.local_size)} MB・${fmtUptime(j.elapsed_sec)}${esc(rate)}${retry}</span>
+        ${j.state==='failed'?`<span style="color:var(--accent-danger)">${esc(j.error||'')}</span> <button class="btn btn-ghost btn-sm" style="padding:0 8px" onclick="_liveStartUploads('${group}',['${esc(String(j.local||'')).replace(/'/g,"\\'")}'])" title="リモートの途中までのデータを活かして続きから再開します">再開</button>`:''}
+        ${j.state==='running'?`<button class="btn btn-ghost btn-sm" style="padding:0 8px;color:var(--accent-danger)" onclick="liveCancelUpload('${j.job_id}','${group}')">中止</button>`:''}
+      </div>`;
+    }).join('')+(jobs.some(j=>j.state!=='running')?`<div style="margin-top:2px"><button class="btn btn-ghost btn-sm" style="padding:0 8px" onclick="liveClearUploads('${group}')" title="完了/失敗/中止のジョブ表示を消します（実行中は残ります）">完了/失敗の表示をクリア</button></div>`:'');
+  }
+  const running=jobs.some(j=>j.state==='running');
+  if(!running&&_liveUpHadRunning[group]){
+    _liveUpHadRunning[group]=false;
+    liveLoadPool(group,false);
+    toast('アップロードが終了しました（結果は進捗欄を確認）','i');
+  }
+  if(running)_liveUpHadRunning[group]=true;
+  return !running;
+}
+async function liveClearUploads(group){
+  try{
+    const r=await fetch(`/api/live/uploads?group=${encodeURIComponent(group)}`,{method:'DELETE'});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||'クリア失敗')}
+    _liveRenderUploads(group).catch(()=>{});
+  }catch(e){toast('クリア失敗: '+(e.message||e),'e')}
+}
+async function liveCancelUpload(jobId,group){
+  if(!confirm('このアップロードを中止しますか？\n（途中までのデータは VPS に残り、同じ動画を再アップロードすると続きから再開されます）'))return;
+  try{
+    const r=await fetch(`/api/live/upload/${jobId}`,{method:'DELETE'});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||'中止失敗')}
+    toast('中止しました','s');
+    _liveRenderUploads(group).catch(()=>{});
+  }catch(e){toast('中止失敗: '+(e.message||e),'e')}
+}
+
+/* ── YouTube 配信情報（タイトル・説明・サムネ） ── */
+async function liveLoadBroadcast(id){
+  const box=_lvEl('lvBc_'+id);box.innerHTML='取得中...';
+  const d=await fetch(`/api/live/broadcasts?stream_id=${encodeURIComponent(id)}`).then(r=>r.json()).catch(e=>({status:'error',error:String(e)}));
+  if(d.status!=='ok'){box.innerHTML=`<span class="badge badge-warning">取得できません</span> ${esc(d.error||'')}`;return}
+  if(!(d.broadcasts||[]).length){box.innerHTML='配信中/予定のライブが見つかりません（配信開始直後は YouTube 側の反映まで1分ほどかかることがあります）';return}
+  // サムネ候補も読み込む
+  const s=(_liveCfg?.config?.streams||[]).find(x=>x.id===id)||{};
+  const rid=s.registry_id||s.group||'';
+  const th=await fetch(`/api/live/local-thumbnails?registry_id=${encodeURIComponent(rid)}`).then(r=>r.json()).catch(()=>({images:[]}));
+  const thumbs=th.images||[];
+  box.innerHTML=d.broadcasts.map(b=>`
+    <div style="border:1px solid var(--border-default,rgba(255,255,255,.1));border-radius:var(--radius-md);padding:var(--space-3);margin-bottom:var(--space-2)${b.matches_stream?';border-color:var(--accent-success)':''}">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+        ${b.matches_stream?'<span class="badge badge-success">この配信</span>':''}
+        <span class="badge ${b.life_cycle==='live'?'badge-success':'badge-info'}">${esc(b.life_cycle||b.broadcast_status)}</span>
+        <span class="badge badge-neutral">${esc({public:'公開',unlisted:'限定公開',private:'非公開'}[b.privacy]||b.privacy||'')}</span>
+        ${b.contains_synthetic_media?'<span class="badge badge-neutral">AI開示済</span>':''}
+        <a href="${esc(b.watch_url)}" target="_blank" rel="noopener" style="color:var(--accent-info)">YouTube で開く</a>
+      </div>
+      <div style="display:flex;gap:var(--space-3);align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:none">
+          <div class="fl" style="margin-bottom:4px">現在のサムネイル</div>
+          ${b.thumbnail?`<img src="${esc(b.thumbnail)}" alt="" style="width:160px;height:90px;object-fit:cover;border-radius:6px;background:var(--bg-elevated)" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="width:160px;height:90px;display:none;align-items:center;justify-content:center;background:var(--bg-elevated);border-radius:6px;color:var(--text-tertiary);font-size:var(--text-xs)">取得不可</div>`:`<div style="width:160px;height:90px;display:flex;align-items:center;justify-content:center;background:var(--bg-elevated);border-radius:6px;color:var(--text-tertiary);font-size:var(--text-xs)">未設定</div>`}
+        </div>
+        <div style="flex:1;min-width:260px">
+          <div class="ff"><label class="fl">タイトル</label><input class="fi" id="lvBcTitle_${id}_${esc(b.id)}" value="${esc(b.title)}"></div>
+          <div class="ff"><label class="fl">説明</label><textarea class="ft" id="lvBcDesc_${id}_${esc(b.id)}" rows="3">${esc(b.description)}</textarea></div>
+          <div class="fr">
+            <div class="ff" style="max-width:170px"><label class="fl">公開設定</label>
+              <select class="fs" id="lvBcPriv_${id}_${esc(b.id)}">
+                <option value="public"${b.privacy==='public'?' selected':''}>公開</option>
+                <option value="unlisted"${b.privacy==='unlisted'?' selected':''}>限定公開</option>
+                <option value="private"${b.privacy==='private'?' selected':''}>非公開</option>
+              </select></div>
+            <div class="ff" style="flex:0;align-self:flex-end"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:var(--text-sm);white-space:nowrap;padding-bottom:6px" title="YouTube の「改変された/AIで作成されたコンテンツ」の開示設定です"><input type="checkbox" id="lvBcAI_${id}_${esc(b.id)}"${b.contains_synthetic_media?' checked':''}> AIで作成（開示）</label></div>
+          </div>
+        </div>
+      </div>
+      <div class="fr">
+        <div class="ff"><label class="fl">サムネイル画像（ローカル）</label>
+          <select class="fs" id="lvBcThumb_${id}_${esc(b.id)}"><option value="">選択...</option>${thumbs.map(t=>`<option value="${esc(t.path)}">${esc(t.rel)}</option>`).join('')}</select></div>
+        <div class="ff" style="flex:0;align-self:flex-end"><button class="btn btn-secondary" onclick="liveSetThumbnail('${id}','${esc(b.id)}')">サムネ適用</button></div>
+      </div>
+      <div class="btns">
+        <button class="btn btn-primary" onclick="liveSaveBroadcast('${id}','${esc(b.id)}')">タイトル/説明/公開設定を保存</button>
+        <button class="btn btn-secondary" id="lvBcSug_${id}_${esc(b.id)}" onclick="liveSuggestMeta('${id}','${esc(b.id)}')" title="チャンネル名と配信動画からタイトル・説明文の案を生成して上の入力欄に入れます（保存はされません）">タイトル/説明をAIで提案</button>
+      </div>
+    </div>`).join('');
+}
+async function liveSaveBroadcast(id,vid){
+  const t=_lvEl(`lvBcTitle_${id}_${vid}`)?.value??'';
+  const de=_lvEl(`lvBcDesc_${id}_${vid}`)?.value??'';
+  const body={stream_id:id,video_id:vid,title:t,description:de};
+  const priv=_lvEl(`lvBcPriv_${id}_${vid}`)?.value;
+  if(priv)body.privacy=priv;
+  const ai=_lvEl(`lvBcAI_${id}_${vid}`);
+  if(ai)body.contains_synthetic_media=ai.checked;
+  try{
+    const r=await fetch('/api/live/broadcasts',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok)toast(`更新しました: ${d.new_title||''}（${{public:'公開',unlisted:'限定公開',private:'非公開'}[d.privacy]||d.privacy||''}${d.contains_synthetic_media?'・AI開示':''}）`,'s');
+    else toast(d.detail||'更新失敗','e');
+  }catch(e){toast('更新失敗: '+e,'e')}
+}
+async function liveSuggestMeta(id,vid){
+  const btn=_lvEl(`lvBcSug_${id}_${vid}`);
+  const t=_lvEl(`lvBcTitle_${id}_${vid}`),de=_lvEl(`lvBcDesc_${id}_${vid}`);
+  if(btn){btn.disabled=true;btn.textContent='AIが考え中...（30秒〜2分）'}
+  try{
+    const r=await fetch('/api/live/broadcasts/suggest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stream_id:id,current_title:t?.value||'',current_description:de?.value||''})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||d.status!=='ok')throw new Error(d.detail||d.error||'提案失敗');
+    if(t&&d.title)t.value=d.title;
+    if(de&&d.description)de.value=d.description;
+    toast('AI 案を入力欄に反映しました。内容を確認して「保存」してください','s');
+  }catch(e){toast('AI提案に失敗: '+(e.message||e),'e')}
+  finally{if(btn){btn.disabled=false;btn.textContent='タイトル/説明をAIで提案'}}
+}
+async function liveSetThumbnail(id,vid){
+  const sel=_lvEl(`lvBcThumb_${id}_${vid}`);
+  if(!sel||!sel.value){toast('サムネイル画像を選択してください','w');return}
+  try{
+    const r=await fetch('/api/live/thumbnail',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stream_id:id,video_id:vid,image_path:sel.value})});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok)toast('サムネイルを設定しました（反映まで数分かかることがあります）','s');
+    else toast(d.detail||'サムネ設定失敗','e');
+  }catch(e){toast('サムネ設定失敗: '+e,'e')}
+}
+
+/* ── 初期設定（VPS） ── */
+function toggleLiveSetup(){const c=_lvEl('liveSetupCard');c.style.display=c.style.display==='none'?'block':'none'}
+function liveCopyPubkey(){
+  const pk=_lvEl('livePubkey').value;
+  if(!pk||pk.startsWith('（')){toast('公開鍵がまだありません（セットアップ実行で生成）','w');return}
+  navigator.clipboard.writeText(pk).then(()=>toast('公開鍵をコピーしました','s')).catch(()=>toast('コピー失敗','e'));
+}
+function _lvVpsBody(){
+  return {name:_lvVal('liveVpsName'),host:_lvVal('liveVpsHost'),port:parseInt(_lvVal('liveVpsPort'))||22,
+          user:_lvVal('liveVpsUser')||'root',remote_dir:_lvVal('liveVpsDir')||'/opt/ytlive',ssh_key:_lvVal('liveVpsKey')||'~/.ssh/ytlive_ed25519'}
+}
+async function liveSaveVpsOnly(){
+  try{
+    const r=await fetch('/api/live/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({vps:_lvVpsBody()})});
+    if(r.ok){toast('接続情報を保存しました','s');loadLiveConfig();loadLiveStatus(false)}
+    else toast('保存失敗','e');
+  }catch(e){toast('保存失敗: '+e,'e')}
+}
+async function liveRunSetup(){
+  const body=_lvVpsBody();
+  if(!body.host){toast('ホストを入力してください','w');return}
+  const pw=_lvVal('liveVpsPw');if(pw)body.password=pw;
+  const log=_lvEl('liveSetupLog');
+  log.style.display='block';log.textContent='セットアップ実行中...（ffmpeg のインストールに数分かかることがあります）';
+  try{
+    const r=await fetch('/api/live/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    log.textContent=(d.steps||[]).map(s=>`${s.ok?'[OK]':'[NG]'} ${s.name}${s.detail?' — '+s.detail:''}`).join('\n')||(d.detail||'');
+    _lvEl('liveVpsPw').value='';
+    if(d.status==='ok'){toast('セットアップ完了','s');loadLiveConfig();loadLiveStatus(true)}
+    else toast('セットアップ未完了（ログを確認）','e');
+  }catch(e){log.textContent+='\nエラー: '+e;toast('セットアップ失敗','e')}
+}
+
+/* ==== Init ==== */
+loadConfig().then(()=>{loadChannelSwitcher();wireSettingsAutoSave();relocateBenchmarkCardsToBenchmarkPage();checkInitialSetup()});
+loadPrompts();tick();pollStatus();pollGlobalStatus();
+loadYtUploadDefaults().then(()=>wireSettingsAutoSave());
+
+// hash から復元 or ダッシュボード
+_restoreFromHash();
+fetch('/api/config/init',{method:'POST'}).then(async r=>{const d=await r.json();if(!d.config?.channel_folder)setTimeout(()=>go('settings'),500)});
