@@ -27,10 +27,14 @@ class FakeStream:
     def __init__(self, lines):
         self.lines = list(lines)
 
-    def readline(self):
+    def readline(self, size=-1):
         if not self.lines:
             raise AssertionError("read past the response event")
-        return self.lines.pop(0)
+        line = self.lines.pop(0)
+        if size is not None and size >= 0 and len(line) > size:  # 実物の readline(size) と同じく size までで返す
+            self.lines.insert(0, line[size:])
+            line = line[:size]
+        return line
 
 
 class Stage7MacMinorsTest(unittest.TestCase):
@@ -76,8 +80,18 @@ class Stage7MacMinorsTest(unittest.TestCase):
         data = va.refresh("chp", {"vidiq_keywords": ["a", "b", "c", "d"]}, now=now, max_calls=3,
                           client_factory=lambda u, t: va.McpHttpClient(u, t, transport=server))
         self.assertTrue(data["ok"] and data["partial"])
-        self.assertEqual(data["expires_at"], "2026-10-27T02:00:00Z")
+        self.assertEqual(data["expires_at"], "2026-10-28T01:00:00Z")  # 期限は 24 時間のまま（VPS 側の学びを早く失効させない）
+        self.assertEqual(data["retry_after"], "2026-10-27T02:00:00Z")
+        self.assertEqual(va.vps_payload(data)["ttl_hours"], 24)
         self.assertEqual(data["metrics"], {"calls": 3, "failed_calls": 1})  # max_calls で飛ばした 1 件は数えない
+        before = len(server.seen)
+        cached = va.refresh("chp", {"vidiq_keywords": ["a", "b", "c", "d"]}, now=now + timedelta(minutes=30), max_calls=3,
+                            client_factory=lambda u, t: va.McpHttpClient(u, t, transport=server))
+        self.assertTrue(cached["cached"])
+        self.assertEqual(len(server.seen), before)  # 1 時間たつまでは取り直さない
+        again = va.refresh("chp", {"vidiq_keywords": ["a", "b", "c", "d"]}, now=now + timedelta(hours=2), max_calls=3,
+                           client_factory=lambda u, t: va.McpHttpClient(u, t, transport=server))
+        self.assertFalse(again["cached"])  # 1 時間後は期限内でも取り直す
         self.assertEqual(oct(va.config_dir().stat().st_mode & 0o777), "0o700")
 
     def test_key_file_owner_and_invalid_json(self):
@@ -96,6 +110,23 @@ class Stage7MacMinorsTest(unittest.TestCase):
 
     def test_display_endpoint_hides_credentials(self):
         self.assertEqual(va.display_endpoint("https://user:pass@mcp.vidiq.com:8443/mcp?key=SECRET#x"), "https://mcp.vidiq.com:8443/mcp")
+        self.assertEqual(va.display_endpoint("https://[::1]:9/mcp"), "https://[::1]:9/mcp")
+        self.assertEqual(va.display_endpoint("https://mcp.vidiq.com:notaport/mcp"), "(invalid endpoint)")
+
+    def test_empty_result_is_not_partial(self):
+        from tests.test_vidiq_adapter import FakeServer, KW_TOOL, kw_result
+        server = FakeServer(tools=[KW_TOOL], results={"keyword_research": lambda a: kw_result(a) if a["keyword"] == "a" else {"content": []}})
+        data = va.refresh("che", {"vidiq_keywords": ["a", "b"]}, now=datetime(2026, 10, 27, tzinfo=timezone.utc),
+                          client_factory=lambda u, t: va.McpHttpClient(u, t, transport=server))
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["partial"])  # データの無い語は失敗に数えない
+        self.assertIsNone(data["retry_after"])
+
+    def test_sse_size_cap_is_protocol_error(self):
+        with patch.object(va, "SSE_MAX_BYTES", 10):
+            with self.assertRaises(va.VidiqError) as cm:
+                va._read_sse_until_response(FakeStream([b"data: " + b"x" * 50 + b"\n"] * 3), 1)
+        self.assertEqual(cm.exception.reason, "protocol")
 
     def test_adopt_copies_scores_and_verified_selected(self):
         folder = self.dir / "5_x"

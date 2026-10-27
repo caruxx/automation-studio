@@ -27,7 +27,7 @@ DEFAULT_ENDPOINT = "https://mcp.vidiq.com/mcp"
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
 TTL_HOURS = 24
-PARTIAL_TTL_HOURS = 1
+PARTIAL_TTL_HOURS = 1  # 一部失敗した取得を取り直せるようになるまでの時間（期限そのものは TTL_HOURS のまま）
 DEFAULT_MAX_CALLS = 3
 INSIGHT_MAX = 300
 MAX_ITEMS = 30
@@ -91,10 +91,15 @@ def endpoint() -> str:
 def display_endpoint(url: Optional[str] = None) -> str:
     """表示用の接続先（scheme・host・port・path だけ。URL に埋めた認証情報や query は出さない）。"""
     from urllib.parse import urlparse
-    u = urlparse(url or endpoint())
-    host = u.hostname or ""
-    port = f":{u.port}" if u.port else ""
-    return f"{u.scheme}://{host}{port}{u.path}"
+    try:
+        u = urlparse(url or endpoint())
+        host = u.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"  # IPv6
+        port = f":{u.port}" if u.port else ""
+        return f"{u.scheme}://{host}{port}{u.path}"
+    except ValueError:
+        return "(invalid endpoint)"
 
 
 def check_endpoint(url: str) -> None:
@@ -127,7 +132,7 @@ def _read_sse_until_response(resp, want_id: Any) -> bytes:
     data_lines: list[str] = []
     total = 0
     while True:
-        line = resp.readline()
+        line = resp.readline(SSE_MAX_BYTES + 1 - total)  # 改行の無い巨大な行でも上限を超えて溜め込まない
         if not line:
             break
         chunks.append(line)
@@ -160,6 +165,8 @@ def _urllib_transport(url: str, headers: dict[str, str], body: bytes, timeout: f
                     want_id = None
                 return resp.status, hdrs, _read_sse_until_response(resp, want_id)
             return resp.status, hdrs, resp.read()
+    except VidiqError:
+        raise  # 上限超過などの分類をそのまま返す（network に包まない）
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read() or b""
@@ -584,7 +591,8 @@ def refresh(channel_key: str, channel_cfg: dict, *, client_factory: Optional[Cal
     now = now or _now()
     cache = load_cache(channel_key)
     fresh, _ = freshness(cache, now)
-    if fresh and not force:
+    retry_at = _parse(cache.get("retry_after")) if cache.get("partial") else None
+    if fresh and not force and not (retry_at is not None and now >= retry_at):
         return {**cache, "ok": True, "cached": True}
     if not is_configured(channel_cfg):
         return {"ok": False, "source": SOURCE, "channel_key": channel_key, "degraded_reason": "not_configured",
@@ -640,10 +648,12 @@ def refresh(channel_key: str, channel_cfg: dict, *, client_factory: Optional[Cal
         video_ids.extend(v for v in it["video_ids"] if v not in video_ids)
         evidence.extend(e for e in it["evidence_ids"] if e not in evidence)
     executed = [c for c in calls if c.get("arguments") is not None]  # 飛ばした呼び出しは数えない
-    partial = any(not c.get("ok") for c in executed)
-    ttl = PARTIAL_TTL_HOURS if partial else TTL_HOURS  # 一部の呼び出しが失敗したときは早めに取り直せるよう短くする
+    # 通信やツールの失敗があった取得は、期限（24 時間）は変えずに 1 時間後から取り直せる印を付ける。
+    # 結果が空だっただけ（empty_result）は失敗に数えない（データの無い語で毎回取り直さない）
+    partial = any(not c.get("ok") and c.get("reason") != "empty_result" for c in executed)
     data = {"source": SOURCE, "channel_key": channel_key, "fetched_at": _iso(now),
-            "expires_at": _iso(now + timedelta(hours=ttl)), "ttl_hours": ttl, "partial": partial,
+            "expires_at": _iso(now + timedelta(hours=TTL_HOURS)), "ttl_hours": TTL_HOURS, "partial": partial,
+            "retry_after": _iso(now + timedelta(hours=PARTIAL_TTL_HOURS)) if partial else None,
             "items": items, "video_ids": video_ids[:200], "evidence_ids": evidence,
             "metrics": {"calls": len(executed), "failed_calls": sum(1 for c in executed if not c.get("ok"))},
             "calls": calls, "raw": raw}

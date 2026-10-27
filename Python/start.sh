@@ -90,7 +90,7 @@ if [[ "${1:-}" == "--replace" ]]; then
         # 止めるのは Automation Studio の app.py だけ（同じポートを別のプログラムが使っていたら止めない）
         for pid in $PIDS; do
             cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
-            if [[ "$cmd" != *"/app.py"* ]]; then
+            if [[ "$cmd" != *"$SCRIPT_DIR/app.py"* ]]; then
                 echo "ポート $PORT を使っているのは Automation Studio ではありません（PID $pid: ${cmd:-不明}）。止めずに終了します" >&2
                 exit 1
             fi
