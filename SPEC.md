@@ -165,24 +165,26 @@ chromium_profile/        # Playwright 永続プロファイル（SUNO ログイ�
 |---|------|---------|----------------|--------------|
 | 0 | `plan` | （無人運用時のみ） | `plan.json` | app_orchestrator.py / app_pipeline.py `step_plan` |
 | 1 | `suno` | SUNO タブ / 楽曲タブ | `music/*.mp3` が 1 本以上 | suno_auto_create.py |
+| 1a | `select` | 楽曲タブ（自動） | `.music_review.json`（AI 選曲。人のハートは採用として尊重） | app_music_select.py |
 | 2 | `rename` | 楽曲タブ | `music/*.mp3`（処理済み） | app_process_tracks.py |
 | 3 | `bgimage` | 画像タブ | `vol{N}.png` or `vol{N}.jpg` | app_image_prompt.py / codex_imagegen.py |
-| 4 | `psd_composite` | 画像タブ（Image2 Layout Studio） | `vol{N}.jpg` + `サムネイル.jpg` | app_image_composite.py（Pillow） |
-| 5 | `premiere` | （自動通過） | — | app_pipeline.py `step_premiere`（何もしない） |
-| 6 | `export` | 編集タブ | `{prefix}_vol*.mp4` + `subtitles_*.srt` | app_ffrender.py |
+| 4 | `composite`（旧名 `psd_composite`） | 画像タブ（Image2 Layout Studio） | `vol{N}.jpg` + `サムネイル.jpg` | app_image_composite.py（Pillow） |
+| 5 | （廃止: 旧 `premiere`） | — | — | 段階 1a で書き出しに統合。旧名の指定は無視される |
+| 6 | `render`（旧名 `export`） | 編集タブ | `{prefix}_vol*.mp4` + `subtitles_*.srt` | app_ffrender.py |
 | 7 | `qa` | （書き出し直後・自動） | QA 全 4 軸 pass | app_pipeline.py `step_qa` |
+| 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt`（記録 `youtube_meta.json`: 根拠 `evidence_ids` と VidIQ の劣化 `insights_degraded` / `degraded_reason`） | claude_proposer.py（insights と VidIQ の学びを注入。VidIQ が使えなくても完走） |
+| 9 | `localization` | （自動） | 多言語メタ（非 fatal） | app_pipeline.py `step_localization` |
+| 10 | `thumbnail` | 画像タブ | `.thumbnail_selection.json` + `thumbnail_selected.jpg`（`thumbnail_selection.verify` 合格） | thumbnail_selection.py（候補生成・採点・確定。全不合格は品質待ち 79） |
+| 11 | `upload` | アップロードタブ | `youtube_upload.json` | app_youtube.py |
+| 12 | `publish_verify` | （VPS・自動） | YouTube 上の公開状態の照合 | VPS `app/services/publish_verify.py` |
 
 > **書き出しエンジン** — 2026-10-25 段階 1a 以降は FFmpeg（`app_ffrender.py`）のみ。`production_mode` は `ffmpeg_only` だけで、旧値 `standard` / `export_engine=ame` は警告付きで読み替える。
 >
 > **レンダーマニフェスト `.ffrender_manifest.json`（構成の正本）** — vol フォルダに保存。曲順・使用画像・尺・音声設定・焼き込み設定を固定する。`--swap '旧=新.mp3'` / `--remove '曲名'` で構成を差し替え、`--show-manifest` で表示、`--no-render` で manifest 操作だけ行う。
 >
 > **曲名焼き込み（`--burn-titles always`）** — 各曲の区間に曲名を**常時焼き込み**（drawtext、画像境界∪曲境界で分割→GOP→TS 連結）。書式は per-channel `.app_channel_config.json` の `burn_titles` ブロック（`font`/`fontsize`/`color`/`prefix`/`x`/`y`/`border`）で定義。mov_text ソフト字幕も併存。
-| 8 | `meta` | 詳細タブ | `youtube_description.txt` + `youtube_tags.txt`（記録 `youtube_meta.json`: 根拠 `evidence_ids` と VidIQ の劣化 `insights_degraded` / `degraded_reason`） | claude_proposer.py（insights と VidIQ の学びを注入。VidIQ が使えなくても完走） |
-| 9 | `localization` | （自動） | 多言語メタ（非 fatal） | app_pipeline.py `step_localization` |
-| 10 | `thumbnail` | 画像タブ | `.thumbnail_selection.json` + `thumbnail_selected.jpg`（`thumbnail_selection.verify` 合格） | thumbnail_selection.py（候補生成・採点・確定。全不合格は品質待ち 79） |
-| 11 | `upload` | アップロードタブ | `youtube_upload.json` | app_youtube.py |
 
-判定ロジックは [index.html](web/static/index.html) の `WORKFLOW_STEPS` 定数、自動実行順は `app_pipeline.py` の `STEPS` / `STEP_LABELS` / `STEP_FUNCS` / `RETRY_POLICY`（4箇所一貫更新）で定義。
+判定ロジックは [web/static/js/app-main.js](web/static/js/app-main.js) の `WORKFLOW_STEPS` 定数、自動実行順は `app_pipeline.py` の `STEPS` / `STEP_LABELS` / `STEP_FUNCS` / `RETRY_POLICY`（4箇所一貫更新）で定義。
 
 ---
 

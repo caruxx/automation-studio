@@ -5,7 +5,7 @@ orzz. ダッシュボード = YouTube BGM チャンネルの動画制作を全�
 ## 必読
 - [AGENTS.md](AGENTS.md) — 運用コマンド＋「自然言語→実行」マッピング
 - [SPEC.md](SPEC.md) — API一覧・データ契約・アーキテクチャ
-- [AGENTS_DESIGN.md](AGENTS_DESIGN.md) / [AGENTS_WORKPLAN.md](AGENTS_WORKPLAN.md) — エージェント化の設計と計画
+- [docs/archive/AGENTS_DESIGN.md](docs/archive/AGENTS_DESIGN.md) / [docs/archive/AGENTS_WORKPLAN.md](docs/archive/AGENTS_WORKPLAN.md) — エージェント化の初期設計と計画（現行の正本ではない。段階 7 で archive）
 - [skills/](skills/) — 機能別スキル
 
 ## 正規入口
@@ -42,7 +42,7 @@ orzz. ダッシュボード = YouTube BGM チャンネルの動画制作を全�
 - ⚠ 複数 vol の SUNO は **workspace を vol 別**にして混在 DL を防ぐ。生成リクエスト送信 ≠ レンダリング完了（DL 前に待機 or cache miss 再試行）
 
 ## サブエージェント
-ドメイン別に委譲: music / image / video / publish / analysis / pipeline / web（詳細 AGENTS_DESIGN §2。`.claude/agents/` はこのリポジトリには含まれない。ドメイン知識は `skills/<domain>.md`）。
+ドメイン別に委譲: music / image / video / publish / analysis / pipeline / web（詳細 docs/archive/AGENTS_DESIGN.md §2（初期設計）。`.claude/agents/` はこのリポジトリには含まれない。ドメイン知識は `skills/<domain>.md`）。
 全エージェント model=opus・tools 無制限（完全権限委譲。Bash でサーバー再起動して検証まで自走）。
 
 ## 言語

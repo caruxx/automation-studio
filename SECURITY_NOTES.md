@@ -24,7 +24,7 @@
 
 ### 2.3 Google Flow / Nano Banana 2
 
-撤去済み（2026-06-07 D8）。画像生成は OpenAI Image API（`OPENAI_API_KEY`）または Codex CLI のみ。`Python/flow_userscript.js` と `save_auth.py` は未参照の残骸として残っており、段階 7 で整理する。
+撤去済み（2026-06-07 D8）。画像生成は OpenAI Image API（`OPENAI_API_KEY`）または Codex CLI のみ。未参照の残骸だった `Python/flow_userscript.js` と `save_auth.py` は、段階 7（2026-10-27）で `archive/Python/` へ移した。
 
 ---
 

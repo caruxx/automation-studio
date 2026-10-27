@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Automation Studio オーケストレーター（Phase 4 試作）。
 
-設計: AGENTS_DESIGN.md §7（StageWorker 共通I/F）/ §9（確定事項）。
+設計: docs/archive/AGENTS_DESIGN.md §7（StageWorker 共通I/F）/ §9（確定事項）。初期設計の記録で、現行の工程定義は workflow.json。
 
 狙い:
   現行の「app.py の _job_* が pipeline を subprocess 起動し、stdout 解析で次を決める」
