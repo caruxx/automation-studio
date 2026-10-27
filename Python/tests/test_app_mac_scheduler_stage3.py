@@ -29,8 +29,9 @@ class FakeScheduler:
 class MacSchedulerStage3Test(unittest.TestCase):
     def test_schedule_publish_api_is_gone(self):
         from fastapi import HTTPException
+        from routers import publish_gate  # 段階 7 で app.py から移した
         with self.assertRaises(HTTPException) as cm:
-            studio.api_youtube_schedule_publish(studio.SchedulePublishRequest(video_name="1_x", delay_hours=1))
+            publish_gate.api_youtube_schedule_publish(publish_gate.SchedulePublishRequest(video_name="1_x", delay_hours=1))
         self.assertEqual(cm.exception.status_code, 410)
         self.assertFalse(hasattr(studio, "_job_publish_now"))
         self.assertFalse(hasattr(studio, "_recover_scheduled_publishes"))
