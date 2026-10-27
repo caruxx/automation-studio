@@ -60,6 +60,13 @@ class RouteTableTest(unittest.TestCase):
                     r = client.get(url)
                     self.assertLess(r.status_code, 500, f"{path} -> {r.status_code} {r.text[:200]}")
                     called += 1
+        sched = getattr(app, "_scheduler", None)  # 起動処理が始めた scheduler を止め、後のテストへ持ち越さない
+        if sched is not None:
+            try:
+                sched.shutdown(wait=False)
+            except Exception:
+                pass
+            app._scheduler = None
         self.assertGreater(called, 5)
 
 
