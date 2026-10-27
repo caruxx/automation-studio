@@ -51,7 +51,11 @@ def api_desc_video_info(video_name: str):
 
     # サムネイル情報
     thumb = None
-    for pattern in ["サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png", f"vol{num}.jpg", f"vol{num}.png"]:
+    from thumbnail_selection import verified_selected as _verified_selected
+    _sel = _verified_selected(folder)  # 投稿に使う確定サムネを優先して見せる（段階 7）
+    if _sel is not None:
+        thumb = {"name": _sel.name, "path": str(_sel)}
+    for pattern in ([] if thumb else ["サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png", f"vol{num}.jpg", f"vol{num}.png"]):
         t = folder / pattern
         if t.exists():
             thumb = {"name": t.name, "path": str(t)}
@@ -85,6 +89,10 @@ def api_desc_thumbnail(video_name: str, channel_id: Optional[str] = None):
     folder = resolve_video_folder(video_name, channel_root=channel_root)
     m = re.match(r'^(\d+)_', video_name)
     num = m.group(1) if m else "00"
+    from thumbnail_selection import verified_selected as _verified_selected
+    _sel = _verified_selected(folder)  # 投稿に使う確定サムネを優先して見せる（段階 7）
+    if _sel is not None:
+        return FileResponse(str(_sel))
     for pattern in ["サムネイル.jpg", "サムネイル.png", "thumbnail.jpg", "thumbnail.png", f"vol{num}.jpg", f"vol{num}.png"]:
         t = folder / pattern
         if t.exists():

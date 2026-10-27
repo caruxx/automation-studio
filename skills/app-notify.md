@@ -1,114 +1,43 @@
 # app-notify: 通知（Chatwork、VPS outbox 経由）
 
-> **段階 3a（2026-10-26）**: Discord Webhook は廃止。Mac は `Python/notify.py` が VPS の outbox（`POST /api/worker/notify`）に
-> event を送り、VPS が Chatwork に配送する（トークンは VPS の環境変数だけに置く）。VPS が未設定 / 到達不能のときは
-> `~/.config/automation-studio/notify_queue.sqlite` に退避し、`studio.py notify-flush` で同じ event_id のまま移管する（自動では移管しない）。
-> kind は info / action_required / alert（省略時は本文から推定）。[To] は action_required と alert だけ。
-> 以下の Discord の設定手順は履歴として残す。
+> 実装: Mac `Python/notify.py`（送信と退避）/ VPS `app/services/notify.py`（outbox と Chatwork 配送）
+> 段階 3a（2026-10-26）で Discord Webhook は廃止した。
 
-# app-notify: Discord スケジュール通知
+## 流れ
 
-Discord Webhook を使用して、動画の公開スケジュールやタスク通知を送信するスキル。
-
-## セットアップ
-
-### 1. Discord で Webhook を作成
-
-1. 通知を受け取りたいサーバーとチャンネルを開く
-2. チャンネル設定 → 連携サービス → Webhook を作成
-3. Webhook URL をコピー
-
-### 2. クレデンシャルファイルの配置
+1. Mac の `notify.py` が event（`event_id`, `kind`, `body`, `vol`, `run_id`, `channel_key`）を VPS の `POST /api/worker/notify` に送る。
+2. VPS は outbox（`notify_outbox`）に積み、Chatwork へ配送する。Chatwork のトークンとルームは VPS の環境変数だけに置く。
+3. VPS が未設定、または届かないときは、Mac の `~/.config/automation-studio/notify_queue.sqlite` に退避する。自動では移管しない。
 
 ```bash
-mkdir -p ~/.config/{app_id}
+python3 Python/studio.py notify-flush --json
 ```
 
-以下のファイルを作成:
+退避した event を、同じ `event_id` のまま VPS へ移管する。
 
-```
-~/.config/{app_id}/discord_config.json
-```
+## kind
 
-```json
-{
-  "webhook_url": "YOUR_DISCORD_WEBHOOK_URL",
-  "username": "Automation Studio"
-}
-```
+| kind | 用途 | Chatwork の [To] |
+|---|---|---|
+| `info` | 完了・劣化の知らせ（VidIQ が使えなかった等） | 付けない |
+| `action_required` | 人の操作待ち（品質待機など） | 付ける |
+| `alert` | 失敗・異常 | 付ける |
 
-`avatar_url` は任意。
+省略すると本文から推定する（待機の終了コード 79 や「失敗 0 件」は alert にしない）。
 
-```json
-{
-  "webhook_url": "YOUR_DISCORD_WEBHOOK_URL",
-  "username": "Automation Studio",
-  "avatar_url": "https://example.com/icon.png"
-}
-```
-
-## 通知スクリプト
-
-配置先: `~/.config/{app_id}/app_notify.sh`
+## CLI
 
 ```bash
-#!/bin/bash
-# app_notify.sh - Discord Webhook で通知送信
-set -euo pipefail
-
-CONFIG_FILE="${HOME}/.config/{app_id}/discord_config.json"
-
-WEBHOOK_URL=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['webhook_url'])")
-MESSAGE="$1"
-
-PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'content': sys.argv[1]}, ensure_ascii=False))" "$MESSAGE")
-
-curl -fsS -X POST "$WEBHOOK_URL" \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD" > /dev/null
-
-echo "Discord通知送信完了"
+python3 Python/notify.py "本文" --kind info --vol 12 --json
 ```
 
-```bash
-chmod +x ~/.config/{app_id}/app_notify.sh
-```
+`--flush` で退避分の移管、`--status` でローカルの件数を表示する。
 
-## 使用方法
+## 互換の入口
 
-### シンプル通知
+- `Python/app_notify.sh <本文>` と `POST /api/notify/discord`・`/api/notify/line` は、名前だけ旧来のまま残した互換の入口で、中身は `notify.py` を呼ぶ。Discord には送らない。
+- 画面の「Discord Webhook 設定」は使われていない（保存しても送信先にならない）。画面の整理は別途行う。
 
-```bash
-~/.config/{app_id}/app_notify.sh "vol.67 のアップロードが完了しました"
-```
+## 関連
 
-### 公開スケジュール通知
-
-```bash
-~/.config/{app_id}/app_notify.sh "$(cat <<MSG
-📺 公開スケジュール
-━━━━━━━━━━━━━━━━
-12:00 - vol.67 Chill BGM
-18:00 - vol.68 Night Jazz
-MSG
-)"
-```
-
-## Web API
-
-```bash
-curl -X POST http://localhost:8888/api/notify/discord \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Discord 通知テスト"}'
-```
-
-旧互換として `/api/notify/line` も残すが、送信先は Discord。
-
-## 設定ファイル構成
-
-```
-~/.config/{app_id}/
-├── discord_config.json      # Discord Webhook URL（手動配置）
-├── app_notify.sh            # 通知送信スクリプト
-└── ...
-```
+- VPS の配送停止（429 時の一時停止など）と運用の注意は VPS repo の `DEPLOY.md`。

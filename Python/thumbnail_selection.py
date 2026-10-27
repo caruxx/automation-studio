@@ -332,9 +332,27 @@ def adopt(folder: Path, candidate_id: str, *, by: str = "human") -> SelectionRes
     sel_hash = sha256_file(folder / SELECTED_FILE)
     if sel_hash != (data.get("candidate_hashes") or {}).get(candidate_id):
         raise ValueError("採用画像のコピーが候補と一致しません（照合中に変わりました）")
+    score = {}
+    for h in reversed(data.get("history") or []):  # 採点の記録があれば写す（無ければ null）
+        sc = (h.get("scores") or {}).get(candidate_id) if isinstance(h, dict) else None
+        if isinstance(sc, dict):
+            score = sc
+            break
     data.update({"status": "selected", "selected_id": candidate_id, "selected_hash": sel_hash, "decided_by": by,
-                 "decided_at": _now(), "selection_revision": int(data.get("selection_revision") or 0) + 1})
+                 "decided_at": _now(), "selection_revision": int(data.get("selection_revision") or 0) + 1,
+                 "predicted_ctr": score.get("predicted_ctr"), "score_total": score.get("score_total")})
     data.setdefault("history", []).append({"run_id": data["run_id"], "at": _now(), "status": "adopted", "by": by,
                                            "candidate_id": candidate_id})
     _save(folder, data)
     return SelectionResult("selected", data["run_id"], candidate_id, sel_hash, int(data.get("attempt") or 0), "", data)
+
+
+def verified_selected(folder) -> Optional[Path]:
+    """表示用: 検証に通った採用画像（thumbnail_selected.jpg）があれば返す。無ければ None（呼び出し側は従来の画像を探す）。"""
+    folder = Path(folder)
+    try:
+        ok, _ = verify(folder)
+    except Exception:
+        return None
+    p = folder / SELECTED_FILE
+    return p if ok and p.is_file() else None

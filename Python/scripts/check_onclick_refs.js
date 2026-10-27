@@ -19,7 +19,8 @@ for (const m of js.matchAll(/window\.([A-Za-z_$][\w$]*)\s*=/g)) defined.add(m[1]
 for (const m of js.matchAll(/window\.E2UI\s*=\s*\{([^}]*)\}/g)) m[1].split(',').forEach(x => defined.add(x.trim().split(':')[0]));
 const builtins = new Set(['event','this','window','document','location','history','navigator','console','alert','confirm','prompt','setTimeout','clearTimeout','fetch','open','close','E2UI','AnalysisJ2','Promise','Array','Object','String','Number','JSON','Math','Date','encodeURIComponent','decodeURIComponent','requestAnimationFrame','parseInt','parseFloat','isNaN']);
 const missing = new Map();
-for (const m of html.matchAll(/\son[a-z]+=(\\?["'])(.*?)\1/g)) {
+// index.html と、読み込む js 内のテンプレート文字列の on*= 属性も検査する（段階 7 で主スクリプトを外部化したため）
+for (const m of js.matchAll(/\son[a-z]+=(\\?["'])(.*?)\1/g)) {
   for (const c of m[2].matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
     const name = c[1];
     if (builtins.has(name) || defined.has(name)) continue;

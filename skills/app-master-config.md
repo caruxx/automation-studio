@@ -60,7 +60,7 @@ v2 では**物理ファイル分離は維持**（後方互換）しつつ、API 
 | `tags_generation` | `_TAGS_PROMPT` | [Python/claude_proposer.py](../Python/claude_proposer.py) L129-154 |
 | `competitor_analysis` | `analyze_with_claude` 内 | [Python/app_competitor.py](../Python/app_competitor.py) L335 付近（v3 で言語ハイブリッド化: descriptive=日本語 / シード=英語 / 数値=numeric） |
 | `suno_from_analysis` | `propose_suno_prompt` | [Python/app_competitor.py](../Python/app_competitor.py) L446 |
-| `suno_from_persona` | `/api/suno/suggest-prompt` | [Python/app.py](../Python/app.py) `api_suno_suggest_prompt` |
+| `suno_from_persona` | `/api/suno/suggest-prompt` | [Python/routers/local_tools.py](../Python/routers/local_tools.py) `api_suno_suggest_prompt` |
 | `imitate_evolve` | `/api/videos/.../suggest-imitate-evolve` | 徹底パクリ進化分析（[app-imitate-evolve.md](./app-imitate-evolve.md)） |
 
 ### フォールバック実装

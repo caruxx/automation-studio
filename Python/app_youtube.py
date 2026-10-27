@@ -1122,7 +1122,7 @@ def upload_video(folder, title=None, schedule=None, privacy="private", tags=None
                         _pub.update_publish_at(youtube, video_id, new_at or None, full_req)
                         _ledger.upload_result(vol_num, input_hash, video_id, "private", new_at or None)
                         _write_marker(folder, video_id, title[:100], "private", new_at or None, s, localizations, note="resumed-complete")
-                        if thumbnail:
+                        if thumbnail and thumb_confirmed:  # 照合を通ったスナップショットだけを送る（段階 7）
                             try:
                                 _pub.set_thumbnail(youtube, video_id, thumbnail, execute=execute_youtube)
                             except Exception as e:
@@ -1320,7 +1320,8 @@ def publish_video_to_public(folder, token_override=None) -> dict:
         items = cur.get("items", [])
         if not items:
             return {"status": "error", "error": f"video_id {video_id} が見つからない（削除済 or 別アカウント）"}
-        prev_priv = items[0].get("status", {}).get("privacyStatus", "")
+        prev_status = items[0].get("status", {}) or {}
+        prev_priv = prev_status.get("privacyStatus", "")
         if prev_priv == "public":
             # marker も更新して冪等化
             upload["published_at"] = datetime.datetime.now().isoformat()
@@ -1333,7 +1334,12 @@ def publish_video_to_public(folder, token_override=None) -> dict:
         return {"status": "error", "error": f"HttpError {e}"}
     # public へ切替
     try:
-        body = {"id": video_id, "status": {"privacyStatus": "public"}}
+        # part=status の更新は status 全体を置き換える。privacyStatus だけを送ると、ライセンス・埋め込み・
+        # 子ども向けの申告・合成メディアの申告などが既定値に戻るため、今の値を引き継ぐ（publishAt は公開時に外す）
+        keep = ("license", "embeddable", "publicStatsViewable", "selfDeclaredMadeForKids", "containsSyntheticMedia")
+        status_body = {k: prev_status[k] for k in keep if k in prev_status}
+        status_body["privacyStatus"] = "public"
+        body = {"id": video_id, "status": status_body}
         resp = execute_youtube(youtube.videos().update(part="status", body=body), "videos.update")
         new_priv = resp.get("status", {}).get("privacyStatus", "")
     except HttpError as e:

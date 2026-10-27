@@ -103,11 +103,11 @@ YouTube Data API v3:
 
 ## 関連ファイル
 
-- `_claude/Python/app.py:api_generate_localizations()` — `/api/videos/{name}/generate-localizations`
-- `_claude/Python/app.py:api_meta_status()` — `/api/videos/{name}/meta-status`
-- `_claude/Python/app.py:api_youtube_update_snippet()` — `/api/youtube/update-snippet/{name}`
-- `_claude/Python/app.py:api_youtube_batch_upload()` — `/api/youtube/batch-upload`
-- `_claude/Python/app.py:api_mp4_info()` — `/api/videos/{name}/mp4-info`
+- `Python/routers/meta_tools.py:api_generate_localizations()` — `/api/videos/{name}/generate-localizations`
+- `Python/routers/meta_tools.py:api_meta_status()` — `/api/videos/{name}/meta-status`
+- `Python/routers/publish_gate.py:api_youtube_update_snippet()` — `/api/youtube/update-snippet/{name}`
+- `Python/routers/youtube.py:api_youtube_batch_upload()` — `/api/youtube/batch-upload`
+- `Python/routers/meta_tools.py:api_mp4_info()` — `/api/videos/{name}/mp4-info`
 - `_claude/Python/app_youtube.py:update_video_snippet()` — videos.update 本体（snippet + localizations 反映）
 - `_claude/Python/app_youtube.py:load_localizations()` — `youtube_localizations.json` 読み込み
 

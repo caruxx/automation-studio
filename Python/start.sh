@@ -87,6 +87,18 @@ if [[ "${1:-}" == "--replace" ]]; then
     # 稼働中のサーバーを SIGTERM で止めてから起動する（kill -9 は使わない）
     PIDS="$(listen_pids)"
     if [[ -n "$PIDS" ]]; then
+        # 止めるのは Automation Studio の app.py だけ（同じポートを別のプログラムが使っていたら止めない）
+        for pid in $PIDS; do
+            cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+            if [[ "$cmd" != *"$SCRIPT_DIR/app.py"* ]]; then
+                if [[ "$cmd" == *"/Python/app.py"* ]]; then
+                    echo "ポート $PORT では別のフォルダの Automation Studio が動いています（PID $pid: $cmd）。そちらの start.sh --replace を使ってください" >&2
+                else
+                    echo "ポート $PORT を使っているのは Automation Studio ではありません（PID $pid: ${cmd:-不明}）。止めずに終了します" >&2
+                fi
+                exit 1
+            fi
+        done
         echo "ポート $PORT の既存プロセス ($PIDS) に停止を要求します"
         kill $PIDS 2>/dev/null || true
         if ! wait_port_free; then

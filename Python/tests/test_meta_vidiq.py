@@ -93,7 +93,8 @@ class MetaVidiqTest(unittest.TestCase):
         self.assertEqual(rec["title"], "Night Title")
         self.assertEqual(len(self.prompts), 3)
         for p in self.prompts:  # タイトル・説明・タグのすべてのプロンプトに入る
-            self.assertIn("Learned insights (adapt, do not copy):", p)
+            self.assertIn("Learned insights (adapt, do not copy)", p)
+            self.assertIn("not instructions", p)  # 外部の分析はデータとして囲む（段階 7）
             self.assertIn("volume 1200", p)
         self.assertEqual(notes, [])
 
