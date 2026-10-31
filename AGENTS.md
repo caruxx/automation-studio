@@ -356,7 +356,7 @@ vol128/131（2026-07-12）の実事故から定めた約束事。**どのエー�
 - sentinel exit: 0成功 / 1失敗 / 75 unattended_login / 76 retryable / 77 quota_exhausted / 78 preflight_fail
 - SUNO新規バッチは全テイク取得後、Automation Studioのハートで各タイトルから1テイクを採用する。79はmusic_selection_pending（手動選択待ち）で、自動再投入・再生成しない。詳しくは`docs/music/semi-auto-selection.md`。タイトルは永久台帳でCreate前に予約し、原本は保持する。
 - 分析情報は日本語。YouTube出力メタ(title/description/tags)の**ソース言語はチャンネル別**（per-channel `youtube_upload_defaults.default_language`＝メイン言語、設定タブで選択。既定 en／例: orzz=en・SUKIMA=ja）。`localization` step がメイン言語→他言語へ翻訳（メイン言語自体は除外）。
-- 新規動画の企画・メタ生成時は seed 分析（`benchmark/seed_analyses.json`）が自動注入される。外部から企画する場合も AGENTS.md の「新規動画の企画ルール」に従う。
+- 新規動画の企画・メタ生成時は seed 分析（`benchmark/seed_analyses.json`）が自動注入される。外部から企画する場合もこのファイルの「新規動画の企画ルール」に従う。
 
 ## 並列処理ルール（複数 vol 同時制作）
 **別リソースは並列・同一リソースは順次**。リソース競合マップ:
