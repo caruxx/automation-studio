@@ -1,4 +1,13 @@
-# Automation Studio — Claude Code 向け運用ガイド
+# Automation Studio — AIエージェント向け運用ガイド
+
+このファイルはこのリポジトリのAI作業規則の正本です。Codex はこのファイルを直接読み、Claude Code は `CLAUDE.md` の `@AGENTS.md` 経由で読み込みます。規則の変更はこのファイルだけに行い、PRで反映します。
+
+orzz. ダッシュボード = YouTube BGM チャンネルの動画制作を全自動化するツール。
+
+## 必読
+- [SPEC.md](SPEC.md) — API一覧・データ契約・アーキテクチャ
+- [docs/archive/AGENTS_DESIGN.md](docs/archive/AGENTS_DESIGN.md) / [docs/archive/AGENTS_WORKPLAN.md](docs/archive/AGENTS_WORKPLAN.md) — エージェント化の初期設計と計画（現行の正本ではない。段階 7 で archive）
+- [skills/](skills/) — 機能別スキル
 
 ## Codex 単独実行モード
 
@@ -37,6 +46,7 @@ SUNO新規セットの採用は[ハートで選ぶセミオート方式](docs/mu
 AI / 人間の正規の入口はリポジトリのルート（`~/dev/automation-studio`）から `python3 Python/studio.py`。
 個別コマンドを直接実行する前に、まず `python3 Python/studio.py <intent> --vol <N> --dry-run` で解決結果と実行コマンドを確認する。
 機械可読な真実は `Python/routes.json`。下の自然言語対応表は概要として残す。
+`Python/routes.json` の `via_api_safe=false` は `--via-api` 禁止。理由は `via_api_unsafe_reason` を参照する。
 
 ## クイックリファレンス
 
@@ -338,6 +348,41 @@ vol128/131（2026-07-12）の実事故から定めた約束事。**どのエー�
 ### チャンネル切替の鉄則
 9. `studio.py` 実行時は **active channel の表示を必ず確認**。suno-auto の workspace は
    `{channel_prefix}_vol{N}`（routes.json 修正済み）。チャンネルをまたぐ作業の前に `--channel <id> --switch` を明示。
+
+## 開発時の鉄則
+- ⚠ サーバーは uvicorn **reload無し**。コード変更後は `bash Python/start.sh --replace` で再起動する（稼働中なら SIGTERM で止めてから起動。launchd 常駐は 2026-07-04 に廃止）。
+- Adobe（Premiere / Photoshop / AME）は 2026-10-25 段階 1a で廃止。`production_mode` は `ffmpeg_only` のみ。書き出しは `app_ffrender.py`、サムネ合成は Pillow。
+- ⚠ pipeline stage 追加時は `STEPS` / `STEP_LABELS` / `STEP_FUNCS` / `RETRY_POLICY` の**4箇所を一貫更新**。
+- sentinel exit: 0成功 / 1失敗 / 75 unattended_login / 76 retryable / 77 quota_exhausted / 78 preflight_fail
+- SUNO新規バッチは全テイク取得後、Automation Studioのハートで各タイトルから1テイクを採用する。79はmusic_selection_pending（手動選択待ち）で、自動再投入・再生成しない。詳しくは`docs/music/semi-auto-selection.md`。タイトルは永久台帳でCreate前に予約し、原本は保持する。
+- 分析情報は日本語。YouTube出力メタ(title/description/tags)の**ソース言語はチャンネル別**（per-channel `youtube_upload_defaults.default_language`＝メイン言語、設定タブで選択。既定 en／例: orzz=en・SUKIMA=ja）。`localization` step がメイン言語→他言語へ翻訳（メイン言語自体は除外）。
+- 新規動画の企画・メタ生成時は seed 分析（`benchmark/seed_analyses.json`）が自動注入される。外部から企画する場合もこのファイルの「新規動画の企画ルール」に従う。
+
+## 並列処理ルール（複数 vol 同時制作）
+**別リソースは並列・同一リソースは順次**。リソース競合マップ:
+
+| リソース | 使う処理 | 並列性 |
+|---|---|---|
+| SUNO ブラウザ | 楽曲生成・DL | **単一**（vol 跨ぎは順次。workspace 名を vol 別 `sk_vol3`/`sk_vol4` にして混在 DL 回避） |
+| ffmpeg（書き出し） | export | 並列可（CPU 律速） |
+| Pillow（画像合成） | psd_composite | 並列可 |
+| Claude/Codex (LLM) | meta・localization・scene_text・SUNO GhostWriter・bgimage | competition 注意 |
+| ffmpeg | 楽曲後処理 | 並列可（CPU） |
+| YouTube | upload | チャンネル別 token |
+
+- ⚠ upload は vol フォルダ単位の `.youtube_upload.lock` で排他 + marker/YouTube 実在確認の三重ガード。再アップロードが必要な時だけ `APP_FORCE_REUPLOAD=1`
+- **並列 OK（別リソース）**: `export(ffmpeg)` ∥ `別vol SUNO生成(ブラウザ+codex)` ／ `DL(SUNO)` ∥ `サムネ(bgimage=codex画像 + psd_composite=Pillow)` ／ `後処理(ffmpeg)` ∥ `別vol サムネ`
+- **並列 NG（同一リソース→順次）**: SUNO 同士
+- ⚠ LLM step（meta/localization）を `--via-api` で実行すると `_api_post` の **10 秒 timeout** で必ず失敗 → **via-api 無し CLI**（`python3 app_pipeline.py <vol> --only meta`、claude_proposer 直接）で実行
+- ⚠ export の「完了」ログは `_api_poll` の **早期誤判定**あり → mp4 サイズ安定 + ffprobe で実完了を裏取り
+- ⚠ 複数 vol の SUNO は **workspace を vol 別**にして混在 DL を防ぐ。生成リクエスト送信 ≠ レンダリング完了（DL 前に待機 or cache miss 再試行）
+
+## サブエージェント（Claude Code）
+ドメイン別に委譲: music / image / video / publish / analysis / pipeline / web（詳細 docs/archive/AGENTS_DESIGN.md §2（初期設計）。`.claude/agents/` はこのリポジトリには含まれない。ドメイン知識は `skills/<domain>.md`）。
+全エージェント model=opus・tools 無制限（完全権限委譲。Bash でサーバー再起動して検証まで自走）。
+
+## 言語
+ユーザーとのやり取り・コメントは日本語。
 
 ## 仕様書・スキル参照
 
